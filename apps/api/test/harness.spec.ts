@@ -1,16 +1,18 @@
+import 'reflect-metadata'
 import { describe, expect, it } from 'vitest'
 
 describe('test harness', () => {
   it('runs TypeScript with decorator metadata enabled', () => {
-    function Marker(): ClassDecorator {
-      return (target) => {
-        Reflect.defineMetadata('marker', 'present', target)
-      }
+    function Marker(): ParameterDecorator {
+      return () => {}
     }
 
-    @Marker()
-    class Probe {}
+    class Probe {
+      constructor(@Marker() param: string) {}
+    }
 
-    expect(Reflect.getMetadata('marker', Probe)).toBe('present')
+    const paramTypes = Reflect.getMetadata('design:paramtypes', Probe)
+    expect(paramTypes).toBeDefined()
+    expect(paramTypes[0]).toBe(String)
   })
 })
