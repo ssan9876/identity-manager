@@ -18,7 +18,14 @@ describe('PermissionEngine', () => {
   let engId: string
 
   beforeEach(async () => {
-    await ctx.pool.query('TRUNCATE TABLE role_assignments, users, org_units CASCADE')
+    // DELETE, not TRUNCATE ... CASCADE: TRUNCATE on `users` always
+    // structurally cascades into audit_log via its actor_user_id foreign
+    // key, and audit_log's append-only trigger unconditionally rejects that.
+    // DELETE respects each table's own onDelete action instead:
+    // role_assignments cascades from users/org_units, audit_log
+    // ('restrict', unreferenced here) is never touched.
+    await ctx.pool.query('DELETE FROM users')
+    await ctx.pool.query('DELETE FROM org_units')
     roles = new RoleAssignmentsRepository(ctx.db)
     users = new UsersRepository(ctx.db)
     orgUnits = new OrgUnitsRepository(ctx.db)

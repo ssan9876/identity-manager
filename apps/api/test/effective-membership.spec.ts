@@ -11,9 +11,15 @@ describe('effective membership', () => {
   let orgUnitId: string
 
   beforeEach(async () => {
-    await ctx.pool.query(
-      'TRUNCATE TABLE group_user_members, group_group_members, groups, users, org_units CASCADE',
-    )
+    // DELETE, not TRUNCATE ... CASCADE: TRUNCATE on `users` always
+    // structurally cascades into audit_log via its actor_user_id foreign
+    // key, and audit_log's append-only trigger unconditionally rejects that.
+    // DELETE respects each table's own onDelete action instead:
+    // group_user_members/group_group_members cascade from groups/users,
+    // audit_log ('restrict', unreferenced here) is never touched.
+    await ctx.pool.query('DELETE FROM groups')
+    await ctx.pool.query('DELETE FROM users')
+    await ctx.pool.query('DELETE FROM org_units')
     groups = new GroupsRepository(ctx.db)
     users = new UsersRepository(ctx.db)
     orgUnitId = (await new OrgUnitsRepository(ctx.db).createRoot('Acme Corp')).id

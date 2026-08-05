@@ -37,7 +37,13 @@ describe('GET /users', () => {
   })
 
   beforeEach(async () => {
-    await ctx.pool.query('TRUNCATE TABLE users, org_units CASCADE')
+    // DELETE, not TRUNCATE ... CASCADE: TRUNCATE on `users` always
+    // structurally cascades into audit_log via its actor_user_id foreign
+    // key, and audit_log's append-only trigger unconditionally rejects that.
+    // DELETE respects each table's own onDelete action instead (audit_log is
+    // 'restrict' and unreferenced here, so it's never touched).
+    await ctx.pool.query('DELETE FROM users')
+    await ctx.pool.query('DELETE FROM org_units')
     orgUnitId = (await new OrgUnitsRepository(ctx.db).createRoot('Acme Corp')).id
     const users = new UsersRepository(ctx.db)
     for (const username of ['ada', 'grace', 'alan']) {

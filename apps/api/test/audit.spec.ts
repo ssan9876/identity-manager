@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import { AuditRepository } from '../src/audit/audit.repository'
 import { AuditWriter } from '../src/audit/audit.writer'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
@@ -11,8 +11,15 @@ describe('audit log', () => {
   let audit: AuditRepository
   let actorId: string
 
-  beforeEach(async () => {
-    await ctx.pool.query('TRUNCATE TABLE audit_log, users, org_units CASCADE')
+  // A single actor is created once for the whole file rather than reset with
+  // beforeEach: audit_log is append-only, so once a row references this
+  // user, the user can never be removed either (its foreign key is
+  // onDelete: 'restrict' — see db/schema/audit-log.ts) — and audit_log
+  // itself can never be cleared between tests (that is the property this
+  // file exists to prove). Tests below compare against a baseline captured
+  // at the start of each test, or rely on list()'s newest-first ordering,
+  // rather than assuming a clean table.
+  beforeAll(async () => {
     writer = new AuditWriter()
     audit = new AuditRepository(ctx.db)
     const orgUnits = new OrgUnitsRepository(ctx.db)
@@ -30,45 +37,54 @@ describe('audit log', () => {
   })
 
   it('records an entry with actor, action, resource and payloads', async () => {
-    await writer.record(ctx.db, {
-      actorUserId: actorId,
-      action: 'user:update',
-      resourceType: 'user',
-      resourceId: actorId,
-      before: { jobTitle: null },
-      after: { jobTitle: 'Engineer' },
+    await ctx.db.transaction(async (tx) => {
+      await writer.record(tx, {
+        actorUserId: actorId,
+        action: 'user:update',
+        resourceType: 'user',
+        resourceId: actorId,
+        before: { jobTitle: null },
+        after: { jobTitle: 'Engineer' },
+      })
     })
 
-    const rows = await audit.list({ limit: 10, offset: 0 })
-    expect(rows).toHaveLength(1)
-    expect(rows[0].action).toBe('user:update')
-    expect(rows[0].resourceType).toBe('user')
-    expect(rows[0].before).toEqual({ jobTitle: null })
-    expect(rows[0].after).toEqual({ jobTitle: 'Engineer' })
+    // limit: 1 rather than checking total table length — audit_log
+    // accumulates across tests in this file (see the beforeAll comment
+    // above), but list() orders newest-first and nothing else writes
+    // concurrently, so the newest row is deterministically this test's own.
+    const [newest] = await audit.list({ limit: 1, offset: 0 })
+    expect(newest.action).toBe('user:update')
+    expect(newest.resourceType).toBe('user')
+    expect(newest.before).toEqual({ jobTitle: null })
+    expect(newest.after).toEqual({ jobTitle: 'Engineer' })
   })
 
   it('allows a null actor for system-originated actions', async () => {
-    await writer.record(ctx.db, {
-      actorUserId: null,
-      action: 'user:deactivate',
-      resourceType: 'user',
-      resourceId: actorId,
-      before: { status: 'active' },
-      after: { status: 'deactivated' },
+    await ctx.db.transaction(async (tx) => {
+      await writer.record(tx, {
+        actorUserId: null,
+        action: 'user:deactivate',
+        resourceType: 'user',
+        resourceId: actorId,
+        before: { status: 'active' },
+        after: { status: 'deactivated' },
+      })
     })
 
-    const rows = await audit.list({ limit: 10, offset: 0 })
-    expect(rows[0].actorUserId).toBeNull()
+    const [newest] = await audit.list({ limit: 1, offset: 0 })
+    expect(newest.actorUserId).toBeNull()
   })
 
   it('refuses UPDATE at the database level', async () => {
-    await writer.record(ctx.db, {
-      actorUserId: actorId,
-      action: 'user:read',
-      resourceType: 'user',
-      resourceId: actorId,
-      before: null,
-      after: null,
+    await ctx.db.transaction(async (tx) => {
+      await writer.record(tx, {
+        actorUserId: actorId,
+        action: 'user:read',
+        resourceType: 'user',
+        resourceId: actorId,
+        before: null,
+        after: null,
+      })
     })
 
     await expect(
@@ -77,19 +93,41 @@ describe('audit log', () => {
   })
 
   it('refuses DELETE at the database level', async () => {
-    await writer.record(ctx.db, {
-      actorUserId: actorId,
-      action: 'user:read',
-      resourceType: 'user',
-      resourceId: actorId,
-      before: null,
-      after: null,
+    await ctx.db.transaction(async (tx) => {
+      await writer.record(tx, {
+        actorUserId: actorId,
+        action: 'user:read',
+        resourceType: 'user',
+        resourceId: actorId,
+        before: null,
+        after: null,
+      })
     })
 
     await expect(ctx.pool.query('DELETE FROM audit_log')).rejects.toThrow(/append-only/i)
   })
 
+  it('refuses TRUNCATE at the database level', async () => {
+    const baseline = await audit.count()
+
+    await ctx.db.transaction(async (tx) => {
+      await writer.record(tx, {
+        actorUserId: actorId,
+        action: 'user:read',
+        resourceType: 'user',
+        resourceId: actorId,
+        before: null,
+        after: null,
+      })
+    })
+
+    await expect(ctx.pool.query('TRUNCATE audit_log')).rejects.toThrow(/append-only/i)
+    expect(await audit.count()).toBe(baseline + 1)
+  })
+
   it('rolls back the audit entry when its enclosing transaction fails', async () => {
+    const baseline = await audit.count()
+
     await expect(
       ctx.db.transaction(async (tx) => {
         await writer.record(tx, {
@@ -104,10 +142,12 @@ describe('audit log', () => {
       }),
     ).rejects.toThrow('mutation failed')
 
-    expect(await audit.count()).toBe(0)
+    expect(await audit.count()).toBe(baseline)
   })
 
   it('keeps the audit entry when its enclosing transaction commits', async () => {
+    const baseline = await audit.count()
+
     await ctx.db.transaction(async (tx) => {
       await writer.record(tx, {
         actorUserId: actorId,
@@ -119,23 +159,27 @@ describe('audit log', () => {
       })
     })
 
-    expect(await audit.count()).toBe(1)
+    expect(await audit.count()).toBe(baseline + 1)
   })
 
   it('returns newest first and paginates', async () => {
+    const baseline = await audit.count()
+
     for (const action of ['a', 'b', 'c']) {
-      await writer.record(ctx.db, {
-        actorUserId: actorId,
-        action,
-        resourceType: 'user',
-        resourceId: actorId,
-        before: null,
-        after: null,
+      await ctx.db.transaction(async (tx) => {
+        await writer.record(tx, {
+          actorUserId: actorId,
+          action,
+          resourceType: 'user',
+          resourceId: actorId,
+          before: null,
+          after: null,
+        })
       })
     }
 
     const page = await audit.list({ limit: 2, offset: 0 })
     expect(page.map((row) => row.action)).toEqual(['c', 'b'])
-    expect(await audit.count()).toBe(3)
+    expect(await audit.count()).toBe(baseline + 3)
   })
 })

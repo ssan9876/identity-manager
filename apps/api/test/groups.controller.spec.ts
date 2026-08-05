@@ -38,9 +38,17 @@ describe('GET /groups', () => {
   })
 
   beforeEach(async () => {
-    await ctx.pool.query(
-      'TRUNCATE TABLE group_user_members, group_group_members, groups, users, org_units CASCADE',
-    )
+    // Not TRUNCATE ... CASCADE: audit_log's append-only trigger fires
+    // unconditionally (even on zero matching rows) for any statement that
+    // would touch it, and TRUNCATE CASCADE on `users` always structurally
+    // reaches audit_log via its actor_user_id foreign key. DELETE instead —
+    // it respects each table's own onDelete action, so group_user_members,
+    // group_group_members and role_assignments (if any) cascade away from
+    // `groups`/`users`, and audit_log (onDelete: 'restrict', unreferenced
+    // here) is never touched at all.
+    await ctx.pool.query('DELETE FROM groups')
+    await ctx.pool.query('DELETE FROM users')
+    await ctx.pool.query('DELETE FROM org_units')
     orgUnitId = (await new OrgUnitsRepository(ctx.db).createRoot('Acme Corp')).id
     const groups = new GroupsRepository(ctx.db)
     const users = new UsersRepository(ctx.db)

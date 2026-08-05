@@ -30,7 +30,7 @@ export class AuditRepository {
       .limit(options.limit)
       .offset(options.offset)
 
-    return rows as AuditRow[]
+    return rows
   }
 
   async count(): Promise<number> {

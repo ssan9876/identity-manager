@@ -59,4 +59,15 @@ async function enforceAuditAppendOnly(pool: Pool): Promise<void> {
     CREATE TRIGGER audit_log_no_delete BEFORE DELETE ON audit_log
     FOR EACH STATEMENT EXECUTE FUNCTION audit_log_append_only();
   `)
+
+  // TRUNCATE bypasses row-oriented DELETE triggers entirely — Postgres fires
+  // a separate BEFORE TRUNCATE event, which needs its own trigger. The owning
+  // role (the same `idm` role migrations and the app runtime both connect
+  // as) can always TRUNCATE a table it owns, so this cannot be closed by
+  // revoking a privilege; it must be a trigger, like UPDATE/DELETE above.
+  await pool.query(`DROP TRIGGER IF EXISTS audit_log_no_truncate ON audit_log`)
+  await pool.query(`
+    CREATE TRIGGER audit_log_no_truncate BEFORE TRUNCATE ON audit_log
+    FOR EACH STATEMENT EXECUTE FUNCTION audit_log_append_only();
+  `)
 }

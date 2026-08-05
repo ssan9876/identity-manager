@@ -14,8 +14,18 @@ export const auditLog = pgTable(
   {
     id: bigserial('id', { mode: 'number' }).primaryKey(),
     // Nullable: system-originated actions have no human actor.
+    //
+    // onDelete is 'restrict', not 'set null': audit_log is append-only, and
+    // append-only means attribution can't quietly erode either. 'set null'
+    // would have Postgres issue an internal UPDATE against audit_log when a
+    // referenced user is deleted — which the append-only trigger in
+    // db/migrate.ts (enforceAuditAppendOnly) unconditionally rejects, since
+    // it fires on every UPDATE statement regardless of match count. The
+    // practical effect either way is the same (a user with audit history
+    // can't be removed), but 'restrict' gets there via a standard FK
+    // violation instead of colliding with the append-only trigger.
     actorUserId: uuid('actor_user_id').references(() => users.id, {
-      onDelete: 'set null',
+      onDelete: 'restrict',
     }),
     action: varchar('action', { length: 64 }).notNull(),
     resourceType: varchar('resource_type', { length: 64 }).notNull(),
