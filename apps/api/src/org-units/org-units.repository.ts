@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
+import { Inject, Injectable } from '@nestjs/common'
 import { asc, eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import { DB_CLIENT } from '../common/db.token'
 import { NotFoundError } from '../common/errors'
 import * as schema from '../db/schema/index'
 import { orgUnits } from '../db/schema/org-units'
@@ -64,8 +66,9 @@ export function toLabel(name: string): string {
   return `ou_${hash}`
 }
 
+@Injectable()
 export class OrgUnitsRepository {
-  constructor(private readonly db: NodePgDatabase<typeof schema>) {}
+  constructor(@Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>) {}
 
   async createRoot(name: string): Promise<OrgUnit> {
     const [row] = await this.db

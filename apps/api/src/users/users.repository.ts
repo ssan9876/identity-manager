@@ -1,5 +1,7 @@
+import { Inject, Injectable } from '@nestjs/common'
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import { DB_CLIENT } from '../common/db.token'
 import { InvalidTransitionError, NotFoundError } from '../common/errors'
 import * as schema from '../db/schema/index'
 import { users } from '../db/schema/users'
@@ -61,8 +63,9 @@ function statusesThatMayTransitionTo(next: UserStatus): UserStatus[] {
   )
 }
 
+@Injectable()
 export class UsersRepository {
-  constructor(private readonly db: NodePgDatabase<typeof schema>) {}
+  constructor(@Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>) {}
 
   async create(input: CreateUserInput): Promise<User> {
     const [row] = await this.db

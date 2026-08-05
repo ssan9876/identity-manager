@@ -22,6 +22,13 @@ describe('parsePageQuery', () => {
     expect(() => parsePageQuery({ offset: '-1' })).toThrow(ValidationError)
   })
 
+  // Carried finding from Task 5's review: offset had no upper bound, so a
+  // preposterous value like this passed validation and would have reached
+  // Postgres as a raw bigint error (a 500) instead of a clean 400.
+  it('rejects an offset above a sane upper bound', () => {
+    expect(() => parsePageQuery({ offset: '1e21' })).toThrow(ValidationError)
+  })
+
   it('rejects a zero or negative limit', () => {
     expect(() => parsePageQuery({ limit: '0' })).toThrow(ValidationError)
   })

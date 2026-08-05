@@ -18,7 +18,13 @@ export interface Page<T> {
 
 const pageSchema = z.object({
   limit: z.coerce.number().int().positive().default(DEFAULT_LIMIT),
-  offset: z.coerce.number().int().min(0).default(0),
+  // Number.isInteger(1e21) is true — huge values like this are still
+  // "integers" in float terms, so .int() alone lets them through. Without an
+  // upper bound, a value like "1e21" used to pass validation and only fail
+  // once it reached Postgres as a raw bigint parameter (an unmapped 500).
+  // MAX_SAFE_INTEGER is the ceiling below which a JS number is guaranteed to
+  // round-trip through Postgres's bigint offset exactly.
+  offset: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
 })
 
 /**
