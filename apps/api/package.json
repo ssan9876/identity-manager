@@ -4,9 +4,10 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start:dev": "tsx watch src/main.ts",
+    "start:dev": "tsx watch --env-file-if-exists=../../.env src/main.ts",
     "test": "vitest run",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx --env-file-if-exists=../../.env src/db/migrate-cli.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.4",

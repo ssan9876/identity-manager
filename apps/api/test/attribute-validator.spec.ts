@@ -213,8 +213,8 @@ describe('validateAttributes', () => {
     })
   })
 
-  it('treats optional "constructor", "toString", and "hasOwnProperty" definitions as absent when the payload never sets them', () => {
-    for (const key of ['constructor', 'toString', 'hasOwnProperty']) {
+  it('treats optional "constructor", "toString", "hasOwnProperty", "valueOf", and "isPrototypeOf" definitions as absent when the payload never sets them', () => {
+    for (const key of ['constructor', 'toString', 'hasOwnProperty', 'valueOf', 'isPrototypeOf']) {
       const defs = [
         def({ key, dataType: 'string', required: false }),
         def({ key: 'ordinary_field', dataType: 'string' }),

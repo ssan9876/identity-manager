@@ -64,6 +64,14 @@ function fieldSchema(definition: AttributeDefinition): z.ZodTypeAny {
       let schema = z.string()
       if (rules.minLength !== undefined) schema = schema.min(rules.minLength)
       if (rules.maxLength !== undefined) schema = schema.max(rules.maxLength)
+      // SECURITY (deferred, not fixed here): `rules.pattern` is DB-sourced
+      // and unvalidated. A catastrophic-backtracking pattern (e.g.
+      // `^(a+)+$`) compiled and executed here can hang the Node event loop
+      // — measured 96.7s on a 33-character input. Currently unreachable
+      // (no write path exists for `attribute_definitions`), so left as-is.
+      // This MUST be addressed — a pattern-safety check or an execution
+      // timeout — by whichever change first exposes a write path for
+      // `attribute_definitions`.
       if (rules.pattern !== undefined) schema = schema.regex(new RegExp(rules.pattern))
       return schema
     }

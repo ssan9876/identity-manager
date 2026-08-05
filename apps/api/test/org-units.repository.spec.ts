@@ -16,6 +16,16 @@ describe('toLabel', () => {
     expect(toLabel('Café')).toBe('cafe')
   })
 
+  it('strips a mid-word combining mark via NFKD normalization', () => {
+    // Unlike 'Café' (mark at the token's trailing edge, where
+    // NFKD-decompose + collapse + trim already yield 'cafe' even if
+    // stripCombiningMarks is neutered), the accent here sits mid-word: only
+    // stripCombiningMarks removing the combining acute accent (U+0301) left
+    // behind by NFKD decomposition of 'é' produces 'mexico' instead of
+    // 'me_xico'.
+    expect(toLabel('México')).toBe('mexico')
+  })
+
   it('no longer collides "Café" and "Caf!" on the same label', () => {
     expect(toLabel('Café')).not.toBe(toLabel('Caf!'))
   })
