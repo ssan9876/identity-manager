@@ -1,19 +1,9 @@
 import { Controller, Get, Inject, Param, Query, UseGuards } from '@nestjs/common'
-import { z } from 'zod'
 import { JwtGuard } from '../auth/jwt.guard'
-import { NotFoundError, ValidationError } from '../common/errors'
+import { NotFoundError } from '../common/errors'
+import { parseId } from '../common/http/parse-id'
 import { type Page, parsePageQuery } from '../common/pagination'
 import { GroupsRepository, type Group } from './groups.repository'
-
-const uuidSchema = z.string().uuid()
-
-function parseId(raw: string): string {
-  const parsed = uuidSchema.safeParse(raw)
-  if (!parsed.success) {
-    throw new ValidationError(['id: must be a UUID'])
-  }
-  return parsed.data
-}
 
 @Controller('groups')
 @UseGuards(JwtGuard)
