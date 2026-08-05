@@ -58,6 +58,21 @@ describe('role catalog', () => {
     }
   })
 
+  // Fix round 2, Critical: role_key is a Postgres enum, so a value like
+  // 'constructor' or 'toString' is ordinary, valid SQL
+  // (`ALTER TYPE role_key ADD VALUE 'constructor'`). An ordinary object
+  // literal inherits Object.prototype, so ROLE_RANK['constructor'] would
+  // resolve to the inherited Object function instead of undefined — a real,
+  // truthy, non-nullish value that defeats both an `in` check (walks the
+  // prototype chain) and a bare `?? fallback` (only catches null/undefined,
+  // and a function is neither). A null prototype removes the hazard at its
+  // source: every property lookup on a colliding key is genuinely
+  // undefined, with no inherited fallback to accidentally observe.
+  it('has no prototype on ROLE_RANK or ROLE_PERMISSIONS, so a role_key colliding with an inherited Object.prototype property cannot resolve to anything', () => {
+    expect(Object.getPrototypeOf(ROLE_RANK)).toBeNull()
+    expect(Object.getPrototypeOf(ROLE_PERMISSIONS)).toBeNull()
+  })
+
   it('does not alias ROLE_PERMISSIONS.super_admin to ALL_ACTIONS', () => {
     // Reference-equality check: super_admin's permission array must be an
     // independent array, not literally the same object as ALL_ACTIONS.

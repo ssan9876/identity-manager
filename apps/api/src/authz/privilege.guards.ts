@@ -21,8 +21,8 @@ export class PrivilegeGuards {
    * pair with assertCanModifyPrincipal's target-rank lookup below: an
    * assignment whose roleKey is not present in ROLE_RANK (the database
    * enum can grow independently of this static catalog — see
-   * ROLE_PERMISSIONS's doc comment) contributes NO privilege, via
-   * `?? NO_PRIVILEGE`, rather than corrupting the whole reduction.
+   * ROLE_PERMISSIONS's doc comment) contributes NO privilege, rather than
+   * corrupting the whole reduction.
    *
    * Finding I-1: `ROLE_RANK[unknownKey]` is `undefined`, and
    * `Math.max(n, undefined)` is `NaN`. Math.max returns NaN if ANY argument
@@ -33,10 +33,30 @@ export class PrivilegeGuards {
    * live: `highestRank([super_admin, ghost])` was `NaN`, not `40`. An
    * unknown role must be ignored, never allowed to silently defeat every
    * later comparison.
+   *
+   * Finding I-1, round 2 (Critical): `ROLE_RANK[key] ?? NO_PRIVILEGE` alone
+   * is not enough, because `??` only catches `null`/`undefined` — a
+   * `roleKey` of `'constructor'`, `'toString'`, `'__proto__'`, etc.
+   * resolves to a real, truthy, INHERITED value from `Object.prototype`
+   * (e.g. `ROLE_RANK['constructor']` is the `Object` function), so `??`
+   * never fires and `Math.max` coerces that inherited value to `NaN`
+   * anyway — the exact bug this comment already describes, reopened via a
+   * different door. `Object.hasOwn` checks ONLY the object's own
+   * properties, never the prototype chain, so it is correct regardless of
+   * whether ROLE_RANK happens to have a prototype. This is belt-and-braces
+   * with ROLE_RANK now being built on `Object.create(null)` (see
+   * actions.ts): even if that ever regressed, this check does not depend
+   * on it.
    */
   highestRank(assignments: ActorAssignment[]): number {
     return assignments.reduce(
-      (highest, assignment) => Math.max(highest, ROLE_RANK[assignment.roleKey] ?? NO_PRIVILEGE),
+      (highest, assignment) =>
+        Math.max(
+          highest,
+          Object.hasOwn(ROLE_RANK, assignment.roleKey)
+            ? ROLE_RANK[assignment.roleKey]
+            : NO_PRIVILEGE,
+        ),
       NO_PRIVILEGE,
     )
   }
@@ -141,12 +161,25 @@ export class PrivilegeGuards {
     // (surfaces as an uncaught 500, per this file's error-taxonomy
     // convention — see common/errors.ts: "anything that is NOT a
     // DomainError is a genuine bug"), never a rank that could satisfy the
-    // comparison below. The `in` check also lets `row.roleKey` be indexed
-    // into ROLE_RANK without an `as RoleKey` cast — the previous
-    // `ROLE_RANK[row.roleKey as RoleKey]` cast is exactly what suppressed
-    // the compiler's ability to flag this as possibly `undefined`.
+    // comparison below.
+    //
+    // Finding I-1, round 2 (Critical): the original `in` operator walks
+    // the prototype chain, so `'constructor' in ROLE_RANK` and
+    // `'toString' in ROLE_RANK` are both `true` on an ordinary object even
+    // though neither is an OWN property — the throw below was silently
+    // skipped for any role_key colliding with an inherited
+    // Object.prototype name, and ROLE_RANK[row.roleKey] then returned that
+    // inherited (truthy, non-numeric) value straight into Math.max, which
+    // coerces it to NaN. `Object.hasOwn` checks only own properties, never
+    // inherited ones, so it is correct regardless of whether ROLE_RANK has
+    // a prototype — belt-and-braces with ROLE_RANK now being built on
+    // `Object.create(null)` (actions.ts). This is also what lets
+    // `row.roleKey` be indexed into ROLE_RANK without an `as RoleKey`
+    // cast — the previous `ROLE_RANK[row.roleKey as RoleKey]` cast is
+    // exactly what suppressed the compiler's ability to flag this as
+    // possibly `undefined`.
     const targetRank = targetAssignments.reduce((highest, row) => {
-      if (!(row.roleKey in ROLE_RANK)) {
+      if (!Object.hasOwn(ROLE_RANK, row.roleKey)) {
         throw new Error(
           `data integrity fault: role_assignments references unknown role_key "${row.roleKey}"`,
         )

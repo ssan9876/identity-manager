@@ -197,6 +197,30 @@ describe('PermissionEngine', () => {
     expect(() => engine.assertCanAnywhere(actor, 'user:create')).toThrow(ForbiddenError)
   })
 
+  // privilege.guards fix round 2, Critical: grantingAssignments does
+  // `ROLE_PERMISSIONS[assignment.roleKey]?.includes(action) ?? false`.
+  // Before ROLE_PERMISSIONS was made prototype-less (authz/actions.ts), a
+  // colliding role_key like 'constructor' resolved to the inherited Object
+  // function (truthy, not nullish), so `?.` did not short-circuit, and
+  // `.includes` — looked up on that function — was `undefined`; calling
+  // `undefined(action)` threw a TypeError. Not an escalation (it failed
+  // closed via crash, never granted anything), but not the clean,
+  // predictable denial this file's design implies either. This pins that
+  // the catalog fix resolves this call site automatically, with no change
+  // to permission.engine.ts itself.
+  it('grantingAssignments (via canAnywhere) does not throw for a role_key colliding with an inherited Object.prototype property, and correctly denies', async () => {
+    await ctx.pool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'constructor'`)
+    const user = await makeUser('ada', rootId)
+    await ctx.pool.query(
+      'INSERT INTO role_assignments (user_id, role_key, scope_org_unit_id) VALUES ($1, $2::role_key, NULL)',
+      [user.id, 'constructor'],
+    )
+    const actor = await engine.resolveActor({ subject: 'k', username: 'ada', email: null })
+
+    expect(() => engine.canAnywhere(actor, 'user:read')).not.toThrow()
+    expect(engine.canAnywhere(actor, 'user:read')).toBe(false)
+  })
+
   it('assertCanIn throws ForbiddenError when denied and is silent when allowed', async () => {
     const user = await makeUser('ada', rootId)
     await roles.assign({ userId: user.id, roleKey: 'help_desk', scopeOrgUnitId: salesId })

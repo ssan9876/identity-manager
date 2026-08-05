@@ -297,6 +297,89 @@ describe('PrivilegeGuards', () => {
     })
   })
 
+  // Finding I-1, round 2 (CRITICAL): the round-1 fix guarded against a
+  // roleKey being ABSENT (`in` / `?? NO_PRIVILEGE`), not against it
+  // resolving to something INHERITED. `'constructor' in ROLE_RANK` and
+  // `'toString' in ROLE_RANK` are both true on an ordinary object (walks
+  // the prototype chain), and `ROLE_RANK['constructor']` is a real,
+  // truthy, non-nullish value (the inherited Object function) that `??`
+  // does not catch — Math.max then coerces it to NaN, reopening the exact
+  // fail-open Finding I-1 was meant to close, via a different door.
+  // role_key is a Postgres enum, so `ALTER TYPE role_key ADD VALUE
+  // 'constructor'` is ordinary, valid SQL — these use the actual colliding
+  // names, not a generic placeholder, and go through the real methods
+  // end-to-end against a real Postgres, exactly as the review reproduced it.
+  describe('role_key values colliding with an inherited Object.prototype property (Finding I-1, fix round 2)', () => {
+    it('denies (never resolves) when the TARGET holds only "constructor"', async () => {
+      await ctx.pool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'constructor'`)
+
+      const plain = await makeUser('plain', rootId)
+      const colliding = await makeUser('colliding', rootId)
+      await ctx.pool.query(
+        'INSERT INTO role_assignments (user_id, role_key, scope_org_unit_id) VALUES ($1, $2::role_key, NULL)',
+        [colliding.id, 'constructor'],
+      )
+      const actor = await actorFor('plain')
+
+      await expect(guards.assertCanModifyPrincipal(actor, colliding.id)).rejects.toThrow()
+      await expect(
+        guards.assertCanModifyPrincipal(actor, colliding.id),
+      ).rejects.not.toBeInstanceOf(ForbiddenError)
+    })
+
+    it('denies (never resolves) when the TARGET holds only "toString"', async () => {
+      await ctx.pool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'toString'`)
+
+      const plain = await makeUser('plain', rootId)
+      const colliding = await makeUser('colliding', rootId)
+      await ctx.pool.query(
+        'INSERT INTO role_assignments (user_id, role_key, scope_org_unit_id) VALUES ($1, $2::role_key, NULL)',
+        [colliding.id, 'toString'],
+      )
+      const actor = await actorFor('plain')
+
+      await expect(guards.assertCanModifyPrincipal(actor, colliding.id)).rejects.toThrow()
+      await expect(
+        guards.assertCanModifyPrincipal(actor, colliding.id),
+      ).rejects.not.toBeInstanceOf(ForbiddenError)
+    })
+
+    it('does not let an ACTOR holding only "constructor" modify a real super_admin', async () => {
+      await ctx.pool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'constructor'`)
+
+      const colliding = await makeUser('colliding', rootId)
+      const boss = await makeUser('boss', rootId)
+      await ctx.pool.query(
+        'INSERT INTO role_assignments (user_id, role_key, scope_org_unit_id) VALUES ($1, $2::role_key, NULL)',
+        [colliding.id, 'constructor'],
+      )
+      await roles.assign({ userId: boss.id, roleKey: 'super_admin' })
+      const actor = await actorFor('colliding')
+
+      // Pre-fix: ROLE_RANK['constructor'] ?? NO_PRIVILEGE never fires
+      // (inherited Object function is truthy, not nullish); Math.max
+      // coerces it to NaN, and NaN < 40 is false -> resolved.
+      expect(guards.highestRank(actor.assignments)).not.toBeNaN()
+      await expect(
+        guards.assertCanModifyPrincipal(actor, boss.id),
+      ).rejects.toBeInstanceOf(ForbiddenError)
+    })
+
+    it('ranks an actor holding "constructor" plus a real role by the real role alone', async () => {
+      await ctx.pool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'constructor'`)
+
+      const mixed = await makeUser('mixed', rootId)
+      await ctx.pool.query(
+        'INSERT INTO role_assignments (user_id, role_key, scope_org_unit_id) VALUES ($1, $2::role_key, NULL)',
+        [mixed.id, 'constructor'],
+      )
+      await roles.assign({ userId: mixed.id, roleKey: 'user_admin' })
+      const actor = await actorFor('mixed')
+
+      expect(guards.highestRank(actor.assignments)).toBe(30)
+    })
+  })
+
   it('computes the highest rank across several assignments', () => {
     expect(
       guards.highestRank([
@@ -322,5 +405,41 @@ describe('PrivilegeGuards', () => {
         { roleKey: 'ghost_role' as RoleKey, scopeOrgUnitId: null, scopePath: null },
       ]),
     ).toBe(40)
+  })
+
+  // Finding I-1, round 2: the full named colliding set from the review,
+  // exercised directly and cheaply (no DB) against highestRank itself. Every
+  // one of these is an inherited property/accessor on Object.prototype, so
+  // each is a DISTINCT way the round-1 `?? NO_PRIVILEGE`-only fix could have
+  // resolved to a truthy, non-nullish value and been coerced to NaN.
+  const COLLIDING_ROLE_KEYS = [
+    'constructor',
+    'toString',
+    'valueOf',
+    'hasOwnProperty',
+    'isPrototypeOf',
+    'propertyIsEnumerable',
+    'toLocaleString',
+    '__proto__',
+  ] as const
+
+  it('highestRank never returns NaN, for any single role_key that collides with an inherited Object.prototype property', () => {
+    for (const collidingKey of COLLIDING_ROLE_KEYS) {
+      const rank = guards.highestRank([
+        { roleKey: collidingKey as RoleKey, scopeOrgUnitId: null, scopePath: null },
+      ])
+      expect(rank, `roleKey "${collidingKey}"`).not.toBeNaN()
+      expect(rank, `roleKey "${collidingKey}"`).toBe(-1)
+    }
+  })
+
+  it('highestRank ignores every colliding role_key even mixed with a real, high-ranked assignment', () => {
+    for (const collidingKey of COLLIDING_ROLE_KEYS) {
+      const rank = guards.highestRank([
+        { roleKey: 'super_admin', scopeOrgUnitId: null, scopePath: null },
+        { roleKey: collidingKey as RoleKey, scopeOrgUnitId: null, scopePath: null },
+      ])
+      expect(rank, `roleKey "${collidingKey}"`).toBe(40)
+    }
   })
 })
