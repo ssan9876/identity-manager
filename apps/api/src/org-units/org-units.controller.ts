@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common'
+import { Controller, Get, Inject, Param, Query, UseGuards } from '@nestjs/common'
 import { z } from 'zod'
 import { JwtGuard } from '../auth/jwt.guard'
 import { NotFoundError, ValidationError } from '../common/errors'
@@ -18,7 +18,7 @@ function parseId(raw: string): string {
 @Controller('org-units')
 @UseGuards(JwtGuard)
 export class OrgUnitsController {
-  constructor(private readonly orgUnits: OrgUnitsRepository) {}
+  constructor(@Inject(OrgUnitsRepository) private readonly orgUnits: OrgUnitsRepository) {}
 
   @Get()
   async list(@Query() query: Record<string, unknown>): Promise<Page<OrgUnit>> {
