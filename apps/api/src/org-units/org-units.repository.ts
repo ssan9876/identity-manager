@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { eq, sql } from 'drizzle-orm'
+import { asc, eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { NotFoundError } from '../common/errors'
 import * as schema from '../db/schema/index'
@@ -128,5 +128,24 @@ export class OrgUnitsRepository {
     )
 
     return rows[0]?.contained ?? false
+  }
+
+  async list(options: { limit: number; offset: number }): Promise<OrgUnit[]> {
+    const rows = await this.db
+      .select()
+      .from(orgUnits)
+      .orderBy(asc(orgUnits.path))
+      .limit(options.limit)
+      .offset(options.offset)
+
+    return rows as OrgUnit[]
+  }
+
+  async count(): Promise<number> {
+    const [row] = await this.db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(orgUnits)
+
+    return row?.value ?? 0
   }
 }

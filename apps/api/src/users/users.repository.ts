@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { InvalidTransitionError, NotFoundError } from '../common/errors'
 import * as schema from '../db/schema/index'
@@ -166,5 +166,36 @@ export class UsersRepository {
     throw new InvalidTransitionError(
       `cannot transition from ${current.status} to ${next}`,
     )
+  }
+
+  async list(
+    options: { limit: number; offset: number; status?: UserStatus; orgUnitId?: string },
+  ): Promise<User[]> {
+    const filters = []
+    if (options.status !== undefined) filters.push(eq(users.status, options.status))
+    if (options.orgUnitId !== undefined) filters.push(eq(users.orgUnitId, options.orgUnitId))
+
+    const rows = await this.db
+      .select()
+      .from(users)
+      .where(filters.length > 0 ? and(...filters) : undefined)
+      .orderBy(asc(users.username))
+      .limit(options.limit)
+      .offset(options.offset)
+
+    return rows as User[]
+  }
+
+  async count(filter: { status?: UserStatus; orgUnitId?: string } = {}): Promise<number> {
+    const filters = []
+    if (filter.status !== undefined) filters.push(eq(users.status, filter.status))
+    if (filter.orgUnitId !== undefined) filters.push(eq(users.orgUnitId, filter.orgUnitId))
+
+    const [row] = await this.db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(users)
+      .where(filters.length > 0 ? and(...filters) : undefined)
+
+    return row?.value ?? 0
   }
 }
