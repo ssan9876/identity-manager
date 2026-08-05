@@ -197,4 +197,44 @@ export class GroupsRepository {
 
     return rows.map((row) => row.childGroupId)
   }
+
+  /**
+   * Every user in this group or any descendant group.
+   * UNION (not UNION ALL) is load-bearing: it de-duplicates the frontier, so
+   * the recursion terminates even against a graph that somehow contains a cycle.
+   */
+  async listEffectiveUserMembers(groupId: string): Promise<string[]> {
+    const { rows } = await this.db.execute<{ user_id: string }>(sql`
+      WITH RECURSIVE reachable AS (
+        SELECT ${groupId}::uuid AS id
+        UNION
+        SELECT ggm.child_group_id
+          FROM group_group_members ggm
+          JOIN reachable r ON ggm.parent_group_id = r.id
+      )
+      SELECT DISTINCT gum.user_id
+        FROM group_user_members gum
+        JOIN reachable r ON gum.group_id = r.id
+    `)
+
+    return rows.map((row) => row.user_id)
+  }
+
+  /** Every group this user belongs to directly, plus all of their ancestors. */
+  async listEffectiveGroupsForUser(userId: string): Promise<string[]> {
+    const { rows } = await this.db.execute<{ group_id: string }>(sql`
+      WITH RECURSIVE ancestors AS (
+        SELECT gum.group_id AS id
+          FROM group_user_members gum
+         WHERE gum.user_id = ${userId}::uuid
+        UNION
+        SELECT ggm.parent_group_id
+          FROM group_group_members ggm
+          JOIN ancestors a ON ggm.child_group_id = a.id
+      )
+      SELECT DISTINCT id AS group_id FROM ancestors
+    `)
+
+    return rows.map((row) => row.group_id)
+  }
 }
