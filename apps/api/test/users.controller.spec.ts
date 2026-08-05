@@ -130,4 +130,44 @@ describe('GET /users', () => {
     const res = await request(app.getHttpServer()).get('/users?offset=1e21').expect(400)
     expect(res.body.code).toBe('VALIDATION_FAILED')
   })
+
+  describe('default deactivated-user exclusion', () => {
+    it('omits a deactivated user from the default list and total', async () => {
+      const repo = new UsersRepository(ctx.db)
+      const toDeactivate = await repo.create({
+        primaryEmail: 'gone@example.com',
+        username: 'gone',
+        firstName: 'Gone',
+        lastName: 'User',
+        orgUnitId,
+      })
+      await repo.changeStatus(toDeactivate.id, 'active')
+      await repo.changeStatus(toDeactivate.id, 'deactivated')
+
+      const res = await request(app.getHttpServer()).get('/users').expect(200)
+      expect(res.body.total).toBe(3)
+      expect(
+        res.body.items.map((u: { username: string }) => u.username),
+      ).not.toContain('gone')
+    })
+
+    it('returns deactivated users when status=deactivated is requested explicitly', async () => {
+      const repo = new UsersRepository(ctx.db)
+      const toDeactivate = await repo.create({
+        primaryEmail: 'gone2@example.com',
+        username: 'gone2',
+        firstName: 'Gone',
+        lastName: 'User',
+        orgUnitId,
+      })
+      await repo.changeStatus(toDeactivate.id, 'active')
+      await repo.changeStatus(toDeactivate.id, 'deactivated')
+
+      const res = await request(app.getHttpServer())
+        .get('/users?status=deactivated')
+        .expect(200)
+      expect(res.body.total).toBe(1)
+      expect(res.body.items.map((u: { username: string }) => u.username)).toEqual(['gone2'])
+    })
+  })
 })

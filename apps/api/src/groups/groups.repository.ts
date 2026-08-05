@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common'
-import { and, asc, eq, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { DB_CLIENT } from '../common/db.token'
 import { ConflictError, CycleError, NotFoundError } from '../common/errors'
@@ -90,6 +90,43 @@ export class GroupsRepository {
     const [row] = await this.db
       .select({ value: sql<number>`count(*)::int` })
       .from(groups)
+
+    return row?.value ?? 0
+  }
+
+  /**
+   * Groups restricted to a specific id set (e.g. a user's effective
+   * memberships), paginated and ordered exactly like `list()`. An empty
+   * `ids` means "nothing matched" (a user in no groups, or a well-formed id
+   * that isn't a real user) — returned as an empty page rather than sending
+   * `IN ()` to Postgres, which is invalid SQL.
+   */
+  async listByIds(ids: string[], options: { limit: number; offset: number }): Promise<Group[]> {
+    if (ids.length === 0) {
+      return []
+    }
+
+    const rows = await this.db
+      .select()
+      .from(groups)
+      .where(inArray(groups.id, ids))
+      .orderBy(asc(groups.name))
+      .limit(options.limit)
+      .offset(options.offset)
+
+    return rows as Group[]
+  }
+
+  /** Matching count for `listByIds` — always agrees with it, same filter. */
+  async countByIds(ids: string[]): Promise<number> {
+    if (ids.length === 0) {
+      return 0
+    }
+
+    const [row] = await this.db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(groups)
+      .where(inArray(groups.id, ids))
 
     return row?.value ?? 0
   }

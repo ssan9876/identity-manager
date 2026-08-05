@@ -17,6 +17,7 @@ describe('GET /groups', () => {
   let allId: string
   let engId: string
   let adaId: string
+  let orgUnitId: string
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -40,7 +41,7 @@ describe('GET /groups', () => {
     await ctx.pool.query(
       'TRUNCATE TABLE group_user_members, group_group_members, groups, users, org_units CASCADE',
     )
-    const orgUnitId = (await new OrgUnitsRepository(ctx.db).createRoot('Acme Corp')).id
+    orgUnitId = (await new OrgUnitsRepository(ctx.db).createRoot('Acme Corp')).id
     const groups = new GroupsRepository(ctx.db)
     const users = new UsersRepository(ctx.db)
 
@@ -110,5 +111,70 @@ describe('GET /groups', () => {
   it('exposes no write routes', async () => {
     await request(app.getHttpServer()).post('/groups').send({ name: 'x' }).expect(404)
     await request(app.getHttpServer()).delete(`/groups/${engId}`).expect(404)
+  })
+
+  describe('?userId= (effective membership filter)', () => {
+    beforeEach(async () => {
+      // An unrelated third group ada does NOT belong to. Its presence means
+      // "ignore userId and return the full list" (the bug) and "filter to
+      // ada's effective groups" (the fix) diverge on total/items in every
+      // test below, so a coincidental pass against the unfiltered list is
+      // impossible.
+      await new GroupsRepository(ctx.db).create({ name: 'Marketing' })
+    })
+
+    it('for a user in a nested child group, returns the ancestor groups too (effective, not direct)', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/groups?userId=${adaId}`)
+        .expect(200)
+      expect(res.body.total).toBe(2)
+      expect(res.body.items.map((g: { name: string }) => g.name)).toEqual([
+        'All Staff',
+        'Engineering',
+      ])
+    })
+
+    it('returns an empty page with total: 0 for a user in no groups', async () => {
+      const lonely = await new UsersRepository(ctx.db).create({
+        primaryEmail: 'lonely@example.com',
+        username: 'lonely',
+        firstName: 'Lonely',
+        lastName: 'User',
+        orgUnitId,
+      })
+
+      const res = await request(app.getHttpServer())
+        .get(`/groups?userId=${lonely.id}`)
+        .expect(200)
+      expect(res.body).toEqual({ items: [], total: 0, limit: 50, offset: 0 })
+    })
+
+    it('returns an empty page, not the full list, for a well-formed userId that is not a user', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/groups?userId=00000000-0000-0000-0000-000000000000')
+        .expect(200)
+      expect(res.body).toEqual({ items: [], total: 0, limit: 50, offset: 0 })
+    })
+
+    it('rejects a non-uuid userId with 400 VALIDATION_FAILED', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/groups?userId=garbage')
+        .expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+    })
+
+    it('composes with limit and offset', async () => {
+      const page1 = await request(app.getHttpServer())
+        .get(`/groups?userId=${adaId}&limit=1&offset=0`)
+        .expect(200)
+      expect(page1.body.total).toBe(2)
+      expect(page1.body.items.map((g: { name: string }) => g.name)).toEqual(['All Staff'])
+
+      const page2 = await request(app.getHttpServer())
+        .get(`/groups?userId=${adaId}&limit=1&offset=1`)
+        .expect(200)
+      expect(page2.body.total).toBe(2)
+      expect(page2.body.items.map((g: { name: string }) => g.name)).toEqual(['Engineering'])
+    })
   })
 })

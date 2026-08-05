@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common'
-import { and, asc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { DB_CLIENT } from '../common/db.token'
 import { InvalidTransitionError, NotFoundError } from '../common/errors'
@@ -171,17 +171,30 @@ export class UsersRepository {
     )
   }
 
+  /**
+   * Builds the shared status/orgUnit WHERE clause for list() and count(), so
+   * the two can never drift apart on which rows they agree count as "in".
+   *
+   * Deactivated users are excluded from all default list and search views
+   * (core design spec). An explicit `status` — including `status:
+   * 'deactivated'` itself, so an admin can still find them — overrides that
+   * default rather than combining with it.
+   */
+  private listFilters(filter: { status?: UserStatus; orgUnitId?: string }) {
+    const filters = [
+      filter.status !== undefined ? eq(users.status, filter.status) : ne(users.status, 'deactivated'),
+    ]
+    if (filter.orgUnitId !== undefined) filters.push(eq(users.orgUnitId, filter.orgUnitId))
+    return and(...filters)
+  }
+
   async list(
     options: { limit: number; offset: number; status?: UserStatus; orgUnitId?: string },
   ): Promise<User[]> {
-    const filters = []
-    if (options.status !== undefined) filters.push(eq(users.status, options.status))
-    if (options.orgUnitId !== undefined) filters.push(eq(users.orgUnitId, options.orgUnitId))
-
     const rows = await this.db
       .select()
       .from(users)
-      .where(filters.length > 0 ? and(...filters) : undefined)
+      .where(this.listFilters(options))
       .orderBy(asc(users.username))
       .limit(options.limit)
       .offset(options.offset)
@@ -190,14 +203,10 @@ export class UsersRepository {
   }
 
   async count(filter: { status?: UserStatus; orgUnitId?: string } = {}): Promise<number> {
-    const filters = []
-    if (filter.status !== undefined) filters.push(eq(users.status, filter.status))
-    if (filter.orgUnitId !== undefined) filters.push(eq(users.orgUnitId, filter.orgUnitId))
-
     const [row] = await this.db
       .select({ value: sql<number>`count(*)::int` })
       .from(users)
-      .where(filters.length > 0 ? and(...filters) : undefined)
+      .where(this.listFilters(filter))
 
     return row?.value ?? 0
   }

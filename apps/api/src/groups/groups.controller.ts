@@ -23,6 +23,22 @@ export class GroupsController {
   @Get()
   async list(@Query() query: Record<string, unknown>): Promise<Page<Group>> {
     const page = parsePageQuery(query)
+
+    if (query.userId !== undefined) {
+      // Filter to this user's EFFECTIVE membership (direct + inherited via
+      // nesting), never the unfiltered list. A malformed userId is a 400,
+      // and a well-formed one that matches no membership (nonexistent user,
+      // or a real user in no groups) is an empty page — not the full list.
+      const userId = parseId(String(query.userId))
+      const effectiveGroupIds = await this.groups.listEffectiveGroupsForUser(userId)
+
+      const [items, total] = await Promise.all([
+        this.groups.listByIds(effectiveGroupIds, page),
+        this.groups.countByIds(effectiveGroupIds),
+      ])
+      return { items, total, limit: page.limit, offset: page.offset }
+    }
+
     const [items, total] = await Promise.all([
       this.groups.list(page),
       this.groups.count(),
