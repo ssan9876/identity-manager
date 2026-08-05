@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import * as schema from '../db/schema/index'
@@ -12,21 +13,54 @@ export interface OrgUnit {
   updatedAt: Date
 }
 
+// ltree labels have a length ceiling; name is varchar(255), so cap well under it.
+const MAX_LABEL_LENGTH = 200
+
+// Combining diacritical marks split off by NFKD normalization (e.g. the
+// acute accent separated from "é"). Stripping these lets accented Latin
+// names collapse to their unaccented ASCII form instead of falling back to a
+// hash, and stops names that differ only by diacritics/punctuation (e.g.
+// "Café" vs "Caf!") from colliding on the same label.
+const COMBINING_MARKS_LOW = 0x0300
+const COMBINING_MARKS_HIGH = 0x036f
+
+function stripCombiningMarks(input: string): string {
+  let result = ''
+  for (const char of input) {
+    const codePoint = char.codePointAt(0) ?? 0
+    if (codePoint < COMBINING_MARKS_LOW || codePoint > COMBINING_MARKS_HIGH) {
+      result += char
+    }
+  }
+  return result
+}
+
 /**
- * Converts a human name into a single valid ltree label.
- * ltree labels permit only [A-Za-z0-9_].
+ * Converts a human name into a single valid ltree label ([A-Za-z0-9_]+).
+ * Never throws — the real, unrestricted name is stored separately in the
+ * `name` column; this label only has to be a stable, unique-enough handle
+ * for the path.
+ *
+ * Names that are entirely non-Latin script (CJK, Cyrillic, emoji, ...) have
+ * no ASCII-representable content left after slugification. Those fall back
+ * to a deterministic label derived from a hash of the original name, rather
+ * than transliterating (which would need a dependency and introduces its
+ * own collisions). Determinism matters: the same name must always produce
+ * the same label so the `org_units_path_unique` index still catches genuine
+ * duplicate siblings.
  */
 export function toLabel(name: string): string {
-  const label = name
+  const slug = stripCombiningMarks(name.normalize('NFKD'))
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
 
-  if (label.length === 0) {
-    throw new Error(`"${name}" does not contain a valid ltree label`)
+  if (slug.length > 0) {
+    return slug.slice(0, MAX_LABEL_LENGTH)
   }
 
-  return label
+  const hash = createHash('sha256').update(name, 'utf8').digest('hex').slice(0, 12)
+  return `ou_${hash}`
 }
 
 export class OrgUnitsRepository {

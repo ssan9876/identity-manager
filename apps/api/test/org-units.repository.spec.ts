@@ -12,8 +12,30 @@ describe('toLabel', () => {
     expect(toLabel('Sales   ---  EMEA')).toBe('sales_emea')
   })
 
-  it('rejects a name with no usable characters', () => {
-    expect(() => toLabel('!!!')).toThrow(/valid ltree label/)
+  it('strips diacritics via NFKD normalization', () => {
+    expect(toLabel('Café')).toBe('cafe')
+  })
+
+  it('no longer collides "Café" and "Caf!" on the same label', () => {
+    expect(toLabel('Café')).not.toBe(toLabel('Caf!'))
+  })
+
+  it('returns a valid label instead of throwing for a name with no usable characters', () => {
+    expect(() => toLabel('!!!')).not.toThrow()
+    expect(toLabel('!!!')).toMatch(/^[A-Za-z0-9_]+$/)
+  })
+
+  it('returns a valid non-empty label for a purely non-Latin name instead of throwing', () => {
+    expect(() => toLabel('北京事业部')).not.toThrow()
+    expect(toLabel('北京事业部')).toMatch(/^[A-Za-z0-9_]+$/)
+  })
+
+  it('is deterministic for the same non-Latin input', () => {
+    expect(toLabel('北京事业部')).toBe(toLabel('北京事业部'))
+  })
+
+  it('produces different labels for different non-Latin names', () => {
+    expect(toLabel('北京事业部')).not.toBe(toLabel('日本語'))
   })
 })
 
@@ -76,5 +98,15 @@ describe('OrgUnitsRepository', () => {
     expect(await repo.isWithinScope(sales.path, emea.path)).toBe(true)
     expect(await repo.isWithinScope(sales.path, sales.path)).toBe(true)
     expect(await repo.isWithinScope(sales.path, eng.path)).toBe(false)
+  })
+
+  it('creates a root with a non-Latin name, preserving the original name and deriving a valid path', async () => {
+    const root = await repo.createRoot('北京事业部')
+    expect(root.name).toBe('北京事业部')
+    expect(root.path).toMatch(/^[A-Za-z0-9_]+$/)
+
+    const child = await repo.createChild(root.id, 'Sales')
+    expect(child.path).toBe(`${root.path}.sales`)
+    expect(child.path.split('.')).toHaveLength(2)
   })
 })
