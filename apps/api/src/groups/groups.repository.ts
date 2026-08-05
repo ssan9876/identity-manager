@@ -1,5 +1,7 @@
+import { Inject, Injectable } from '@nestjs/common'
 import { and, asc, eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import { DB_CLIENT } from '../common/db.token'
 import { ConflictError, CycleError, NotFoundError } from '../common/errors'
 import * as schema from '../db/schema/index'
 import { groupGroupMembers, groupUserMembers } from '../db/schema/group-members'
@@ -33,8 +35,9 @@ const UNIQUE_VIOLATION = '23505'
  */
 const GROUP_GRAPH_LOCK_ID = 0x1d3a_0001
 
+@Injectable()
 export class GroupsRepository {
-  constructor(private readonly db: NodePgDatabase<typeof schema>) {}
+  constructor(@Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>) {}
 
   async create(input: CreateGroupInput): Promise<Group> {
     try {

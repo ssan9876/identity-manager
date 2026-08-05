@@ -4,6 +4,8 @@ import { MeController } from './auth/me.controller'
 import { DB_CLIENT } from './common/db.token'
 import { loadEnv } from './config/env'
 import { createDbClient } from './db/client'
+import { GroupsController } from './groups/groups.controller'
+import { GroupsRepository } from './groups/groups.repository'
 import { HealthController } from './health/health.controller'
 import { OrgUnitsController } from './org-units/org-units.controller'
 import { OrgUnitsRepository } from './org-units/org-units.repository'
@@ -11,7 +13,13 @@ import { UsersController } from './users/users.controller'
 import { UsersRepository } from './users/users.repository'
 
 @Module({
-  controllers: [HealthController, MeController, UsersController, OrgUnitsController],
+  controllers: [
+    HealthController,
+    MeController,
+    UsersController,
+    OrgUnitsController,
+    GroupsController,
+  ],
   providers: [
     {
       provide: JWT_GUARD_OPTIONS,
@@ -27,6 +35,7 @@ import { UsersRepository } from './users/users.repository'
     JwtGuard,
     UsersRepository,
     OrgUnitsRepository,
+    GroupsRepository,
   ],
 })
 export class AppModule {}
