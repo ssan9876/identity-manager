@@ -4,6 +4,7 @@ import request from 'supertest'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { JwtGuard } from '../src/auth/jwt.guard'
+import { PermissionGuard } from '../src/authz/permission.guard'
 import { DB_CLIENT } from '../src/common/db.token'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { UsersController } from '../src/users/users.controller'
@@ -24,6 +25,8 @@ describe('GET /users', () => {
       ],
     })
       .overrideGuard(JwtGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(PermissionGuard)
       .useValue({ canActivate: () => true })
       .compile()
 

@@ -1,16 +1,19 @@
 import { Controller, Get, Inject, Param, Query, UseGuards } from '@nestjs/common'
 import { JwtGuard } from '../auth/jwt.guard'
+import { PermissionGuard } from '../authz/permission.guard'
+import { RequirePermission } from '../authz/require-permission.decorator'
 import { NotFoundError } from '../common/errors'
 import { parseId } from '../common/http/parse-id'
 import { type Page, parsePageQuery } from '../common/pagination'
 import { OrgUnitsRepository, type OrgUnit } from './org-units.repository'
 
 @Controller('org-units')
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, PermissionGuard)
 export class OrgUnitsController {
   constructor(@Inject(OrgUnitsRepository) private readonly orgUnits: OrgUnitsRepository) {}
 
   @Get()
+  @RequirePermission('org_unit:read')
   async list(@Query() query: Record<string, unknown>): Promise<Page<OrgUnit>> {
     const page = parsePageQuery(query)
     const [items, total] = await Promise.all([
@@ -21,6 +24,7 @@ export class OrgUnitsController {
   }
 
   @Get(':id')
+  @RequirePermission('org_unit:read')
   async findOne(@Param('id') rawId: string): Promise<OrgUnit> {
     const id = parseId(rawId)
     const unit = await this.orgUnits.findById(id)
@@ -31,6 +35,7 @@ export class OrgUnitsController {
   }
 
   @Get(':id/subtree')
+  @RequirePermission('org_unit:read')
   async subtree(@Param('id') rawId: string): Promise<OrgUnit[]> {
     const id = parseId(rawId)
     const unit = await this.orgUnits.findById(id)

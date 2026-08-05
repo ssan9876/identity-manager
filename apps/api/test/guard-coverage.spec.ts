@@ -3,6 +3,7 @@ import { Controller, Module, forwardRef } from '@nestjs/common'
 import { describe, expect, it } from 'vitest'
 import { AppModule } from '../src/app.module'
 import { JwtGuard } from '../src/auth/jwt.guard'
+import { REQUIRED_PERMISSION } from '../src/authz/require-permission.decorator'
 
 /** Only the liveness probe may be reached without authentication. */
 const OPEN_BY_DESIGN = new Set(['HealthController'])
@@ -83,6 +84,30 @@ describe('guard coverage', () => {
       .map((controller) => controller.name)
 
     expect(unguarded).toEqual([])
+  })
+
+  it('declares a permission on every route of every guarded controller', () => {
+    const missing: string[] = []
+
+    for (const controller of collectControllers(AppModule)) {
+      if (OPEN_BY_DESIGN.has(controller.name) || controller.name === 'MeController') {
+        continue
+      }
+
+      const proto = controller.prototype as Record<string, unknown>
+      for (const key of Object.getOwnPropertyNames(proto)) {
+        if (key === 'constructor') continue
+        const handler = proto[key]
+        if (typeof handler !== 'function') continue
+        const isRoute = Reflect.hasMetadata('path', handler)
+        if (!isRoute) continue
+        if (Reflect.getMetadata(REQUIRED_PERMISSION, handler) === undefined) {
+          missing.push(`${controller.name}.${key}`)
+        }
+      }
+    }
+
+    expect(missing).toEqual([])
   })
 })
 

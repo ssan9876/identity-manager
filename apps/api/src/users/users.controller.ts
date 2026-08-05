@@ -1,6 +1,8 @@
 import { Controller, Get, Inject, Param, Query, UseGuards } from '@nestjs/common'
 import { z } from 'zod'
 import { JwtGuard } from '../auth/jwt.guard'
+import { PermissionGuard } from '../authz/permission.guard'
+import { RequirePermission } from '../authz/require-permission.decorator'
 import { NotFoundError, ValidationError } from '../common/errors'
 import { parseId } from '../common/http/parse-id'
 import { type Page, parsePageQuery } from '../common/pagination'
@@ -11,11 +13,12 @@ const statusSchema = z
   .optional()
 
 @Controller('users')
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, PermissionGuard)
 export class UsersController {
   constructor(@Inject(UsersRepository) private readonly users: UsersRepository) {}
 
   @Get()
+  @RequirePermission('user:read')
   async list(@Query() query: Record<string, unknown>): Promise<Page<User>> {
     const page = parsePageQuery(query)
 
@@ -40,6 +43,7 @@ export class UsersController {
   }
 
   @Get(':id')
+  @RequirePermission('user:read')
   async findOne(@Param('id') rawId: string): Promise<User> {
     const id = parseId(rawId)
     const user = await this.users.findById(id)

@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing'
 import request from 'supertest'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { JwtGuard } from '../src/auth/jwt.guard'
+import { PermissionGuard } from '../src/authz/permission.guard'
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { GroupsController } from '../src/groups/groups.controller'
@@ -25,6 +26,8 @@ describe('GET /groups', () => {
       providers: [{ provide: DB_CLIENT, useFactory: () => ctx.db }, GroupsRepository],
     })
       .overrideGuard(JwtGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(PermissionGuard)
       .useValue({ canActivate: () => true })
       .compile()
 

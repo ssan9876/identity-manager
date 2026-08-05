@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing'
 import request from 'supertest'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { JwtGuard } from '../src/auth/jwt.guard'
+import { PermissionGuard } from '../src/authz/permission.guard'
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { OrgUnitsController } from '../src/org-units/org-units.controller'
@@ -24,6 +25,8 @@ describe('GET /org-units', () => {
       ],
     })
       .overrideGuard(JwtGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(PermissionGuard)
       .useValue({ canActivate: () => true })
       .compile()
 

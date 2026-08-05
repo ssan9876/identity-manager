@@ -1,5 +1,9 @@
 import { execSync, spawn, type ChildProcess } from 'node:child_process'
+import { RoleAssignmentsRepository } from '../src/authz/role-assignments.repository'
 import { loadEnv } from '../src/config/env'
+import { createDbClient } from '../src/db/client'
+import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
+import { UsersRepository } from '../src/users/users.repository'
 
 /**
  * Boots the app exactly the way a human does — `pnpm run start:dev` — waits
@@ -18,6 +22,12 @@ import { loadEnv } from '../src/config/env'
  * script is the only check in the repo that starts the app the same way a
  * human running `pnpm run start:dev` would and proves an authenticated
  * request actually reaches a repository.
+ *
+ * Since Task 6 (PermissionGuard on every read route), a valid token alone is
+ * no longer enough: the principal must also map to a local, active user
+ * holding a role that grants the route's declared permission. `seedActor`
+ * below provisions and tears down exactly that for this script's own
+ * Keycloak test user before/after the checks run.
  */
 
 const HEALTH_TIMEOUT_MS = 30_000
@@ -32,6 +42,93 @@ function log(message: string): void {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+const SMOKE_ORG_UNIT_NAME = 'Smoke Test Org (idm:smoke-dev)'
+
+interface SeededActor {
+  /** Removes exactly what this run seeded (or reused — see below) and closes its pool. */
+  cleanup: () => Promise<void>
+}
+
+/**
+ * Seeds what `PermissionGuard` (Task 6) now requires before any request can
+ * reach a read endpoint: an org unit, a local `users` row whose `username`
+ * matches the Keycloak token's `preferred_username` (KEYCLOAK_USERNAME),
+ * ACTIVATED — `resolveActor` denies anything but `status: 'active'`, and
+ * `UsersRepository.create()` defaults new rows to `pending` — and a global
+ * `super_admin` role assignment.
+ *
+ * Idempotent against a previous run that crashed before its own cleanup ran:
+ * a leftover local user with this exact username can only be this script's
+ * own artifact (nothing else in the codebase creates one), so it is reused
+ * rather than failing on a unique-constraint violation, and is still fully
+ * removed by THIS run's cleanup rather than left to accumulate.
+ *
+ * Talks to Postgres directly, on its own pool — independent of the app
+ * process this script spawns, so seeding/cleanup work whether or not that
+ * process is up.
+ */
+async function seedActor(databaseUrl: string): Promise<SeededActor> {
+  const { db, pool } = createDbClient(databaseUrl)
+
+  try {
+    const orgUnits = new OrgUnitsRepository(db)
+    const users = new UsersRepository(db)
+    const roleAssignments = new RoleAssignmentsRepository(db)
+
+    log('seeding an org unit, an active local user, and a super_admin role assignment ...')
+
+    let user = await users.findByEmail(KEYCLOAK_USERNAME)
+    if (user === null) {
+      const orgUnit = await orgUnits.createRoot(SMOKE_ORG_UNIT_NAME)
+      user = await users.create({
+        primaryEmail: KEYCLOAK_USERNAME,
+        username: KEYCLOAK_USERNAME,
+        firstName: 'Smoke',
+        lastName: 'Test',
+        orgUnitId: orgUnit.id,
+      })
+    }
+
+    if (user.status !== 'active') {
+      user = await users.changeStatus(user.id, 'active')
+    }
+
+    const existingAssignments = await roleAssignments.listForUser(user.id)
+    const hasSuperAdmin = existingAssignments.some(
+      (assignment) => assignment.roleKey === 'super_admin' && assignment.scopeOrgUnitId === null,
+    )
+    if (!hasSuperAdmin) {
+      await roleAssignments.assign({ userId: user.id, roleKey: 'super_admin' })
+    }
+
+    const userId = user.id
+    const orgUnitId = user.orgUnitId
+    log(`seeded local user ${userId} (${KEYCLOAK_USERNAME}) with super_admin`)
+
+    return {
+      async cleanup(): Promise<void> {
+        log('cleaning up seeded smoke-test data ...')
+        try {
+          // role_assignments cascades from users, but delete it explicitly
+          // first anyway so cleanup order never depends on that cascade
+          // being configured the way it happens to be today. Nothing here
+          // touches audit_log: it is append-only (rows can never be
+          // removed, by design — see db/migrate.ts), but GET routes write
+          // no audit rows, so this run left none to clean up.
+          await pool.query('DELETE FROM role_assignments WHERE user_id = $1', [userId])
+          await pool.query('DELETE FROM users WHERE id = $1', [userId])
+          await pool.query('DELETE FROM org_units WHERE id = $1', [orgUnitId])
+        } finally {
+          await pool.end()
+        }
+      },
+    }
+  } catch (error) {
+    await pool.end()
+    throw error
+  }
 }
 
 /** PIDs currently LISTENING on `port`, Windows-only (netstat -ano parsing). */
@@ -182,47 +279,60 @@ async function main(): Promise<void> {
     )
   }
 
-  log('starting the dev server the way a human does: `pnpm run start:dev`')
-  // A single command string (not `[cmd, ...args]`) avoids Node's DEP0190
-  // warning about unescaped args under shell:true — there's no untrusted
-  // input here, but there's also no reason to trip it.
-  const child = spawn('pnpm run start:dev', {
-    env: process.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    shell: true,
-  })
-
-  let serverOutput = ''
-  child.stdout?.on('data', (chunk: Buffer) => (serverOutput += chunk.toString()))
-  child.stderr?.on('data', (chunk: Buffer) => (serverOutput += chunk.toString()))
+  // Since Task 6, PermissionGuard denies every request from a principal with
+  // no local, active user and role assignment — including this script's own
+  // Keycloak test user, which (deliberately) has neither by default. Seed
+  // both before starting the server. This talks to Postgres directly and
+  // does not depend on the app process below, so it runs first and its
+  // cleanup is guaranteed via the outer `finally` regardless of how the
+  // server checks turn out.
+  const seeded = await seedActor(env.databaseUrl)
 
   let exitCode = 0
   try {
-    log(`waiting for ${baseUrl}/health ...`)
-    await waitForHealth(baseUrl)
-    log('health check ok')
+    log('starting the dev server the way a human does: `pnpm run start:dev`')
+    // A single command string (not `[cmd, ...args]`) avoids Node's DEP0190
+    // warning about unescaped args under shell:true — there's no untrusted
+    // input here, but there's also no reason to trip it.
+    const child = spawn('pnpm run start:dev', {
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: true,
+    })
 
-    log(`minting a token from ${env.keycloakIssuer} (${KEYCLOAK_USERNAME}) ...`)
-    const token = await mintToken(env.keycloakIssuer)
-    log('token minted')
+    let serverOutput = ''
+    child.stdout?.on('data', (chunk: Buffer) => (serverOutput += chunk.toString()))
+    child.stderr?.on('data', (chunk: Buffer) => (serverOutput += chunk.toString()))
 
-    await checkAuthenticatedList(baseUrl, token, '/users')
+    try {
+      log(`waiting for ${baseUrl}/health ...`)
+      await waitForHealth(baseUrl)
+      log('health check ok')
 
-    // The GroupsController DI regression (bare-class constructor injection
-    // relying on design:paramtypes) is exactly what this script exists to
-    // catch — see the file header. GroupsRepository was dormant, unwired
-    // into AppModule, until the groups controller landed, so /users alone
-    // could pass this script while /groups 500ed under the dev transform.
-    await checkAuthenticatedList(baseUrl, token, '/groups')
-  } catch (error) {
-    exitCode = 1
-    console.error(`[smoke:dev] SMOKE FAILED: ${error instanceof Error ? error.message : String(error)}`)
-    console.error('[smoke:dev] --- captured dev-server output ---')
-    console.error(serverOutput || '(none captured)')
+      log(`minting a token from ${env.keycloakIssuer} (${KEYCLOAK_USERNAME}) ...`)
+      const token = await mintToken(env.keycloakIssuer)
+      log('token minted')
+
+      await checkAuthenticatedList(baseUrl, token, '/users')
+
+      // The GroupsController DI regression (bare-class constructor injection
+      // relying on design:paramtypes) is exactly what this script exists to
+      // catch — see the file header. GroupsRepository was dormant, unwired
+      // into AppModule, until the groups controller landed, so /users alone
+      // could pass this script while /groups 500ed under the dev transform.
+      await checkAuthenticatedList(baseUrl, token, '/groups')
+    } catch (error) {
+      exitCode = 1
+      console.error(`[smoke:dev] SMOKE FAILED: ${error instanceof Error ? error.message : String(error)}`)
+      console.error('[smoke:dev] --- captured dev-server output ---')
+      console.error(serverOutput || '(none captured)')
+    } finally {
+      log('shutting down the dev server ...')
+      shutdown(child)
+      await sleep(500)
+    }
   } finally {
-    log('shutting down the dev server ...')
-    shutdown(child)
-    await sleep(500)
+    await seeded.cleanup()
   }
 
   process.exit(exitCode)
