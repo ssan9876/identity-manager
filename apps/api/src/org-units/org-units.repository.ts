@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import { NotFoundError } from '../common/errors'
 import * as schema from '../db/schema/index'
 import { orgUnits } from '../db/schema/org-units'
 
@@ -78,7 +79,7 @@ export class OrgUnitsRepository {
   async createChild(parentId: string, name: string): Promise<OrgUnit> {
     const parent = await this.findById(parentId)
     if (parent === null) {
-      throw new Error(`parent org unit not found: ${parentId}`)
+      throw new NotFoundError('parent org unit', parentId)
     }
 
     const [row] = await this.db

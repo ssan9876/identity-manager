@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ValidationError } from '../common/errors'
 
 export type AttributeDataType = 'string' | 'number' | 'boolean' | 'date' | 'enum'
 
@@ -23,9 +24,9 @@ export interface AttributeDefinition {
   selfEditable: boolean
 }
 
-export class AttributeValidationError extends Error {
-  constructor(public readonly issues: string[]) {
-    super(`attribute validation failed: ${issues.join('; ')}`)
+export class AttributeValidationError extends ValidationError {
+  constructor(issues: string[]) {
+    super(issues, `attribute validation failed: ${issues.join('; ')}`)
     this.name = 'AttributeValidationError'
   }
 }

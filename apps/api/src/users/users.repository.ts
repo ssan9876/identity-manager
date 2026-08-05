@@ -1,5 +1,6 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import { InvalidTransitionError, NotFoundError } from '../common/errors'
 import * as schema from '../db/schema/index'
 import { users } from '../db/schema/users'
 
@@ -153,13 +154,17 @@ export class UsersRepository {
     // atomic UPDATE above already made the real decision.
     const current = await this.findById(id)
     if (current === null) {
-      throw new Error(`user not found: ${id}`)
+      throw new NotFoundError('user', id)
     }
 
     if (current.status === 'deactivated') {
-      throw new Error('deactivated is terminal; the user cannot be reactivated')
+      throw new InvalidTransitionError(
+        'deactivated is terminal; the user cannot be reactivated',
+      )
     }
 
-    throw new Error(`cannot transition from ${current.status} to ${next}`)
+    throw new InvalidTransitionError(
+      `cannot transition from ${current.status} to ${next}`,
+    )
   }
 }
