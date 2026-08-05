@@ -33,4 +33,13 @@ describe('loadEnv', () => {
       /KEYCLOAK_ISSUER/,
     )
   })
+
+  it('strips trailing slashes from keycloakIssuer', () => {
+    expect(
+      loadEnv({
+        ...valid,
+        KEYCLOAK_ISSUER: 'http://localhost:8080/realms/identity-manager/',
+      }).keycloakIssuer,
+    ).toBe('http://localhost:8080/realms/identity-manager')
+  })
 })
