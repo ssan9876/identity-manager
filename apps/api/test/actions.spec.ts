@@ -4,6 +4,7 @@ import {
   ALL_ROLE_KEYS,
   ROLE_PERMISSIONS,
   ROLE_RANK,
+  type Action,
 } from '../src/authz/actions'
 
 describe('role catalog', () => {
@@ -54,6 +55,28 @@ describe('role catalog', () => {
       for (const action of ROLE_PERMISSIONS[role]) {
         expect(known.has(action)).toBe(true)
       }
+    }
+  })
+
+  it('does not alias ROLE_PERMISSIONS.super_admin to ALL_ACTIONS', () => {
+    // Reference-equality check: super_admin's permission array must be an
+    // independent array, not literally the same object as ALL_ACTIONS.
+    expect(ROLE_PERMISSIONS.super_admin).not.toBe(ALL_ACTIONS)
+
+    // More useful than reference equality alone: prove mutation cannot
+    // cross between them. `readonly Action[]` only blocks mutation through
+    // typed call sites — a cast defeats it and is legal under `strict:
+    // true` with no `any`/`@ts-ignore`. Simulate exactly that cast and
+    // confirm ALL_ACTIONS is unaffected. Always restored via `finally`, so
+    // this test never leaves either array mutated for tests that run after
+    // it, whichever way the assertion goes.
+    const mutable = ROLE_PERMISSIONS.super_admin as Action[]
+    const originalLength = ALL_ACTIONS.length
+    mutable.push('user:read')
+    try {
+      expect(ALL_ACTIONS.length).toBe(originalLength)
+    } finally {
+      mutable.pop()
     }
   })
 })

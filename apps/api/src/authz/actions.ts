@@ -50,7 +50,7 @@ const READ_ONLY_ACTIONS: readonly Action[] = ['user:read', 'group:read', 'org_un
  * should only change through code review.
  */
 export const ROLE_PERMISSIONS: Record<RoleKey, readonly Action[]> = {
-  super_admin: ALL_ACTIONS,
+  super_admin: [...ALL_ACTIONS],
   user_admin: [
     'user:read',
     'user:create',
