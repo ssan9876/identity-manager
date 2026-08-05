@@ -43,6 +43,13 @@
       "when": 1785951737766,
       "tag": "0005_sour_stepford_cuckoos",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785965736180,
+      "tag": "0006_worthless_forge",
+      "breakpoints": true
     }
   ]
 }
