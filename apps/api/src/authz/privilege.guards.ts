@@ -41,24 +41,28 @@ export class PrivilegeGuards {
    * (e.g. `ROLE_RANK['constructor']` is the `Object` function), so `??`
    * never fires and `Math.max` coerces that inherited value to `NaN`
    * anyway — the exact bug this comment already describes, reopened via a
-   * different door. `Object.hasOwn` checks ONLY the object's own
-   * properties, never the prototype chain, so it is correct regardless of
-   * whether ROLE_RANK happens to have a prototype. This is belt-and-braces
-   * with ROLE_RANK now being built on `Object.create(null)` (see
-   * actions.ts): even if that ever regressed, this check does not depend
-   * on it.
+   * different door. This is belt-and-braces with ROLE_RANK now being built
+   * on `Object.create(null)` (see actions.ts): even if that ever
+   * regressed, this check does not depend on it.
+   *
+   * Finding I-1, round 3 (Minor, hardening): reads `ROLE_RANK[roleKey]`
+   * exactly ONCE into `rank`, then checks `typeof rank === 'number'` —
+   * rather than the round-2 shape, which evaluated `roleKey` twice (once
+   * in `Object.hasOwn`, once in the index expression, each going through
+   * `ToPropertyKey`). A double-read `Object.hasOwn(o, k) ? o[k] : d` can
+   * only diverge from a single read if `k`'s string conversion is
+   * unstable across the two reads (e.g. a hand-fabricated `roleKey` with a
+   * flip-flopping `toString`), which is unreachable through the pg driver
+   * (row values are plain strings) — but the single-read `typeof` form is
+   * strictly stronger regardless: it validates the VALUE actually found is
+   * a `number`, not merely that some own key by that name is present,
+   * with no window for the two evaluations to disagree at all.
    */
   highestRank(assignments: ActorAssignment[]): number {
-    return assignments.reduce(
-      (highest, assignment) =>
-        Math.max(
-          highest,
-          Object.hasOwn(ROLE_RANK, assignment.roleKey)
-            ? ROLE_RANK[assignment.roleKey]
-            : NO_PRIVILEGE,
-        ),
-      NO_PRIVILEGE,
-    )
+    return assignments.reduce((highest, assignment) => {
+      const rank = ROLE_RANK[assignment.roleKey]
+      return Math.max(highest, typeof rank === 'number' ? rank : NO_PRIVILEGE)
+    }, NO_PRIVILEGE)
   }
 
   /**

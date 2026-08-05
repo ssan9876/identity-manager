@@ -73,6 +73,23 @@ describe('role catalog', () => {
     expect(Object.getPrototypeOf(ROLE_PERMISSIONS)).toBeNull()
   })
 
+  // Fix round 3, Important: round 2's `Object.assign(Object.create(null),
+  // {...}) as Record<RoleKey, ...>` let an EXTRA key (e.g. a fabricated
+  // `ghost` role, ranked above super_admin, granted every action) compile
+  // clean and pass every test above, because every test above iterates
+  // ALL_ROLE_KEYS — an extra key on the catalog itself is never inspected
+  // by any of them. Round 3 restores the compile-time check (TS2353 via
+  // `satisfies` — see actions.ts's doc comment), but this is the runtime
+  // counterpart, independent of the compiler: it inspects the catalogs'
+  // OWN keys directly, so a mismatch fails a test even under
+  // type-checking-disabled execution (ts-node/swc transpile-only, etc.),
+  // which is exactly how this project's tests already run (vitest's SWC
+  // transform strips types without checking them).
+  it('ROLE_RANK and ROLE_PERMISSIONS have exactly the keys in ALL_ROLE_KEYS -- no extra, no missing', () => {
+    expect(new Set(Object.keys(ROLE_RANK))).toEqual(new Set(ALL_ROLE_KEYS))
+    expect(new Set(Object.keys(ROLE_PERMISSIONS))).toEqual(new Set(ALL_ROLE_KEYS))
+  })
+
   it('does not alias ROLE_PERMISSIONS.super_admin to ALL_ACTIONS', () => {
     // Reference-equality check: super_admin's permission array must be an
     // independent array, not literally the same object as ALL_ACTIONS.

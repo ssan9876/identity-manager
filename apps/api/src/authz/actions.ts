@@ -64,12 +64,34 @@ const READ_ONLY_ACTIONS: readonly Action[] = ['user:read', 'group:read', 'org_un
  * which relies on exactly this). This is the third time this project has
  * been bitten by prototype-chain semantics — see the Milestone 2 attribute
  * validator's two `__proto__` findings, and Task 4 fix round 2's Critical
- * finding, which is what closed this. `as Record<...>` is required because
- * `Object.create`'s return type is untyped (`any`); the object's actual
- * shape is guaranteed by the literal passed to `Object.assign`.
+ * finding, which is what closed this.
+ *
+ * Round 2 shipped this as `Object.assign(Object.create(null), {...}) as
+ * Record<RoleKey, ...>` — a REGRESSION found in round 3. `Object.create`'s
+ * return type is `any`, so `Object.assign(any, {...})` collapses to `any`
+ * too, and a trailing `as` on an `any` expression is not a structural
+ * check at all — it succeeds unconditionally, so a typo'd action, a
+ * dropped role, an EXTRA role, or a wrong-typed rank all compiled clean.
+ * Fixed two ways together: (1) the `Object.create(null)` call itself is
+ * cast — `Object.create(null) as Record<RoleKey, ...>` — an assertion on a
+ * value already known at runtime to be an empty, prototype-less object,
+ * not a claim about a literal's shape; (2) the object LITERAL passed to
+ * `Object.assign` carries `satisfies Record<RoleKey, ...>`, which DOES
+ * structurally check the literal (missing keys, extra keys, wrong value
+ * types) while still preserving its own precise inferred type for the
+ * `Object.assign` call. It is the `satisfies` clause on the literal —
+ * not the runtime `Object.assign` call, and not any cast on the overall
+ * expression, because there no longer is one — that guarantees the shape.
+ *
+ * One behaviour change from an ordinary object literal: `String(ROLE_RANK)`
+ * (or `` `${ROLE_RANK}` ``) now throws `TypeError: Cannot convert object to
+ * primitive value`, because a null-prototype object has no inherited
+ * `toString`/`valueOf` for `ToPrimitive` to fall back on. Latent today —
+ * nothing in this codebase interpolates a catalog — but worth knowing
+ * before adding logging/debugging code that does.
  */
 export const ROLE_PERMISSIONS: Record<RoleKey, readonly Action[]> = Object.assign(
-  Object.create(null),
+  Object.create(null) as Record<RoleKey, readonly Action[]>,
   {
     super_admin: [...ALL_ACTIONS],
     user_admin: [
@@ -86,18 +108,23 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly Action[]> = Object.assig
     help_desk: ['user:read', 'user:update', 'group:read', 'org_unit:read'],
     auditor: [...READ_ONLY_ACTIONS, 'audit:read'],
     read_only: READ_ONLY_ACTIONS,
-  },
-) as Record<RoleKey, readonly Action[]>
+  } satisfies Record<RoleKey, readonly Action[]>,
+)
 
 /**
  * Higher outranks lower. Used only by the privilege-escalation guards.
  * Null-prototype, for the same reason as ROLE_PERMISSIONS above — see its
- * doc comment.
+ * doc comment, including the round-2 `as`-cast-on-`any` regression that
+ * round 3 fixed (typed `Object.create(null)` target + `satisfies` on the
+ * literal, no cast on the overall expression).
  */
-export const ROLE_RANK: Record<RoleKey, number> = Object.assign(Object.create(null), {
-  super_admin: 40,
-  user_admin: 30,
-  help_desk: 20,
-  auditor: 10,
-  read_only: 0,
-}) as Record<RoleKey, number>
+export const ROLE_RANK: Record<RoleKey, number> = Object.assign(
+  Object.create(null) as Record<RoleKey, number>,
+  {
+    super_admin: 40,
+    user_admin: 30,
+    help_desk: 20,
+    auditor: 10,
+    read_only: 0,
+  } satisfies Record<RoleKey, number>,
+)

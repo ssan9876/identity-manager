@@ -80,6 +80,15 @@ export class PermissionEngine {
     }
   }
 
+  // Safe against a roleKey colliding with an inherited Object.prototype
+  // property (e.g. 'constructor', 'toString') ONLY because ROLE_PERMISSIONS
+  // is built on a null prototype in authz/actions.ts — see that file's doc
+  // comment. Nothing HERE checks for that; on an ordinary object literal,
+  // ROLE_PERMISSIONS['constructor'] would be the inherited Object function
+  // (truthy, not nullish), so `?.` would not short-circuit, `.includes`
+  // would be undefined, and calling it would throw. That coupling is
+  // currently named only from the actions.ts side (one-directionally) —
+  // noted here too so it survives a refactor of either file.
   private grantingAssignments(actor: Actor, action: Action): ActorAssignment[] {
     return actor.assignments.filter((assignment) =>
       ROLE_PERMISSIONS[assignment.roleKey]?.includes(action) ?? false,
