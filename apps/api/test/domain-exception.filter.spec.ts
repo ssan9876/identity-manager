@@ -6,6 +6,7 @@ import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import {
   ConflictError,
   CycleError,
+  ForbiddenError,
   InvalidTransitionError,
   NotFoundError,
   ValidationError,
@@ -32,6 +33,10 @@ class BoomController {
   @Get('validation')
   validation(): never {
     throw new ValidationError(['name: Required'])
+  }
+  @Get('forbidden')
+  forbidden(): never {
+    throw new ForbiddenError('not permitted')
   }
   @Get('unmapped')
   unmapped(): never {
@@ -83,6 +88,11 @@ describe('DomainExceptionFilter', () => {
     const res = await request(app.getHttpServer()).get('/boom/validation').expect(400)
     expect(res.body.code).toBe('VALIDATION_FAILED')
     expect(res.body.issues).toEqual(['name: Required'])
+  })
+
+  it('maps ForbiddenError to 403', async () => {
+    const res = await request(app.getHttpServer()).get('/boom/forbidden').expect(403)
+    expect(res.body.code).toBe('FORBIDDEN')
   })
 
   it('does not catch non-domain errors, and never leaks their message', async () => {

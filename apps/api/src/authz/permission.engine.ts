@@ -36,7 +36,11 @@ export class PermissionEngine {
    * Keycloak subject and becomes the authoritative mapping. Replace this then.
    *
    * Fails closed: an unmatched or non-active principal is denied, never
-   * treated as an anonymous or default actor.
+   * treated as an anonymous or default actor. The status check below is an
+   * ALLOWLIST (`=== 'active'`), deliberately not a denylist of known-bad
+   * statuses — a status added to the enum later (there are only four today:
+   * pending/active/suspended/deactivated) is denied by default, not granted
+   * by default.
    */
   async resolveActor(principal: Principal): Promise<Actor> {
     const [row] = await this.db
@@ -54,7 +58,7 @@ export class PermissionEngine {
       throw new ForbiddenError('principal does not map to a known user')
     }
 
-    if (row.status === 'deactivated' || row.status === 'suspended') {
+    if (row.status !== 'active') {
       throw new ForbiddenError('principal does not map to an active user')
     }
 
@@ -78,11 +82,44 @@ export class PermissionEngine {
 
   private grantingAssignments(actor: Actor, action: Action): ActorAssignment[] {
     return actor.assignments.filter((assignment) =>
-      ROLE_PERMISSIONS[assignment.roleKey].includes(action),
+      ROLE_PERMISSIONS[assignment.roleKey]?.includes(action) ?? false,
     )
   }
 
-  async can(actor: Actor, action: Action, targetOrgUnitId?: string): Promise<boolean> {
+  /**
+   * Does this actor hold `action` at ANY scope at all? Pure in-memory check
+   * against the assignments `resolveActor` already fetched — no database
+   * access, hence synchronous.
+   *
+   * This says nothing about WHICH org units are in scope. For a list route:
+   * use this to decide whether to enter the route at all, then narrow
+   * results with `scopePathsFor`. For a single, already-identified target,
+   * use `canIn` instead — never treat "no target" and "an unresolved
+   * target" as the same thing (see `canIn`).
+   */
+  canAnywhere(actor: Actor, action: Action): boolean {
+    return this.grantingAssignments(actor, action).length > 0
+  }
+
+  assertCanAnywhere(actor: Actor, action: Action): void {
+    if (!this.canAnywhere(actor, action)) {
+      throw new ForbiddenError(`not permitted: ${action}`)
+    }
+  }
+
+  /**
+   * Does this actor hold `action` over this SPECIFIC, already-resolved org
+   * unit? `orgUnitId` is required on purpose — it must be a real id, not
+   * `string | undefined`. A failed lookup (e.g. `user?.orgUnitId` when
+   * `findById` returned null) has to be handled by the caller BEFORE
+   * reaching this method. The previous single `can(actor, action, target?)`
+   * let "the target doesn't exist" and "there is no target to check, this is
+   * a list route" collapse into the same `undefined`, and the list-route
+   * branch resolved to an accidental allow — see task-3-report.md, Finding
+   * I-2. Making the parameter required makes that shape fail to compile
+   * instead of fail at runtime.
+   */
+  async canIn(actor: Actor, action: Action, orgUnitId: string): Promise<boolean> {
     const granting = this.grantingAssignments(actor, action)
 
     if (granting.length === 0) {
@@ -91,12 +128,6 @@ export class PermissionEngine {
 
     // A global assignment (NULL scope) applies everywhere.
     if (granting.some((assignment) => assignment.scopeOrgUnitId === null)) {
-      return true
-    }
-
-    if (targetOrgUnitId === undefined) {
-      // No specific target: holding the action anywhere is enough to enter the
-      // route. Result-level filtering is the caller's job via scopePathsFor.
       return true
     }
 
@@ -126,7 +157,7 @@ export class PermissionEngine {
       SELECT EXISTS (
         SELECT 1
           FROM org_units
-         WHERE id = ${targetOrgUnitId}::uuid
+         WHERE id = ${orgUnitId}::uuid
            AND path <@ ANY (${sql.param(scopePaths)}::ltree[])
       ) AS contained
     `)
@@ -134,15 +165,30 @@ export class PermissionEngine {
     return rows[0]?.contained ?? false
   }
 
-  async assertCan(actor: Actor, action: Action, targetOrgUnitId?: string): Promise<void> {
-    if (!(await this.can(actor, action, targetOrgUnitId))) {
+  async assertCanIn(actor: Actor, action: Action, orgUnitId: string): Promise<void> {
+    if (!(await this.canIn(actor, action, orgUnitId))) {
       throw new ForbiddenError(`not permitted: ${action}`)
     }
   }
 
   /**
    * The ltree paths within which this actor may perform `action`.
-   * `null` means unrestricted (a global assignment); `[]` means nowhere.
+   * `null` means UNRESTRICTED (a global assignment) — apply no filter.
+   * `[]` means NOWHERE (no applicable assignment at all) — apply a filter
+   * that matches nothing.
+   *
+   * TRAP — do not conflate these by truthiness. `[]` is a truthy value (JS
+   * arrays are always truthy, regardless of length), but `[].length` is
+   * falsy. A caller who writes:
+   *
+   *   if (paths?.length) applyFilter(paths)   // else: no filter
+   *
+   * silently treats an actor entitled to NOTHING the same as one entitled to
+   * EVERYTHING, because the `[]` case skips `applyFilter` too. The correct
+   * guard checks presence, not length:
+   *
+   *   if (paths) applyFilter(paths)           // [] still filters correctly
+   *   // else: paths is null — unrestricted, apply no filter at all
    */
   async scopePathsFor(actor: Actor, action: Action): Promise<string[] | null> {
     const granting = this.grantingAssignments(actor, action)
