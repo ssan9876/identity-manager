@@ -55,6 +55,21 @@ describe('UsersRepository', () => {
     expect((await users.findByEmail('ADA@EXAMPLE.COM'))?.username).toBe('ada')
   })
 
+  it('finds by username case-insensitively', async () => {
+    await users.create(input())
+    expect((await users.findByUsername('ADA'))?.primaryEmail).toBe('ada@example.com')
+  })
+
+  it('findByUsername matches on username, not email', async () => {
+    await users.create(input())
+    // 'ada@example.com' is this user's email, not their username ('ada') --
+    // pins that findByUsername compares against the username column, not
+    // primaryEmail. A caller that needs "the user PermissionEngine.
+    // resolveActor would resolve for this principal" must get null here,
+    // not a false-positive match on the email column.
+    expect(await users.findByUsername('ada@example.com')).toBeNull()
+  })
+
   it('allows pending to active to suspended to deactivated', async () => {
     const user = await users.create(input())
     expect((await users.changeStatus(user.id, 'active')).status).toBe('active')

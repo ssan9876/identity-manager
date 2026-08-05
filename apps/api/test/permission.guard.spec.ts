@@ -1,4 +1,4 @@
-import { Controller, Get, type INestApplication, UseGuards } from '@nestjs/common'
+import { Controller, Get, type ExecutionContext, type INestApplication, UseGuards } from '@nestjs/common'
 import { Test } from '@nestjs/testing'
 import { Reflector } from '@nestjs/core'
 import request from 'supertest'
@@ -10,6 +10,7 @@ import { RoleAssignmentsRepository } from '../src/authz/role-assignments.reposit
 import { JwtGuard } from '../src/auth/jwt.guard'
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
+import { ForbiddenError } from '../src/common/errors'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { UsersRepository } from '../src/users/users.repository'
 import { withTestDatabase } from './support/pg'
@@ -148,5 +149,23 @@ describe('PermissionGuard', () => {
 
     await ctx.pool.query('DELETE FROM role_assignments')
     await request(app.getHttpServer()).get('/probe/readable').expect(403)
+  })
+
+  // Guard-order defense: PermissionGuard reads request.principal, which only
+  // exists because JwtGuard ran first and set it. Nothing enforces that
+  // order except every controller happening to declare `@UseGuards(JwtGuard,
+  // PermissionGuard)` in that sequence — reversing it (or a controller that
+  // wires PermissionGuard without JwtGuard at all) leaves request.principal
+  // undefined. Exercised directly against the guard, bypassing the app/HTTP
+  // stack entirely, so this is unaffected by every real controller's guard
+  // order happening to be correct today.
+  it('throws ForbiddenError, not a crash, when request.principal is missing (guard-order defense)', async () => {
+    const guard = new PermissionGuard(new PermissionEngine(ctx.db), new Reflector())
+    const fakeContext = {
+      getHandler: () => ProbeController.prototype.readable,
+      switchToHttp: () => ({ getRequest: () => ({}) }),
+    } as unknown as ExecutionContext
+
+    await expect(guard.canActivate(fakeContext)).rejects.toBeInstanceOf(ForbiddenError)
   })
 })

@@ -111,6 +111,26 @@ export class UsersRepository {
   }
 
   /**
+   * Case-insensitive match on `username` — the same field and comparison
+   * `PermissionEngine.resolveActor` uses to map an authenticated principal
+   * onto a local user (`lower(username) = lower(principal.username)`; see
+   * permission.engine.ts). Callers that need "the user the guard would
+   * resolve for this principal" must use this, not `findByEmail`: email and
+   * username are independent, both-unique columns, so a row can match one
+   * without matching the other, and matching on the wrong one finds (and
+   * risks acting on) an unrelated user.
+   */
+  async findByUsername(username: string): Promise<User | null> {
+    const [row] = await this.db
+      .select()
+      .from(users)
+      .where(sql`lower(${users.username}) = lower(${username})`)
+      .limit(1)
+
+    return (row as User | undefined) ?? null
+  }
+
+  /**
    * There is no delete. Removal is a transition to `deactivated`, which is
    * terminal, so historical access questions stay answerable.
    *

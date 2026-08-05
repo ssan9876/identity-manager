@@ -3,10 +3,21 @@ import { Controller, Module, forwardRef } from '@nestjs/common'
 import { describe, expect, it } from 'vitest'
 import { AppModule } from '../src/app.module'
 import { JwtGuard } from '../src/auth/jwt.guard'
+import { PermissionGuard } from '../src/authz/permission.guard'
 import { REQUIRED_PERMISSION } from '../src/authz/require-permission.decorator'
 
 /** Only the liveness probe may be reached without authentication. */
 const OPEN_BY_DESIGN = new Set(['HealthController'])
+
+/**
+ * Authenticated but not authorized: these controllers need identity
+ * (JwtGuard) but never a permission grant (PermissionGuard) — they return
+ * only the caller's own principal, never directory data. Declared beside
+ * OPEN_BY_DESIGN, by name, so every exemption this file honours is visible
+ * in one place and adding one is a deliberate, reviewable act rather than an
+ * inline string comparison buried in a loop.
+ */
+const AUTHENTICATION_ONLY = new Set(['MeController'])
 
 type Ctor = new (...args: never[]) => unknown
 
@@ -86,11 +97,38 @@ describe('guard coverage', () => {
     expect(unguarded).toEqual([])
   })
 
+  // Independent from the JwtGuard assertion above on purpose: a controller
+  // can carry @UseGuards(JwtGuard) with @RequirePermission on every route
+  // and still enforce NOTHING if PermissionGuard itself was left off the
+  // decorator — the JwtGuard assertion is blind to that (it only checks
+  // JwtGuard is present), and the "declares a permission" assertion below is
+  // blind to it too (it only checks route METADATA exists, never that
+  // anything actually reads it at request time). Found live in review:
+  // exactly that shape returned 200 with the full user list to a principal
+  // holding no role and no local user record at all. Two separate
+  // assertions — one per guard — mean a controller missing EITHER one fails
+  // loudly and by name, instead of the failure being silently absorbed by
+  // whichever assertion still happens to pass.
+  it('applies PermissionGuard to every controller except the health endpoint and /me', () => {
+    const unguarded = collectControllers(AppModule)
+      .filter(
+        (controller) =>
+          !OPEN_BY_DESIGN.has(controller.name) && !AUTHENTICATION_ONLY.has(controller.name),
+      )
+      .filter((controller) => {
+        const guards: unknown[] = Reflect.getMetadata('__guards__', controller) ?? []
+        return !guards.includes(PermissionGuard)
+      })
+      .map((controller) => controller.name)
+
+    expect(unguarded).toEqual([])
+  })
+
   it('declares a permission on every route of every guarded controller', () => {
     const missing: string[] = []
 
     for (const controller of collectControllers(AppModule)) {
-      if (OPEN_BY_DESIGN.has(controller.name) || controller.name === 'MeController') {
+      if (OPEN_BY_DESIGN.has(controller.name) || AUTHENTICATION_ONLY.has(controller.name)) {
         continue
       }
 

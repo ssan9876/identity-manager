@@ -39,6 +39,25 @@ export class PermissionGuard implements CanActivate {
 
     const request = context.switchToHttp().getRequest<AuthorizedRequest>()
 
+    // Defensive: this guard reads request.principal, which exists only
+    // because JwtGuard ran first and set it. `@UseGuards(JwtGuard,
+    // PermissionGuard)` on every controller is what guarantees that order
+    // today, but nothing at compile time or runtime enforces it — reversing
+    // the decorator's argument order (or a controller that adds
+    // PermissionGuard without JwtGuard) would leave request.principal
+    // undefined here. AuthorizedRequest's type claims principal always
+    // exists, so without this check resolveActor(undefined) would throw an
+    // unhandled TypeError from deep inside a SQL template — still a fail
+    // CLOSED outcome (a 500 grants nothing), but an illegible one: a raw
+    // 500 instead of the same clean 403 every other denial in this guard
+    // produces, and nothing in the test suite would catch it (every
+    // controller in the real app happens to declare the guards in the
+    // working order). Checking explicitly turns a silent ordering mistake
+    // into the same intentional, legible denial as any other.
+    if (request.principal === undefined) {
+      throw new ForbiddenError('no authenticated principal on request — check guard order')
+    }
+
     // Resolved fresh on every request — never cached. PermissionEngine
     // snapshots the actor's role assignments (and each assignment's scope
     // path) into the Actor it returns; that snapshot is only correct for the

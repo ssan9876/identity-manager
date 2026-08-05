@@ -46,8 +46,24 @@ function sleep(ms: number): Promise<void> {
 
 const SMOKE_ORG_UNIT_NAME = 'Smoke Test Org (idm:smoke-dev)'
 
+// Deliberately NOT KEYCLOAK_USERNAME. `username` must equal KEYCLOAK_USERNAME
+// (that's what resolveActor matches against — see the doc comment below),
+// but `primary_email` is an INDEPENDENT unique-constrained column, and a
+// real pre-existing user can easily share that email while holding a
+// different username (that is exactly the reviewer's Finding 2 scenario:
+// primary_email='admin@example.com', username='not.the.token.user'). Seeding
+// with primaryEmail: KEYCLOAK_USERNAME would collide with that unrelated
+// row's email and crash `users.create` with a raw 23505, even once the
+// username lookup/cleanup are both correct. A dedicated sentinel, on the
+// reserved `.invalid` TLD (RFC 2606 — guaranteed never a real, resolvable,
+// or assignable domain; the same convention app.module.spec.ts already uses
+// for its Keycloak issuer stub), decouples the two columns completely: this
+// script can only ever collide with pre-existing data on `username`, which
+// the lookup below already handles correctly.
+const SMOKE_USER_EMAIL = 'idm-smoke-dev@local.invalid'
+
 interface SeededActor {
-  /** Removes exactly what this run seeded (or reused — see below) and closes its pool. */
+  /** Removes only what THIS run created and closes its pool. */
   cleanup: () => Promise<void>
 }
 
@@ -59,11 +75,21 @@ interface SeededActor {
  * `UsersRepository.create()` defaults new rows to `pending` — and a global
  * `super_admin` role assignment.
  *
- * Idempotent against a previous run that crashed before its own cleanup ran:
- * a leftover local user with this exact username can only be this script's
- * own artifact (nothing else in the codebase creates one), so it is reused
- * rather than failing on a unique-constraint violation, and is still fully
- * removed by THIS run's cleanup rather than left to accumulate.
+ * Looks the user up by `username` (`findByUsername`), because that is
+ * exactly what `resolveActor` matches a principal against — never by email.
+ * A prior version of this function matched on email instead, which found
+ * (and its cleanup then deleted) a real pre-existing user and org unit in a
+ * shared dev database that merely happened to share this email address but
+ * had a different username: matching the wrong field reused a stranger's
+ * row, and reusing it is what made deleting it look "safe" — see the fix
+ * round in task-6-report.md, Finding 2.
+ *
+ * Cleanup deletes only what THIS run created — tracked explicitly below,
+ * never inferred from "found vs. not found" — so a run that reuses a
+ * leftover from an earlier *interrupted run of this same script* (a real
+ * row whose username genuinely matches KEYCLOAK_USERNAME, left behind by a
+ * crash before that run's own cleanup) does not delete it either; only the
+ * run that actually created a row is ever responsible for removing it.
  *
  * Talks to Postgres directly, on its own pool — independent of the app
  * process this script spawns, so seeding/cleanup work whether or not that
@@ -79,16 +105,25 @@ async function seedActor(databaseUrl: string): Promise<SeededActor> {
 
     log('seeding an org unit, an active local user, and a super_admin role assignment ...')
 
-    let user = await users.findByEmail(KEYCLOAK_USERNAME)
+    let user = await users.findByUsername(KEYCLOAK_USERNAME)
+    let createdOrgUnitId: string | null = null
+    let createdUserId: string | null = null
+
     if (user === null) {
       const orgUnit = await orgUnits.createRoot(SMOKE_ORG_UNIT_NAME)
+      createdOrgUnitId = orgUnit.id
       user = await users.create({
-        primaryEmail: KEYCLOAK_USERNAME,
+        primaryEmail: SMOKE_USER_EMAIL,
         username: KEYCLOAK_USERNAME,
         firstName: 'Smoke',
         lastName: 'Test',
         orgUnitId: orgUnit.id,
       })
+      createdUserId = user.id
+    } else {
+      log(
+        `reusing a pre-existing local user matching username ${KEYCLOAK_USERNAME} (left by an interrupted earlier run) — this run will not delete it or its org unit`,
+      )
     }
 
     if (user.status !== 'active') {
@@ -99,27 +134,35 @@ async function seedActor(databaseUrl: string): Promise<SeededActor> {
     const hasSuperAdmin = existingAssignments.some(
       (assignment) => assignment.roleKey === 'super_admin' && assignment.scopeOrgUnitId === null,
     )
+    let createdRoleAssignmentId: string | null = null
     if (!hasSuperAdmin) {
-      await roleAssignments.assign({ userId: user.id, roleKey: 'super_admin' })
+      const assignment = await roleAssignments.assign({ userId: user.id, roleKey: 'super_admin' })
+      createdRoleAssignmentId = assignment.id
     }
 
-    const userId = user.id
-    const orgUnitId = user.orgUnitId
-    log(`seeded local user ${userId} (${KEYCLOAK_USERNAME}) with super_admin`)
+    log(`seeded local user ${user.id} (${KEYCLOAK_USERNAME}) with super_admin`)
 
     return {
       async cleanup(): Promise<void> {
-        log('cleaning up seeded smoke-test data ...')
+        log('cleaning up smoke-test data this run created ...')
         try {
-          // role_assignments cascades from users, but delete it explicitly
-          // first anyway so cleanup order never depends on that cascade
-          // being configured the way it happens to be today. Nothing here
+          // Each delete is independently conditional on THIS run having
+          // created that exact row — never on "found vs. not found" at the
+          // top of this function, and never unconditional. Nothing here
           // touches audit_log: it is append-only (rows can never be
           // removed, by design — see db/migrate.ts), but GET routes write
-          // no audit rows, so this run left none to clean up.
-          await pool.query('DELETE FROM role_assignments WHERE user_id = $1', [userId])
-          await pool.query('DELETE FROM users WHERE id = $1', [userId])
-          await pool.query('DELETE FROM org_units WHERE id = $1', [orgUnitId])
+          // no audit rows, so this run left none to clean up either way.
+          if (createdRoleAssignmentId !== null) {
+            await pool.query('DELETE FROM role_assignments WHERE id = $1', [
+              createdRoleAssignmentId,
+            ])
+          }
+          if (createdUserId !== null) {
+            await pool.query('DELETE FROM users WHERE id = $1', [createdUserId])
+          }
+          if (createdOrgUnitId !== null) {
+            await pool.query('DELETE FROM org_units WHERE id = $1', [createdOrgUnitId])
+          }
         } finally {
           await pool.end()
         }
