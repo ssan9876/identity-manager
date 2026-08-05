@@ -134,6 +134,43 @@ async function mintToken(issuer: string): Promise<string> {
   return body.access_token
 }
 
+/**
+ * Calls an authenticated `GET <path>`, asserting 200 and a body shaped like
+ * a `Page<T>` (an `items` array). Shared by every list-endpoint check below
+ * so each one exercises the identical assertion — status, JSON-parseable,
+ * `items` is an array — through the real HTTP stack.
+ */
+async function checkAuthenticatedList(
+  baseUrl: string,
+  token: string,
+  path: string,
+): Promise<number> {
+  log(`calling GET ${path} with the token ...`)
+  const res = await fetch(`${baseUrl}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const text = await res.text()
+
+  if (res.status !== 200) {
+    throw new Error(`expected 200 from GET ${path}, got ${res.status}: ${text}`)
+  }
+
+  let body: unknown
+  try {
+    body = JSON.parse(text)
+  } catch {
+    throw new Error(`GET ${path} did not return valid JSON: ${text}`)
+  }
+
+  const items = (body as { items?: unknown } | null)?.items
+  if (!Array.isArray(items)) {
+    throw new Error(`GET ${path} response had no "items" array: ${text}`)
+  }
+
+  log(`SMOKE OK — GET ${path} -> 200, items: array (length ${items.length})`)
+  return items.length
+}
+
 async function main(): Promise<void> {
   const env = loadEnv(process.env)
   const baseUrl = `http://localhost:${env.port}`
@@ -169,29 +206,14 @@ async function main(): Promise<void> {
     const token = await mintToken(env.keycloakIssuer)
     log('token minted')
 
-    log('calling GET /users with the token ...')
-    const res = await fetch(`${baseUrl}/users`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    const text = await res.text()
+    await checkAuthenticatedList(baseUrl, token, '/users')
 
-    if (res.status !== 200) {
-      throw new Error(`expected 200 from GET /users, got ${res.status}: ${text}`)
-    }
-
-    let body: unknown
-    try {
-      body = JSON.parse(text)
-    } catch {
-      throw new Error(`GET /users did not return valid JSON: ${text}`)
-    }
-
-    const items = (body as { items?: unknown } | null)?.items
-    if (!Array.isArray(items)) {
-      throw new Error(`GET /users response had no "items" array: ${text}`)
-    }
-
-    log(`SMOKE OK — GET /users -> 200, items: array (length ${items.length})`)
+    // The GroupsController DI regression (bare-class constructor injection
+    // relying on design:paramtypes) is exactly what this script exists to
+    // catch — see the file header. GroupsRepository was dormant, unwired
+    // into AppModule, until the groups controller landed, so /users alone
+    // could pass this script while /groups 500ed under the dev transform.
+    await checkAuthenticatedList(baseUrl, token, '/groups')
   } catch (error) {
     exitCode = 1
     console.error(`[smoke:dev] SMOKE FAILED: ${error instanceof Error ? error.message : String(error)}`)
