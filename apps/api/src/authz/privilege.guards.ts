@@ -16,9 +16,27 @@ export class PrivilegeGuards {
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
   ) {}
 
+  /**
+   * The actor's own highest rank. ACTOR side of an intentionally asymmetric
+   * pair with assertCanModifyPrincipal's target-rank lookup below: an
+   * assignment whose roleKey is not present in ROLE_RANK (the database
+   * enum can grow independently of this static catalog — see
+   * ROLE_PERMISSIONS's doc comment) contributes NO privilege, via
+   * `?? NO_PRIVILEGE`, rather than corrupting the whole reduction.
+   *
+   * Finding I-1: `ROLE_RANK[unknownKey]` is `undefined`, and
+   * `Math.max(n, undefined)` is `NaN`. Math.max returns NaN if ANY argument
+   * ever was NaN, so one unrecognized assignment anywhere in the array
+   * poisons every subsequent step of this reduce, and NaN fails every `<`
+   * and `>` comparison — the caller's rank check would then never throw,
+   * for ANY comparison, not just ones involving the unknown role. Demonstrated
+   * live: `highestRank([super_admin, ghost])` was `NaN`, not `40`. An
+   * unknown role must be ignored, never allowed to silently defeat every
+   * later comparison.
+   */
   highestRank(assignments: ActorAssignment[]): number {
     return assignments.reduce(
-      (highest, assignment) => Math.max(highest, ROLE_RANK[assignment.roleKey]),
+      (highest, assignment) => Math.max(highest, ROLE_RANK[assignment.roleKey] ?? NO_PRIVILEGE),
       NO_PRIVILEGE,
     )
   }
@@ -27,6 +45,19 @@ export class PrivilegeGuards {
    * An administrator may only grant a role they themselves hold, at a scope
    * their own holding covers. Without this, "help desk can reset passwords"
    * becomes "help desk can make themselves a super admin".
+   *
+   * CONTRACT — what this does NOT check: whether the actor may assign
+   * roles AT ALL. An actor holding only a global `read_only` assignment
+   * passes `assertCanAssignRole(actor, 'read_only', null)` — they DO hold
+   * `read_only`, globally, so the "what do they hold, at what scope" logic
+   * below is satisfied — even though nothing entitles them to reach a
+   * role-assignment operation in the first place; that same actor's
+   * `permissionEngine.canAnywhere(actor, 'role:assign')` is false. This is
+   * a deliberate NARROWING guard (which role, at which scope), not a
+   * complete authorization decision on its own. Callers MUST additionally
+   * pair this with a `role:assign` permission check —
+   * `PermissionEngine.assertCanAnywhere`/`assertCanIn`, scoped as
+   * appropriate — before this method is ever reached.
    */
   async assertCanAssignRole(
     actor: Actor,
@@ -82,6 +113,16 @@ export class PrivilegeGuards {
   /**
    * An administrator may not modify a principal whose privileges exceed their
    * own — otherwise a help-desk account becomes a path to any executive's.
+   *
+   * CONTRACT — what this does NOT check: org-unit scope, on either side. A
+   * `user_admin` scoped to Sales passes this against a global `read_only`
+   * user who happens to live in Engineering: rank alone says "not more
+   * privileged than me," which is true, and says nothing about whether the
+   * actor may reach that principal at all. Rank and scope are
+   * independently load-bearing; neither subsumes the other. Callers MUST
+   * additionally pair this with
+   * `permissionEngine.assertCanIn(actor, 'user:update', target.orgUnitId)`
+   * (or the read-path equivalent) before this method is ever reached.
    */
   async assertCanModifyPrincipal(actor: Actor, targetUserId: string): Promise<void> {
     const targetAssignments = await this.db
@@ -89,10 +130,29 @@ export class PrivilegeGuards {
       .from(roleAssignments)
       .where(eq(roleAssignments.userId, targetUserId))
 
-    const targetRank = targetAssignments.reduce(
-      (highest, row) => Math.max(highest, ROLE_RANK[row.roleKey as RoleKey]),
-      NO_PRIVILEGE,
-    )
+    // TARGET side of the asymmetric pair with highestRank above — see
+    // Finding I-1. An unrecognized role_key here must NEVER read as "this
+    // principal holds no privilege, go ahead": role_assignments.role_key is
+    // a Postgres enum that can grow independently of this code's ROLE_RANK
+    // catalog (ROLE_PERMISSIONS's doc comment: the catalog is deliberately
+    // static code, changed only by review). A target row referencing a key
+    // this catalog doesn't recognise is a data-integrity fault, not a
+    // legitimate low-privilege principal, so this throws a plain Error
+    // (surfaces as an uncaught 500, per this file's error-taxonomy
+    // convention — see common/errors.ts: "anything that is NOT a
+    // DomainError is a genuine bug"), never a rank that could satisfy the
+    // comparison below. The `in` check also lets `row.roleKey` be indexed
+    // into ROLE_RANK without an `as RoleKey` cast — the previous
+    // `ROLE_RANK[row.roleKey as RoleKey]` cast is exactly what suppressed
+    // the compiler's ability to flag this as possibly `undefined`.
+    const targetRank = targetAssignments.reduce((highest, row) => {
+      if (!(row.roleKey in ROLE_RANK)) {
+        throw new Error(
+          `data integrity fault: role_assignments references unknown role_key "${row.roleKey}"`,
+        )
+      }
+      return Math.max(highest, ROLE_RANK[row.roleKey])
+    }, NO_PRIVILEGE)
 
     if (this.highestRank(actor.assignments) < targetRank) {
       throw new ForbiddenError('not permitted to modify a more privileged principal')

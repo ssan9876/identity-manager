@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
+import type { RoleKey } from '../src/authz/actions'
 import { PermissionEngine } from '../src/authz/permission.engine'
 import { PrivilegeGuards } from '../src/authz/privilege.guards'
 import { RoleAssignmentsRepository } from '../src/authz/role-assignments.repository'
@@ -17,6 +18,7 @@ describe('PrivilegeGuards', () => {
   let salesId: string
   let emeaId: string
   let engId: string
+  let supportId: string
 
   beforeEach(async () => {
     await ctx.pool.query('TRUNCATE TABLE role_assignments, users, org_units CASCADE')
@@ -31,6 +33,9 @@ describe('PrivilegeGuards', () => {
     salesId = (await orgUnits.createChild(root.id, 'Sales')).id
     emeaId = (await orgUnits.createChild(salesId, 'EMEA')).id
     engId = (await orgUnits.createChild(root.id, 'Engineering')).id
+    // Third sibling, disjoint from both salesId and engId's subtrees — used
+    // by the multi-element sql.param test below (a "third unrelated scope").
+    supportId = (await orgUnits.createChild(root.id, 'Support')).id
   })
 
   // Creates a user and activates it before returning. PermissionEngine
@@ -109,6 +114,91 @@ describe('PrivilegeGuards', () => {
     ).rejects.toBeInstanceOf(ForbiddenError)
   })
 
+  // Finding I-2: every test above reaches `holdings` through the literal
+  // `assignment.roleKey === roleKey` disjunct (all use help_desk). The
+  // `|| assignment.roleKey === 'super_admin'` disjunct — the spec's
+  // headline escalation path, a scoped super_admin — was previously
+  // exercised ONLY by the first test's globally-scoped super_admin, where
+  // every assertion expects allow, so a plausible-but-wrong refactor that
+  // treats ANY super_admin membership as an unconditional bypass (instead
+  // of folding it into the same scope-restricted holdings list as every
+  // other role) left the original 11 tests green. A SCOPED super_admin must
+  // be denied outside its own subtree exactly like a scoped help_desk is.
+  describe('a scoped super_admin (the headline escalation path)', () => {
+    it('is denied granting super_admin globally', async () => {
+      const admin = await makeUser('admin', rootId)
+      await roles.assign({ userId: admin.id, roleKey: 'super_admin', scopeOrgUnitId: salesId })
+      const actor = await actorFor('admin')
+
+      await expect(
+        guards.assertCanAssignRole(actor, 'super_admin', null),
+      ).rejects.toBeInstanceOf(ForbiddenError)
+    })
+
+    it('is denied granting user_admin globally', async () => {
+      const admin = await makeUser('admin', rootId)
+      await roles.assign({ userId: admin.id, roleKey: 'super_admin', scopeOrgUnitId: salesId })
+      const actor = await actorFor('admin')
+
+      await expect(
+        guards.assertCanAssignRole(actor, 'user_admin', null),
+      ).rejects.toBeInstanceOf(ForbiddenError)
+    })
+
+    it('is denied granting outside its own subtree', async () => {
+      const admin = await makeUser('admin', rootId)
+      await roles.assign({ userId: admin.id, roleKey: 'super_admin', scopeOrgUnitId: salesId })
+      const actor = await actorFor('admin')
+
+      await expect(
+        guards.assertCanAssignRole(actor, 'user_admin', engId),
+      ).rejects.toBeInstanceOf(ForbiddenError)
+    })
+
+    it('is denied granting at the root, above its own scope', async () => {
+      const admin = await makeUser('admin', rootId)
+      await roles.assign({ userId: admin.id, roleKey: 'super_admin', scopeOrgUnitId: salesId })
+      const actor = await actorFor('admin')
+
+      await expect(
+        guards.assertCanAssignRole(actor, 'user_admin', rootId),
+      ).rejects.toBeInstanceOf(ForbiddenError)
+    })
+
+    it('is allowed granting inside its own subtree — intended delegation', async () => {
+      const admin = await makeUser('admin', rootId)
+      await roles.assign({ userId: admin.id, roleKey: 'super_admin', scopeOrgUnitId: salesId })
+      const actor = await actorFor('admin')
+
+      await expect(
+        guards.assertCanAssignRole(actor, 'user_admin', emeaId),
+      ).resolves.toBeUndefined()
+    })
+  })
+
+  // Minor finding: every test above gives the actor exactly ONE holding, so
+  // sql.param(scopePaths) is only ever exercised with a 1-element array.
+  // Task 3 documented that Drizzle's sql tag renders 1-element and
+  // >=2-element arrays differently (see the sql.param comment above). This
+  // exercises the real >=2-element case: two disjoint held scopes, granted
+  // at each, denied at a third (supportId) the actor holds nothing in.
+  it('grants at either of two disjoint held scopes and denies an unrelated third', async () => {
+    const admin = await makeUser('admin', rootId)
+    await roles.assign({ userId: admin.id, roleKey: 'help_desk', scopeOrgUnitId: salesId })
+    await roles.assign({ userId: admin.id, roleKey: 'help_desk', scopeOrgUnitId: engId })
+    const actor = await actorFor('admin')
+
+    await expect(
+      guards.assertCanAssignRole(actor, 'help_desk', salesId),
+    ).resolves.toBeUndefined()
+    await expect(
+      guards.assertCanAssignRole(actor, 'help_desk', engId),
+    ).resolves.toBeUndefined()
+    await expect(
+      guards.assertCanAssignRole(actor, 'help_desk', supportId),
+    ).rejects.toBeInstanceOf(ForbiddenError)
+  })
+
   it('refuses to let an actor modify a principal who outranks them', async () => {
     const helper = await makeUser('helper', rootId)
     const boss = await makeUser('boss', rootId)
@@ -151,6 +241,62 @@ describe('PrivilegeGuards', () => {
     ).rejects.toBeInstanceOf(ForbiddenError)
   })
 
+  // Finding I-1: role_assignments.role_key is a Postgres enum that can grow
+  // independently of this code's static ROLE_RANK catalog (e.g. a migration
+  // lands ahead of a deploy). `ROLE_RANK[unknownKey]` is `undefined`, and
+  // `Math.max(n, undefined)` is `NaN`, which poisons the whole reduce and
+  // fails every later `<`/`>` comparison — a silent fail-open, not the
+  // fail-closed 403/500 either side of this check needs. These simulate
+  // that drift for real, by widening a real Postgres enum, the same way
+  // the review demonstrated it live (`ALTER TYPE role_key ADD VALUE
+  // 'ghost_role'`), so the regression is pinned against genuine Postgres
+  // behaviour, not a hand-typed fixture.
+  describe('role_key catalog drift (Finding I-1)', () => {
+    it('does not let an unrecognized role on the ACTOR inflate their rank past a real denial', async () => {
+      await ctx.pool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'ghost_role'`)
+
+      const ghost = await makeUser('ghost', rootId)
+      const boss = await makeUser('boss', rootId)
+      await ctx.pool.query(
+        'INSERT INTO role_assignments (user_id, role_key, scope_org_unit_id) VALUES ($1, $2::role_key, NULL)',
+        [ghost.id, 'ghost_role'],
+      )
+      await roles.assign({ userId: boss.id, roleKey: 'super_admin' })
+      const actor = await actorFor('ghost')
+
+      // Pre-fix: highestRank([ghost_role]) was NaN, and NaN < 40 is false —
+      // never throws, so an actor holding nothing recognizable could modify
+      // a super_admin. Fixed: the unknown role contributes NO_PRIVILEGE, so
+      // this actor's rank is -1, correctly denied against a real 40.
+      await expect(
+        guards.assertCanModifyPrincipal(actor, boss.id),
+      ).rejects.toBeInstanceOf(ForbiddenError)
+    })
+
+    it('fails loud (throws), not open, when the TARGET holds an unrecognized role', async () => {
+      await ctx.pool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'ghost_role'`)
+
+      const plain = await makeUser('plain', rootId)
+      const ghost = await makeUser('ghost', rootId)
+      await ctx.pool.query(
+        'INSERT INTO role_assignments (user_id, role_key, scope_org_unit_id) VALUES ($1, $2::role_key, NULL)',
+        [ghost.id, 'ghost_role'],
+      )
+      const actor = await actorFor('plain')
+
+      // Pre-fix: targetRank was NaN, and actorRank(-1) < NaN is false —
+      // never throws, so a completely unprivileged actor could modify this
+      // target. Fixed: an unrecognized role_key on the TARGET must never
+      // read as "unprivileged, go ahead" — it throws a data-integrity
+      // fault (a plain Error, not ForbiddenError) instead, so it must
+      // reject, and must not be mistaken for an ordinary 403 denial.
+      await expect(guards.assertCanModifyPrincipal(actor, ghost.id)).rejects.toThrow()
+      await expect(
+        guards.assertCanModifyPrincipal(actor, ghost.id),
+      ).rejects.not.toBeInstanceOf(ForbiddenError)
+    })
+  })
+
   it('computes the highest rank across several assignments', () => {
     expect(
       guards.highestRank([
@@ -163,5 +309,18 @@ describe('PrivilegeGuards', () => {
 
   it('treats no assignments as the lowest rank', () => {
     expect(guards.highestRank([])).toBe(-1)
+  })
+
+  it('highestRank ignores an assignment whose roleKey is outside the catalog, rather than corrupting the result via NaN', () => {
+    // Direct, DB-free pin on highestRank's own contract (Finding I-1,
+    // actor side): even mixed with a real, high-ranked assignment, an
+    // unrecognized roleKey must not win via NaN contamination or otherwise
+    // change the answer.
+    expect(
+      guards.highestRank([
+        { roleKey: 'super_admin', scopeOrgUnitId: null, scopePath: null },
+        { roleKey: 'ghost_role' as RoleKey, scopeOrgUnitId: null, scopePath: null },
+      ]),
+    ).toBe(40)
   })
 })
