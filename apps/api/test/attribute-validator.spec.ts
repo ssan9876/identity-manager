@@ -195,4 +195,78 @@ describe('validateAttributes', () => {
     expect(Object.keys(freshProbe)).toEqual([])
     expect(Object.getPrototypeOf(freshProbe)).toBe(Object.prototype)
   })
+
+  it('treats an optional "__proto__" definition as absent when the payload never sets it, validating the rest of the payload normally', () => {
+    const defs = [
+      def({ key: '__proto__', dataType: 'string', required: false }),
+      def({ key: 'ordinary_field', dataType: 'string' }),
+    ]
+
+    // The payload is an ordinary object literal: it has no *own* "__proto__"
+    // property. Reading payload['__proto__'] off it inherits
+    // Object.prototype's accessor, returning the payload's own prototype
+    // object rather than undefined — which, unless the payload is
+    // sanitized first, defeats `.optional()` and fails validation for a
+    // key this payload never mentioned.
+    expect(validateAttributes(defs, { ordinary_field: 'hello' })).toEqual({
+      ordinary_field: 'hello',
+    })
+  })
+
+  it('treats optional "constructor", "toString", and "hasOwnProperty" definitions as absent when the payload never sets them', () => {
+    for (const key of ['constructor', 'toString', 'hasOwnProperty']) {
+      const defs = [
+        def({ key, dataType: 'string', required: false }),
+        def({ key: 'ordinary_field', dataType: 'string' }),
+      ]
+      expect(validateAttributes(defs, { ordinary_field: 'hello' })).toEqual({
+        ordinary_field: 'hello',
+      })
+    }
+  })
+
+  it('still enforces a required "__proto__" definition after payload sanitization: {} throws, an own-keyed payload succeeds', () => {
+    const defs = [def({ key: '__proto__', dataType: 'string', required: true })]
+
+    expect(() => validateAttributes(defs, {})).toThrow(AttributeValidationError)
+
+    // Object.fromEntries creates a genuine *own* "__proto__" data property,
+    // which sanitizePayload must preserve (not just discard as if absent).
+    const payloadWithProtoKey = Object.fromEntries([['__proto__', 'CC-1']])
+    expect(Object.prototype.hasOwnProperty.call(payloadWithProtoKey, '__proto__')).toBe(
+      true,
+    )
+    expect(() => validateAttributes(defs, payloadWithProtoKey)).not.toThrow()
+  })
+
+  it('causes no global Object prototype pollution when validating optional or required "dangerous key" definitions', () => {
+    const beforeProtoKeys = Object.getOwnPropertyNames(Object.prototype)
+
+    const ordinaryOnly = { ordinary_field: 'hello' }
+    validateAttributes(
+      [
+        def({ key: '__proto__', dataType: 'string', required: false }),
+        def({ key: 'ordinary_field', dataType: 'string' }),
+      ],
+      ordinaryOnly,
+    )
+    validateAttributes(
+      [
+        def({ key: 'constructor', dataType: 'string', required: false }),
+        def({ key: 'ordinary_field', dataType: 'string' }),
+      ],
+      ordinaryOnly,
+    )
+    const payloadWithProtoKey = Object.fromEntries([['__proto__', 'CC-1']])
+    validateAttributes(
+      [def({ key: '__proto__', dataType: 'string', required: true })],
+      payloadWithProtoKey,
+    )
+
+    expect(Object.getOwnPropertyNames(Object.prototype)).toEqual(beforeProtoKeys)
+
+    const freshProbe: Record<string, unknown> = {}
+    expect(Object.keys(freshProbe)).toEqual([])
+    expect(Object.getPrototypeOf(freshProbe)).toBe(Object.prototype)
+  })
 })

@@ -125,12 +125,40 @@ export function buildAttributeSchema(
   return z.object(shape).strict() as z.ZodType<Record<string, unknown>>
 }
 
+/**
+ * Copies the input into a null-prototype object holding only its own
+ * enumerable properties before Zod ever sees it.
+ *
+ * Zod reads each shape key off the payload via `data[key]`. For key names
+ * that Object.prototype also carries — __proto__ (an accessor) as well as
+ * constructor, toString, hasOwnProperty, valueOf, isPrototypeOf, etc.
+ * (plain inherited data properties) — that read returns the *inherited*
+ * value on an ordinary payload that never set an own property with that
+ * name, rather than `undefined`. A schema field for such a key is then
+ * never recognised as absent, so `.optional()` never applies and an
+ * unrelated payload that simply never mentioned the key fails validation.
+ * A null-prototype copy has no inherited properties to leak through:
+ * Object.assign only copies the source's *own* enumerable properties, so a
+ * key genuinely set on the input is preserved with its value, and a key
+ * that was never own-set on the input is absent from the copy too — which
+ * reads back as `undefined`, exactly what `.optional()` needs.
+ *
+ * Non-object inputs (arrays, primitives, null) pass through unchanged so
+ * their existing top-level type-mismatch errors keep surfacing normally.
+ */
+function sanitizePayload(value: unknown): unknown {
+  const input = value ?? {}
+  return typeof input === 'object' && input !== null && !Array.isArray(input)
+    ? Object.assign(Object.create(null), input)
+    : input
+}
+
 export function validateAttributes(
   definitions: AttributeDefinition[],
   value: unknown,
   appliesTo: 'user' | 'group' = 'user',
 ): Record<string, unknown> {
-  const result = buildAttributeSchema(definitions, appliesTo).safeParse(value ?? {})
+  const result = buildAttributeSchema(definitions, appliesTo).safeParse(sanitizePayload(value))
 
   if (!result.success) {
     throw new AttributeValidationError(
