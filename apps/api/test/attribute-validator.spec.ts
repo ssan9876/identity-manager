@@ -269,4 +269,86 @@ describe('validateAttributes', () => {
     expect(Object.keys(freshProbe)).toEqual([])
     expect(Object.getPrototypeOf(freshProbe)).toBe(Object.prototype)
   })
+
+  it('rejects an unmodeled key with a throwing getter cleanly, without ever invoking the getter', () => {
+    const defs = [def({ key: 'other_field', dataType: 'string' })]
+
+    let getterCalls = 0
+    const payload: Record<string, unknown> = { other_field: 'valid value' }
+    Object.defineProperty(payload, 'evil_unmodeled', {
+      get() {
+        getterCalls++
+        throw new Error('getter boom')
+      },
+      enumerable: true,
+      configurable: true,
+    })
+
+    try {
+      validateAttributes(defs, payload)
+      expect.unreachable('should have thrown')
+    } catch (error) {
+      expect(error).toBeInstanceOf(AttributeValidationError)
+      expect((error as AttributeValidationError).issues.join('; ')).toMatch(
+        /evil_unmodeled/,
+      )
+    }
+    // The whole point of copying by descriptor rather than by value: an
+    // unmodeled key's getter is carried across as a function reference and
+    // is never called, because Zod's strict-mode "is this key known"
+    // check (for...in) only ever reads key *names*, not values.
+    expect(getterCalls).toBe(0)
+  })
+
+  it('documents the behaviour for a DECLARED key whose getter throws: it is not a silent success', () => {
+    const defs = [def({ key: 'declared_throwing', dataType: 'string', required: true })]
+
+    const payload: Record<string, unknown> = {}
+    Object.defineProperty(payload, 'declared_throwing', {
+      get() {
+        throw new Error('declared getter boom')
+      },
+      enumerable: true,
+      configurable: true,
+    })
+
+    // Unlike the unmodeled-key case above, Zod *must* read a declared
+    // field's value to validate it (buildAttributeSchema's shape says this
+    // key matters), so the getter necessarily runs, and its throw is not
+    // something payload sanitization can intercept or convert — Zod's own
+    // per-field read (`ctx.data[key]`) is not wrapped in a try/catch, so
+    // this propagates as the getter's own raw Error, not an
+    // AttributeValidationError. The requirement here is only that it is
+    // not a silent success: the caller must see *some* failure rather than
+    // an incomplete or wrong result passed off as valid.
+    expect(() => validateAttributes(defs, payload)).toThrow('declared getter boom')
+  })
+
+  it('validates a non-enumerable own property for a required declared attribute, and includes it in the result', () => {
+    const defs = [def({ key: 'cost_center', dataType: 'string', required: true })]
+
+    const payload: Record<string, unknown> = {}
+    Object.defineProperty(payload, 'cost_center', {
+      value: 'CC-9999',
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    })
+
+    expect(validateAttributes(defs, payload)).toEqual({ cost_center: 'CC-9999' })
+  })
+
+  it('validates a non-enumerable own property for an optional declared attribute, without silently dropping it', () => {
+    const defs = [def({ key: 'cost_center', dataType: 'string', required: false })]
+
+    const payload: Record<string, unknown> = {}
+    Object.defineProperty(payload, 'cost_center', {
+      value: 'CC-9999',
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    })
+
+    expect(validateAttributes(defs, payload)).toEqual({ cost_center: 'CC-9999' })
+  })
 })

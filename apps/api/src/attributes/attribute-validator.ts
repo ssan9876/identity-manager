@@ -127,7 +127,8 @@ export function buildAttributeSchema(
 
 /**
  * Copies the input into a null-prototype object holding only its own
- * enumerable properties before Zod ever sees it.
+ * properties — by property *descriptor*, not by reading each value — before
+ * Zod ever sees it.
  *
  * Zod reads each shape key off the payload via `data[key]`. For key names
  * that Object.prototype also carries — __proto__ (an accessor) as well as
@@ -137,20 +138,47 @@ export function buildAttributeSchema(
  * name, rather than `undefined`. A schema field for such a key is then
  * never recognised as absent, so `.optional()` never applies and an
  * unrelated payload that simply never mentioned the key fails validation.
- * A null-prototype copy has no inherited properties to leak through:
- * Object.assign only copies the source's *own* enumerable properties, so a
- * key genuinely set on the input is preserved with its value, and a key
- * that was never own-set on the input is absent from the copy too — which
- * reads back as `undefined`, exactly what `.optional()` needs.
+ * A null-prototype copy has no inherited properties to leak through, which
+ * fixes that.
+ *
+ * Copying by descriptor (Object.getOwnPropertyDescriptors +
+ * Object.defineProperties) rather than by value (Object.assign) matters for
+ * two further reasons:
+ *  - Object.assign reads (invokes) every own *enumerable* property's getter
+ *    while copying, before Zod's own `.strict()` unknown-key scan — which
+ *    uses `for...in` and never invokes getters — ever runs. A throwing
+ *    getter on a key that isn't even part of the schema would abort the
+ *    copy with a raw, uncaught Error instead of the clean "unrecognized
+ *    key" AttributeValidationError Zod would otherwise produce.
+ *    getOwnPropertyDescriptors captures a getter as a function reference,
+ *    not its invoked result, so defineProperties installs it without
+ *    calling it; it only runs later if Zod actually reads that key (i.e.
+ *    only for a key that's part of the declared shape).
+ *  - Object.assign's source enumeration skips *non-enumerable* own
+ *    properties entirely, silently dropping them from the copy — causing a
+ *    required declared attribute stored non-enumerably to be rejected as
+ *    missing, and an optional one to vanish from the result with no error
+ *    at all. getOwnPropertyDescriptors returns every own property
+ *    regardless of enumerability, and defineProperties preserves each
+ *    property's enumerable flag on the copy, so a declared field's value is
+ *    read correctly either way, while `.strict()`'s unknown-key scan (which
+ *    does depend on enumerability, being for...in-based) is unaffected.
+ *
+ * defineProperties always creates *own* properties via [[DefineOwnProperty]]
+ * and never triggers an inherited setter, so a genuine own "__proto__" is
+ * still preserved (the round-1 shape fix keeps working).
  *
  * Non-object inputs (arrays, primitives, null) pass through unchanged so
  * their existing top-level type-mismatch errors keep surfacing normally.
  */
 function sanitizePayload(value: unknown): unknown {
   const input = value ?? {}
-  return typeof input === 'object' && input !== null && !Array.isArray(input)
-    ? Object.assign(Object.create(null), input)
-    : input
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    return input
+  }
+  const payload = Object.create(null)
+  Object.defineProperties(payload, Object.getOwnPropertyDescriptors(input))
+  return payload
 }
 
 export function validateAttributes(
