@@ -1,5 +1,8 @@
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { Inject, Injectable } from '@nestjs/common'
+import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import { DB_CLIENT } from '../common/db.token'
+import { InvalidTransitionError, NotFoundError } from '../common/errors'
 import * as schema from '../db/schema/index'
 import { users } from '../db/schema/users'
 
@@ -60,8 +63,9 @@ function statusesThatMayTransitionTo(next: UserStatus): UserStatus[] {
   )
 }
 
+@Injectable()
 export class UsersRepository {
-  constructor(private readonly db: NodePgDatabase<typeof schema>) {}
+  constructor(@Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>) {}
 
   async create(input: CreateUserInput): Promise<User> {
     const [row] = await this.db
@@ -153,13 +157,57 @@ export class UsersRepository {
     // atomic UPDATE above already made the real decision.
     const current = await this.findById(id)
     if (current === null) {
-      throw new Error(`user not found: ${id}`)
+      throw new NotFoundError('user', id)
     }
 
     if (current.status === 'deactivated') {
-      throw new Error('deactivated is terminal; the user cannot be reactivated')
+      throw new InvalidTransitionError(
+        'deactivated is terminal; the user cannot be reactivated',
+      )
     }
 
-    throw new Error(`cannot transition from ${current.status} to ${next}`)
+    throw new InvalidTransitionError(
+      `cannot transition from ${current.status} to ${next}`,
+    )
+  }
+
+  /**
+   * Builds the shared status/orgUnit WHERE clause for list() and count(), so
+   * the two can never drift apart on which rows they agree count as "in".
+   *
+   * Deactivated users are excluded from all default list and search views
+   * (core design spec). An explicit `status` — including `status:
+   * 'deactivated'` itself, so an admin can still find them — overrides that
+   * default rather than combining with it.
+   */
+  private listFilters(filter: { status?: UserStatus; orgUnitId?: string }) {
+    const filters = [
+      filter.status !== undefined ? eq(users.status, filter.status) : ne(users.status, 'deactivated'),
+    ]
+    if (filter.orgUnitId !== undefined) filters.push(eq(users.orgUnitId, filter.orgUnitId))
+    return and(...filters)
+  }
+
+  async list(
+    options: { limit: number; offset: number; status?: UserStatus; orgUnitId?: string },
+  ): Promise<User[]> {
+    const rows = await this.db
+      .select()
+      .from(users)
+      .where(this.listFilters(options))
+      .orderBy(asc(users.username))
+      .limit(options.limit)
+      .offset(options.offset)
+
+    return rows as User[]
+  }
+
+  async count(filter: { status?: UserStatus; orgUnitId?: string } = {}): Promise<number> {
+    const [row] = await this.db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(users)
+      .where(this.listFilters(filter))
+
+    return row?.value ?? 0
   }
 }

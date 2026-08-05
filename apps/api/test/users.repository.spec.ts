@@ -209,4 +209,61 @@ describe('UsersRepository', () => {
   it('exposes no delete operation', () => {
     expect((users as unknown as Record<string, unknown>).delete).toBeUndefined()
   })
+
+  describe('list/count default status filtering', () => {
+    it('excludes a deactivated user from the default list and count, while including pending/active/suspended', async () => {
+      const pending = await users.create(
+        input({ username: 'status-pending', primaryEmail: 'status-pending@example.com' }),
+      )
+      const active = await users.create(
+        input({ username: 'status-active', primaryEmail: 'status-active@example.com' }),
+      )
+      await users.changeStatus(active.id, 'active')
+      const suspended = await users.create(
+        input({ username: 'status-suspended', primaryEmail: 'status-suspended@example.com' }),
+      )
+      await users.changeStatus(suspended.id, 'active')
+      await users.changeStatus(suspended.id, 'suspended')
+      const deactivated = await users.create(
+        input({
+          username: 'status-deactivated',
+          primaryEmail: 'status-deactivated@example.com',
+        }),
+      )
+      await users.changeStatus(deactivated.id, 'active')
+      await users.changeStatus(deactivated.id, 'deactivated')
+
+      const list = await users.list({ limit: 50, offset: 0 })
+      const ids = list.map((u) => u.id)
+      expect(ids).toEqual(expect.arrayContaining([pending.id, active.id, suspended.id]))
+      expect(ids).not.toContain(deactivated.id)
+
+      const count = await users.count()
+      expect(count).toBe(3)
+      expect(count).toBe(list.length)
+    })
+
+    it('returns exactly the deactivated users when status: "deactivated" is requested explicitly', async () => {
+      const active = await users.create(
+        input({ username: 'status-active-2', primaryEmail: 'status-active-2@example.com' }),
+      )
+      await users.changeStatus(active.id, 'active')
+      const deactivated = await users.create(
+        input({
+          username: 'status-deactivated-2',
+          primaryEmail: 'status-deactivated-2@example.com',
+        }),
+      )
+      await users.changeStatus(deactivated.id, 'active')
+      await users.changeStatus(deactivated.id, 'deactivated')
+
+      const list = await users.list({ limit: 50, offset: 0, status: 'deactivated' })
+      expect(list.map((u) => u.id)).toEqual([deactivated.id])
+      expect(list.map((u) => u.id)).not.toContain(active.id)
+
+      const count = await users.count({ status: 'deactivated' })
+      expect(count).toBe(1)
+      expect(count).toBe(list.length)
+    })
+  })
 })

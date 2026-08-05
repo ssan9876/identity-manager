@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto'
-import { eq, sql } from 'drizzle-orm'
+import { Inject, Injectable } from '@nestjs/common'
+import { asc, eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import { DB_CLIENT } from '../common/db.token'
+import { NotFoundError } from '../common/errors'
 import * as schema from '../db/schema/index'
 import { orgUnits } from '../db/schema/org-units'
 
@@ -63,8 +66,9 @@ export function toLabel(name: string): string {
   return `ou_${hash}`
 }
 
+@Injectable()
 export class OrgUnitsRepository {
-  constructor(private readonly db: NodePgDatabase<typeof schema>) {}
+  constructor(@Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>) {}
 
   async createRoot(name: string): Promise<OrgUnit> {
     const [row] = await this.db
@@ -78,7 +82,7 @@ export class OrgUnitsRepository {
   async createChild(parentId: string, name: string): Promise<OrgUnit> {
     const parent = await this.findById(parentId)
     if (parent === null) {
-      throw new Error(`parent org unit not found: ${parentId}`)
+      throw new NotFoundError('parent org unit', parentId)
     }
 
     const [row] = await this.db
@@ -127,5 +131,24 @@ export class OrgUnitsRepository {
     )
 
     return rows[0]?.contained ?? false
+  }
+
+  async list(options: { limit: number; offset: number }): Promise<OrgUnit[]> {
+    const rows = await this.db
+      .select()
+      .from(orgUnits)
+      .orderBy(asc(orgUnits.path))
+      .limit(options.limit)
+      .offset(options.offset)
+
+    return rows as OrgUnit[]
+  }
+
+  async count(): Promise<number> {
+    const [row] = await this.db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(orgUnits)
+
+    return row?.value ?? 0
   }
 }
