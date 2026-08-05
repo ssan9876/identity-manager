@@ -76,6 +76,91 @@ describe('UsersRepository', () => {
     )
   })
 
+  it('resolves concurrent identical transition requests atomically, with no double success', async () => {
+    const ITERATIONS = 20
+
+    for (let i = 0; i < ITERATIONS; i++) {
+      const user = await users.create(
+        input({
+          primaryEmail: `race-same-${i}@example.com`,
+          username: `race-same-${i}`,
+        }),
+      )
+      await users.changeStatus(user.id, 'active')
+      await users.changeStatus(user.id, 'suspended')
+
+      // Two identical concurrent requests to deactivate the same user. A
+      // read-then-write implementation has no guard against this: both reads
+      // see 'suspended', both validate, both blindly write "success". The
+      // atomic conditional UPDATE re-checks the row's live status at write
+      // time, so only the request that actually lands first can win.
+      const results = await Promise.allSettled([
+        users.changeStatus(user.id, 'deactivated'),
+        users.changeStatus(user.id, 'deactivated'),
+      ])
+
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+      expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1)
+
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          expect(String((result.reason as Error)?.message)).toMatch(
+            /deactivated is terminal/,
+          )
+        }
+      }
+
+      const final = await users.findById(user.id)
+      expect(final?.status).toBe('deactivated')
+      expect(final?.deactivatedAt).toBeInstanceOf(Date)
+    }
+  })
+
+  it('never lets a concurrent competing transition silently undo a concurrent deactivation', async () => {
+    const ITERATIONS = 20
+
+    for (let i = 0; i < ITERATIONS; i++) {
+      const user = await users.create(
+        input({
+          primaryEmail: `race-mixed-${i}@example.com`,
+          username: `race-mixed-${i}`,
+        }),
+      )
+      await users.changeStatus(user.id, 'active')
+      await users.changeStatus(user.id, 'suspended')
+
+      // The exact shape the reviewer reproduced: a suspended user with a
+      // concurrent reactivation racing a concurrent deactivation. Whichever
+      // one physically lands first, 'deactivated' must win in the end --
+      // either it lands directly, or 'active' lands first and the concurrent
+      // deactivate request legally follows it ('active' -> 'deactivated' is
+      // itself allowed). There is no valid interleaving of this specific
+      // pair that should leave the row 'active'. The old read-then-write
+      // code allowed exactly that ~40% of the time: the deactivate call
+      // reported success while the row was silently reverted to active with
+      // a null deactivatedAt.
+      const [activeResult, deactivatedResult] = await Promise.allSettled([
+        users.changeStatus(user.id, 'active'),
+        users.changeStatus(user.id, 'deactivated'),
+      ])
+
+      expect(deactivatedResult.status).toBe('fulfilled')
+
+      const final = await users.findById(user.id)
+      expect(final?.status).toBe('deactivated')
+      expect(final?.deactivatedAt).toBeInstanceOf(Date)
+
+      // If the concurrent reactivation lost the race, it must fail loudly
+      // with the terminal message -- never succeed silently against a stale
+      // read.
+      if (activeResult.status === 'rejected') {
+        expect(String((activeResult.reason as Error)?.message)).toMatch(
+          /deactivated is terminal/,
+        )
+      }
+    }
+  })
+
   it('exposes no delete operation', () => {
     expect((users as unknown as Record<string, unknown>).delete).toBeUndefined()
   })

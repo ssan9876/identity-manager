@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import * as schema from '../db/schema/index'
 import { users } from '../db/schema/users'
@@ -46,6 +46,18 @@ const ALLOWED_TRANSITIONS: Record<UserStatus, readonly UserStatus[]> = {
   active: ['suspended', 'deactivated'],
   suspended: ['active', 'deactivated'],
   deactivated: [],
+}
+
+/**
+ * The statuses from which `next` may be reached directly, derived from
+ * ALLOWED_TRANSITIONS so the two can never drift apart. Used as the `WHERE
+ * status IN (...)` guard on the atomic transition update below. Empty for a
+ * `next` nothing transitions into (currently only `pending`).
+ */
+function statusesThatMayTransitionTo(next: UserStatus): UserStatus[] {
+  return (Object.keys(ALLOWED_TRANSITIONS) as UserStatus[]).filter((from) =>
+    ALLOWED_TRANSITIONS[from].includes(next),
+  )
 }
 
 export class UsersRepository {
@@ -97,8 +109,48 @@ export class UsersRepository {
   /**
    * There is no delete. Removal is a transition to `deactivated`, which is
    * terminal, so historical access questions stay answerable.
+   *
+   * The read-validate-write pattern is not safe here: two concurrent callers
+   * can both read the same starting status, both pass validation against
+   * that stale snapshot, and both blindly overwrite the row, silently
+   * discarding whichever write lost the race — including a `deactivated`
+   * write, which must never be undone. Instead this issues a single
+   * conditional UPDATE whose WHERE clause re-checks the transition legality
+   * against the row's *current* committed status at write time. Postgres
+   * serializes concurrent UPDATEs on the same row (row-level lock) and
+   * re-evaluates a blocked UPDATE's WHERE clause against the winner's
+   * committed data before applying it (EvalPlanQual), so the decision and
+   * the write are one atomic step with no window for a lost update.
    */
   async changeStatus(id: string, next: UserStatus): Promise<User> {
+    const permittedFrom = statusesThatMayTransitionTo(next)
+
+    // A `next` with no valid predecessor (only `pending` today) can never
+    // match any row. `inArray` with an empty array is unsafe to send to the
+    // driver, and there is nothing to gain by trying — skip straight to
+    // error determination below.
+    if (permittedFrom.length > 0) {
+      const [row] = await this.db
+        .update(users)
+        .set({
+          status: next,
+          updatedAt: new Date(),
+          // Only touched when landing on `deactivated`; omitted entirely
+          // from the SET clause otherwise so the existing value, if any, is
+          // left untouched rather than being reset.
+          ...(next === 'deactivated' ? { deactivatedAt: new Date() } : {}),
+        })
+        .where(and(eq(users.id, id), inArray(users.status, permittedFrom)))
+        .returning()
+
+      if (row) {
+        return row as User
+      }
+    }
+
+    // Zero rows matched (or there was no valid predecessor to try at all).
+    // This read is advisory only, purely to report an accurate reason — the
+    // atomic UPDATE above already made the real decision.
     const current = await this.findById(id)
     if (current === null) {
       throw new Error(`user not found: ${id}`)
@@ -108,20 +160,6 @@ export class UsersRepository {
       throw new Error('deactivated is terminal; the user cannot be reactivated')
     }
 
-    if (!ALLOWED_TRANSITIONS[current.status].includes(next)) {
-      throw new Error(`cannot transition from ${current.status} to ${next}`)
-    }
-
-    const [row] = await this.db
-      .update(users)
-      .set({
-        status: next,
-        updatedAt: new Date(),
-        deactivatedAt: next === 'deactivated' ? new Date() : current.deactivatedAt,
-      })
-      .where(eq(users.id, id))
-      .returning()
-
-    return row as User
+    throw new Error(`cannot transition from ${current.status} to ${next}`)
   }
 }
