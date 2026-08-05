@@ -68,9 +68,20 @@ export class JwtGuard implements CanActivate {
         algorithms: ['RS256'],
       })
 
+      const subject = payload.sub
+      const username = payload.preferred_username as string | undefined
+
+      // A valid signature is necessary but not sufficient: without a subject
+      // or username there is no identity to hand downstream authorization
+      // code, and defaulting to '' would silently fabricate one. Fail closed
+      // exactly like any other invalid token, with the same generic message.
+      if (!subject || !username) {
+        throw new UnauthorizedException('invalid token')
+      }
+
       request.principal = {
-        subject: payload.sub ?? '',
-        username: (payload.preferred_username as string | undefined) ?? '',
+        subject,
+        username,
         email: (payload.email as string | undefined) ?? null,
       }
 

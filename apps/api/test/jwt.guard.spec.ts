@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { JwtGuard } from '../src/auth/jwt.guard'
 import { MeController } from '../src/auth/me.controller'
 import { startKeycloak, type TestKeycloak } from './support/keycloak'
+import { startLocalJwks, type LocalJwks } from './support/local-jwks'
 
 describe('JwtGuard on GET /me', () => {
   let app: INestApplication
@@ -93,5 +94,58 @@ describe('JwtGuard on GET /me', () => {
       .expect(401)
 
     await strictApp.close()
+  })
+})
+
+describe('JwtGuard rejects validly-signed tokens missing required identity claims', () => {
+  let app: INestApplication
+  let localJwks: LocalJwks
+
+  beforeAll(async () => {
+    localJwks = await startLocalJwks()
+
+    const moduleRef = await Test.createTestingModule({
+      controllers: [MeController],
+    })
+      .overrideGuard(JwtGuard)
+      .useValue(
+        new JwtGuard({
+          issuer: localJwks.issuer,
+          audience: 'idm-api',
+        }),
+      )
+      .compile()
+
+    app = moduleRef.createNestApplication()
+    await app.init()
+  })
+
+  afterAll(async () => {
+    await app?.close()
+    await localJwks?.stop()
+  })
+
+  it('rejects a token with no "sub" claim', async () => {
+    const token = await localJwks.signToken({
+      aud: 'idm-api',
+      preferred_username: 'someone@example.com',
+    })
+
+    await request(app.getHttpServer())
+      .get('/me')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(401)
+  })
+
+  it('rejects a token with no "preferred_username" claim', async () => {
+    const token = await localJwks.signToken({
+      aud: 'idm-api',
+      sub: 'a-real-subject-id',
+    })
+
+    await request(app.getHttpServer())
+      .get('/me')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(401)
   })
 })
