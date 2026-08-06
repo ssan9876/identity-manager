@@ -28,6 +28,13 @@ const REQUIRED_ENV = {
   DATABASE_URL: 'postgres://idm:pw@localhost:5432/identity_manager',
   KEYCLOAK_ISSUER: 'http://keycloak.invalid/realms/identity-manager',
   KEYCLOAK_AUDIENCE: 'idm-api',
+  // Milestone 4, Task 2: loadEnv now requires these unconditionally (see
+  // config/env.ts), even though AppModule itself does not yet wire up
+  // KeycloakAdminClient (Task 3 does) — both AppModule factories below call
+  // the SAME loadEnv(process.env), which validates the whole Env shape
+  // regardless of which fields a given provider actually reads.
+  KEYCLOAK_ADMIN_CLIENT_ID: 'idm-sync-service',
+  KEYCLOAK_ADMIN_CLIENT_SECRET: 'idm_sync_dev_secret_change_me',
   PORT: '3000',
 } as const
 

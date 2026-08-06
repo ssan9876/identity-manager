@@ -13,8 +13,12 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
-      "redirectUris": ["http://localhost:5173/*"],
-      "webOrigins": ["http://localhost:5173"],
+      "redirectUris": [
+        "http://localhost:5173/*"
+      ],
+      "webOrigins": [
+        "http://localhost:5173"
+      ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "http://localhost:5173/*"
@@ -58,6 +62,19 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "idm-sync-service",
+      "name": "Identity Manager - Keycloak sync service account (Milestone 4 outbox worker)",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "idm_sync_dev_secret_change_me",
+      "publicClient": false,
+      "bearerOnly": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true
     }
   ],
   "users": [
@@ -69,8 +86,37 @@
       "enabled": true,
       "emailVerified": true,
       "credentials": [
-        { "type": "password", "value": "dev_password_change_me", "temporary": false }
+        {
+          "type": "password",
+          "value": "dev_password_change_me",
+          "temporary": false
+        }
       ]
+    },
+    {
+      "username": "service-account-idm-sync-service",
+      "enabled": true,
+      "serviceAccountClientId": "idm-sync-service",
+      "clientRoles": {
+        "realm-management": [
+          "manage-users",
+          "query-users",
+          "view-users",
+          "query-groups"
+        ]
+      }
     }
-  ]
+  ],
+  "components": {
+    "org.keycloak.userprofile.UserProfileProvider": [
+      {
+        "providerId": "declarative-user-profile",
+        "config": {
+          "kc.user.profile.config": [
+            "{\"attributes\":[{\"name\":\"username\",\"displayName\":\"${username}\",\"validations\":{\"length\":{\"min\":3,\"max\":255},\"username-prohibited-characters\":{},\"up-username-not-idn-homograph\":{}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"email\",\"displayName\":\"${email}\",\"validations\":{\"email\":{},\"length\":{\"max\":255}},\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"firstName\",\"displayName\":\"${firstName}\",\"validations\":{\"length\":{\"max\":255},\"person-name-prohibited-characters\":{}},\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"lastName\",\"displayName\":\"${lastName}\",\"validations\":{\"length\":{\"max\":255},\"person-name-prohibited-characters\":{}},\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false}],\"groups\":[{\"name\":\"user-metadata\",\"displayHeader\":\"User metadata\",\"displayDescription\":\"Attributes, which refer to user metadata\"}],\"unmanagedAttributePolicy\":\"ADMIN_EDIT\"}"
+          ]
+        }
+      }
+    ]
+  }
 }
