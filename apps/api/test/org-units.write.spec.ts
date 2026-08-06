@@ -13,6 +13,7 @@ import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { OrgUnitsController } from '../src/org-units/org-units.controller'
 import { OrgUnitsRepository, type OrgUnit } from '../src/org-units/org-units.repository'
+import { OutboxWriter } from '../src/outbox/outbox.writer'
 import { UsersRepository } from '../src/users/users.repository'
 import { type TestDatabase, withTestDatabase } from './support/pg'
 
@@ -97,6 +98,7 @@ describe('org unit write endpoints (Milestone 3b, Task 3)', () => {
         PermissionEngine,
         PermissionGuard,
         AuditWriter,
+        OutboxWriter,
         Reflector,
       ],
     })

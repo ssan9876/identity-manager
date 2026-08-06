@@ -27,7 +27,21 @@ import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
 import { type Page, parsePageQuery } from '../common/pagination'
 import * as schema from '../db/schema/index'
+import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
+import { OutboxWriter } from '../outbox/outbox.writer'
+import { type SyncState, SyncStateRepository } from '../outbox/sync-state.repository'
 import { UsersRepository, type User, type UserStatus } from './users.repository'
+
+/**
+ * Every user-returning route in this controller responds with this shape,
+ * never bare `User` — ONE consistent read shape (Milestone 4, Task 4), so a
+ * caller never has to know which endpoint it called to know whether
+ * `syncState` will be present. See `SyncStateRepository`'s doc comment for
+ * what the value means and how it is derived.
+ */
+export interface UserWithSyncState extends User {
+  syncState: SyncState
+}
 
 const statusSchema = z
   .enum(['pending', 'active', 'suspended', 'deactivated'])
@@ -119,6 +133,9 @@ export class UsersController {
     @Inject(PermissionEngine) private readonly engine: PermissionEngine,
     @Inject(PrivilegeGuards) private readonly privileges: PrivilegeGuards,
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
+    @Inject(OutboxWriter) private readonly outboxWriter: OutboxWriter,
+    @Inject(KeycloakAdminClient) private readonly keycloak: KeycloakAdminClient,
+    @Inject(SyncStateRepository) private readonly syncStates: SyncStateRepository,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
   ) {}
 
@@ -127,7 +144,7 @@ export class UsersController {
   async list(
     @Query() query: Record<string, unknown>,
     @Req() request: AuthorizedRequest,
-  ): Promise<Page<User>> {
+  ): Promise<Page<UserWithSyncState>> {
     const page = parsePageQuery(query)
 
     const status = statusSchema.safeParse(query.status)
@@ -152,12 +169,21 @@ export class UsersController {
       this.users.count(filter),
     ])
 
-    return { items, total, limit: page.limit, offset: page.offset }
+    // ONE batched syncState lookup for the whole page (see
+    // SyncStateRepository.resolveForUsers' doc comment) rather than N
+    // separate per-row calls.
+    const syncStates = await this.syncStates.resolveForUsers(items.map((user) => user.id))
+    const withSyncState = items.map((user) => this.attachSyncState(user, syncStates.get(user.id)))
+
+    return { items: withSyncState, total, limit: page.limit, offset: page.offset }
   }
 
   @Get(':id')
   @RequirePermission('user:read')
-  async findOne(@Param('id') rawId: string, @Req() request: AuthorizedRequest): Promise<User> {
+  async findOne(
+    @Param('id') rawId: string,
+    @Req() request: AuthorizedRequest,
+  ): Promise<UserWithSyncState> {
     const id = parseId(rawId)
     const user = await this.users.findById(id)
     if (user === null) {
@@ -166,7 +192,12 @@ export class UsersController {
     // Out-of-scope existing resource -> 403, not 404 (decision 2): the
     // directory's existence is not secret, its contents are.
     await this.engine.assertCanIn(request.actor, 'user:read', user.orgUnitId)
-    return user
+    const syncState = await this.syncStates.resolveForUser(id)
+    return this.attachSyncState(user, syncState)
+  }
+
+  private attachSyncState(user: User, syncState: SyncState | undefined): UserWithSyncState {
+    return { ...user, syncState: syncState ?? 'pending' }
   }
 
   /**
@@ -181,7 +212,7 @@ export class UsersController {
    */
   @Post()
   @RequirePermission('user:create')
-  async create(@Body() body: unknown, @Req() request: AuthorizedRequest): Promise<User> {
+  async create(@Body() body: unknown, @Req() request: AuthorizedRequest): Promise<UserWithSyncState> {
     const parsed = parseBody(createUserBodySchema, body)
 
     await this.engine.assertCanIn(request.actor, 'user:create', parsed.orgUnitId)
@@ -189,7 +220,7 @@ export class UsersController {
     const definitions = await this.users.listActiveAttributeDefinitions()
     const attributes = validateAttributes(definitions, parsed.attributes)
 
-    return this.db.transaction(async (tx) => {
+    const user = await this.db.transaction(async (tx) => {
       const user = await this.users.create(
         {
           primaryEmail: parsed.primaryEmail,
@@ -217,8 +248,22 @@ export class UsersController {
         after: snapshotUser(user),
       })
 
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'user',
+        aggregateId: user.id,
+        eventType: 'created',
+        payload: { ...snapshotUser(user), action: 'user:create' },
+      })
+
       return user
     })
+
+    // Freshly enqueued, unprocessed 'created' event -> always resolves
+    // 'pending' here; included for response-shape consistency with every
+    // other user-returning route (see UserWithSyncState's doc comment)
+    // rather than special-cased away.
+    const syncState = await this.syncStates.resolveForUser(user.id)
+    return this.attachSyncState(user, syncState)
   }
 
   /**
@@ -240,7 +285,7 @@ export class UsersController {
     @Param('id') rawId: string,
     @Body() body: unknown,
     @Req() request: AuthorizedRequest,
-  ): Promise<User> {
+  ): Promise<UserWithSyncState> {
     const id = parseId(rawId)
     const parsed = parseBody(updateUserBodySchema, body)
 
@@ -253,7 +298,7 @@ export class UsersController {
       attributes = validateAttributes(definitions, parsed.attributes)
     }
 
-    return this.db.transaction(async (tx) => {
+    const updated = await this.db.transaction(async (tx) => {
       const current = await this.users.findById(id, tx)
       if (current === null) {
         throw new NotFoundError('user', id)
@@ -287,8 +332,18 @@ export class UsersController {
         after: snapshotUser(updated),
       })
 
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'user',
+        aggregateId: id,
+        eventType: 'updated',
+        payload: { ...snapshotUser(updated), action: 'user:update' },
+      })
+
       return updated
     })
+
+    const syncState = await this.syncStates.resolveForUser(id)
+    return this.attachSyncState(updated, syncState)
   }
 
   /**
@@ -297,14 +352,25 @@ export class UsersController {
    * Same load-inside-the-transaction, pair-both-checks shape as `update`
    * above. 200, not the POST-default 201: this acts on an existing
    * resource, it does not create one.
+   *
+   * Milestone 4, Task 4 (decision 4 — "synchronous-first"): once the local
+   * transaction below has committed, this ALSO attempts to revoke
+   * Keycloak-side access INLINE, before this method returns — see
+   * `revokeKeycloakAccess`'s doc comment. Offboarding is the one operation
+   * in this system that cannot wait for the outbox to drain; a deactivated
+   * user with a still-live Keycloak session is a real security exposure for
+   * as long as it persists.
    */
   @Post(':id/deactivate')
   @HttpCode(HttpStatus.OK)
   @RequirePermission('user:deactivate')
-  async deactivate(@Param('id') rawId: string, @Req() request: AuthorizedRequest): Promise<User> {
+  async deactivate(
+    @Param('id') rawId: string,
+    @Req() request: AuthorizedRequest,
+  ): Promise<UserWithSyncState> {
     const id = parseId(rawId)
 
-    return this.db.transaction(async (tx) => {
+    const updated = await this.db.transaction(async (tx) => {
       const current = await this.users.findById(id, tx)
       if (current === null) {
         throw new NotFoundError('user', id)
@@ -324,7 +390,77 @@ export class UsersController {
         after: snapshotUser(updated),
       })
 
+      // No 'deleted' event type exists (there is no delete for users, ever
+      // — see this handler's own doc comment). Removal propagates as
+      // 'status_changed' carrying `deactivated` — already present as
+      // snapshotUser(updated).status, since deactivate is the only path
+      // that lands a user on that terminal status. This event is the
+      // DURABILITY fallback for the synchronous revocation attempted below
+      // — written unconditionally, before we even know whether that
+      // synchronous attempt will succeed.
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'user',
+        aggregateId: id,
+        eventType: 'status_changed',
+        payload: { ...snapshotUser(updated), action: 'user:deactivate' },
+      })
+
       return updated
     })
+
+    // Runs AFTER the transaction has committed — never before: a Keycloak
+    // call must never run ahead of, or gate, the local mutation it reflects
+    // (see revokeKeycloakAccess's doc comment for the full reasoning,
+    // including why a failure here never fails this request).
+    await this.revokeKeycloakAccess(updated.username)
+
+    // Resolved fresh, AFTER the revocation attempt above: the outbox event
+    // written inside the transaction is still 'pending' (no worker runs
+    // inline here), so this reads 'pending' regardless of whether the
+    // synchronous Keycloak call above just succeeded or failed — which is
+    // exactly the contract: never imply access is already fully
+    // synced/revoked from this response alone; the queued event is the
+    // thing that still has to land for full reconciliation (profile,
+    // groups, attributes), even when the synchronous disable+revoke did
+    // land. See UsersController's file-level test coverage
+    // (test/revocation.spec.ts) for the failure-path proof.
+    const syncState = await this.syncStates.resolveForUser(id)
+    return this.attachSyncState(updated, syncState)
+  }
+
+  /**
+   * Attempts to end Keycloak-side access for `username` RIGHT NOW:
+   * `setEnabled(false)` (blocks future logins) followed by `revokeSessions`
+   * (kills sessions/tokens already issued) — see revokeSessions' own doc
+   * comment for why neither substitutes for the other. The two are wrapped
+   * in a single try/catch because they express ONE intent ("kill this
+   * account's access") rather than two independent ones: if the account
+   * cannot even be found/disabled, there is equally nothing this method can
+   * usefully do about that account's sessions either, and the outbox's
+   * eventual `reconcileUser` pass (which separately re-asserts `enabled`
+   * every time it runs — see SyncWorker.reconcileUser) is what actually
+   * finishes the job either way.
+   *
+   * NEVER throws. A Keycloak outage (or a user who never finished their
+   * FIRST sync yet, surfacing as Keycloak-side NotFoundError) must never
+   * fail a deactivate request that has already committed locally — the
+   * contract is "log it, still enqueue" (the caller already enqueued,
+   * unconditionally, before calling this), never "fail the mutation because
+   * Keycloak is down." Logged via `console.error` — this codebase has no
+   * structured logger yet (see health.controller.ts and every other
+   * best-effort log call in this milestone, e.g. SyncWorker.tick) — with
+   * enough detail (username, cause) for an operator to correlate against
+   * the outbox row that will retry it.
+   */
+  private async revokeKeycloakAccess(username: string): Promise<void> {
+    try {
+      await this.keycloak.setEnabled(username, false)
+      await this.keycloak.revokeSessions(username)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(
+        `[users.controller] synchronous Keycloak revocation failed for "${username}" — the outbox event will retry it: ${message}`,
+      )
+    }
   }
 }

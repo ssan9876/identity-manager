@@ -11,6 +11,7 @@ import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { GroupsController } from '../src/groups/groups.controller'
 import { GroupsRepository } from '../src/groups/groups.repository'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
+import { OutboxWriter } from '../src/outbox/outbox.writer'
 import { UsersRepository } from '../src/users/users.repository'
 import { withTestDatabase } from './support/pg'
 
@@ -56,8 +57,10 @@ describe('GET /groups', () => {
         // Milestone 3b, Task 3: GroupsController's write handlers now also
         // depend on AuditWriter (to audit each mutation inside its
         // transaction) — required here purely for DI resolution, since this
-        // suite only exercises the (unchanged) read routes.
+        // suite only exercises the (unchanged) read routes. Milestone 4,
+        // Task 1 adds OutboxWriter alongside it for the same reason.
         AuditWriter,
+        OutboxWriter,
       ],
     })
       .overrideGuard(JwtGuard)

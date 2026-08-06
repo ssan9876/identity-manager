@@ -26,6 +26,7 @@ import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
 import { type Page, parsePageQuery } from '../common/pagination'
 import * as schema from '../db/schema/index'
+import { OutboxWriter } from '../outbox/outbox.writer'
 import { GroupsRepository, type Group } from './groups.repository'
 
 const createGroupBodySchema = z
@@ -79,6 +80,7 @@ export class GroupsController {
     @Inject(GroupsRepository) private readonly groups: GroupsRepository,
     @Inject(PermissionEngine) private readonly engine: PermissionEngine,
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
+    @Inject(OutboxWriter) private readonly outboxWriter: OutboxWriter,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
   ) {}
 
@@ -194,6 +196,13 @@ export class GroupsController {
         after: snapshotGroup(group),
       })
 
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'group',
+        aggregateId: group.id,
+        eventType: 'created',
+        payload: { ...snapshotGroup(group), action: 'group:create' },
+      })
+
       return group
     })
   }
@@ -242,6 +251,13 @@ export class GroupsController {
         after: snapshotGroup(updated),
       })
 
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'group',
+        aggregateId: id,
+        eventType: 'updated',
+        payload: { ...snapshotGroup(updated), action: 'group:update' },
+      })
+
       return updated
     })
   }
@@ -283,6 +299,18 @@ export class GroupsController {
         after: { groupId: id, userId: parsed.userId },
       })
 
+      // aggregateType 'membership', not 'group': a group_user_members row is
+      // a pure edge with no id of its own (see the doc comment above this
+      // handler), so this is a DIFFERENT event stream from this same
+      // group's own name/description/attributes — anchored on the PARENT
+      // group's id exactly like the audit row above, per the same reasoning.
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'membership',
+        aggregateId: id,
+        eventType: 'membership_changed',
+        payload: { groupId: id, userId: parsed.userId, action: 'group:add_member' },
+      })
+
       return { groupId: id, userId: parsed.userId }
     })
   }
@@ -309,6 +337,13 @@ export class GroupsController {
         resourceId: id,
         before: { groupId: id, userId },
         after: null,
+      })
+
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'membership',
+        aggregateId: id,
+        eventType: 'membership_changed',
+        payload: { groupId: id, userId, action: 'group:remove_member' },
       })
 
       return { groupId: id, userId }
@@ -350,6 +385,17 @@ export class GroupsController {
         after: { parentGroupId: id, childGroupId: parsed.childId },
       })
 
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'membership',
+        aggregateId: id,
+        eventType: 'membership_changed',
+        payload: {
+          parentGroupId: id,
+          childGroupId: parsed.childId,
+          action: 'group:add_child_group',
+        },
+      })
+
       return { parentGroupId: id, childGroupId: parsed.childId }
     })
   }
@@ -376,6 +422,13 @@ export class GroupsController {
         resourceId: id,
         before: { parentGroupId: id, childGroupId: childId },
         after: null,
+      })
+
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'membership',
+        aggregateId: id,
+        eventType: 'membership_changed',
+        payload: { parentGroupId: id, childGroupId: childId, action: 'group:remove_child_group' },
       })
 
       return { parentGroupId: id, childGroupId: childId }

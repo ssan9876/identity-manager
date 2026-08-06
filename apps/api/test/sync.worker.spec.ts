@@ -1,0 +1,564 @@
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { GroupsRepository } from '../src/groups/groups.repository'
+import { KeycloakAdminClient } from '../src/keycloak/keycloak-admin.client'
+import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
+import { OutboxRepository } from '../src/outbox/outbox.repository'
+import { computeBackoffDelayMs, SyncWorker, type SyncWorkerConfig } from '../src/outbox/sync.worker'
+import { type User, UsersRepository } from '../src/users/users.repository'
+import { startKeycloak, type TestKeycloak } from './support/keycloak'
+import { withTestDatabase } from './support/pg'
+
+const SYNC_CLIENT_ID = 'idm-sync-service'
+const SYNC_CLIENT_SECRET = 'idm_sync_dev_secret_change_me'
+
+// A definitely-closed local port: connecting to it fails FAST with
+// ECONNREFUSED rather than hanging on a network timeout, which is what
+// every "Keycloak unreachable" test below needs to stay quick and
+// deterministic.
+const UNREACHABLE_ISSUER = 'http://127.0.0.1:1/realms/unreachable'
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function unreachableClient(): KeycloakAdminClient {
+  return new KeycloakAdminClient({
+    issuer: UNREACHABLE_ISSUER,
+    clientId: 'irrelevant',
+    clientSecret: 'irrelevant',
+  })
+}
+
+interface OutboxRow {
+  id: string
+  status: string
+  attempts: number
+  next_attempt_at: string
+  last_error: string | null
+}
+
+interface ExternalIdentityRow {
+  external_id: string
+  sync_state: string
+  last_synced_at: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Pure unit tests: the backoff calculation is a free function with no I/O.
+// ---------------------------------------------------------------------------
+describe('computeBackoffDelayMs', () => {
+  const config = { baseDelayMs: 1000, maxDelayMs: 1_000_000 }
+
+  it('grows exponentially with attempts (checked at the bottom of the jitter range, random() = 0)', () => {
+    expect(computeBackoffDelayMs(1, config, () => 0)).toBe(500) // exp=1000, half=500
+    expect(computeBackoffDelayMs(2, config, () => 0)).toBe(1000) // exp=2000, half=1000
+    expect(computeBackoffDelayMs(3, config, () => 0)).toBe(2000) // exp=4000, half=2000
+  })
+
+  it('jitters within [half, full] of the exponential value', () => {
+    expect(computeBackoffDelayMs(1, config, () => 0)).toBe(500)
+    expect(computeBackoffDelayMs(1, config, () => 1)).toBe(1000)
+    expect(computeBackoffDelayMs(1, config, () => 0.5)).toBe(750)
+  })
+
+  it('never exceeds maxDelayMs, even at a high attempt count', () => {
+    const capped = { baseDelayMs: 1000, maxDelayMs: 5000 }
+    expect(computeBackoffDelayMs(20, capped, () => 1)).toBe(5000)
+    expect(computeBackoffDelayMs(20, capped, () => 0)).toBe(2500)
+  })
+
+  it('treats attempts <= 1 the same as attempts = 1 (no negative exponent)', () => {
+    expect(computeBackoffDelayMs(0, config, () => 0)).toBe(computeBackoffDelayMs(1, config, () => 0))
+  })
+})
+
+/**
+ * MILESTONE 4, TASK 3: the sync worker that drains `outbox_events` into
+ * Keycloak. Against a REAL Postgres Testcontainer (`withTestDatabase`) AND a
+ * REAL Keycloak Testcontainer (`startKeycloak`) — never mocks, per the
+ * milestone plan's global constraints.
+ *
+ * One Postgres container and one Keycloak container are shared across every
+ * test below (both are expensive to start), so — exactly like
+ * outbox-emission.spec.ts and users.write.spec.ts before it — this file does
+ * NOT reset tables between tests; every fixture is uniquely tagged
+ * (`nextTag`) instead. The `afterEach` below additionally drains the ENTIRE
+ * backlog after every single test, which matters more here than in those
+ * files: `SyncWorker.runOnce`/`drain` always claim the globally
+ * lowest-id CLAIMABLE row across every aggregate (see
+ * OutboxRepository.claimNext), so a row left `pending` and due at the end of
+ * one test would otherwise be silently picked up by an unrelated LATER
+ * test's own `runOnce()` call instead of the row that test just inserted.
+ */
+describe('SyncWorker (Milestone 4, Task 3)', () => {
+  const ctx = withTestDatabase()
+  let keycloak: TestKeycloak
+  let client: KeycloakAdminClient
+  let cleanupWorker: SyncWorker
+  let orgUnitId: string
+
+  const usersRepo = () => new UsersRepository(ctx.db)
+  const groupsRepo = () => new GroupsRepository(ctx.db)
+  const outboxRepo = () => new OutboxRepository()
+  const makeWorker = (kc: KeycloakAdminClient = client, config?: Partial<SyncWorkerConfig>) =>
+    new SyncWorker(ctx.db, outboxRepo(), usersRepo(), groupsRepo(), kc, config)
+
+  beforeAll(async () => {
+    keycloak = await startKeycloak()
+    client = new KeycloakAdminClient({
+      issuer: keycloak.issuer,
+      clientId: SYNC_CLIENT_ID,
+      clientSecret: SYNC_CLIENT_SECRET,
+    })
+
+    orgUnitId = (await new OrgUnitsRepository(ctx.db).createRoot(`Sync Worker Root ${Date.now()}`)).id
+
+    // 'department' is sync_to_keycloak; 'internalNotes' is not. Shared by
+    // every test that needs a real row here — there is no write path for
+    // `attribute_definitions` yet (see UsersRepository.listActiveAttributeDefinitions'
+    // own doc comment), so a direct insert is the only way to seed one.
+    await ctx.pool.query(`
+      INSERT INTO attribute_definitions (key, label, data_type, applies_to, sync_to_keycloak, is_active)
+      VALUES ('department', 'Department', 'string', 'user', true, true),
+             ('internalNotes', 'Internal Notes', 'string', 'user', false, true)
+    `)
+
+    cleanupWorker = makeWorker()
+  })
+
+  afterAll(async () => {
+    await keycloak?.stop()
+  })
+
+  afterEach(async () => {
+    // See this file's own doc comment for why this matters more here than
+    // in a Postgres-only spec file. Uses the REAL, working client so
+    // anything left mid-retry converges instead of dead-lettering here.
+    await cleanupWorker.drain()
+  })
+
+  // -------------------------------------------------------------------
+  // Fixtures
+  // -------------------------------------------------------------------
+  let fixtureSeq = 0
+  function nextTag(): string {
+    fixtureSeq += 1
+    return `${fixtureSeq}`
+  }
+
+  async function makeUser(attributes?: Record<string, unknown>): Promise<User> {
+    const tag = nextTag()
+    const username = `sw-user-${tag}@example.com`.toLowerCase()
+    return usersRepo().create({
+      primaryEmail: username,
+      username,
+      firstName: 'Sync',
+      lastName: `Worker${tag}`,
+      orgUnitId,
+      attributes,
+    })
+  }
+
+  async function makeGroup(label: string) {
+    return groupsRepo().create({ name: `${label} ${nextTag()}` })
+  }
+
+  async function insertOutboxEvent(
+    aggregateType: string,
+    aggregateId: string,
+    eventType: string,
+    payload: Record<string, unknown>,
+    nextAttemptAt?: Date,
+  ): Promise<number> {
+    const { rows } = await ctx.pool.query<{ id: string }>(
+      `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, next_attempt_at)
+       VALUES ($1, $2, $3, $4, COALESCE($5, now()))
+       RETURNING id`,
+      [aggregateType, aggregateId, eventType, JSON.stringify(payload), nextAttemptAt ?? null],
+    )
+    return Number(rows[0]!.id)
+  }
+
+  async function outboxRow(id: number): Promise<OutboxRow> {
+    const { rows } = await ctx.pool.query<OutboxRow>('SELECT * FROM outbox_events WHERE id = $1', [id])
+    const row = rows[0]
+    if (!row) throw new Error(`no outbox row ${id}`)
+    return row
+  }
+
+  async function externalIdentityRow(userId: string): Promise<ExternalIdentityRow | null> {
+    const { rows } = await ctx.pool.query<ExternalIdentityRow>(
+      "SELECT * FROM external_identities WHERE user_id = $1 AND system = 'keycloak'",
+      [userId],
+    )
+    return rows[0] ?? null
+  }
+
+  async function setNextAttemptAt(id: number, when: Date): Promise<void> {
+    await ctx.pool.query('UPDATE outbox_events SET next_attempt_at = $1 WHERE id = $2', [when, id])
+  }
+
+  async function resetToPending(id: number): Promise<void> {
+    await ctx.pool.query("UPDATE outbox_events SET status = 'pending' WHERE id = $1", [id])
+  }
+
+  /** The full observable Keycloak-side state for one user, for before/after equality checks. */
+  async function captureKeycloakState(username: string) {
+    return {
+      user: await client.findUserByUsername(username),
+      groups: await keycloak.getUserGroupNames(username),
+      credentials: await client.listCredentials(username),
+    }
+  }
+
+  // =====================================================================
+  // Idempotence — the property the whole design rests on.
+  // =====================================================================
+  describe('idempotence', () => {
+    it('applying the same event twice produces identical Keycloak state', async () => {
+      const user = await makeUser({ department: 'Engineering', internalNotes: 'secret' })
+      await usersRepo().changeStatus(user.id, 'active')
+      const eventId = await insertOutboxEvent('user', user.id, 'created', {})
+
+      const worker = makeWorker()
+
+      expect(await worker.runOnce()).toBe('processed')
+      expect((await outboxRow(eventId)).status).toBe('done')
+
+      const first = await captureKeycloakState(user.username)
+      expect(first.user?.enabled).toBe(true)
+      expect(first.user?.attributes).toEqual({ department: ['Engineering'] })
+      expect(first.credentials).toEqual([])
+
+      const firstIdentity = await externalIdentityRow(user.id)
+      expect(firstIdentity?.sync_state).toBe('synced')
+      expect(firstIdentity?.external_id).toBe(first.user?.id)
+
+      // Force reprocessing of the SAME event — never happens automatically
+      // (a 'done' row is never reclaimed), so this simulates a replay.
+      await resetToPending(eventId)
+      expect(await worker.runOnce()).toBe('processed')
+      expect((await outboxRow(eventId)).status).toBe('done')
+
+      const second = await captureKeycloakState(user.username)
+      expect(second).toEqual(first)
+
+      const secondIdentity = await externalIdentityRow(user.id)
+      expect(secondIdentity?.external_id).toBe(firstIdentity?.external_id)
+      expect(secondIdentity?.sync_state).toBe('synced')
+    })
+  })
+
+  // =====================================================================
+  // Strict per-aggregate ordering — deliberately constructed.
+  // =====================================================================
+  describe('ordering', () => {
+    it('never applies a newer event before an older pending one for the same aggregate', async () => {
+      const user = await makeUser()
+      const otherUser = await makeUser() // a DIFFERENT aggregate — proves the worker isn't just globally stalled
+
+      // Event #1: older (lower id), but not yet due — simulates an event
+      // still backing off from an earlier failure.
+      const future = new Date(Date.now() + 60_000)
+      const eventOne = await insertOutboxEvent('user', user.id, 'created', {}, future)
+      // Event #2: newer (higher id), SAME aggregate, due right now.
+      const eventTwo = await insertOutboxEvent('user', user.id, 'updated', {})
+      // An unrelated aggregate's event, also due right now.
+      const eventOther = await insertOutboxEvent('user', otherUser.id, 'created', {})
+
+      const worker = makeWorker()
+
+      // Only the unrelated aggregate is claimable: #2 is due but BLOCKED by
+      // #1 (older, still pending) even though #1 itself isn't due yet.
+      expect(await worker.runOnce()).toBe('processed')
+      expect((await outboxRow(eventOther)).status).toBe('done')
+      expect((await outboxRow(eventTwo)).status).toBe('pending')
+      expect((await outboxRow(eventTwo)).attempts).toBe(0)
+      expect((await outboxRow(eventOne)).status).toBe('pending')
+
+      // Asking again and again must never reach past #1 to #2.
+      expect(await worker.runOnce()).toBe('idle')
+      expect(await worker.runOnce()).toBe('idle')
+      expect((await outboxRow(eventTwo)).status).toBe('pending')
+
+      // #1's backoff "elapses" — now IT, and only it, becomes claimable.
+      await setNextAttemptAt(eventOne, new Date(Date.now() - 1_000))
+      expect(await worker.runOnce()).toBe('processed')
+      expect((await outboxRow(eventOne)).status).toBe('done')
+      expect((await outboxRow(eventTwo)).status).toBe('pending') // still not yet — this call only did #1
+
+      // NOW #2 is unblocked.
+      expect(await worker.runOnce()).toBe('processed')
+      expect((await outboxRow(eventTwo)).status).toBe('done')
+    })
+  })
+
+  // =====================================================================
+  // Concurrency — two workers racing one backlog.
+  // =====================================================================
+  describe('concurrency', () => {
+    it('two workers racing the same backlog process each event exactly once', async () => {
+      const workerA = makeWorker()
+      const workerB = makeWorker()
+
+      const soloUsers = await Promise.all(Array.from({ length: 6 }, () => makeUser()))
+      const soloEventIds = await Promise.all(
+        soloUsers.map((user) => insertOutboxEvent('user', user.id, 'created', {})),
+      )
+
+      // One aggregate with THREE sequential events, so the race also
+      // exercises ordering, not just "no double-processing".
+      const sequencedUser = await makeUser()
+      const seqEvent1 = await insertOutboxEvent('user', sequencedUser.id, 'created', {})
+      const seqEvent2 = await insertOutboxEvent('user', sequencedUser.id, 'updated', {})
+      const seqEvent3 = await insertOutboxEvent('user', sequencedUser.id, 'updated', {})
+
+      const [countA, countB] = await Promise.all([workerA.drain(), workerB.drain()])
+      expect(countA + countB).toBe(9)
+
+      for (const id of [...soloEventIds, seqEvent1, seqEvent2, seqEvent3]) {
+        const row = await outboxRow(id)
+        expect(row.status).toBe('done')
+        // The "exactly once" proof: a double-claim would have collided with
+        // itself on Keycloak's own username uniqueness (a second concurrent
+        // createUser for the same user 409s), which this worker would have
+        // caught and turned into a retry — bumping attempts above zero. Zero
+        // attempts across every event means no collision ever happened.
+        expect(row.attempts).toBe(0)
+      }
+
+      for (const user of [...soloUsers, sequencedUser]) {
+        const state = await client.findUserByUsername(user.username)
+        expect(state).not.toBeNull()
+      }
+    })
+  })
+
+  // =====================================================================
+  // Resilience — Keycloak unreachable, then recovers.
+  // =====================================================================
+  describe('resilience', () => {
+    it('stays pending with attempts/nextAttemptAt advancing while unreachable, then drains once Keycloak returns', async () => {
+      const user = await makeUser()
+      const eventId = await insertOutboxEvent('user', user.id, 'created', {})
+
+      const badWorker = makeWorker(unreachableClient(), { maxAttempts: 10, baseDelayMs: 300, maxDelayMs: 600 })
+
+      expect(await badWorker.runOnce()).toBe('processed') // claimed + attempted, not necessarily succeeded
+      const afterFirst = await outboxRow(eventId)
+      expect(afterFirst.status).toBe('pending')
+      expect(afterFirst.attempts).toBe(1)
+      expect(afterFirst.last_error).toBeTruthy()
+      expect(new Date(afterFirst.next_attempt_at).getTime()).toBeGreaterThan(Date.now())
+
+      // The backoff window has not elapsed — retrying immediately is a no-op.
+      expect(await badWorker.runOnce()).toBe('idle')
+
+      await sleep(350)
+      expect(await badWorker.runOnce()).toBe('processed')
+      const afterSecond = await outboxRow(eventId)
+      expect(afterSecond.status).toBe('pending')
+      expect(afterSecond.attempts).toBe(2)
+      expect(new Date(afterSecond.next_attempt_at).getTime()).toBeGreaterThan(
+        new Date(afterFirst.next_attempt_at).getTime(),
+      )
+
+      // Keycloak "returns": a worker with a WORKING client drains the same
+      // row once it is due.
+      await setNextAttemptAt(eventId, new Date(Date.now() - 1_000))
+      const goodWorker = makeWorker()
+      expect(await goodWorker.runOnce()).toBe('processed')
+      expect((await outboxRow(eventId)).status).toBe('done')
+
+      expect(await client.findUserByUsername(user.username)).not.toBeNull()
+    })
+  })
+
+  // =====================================================================
+  // Dead-lettering — the attempt cap, and visibility after it.
+  // =====================================================================
+  describe('dead-lettering', () => {
+    it('exceeding the attempt cap marks the event failed with lastError populated, and it stays queryable', async () => {
+      const user = await makeUser()
+      const eventId = await insertOutboxEvent('user', user.id, 'created', {})
+      const worker = makeWorker(unreachableClient(), { maxAttempts: 3, baseDelayMs: 10, maxDelayMs: 20 })
+
+      for (let i = 0; i < 3; i++) {
+        expect(await worker.runOnce()).toBe('processed')
+        const row = await outboxRow(eventId)
+        if (row.status === 'pending') {
+          await setNextAttemptAt(eventId, new Date(Date.now() - 1_000))
+        }
+      }
+
+      const final = await outboxRow(eventId)
+      expect(final.status).toBe('failed')
+      expect(final.attempts).toBe(3)
+      expect(final.last_error).toBeTruthy()
+
+      // Still queryable — a dead letter is visible, never silently dropped.
+      const { rows } = await ctx.pool.query("SELECT id FROM outbox_events WHERE id = $1 AND status = 'failed'", [
+        eventId,
+      ])
+      expect(rows).toHaveLength(1)
+
+      // Never synced even once, so there is no external_identities row at
+      // all — externalId is NOT NULL and there is nothing real to put there
+      // (see SyncWorker.markUserSyncFailed's doc comment).
+      expect(await externalIdentityRow(user.id)).toBeNull()
+    })
+
+    it('regresses an ALREADY-synced user to failed while preserving the last known-good externalId', async () => {
+      const user = await makeUser()
+      const firstEventId = await insertOutboxEvent('user', user.id, 'created', {})
+      expect(await makeWorker().runOnce()).toBe('processed')
+      expect((await outboxRow(firstEventId)).status).toBe('done')
+
+      const synced = await externalIdentityRow(user.id)
+      expect(synced?.sync_state).toBe('synced')
+      const knownGoodExternalId = synced?.external_id
+
+      const secondEventId = await insertOutboxEvent('user', user.id, 'updated', {})
+      const badWorker = makeWorker(unreachableClient(), { maxAttempts: 2, baseDelayMs: 10, maxDelayMs: 20 })
+
+      for (let i = 0; i < 2; i++) {
+        await badWorker.runOnce()
+        const row = await outboxRow(secondEventId)
+        if (row.status === 'pending') {
+          await setNextAttemptAt(secondEventId, new Date(Date.now() - 1_000))
+        }
+      }
+
+      expect((await outboxRow(secondEventId)).status).toBe('failed')
+
+      const regressed = await externalIdentityRow(user.id)
+      expect(regressed?.sync_state).toBe('failed')
+      expect(regressed?.external_id).toBe(knownGoodExternalId) // last known-good value, untouched
+    })
+  })
+
+  // =====================================================================
+  // User creation — no credential, default-deny attributes, enabled mapping.
+  // =====================================================================
+  describe('user creation', () => {
+    it('a created user reaches Keycloak with no credential and only sync_to_keycloak attributes', async () => {
+      const user = await makeUser({ department: 'Engineering', internalNotes: 'do not sync me' })
+      await usersRepo().changeStatus(user.id, 'active')
+      const eventId = await insertOutboxEvent('user', user.id, 'created', {})
+
+      expect(await makeWorker().runOnce()).toBe('processed')
+      expect((await outboxRow(eventId)).status).toBe('done')
+
+      const kcUser = await client.findUserByUsername(user.username)
+      expect(kcUser).not.toBeNull()
+      expect(kcUser?.enabled).toBe(true)
+      expect(kcUser?.attributes).toEqual({ department: ['Engineering'] })
+
+      expect(await client.listCredentials(user.username)).toEqual([])
+    })
+
+    it('a pending (not-yet-active) user is created disabled in Keycloak', async () => {
+      const user = await makeUser() // default status: 'pending'
+      const eventId = await insertOutboxEvent('user', user.id, 'created', {})
+
+      expect(await makeWorker().runOnce()).toBe('processed')
+      expect((await outboxRow(eventId)).status).toBe('done')
+
+      const kcUser = await client.findUserByUsername(user.username)
+      expect(kcUser?.enabled).toBe(false)
+    })
+  })
+
+  // =====================================================================
+  // Group membership propagation (bonus coverage beyond the enumerated
+  // list): flattened effective membership, and reacting to a bare
+  // membership_changed event with no accompanying user event.
+  // =====================================================================
+  describe('group membership propagation', () => {
+    it('pushes flattened effective membership and reacts to membership_changed events', async () => {
+      const parent = await makeGroup('Parent')
+      const child = await makeGroup('Child')
+      await groupsRepo().addChildGroup(parent.id, child.id)
+
+      const directUser = await makeUser()
+      const nestedUser = await makeUser()
+
+      // Mirrors GroupsController's own emission shape (see
+      // groups.controller.ts's addMember handler) — constructed directly
+      // here since this task's file scope does not include the controller.
+      await groupsRepo().addUser(parent.id, directUser.id)
+      const addDirectEvent = await insertOutboxEvent('membership', parent.id, 'membership_changed', {
+        groupId: parent.id,
+        userId: directUser.id,
+      })
+
+      await groupsRepo().addUser(child.id, nestedUser.id)
+      const addNestedEvent = await insertOutboxEvent('membership', child.id, 'membership_changed', {
+        groupId: child.id,
+        userId: nestedUser.id,
+      })
+
+      const worker = makeWorker()
+      expect(await worker.drain()).toBe(2)
+      expect((await outboxRow(addDirectEvent)).status).toBe('done')
+      expect((await outboxRow(addNestedEvent)).status).toBe('done')
+
+      expect(await keycloak.getUserGroupNames(directUser.username)).toContain(parent.name)
+
+      // Flattened: a member of the CHILD group is pushed into the child AND
+      // every ancestor (the parent) — settled decision, see
+      // SyncWorker.syncEffectiveGroups' doc comment.
+      const nestedGroups = await keycloak.getUserGroupNames(nestedUser.username)
+      expect(nestedGroups).toEqual(expect.arrayContaining([child.name, parent.name]))
+
+      // Removal: the affected user is identified via payload.userId, which
+      // stays discoverable even though the edge itself is now gone (see
+      // SyncWorker.reconcileMembership's doc comment on why this differs
+      // from the child-group case above).
+      await groupsRepo().removeUser(parent.id, directUser.id)
+      const removeDirectEvent = await insertOutboxEvent('membership', parent.id, 'membership_changed', {
+        groupId: parent.id,
+        userId: directUser.id,
+      })
+      expect(await worker.runOnce()).toBe('processed')
+      expect((await outboxRow(removeDirectEvent)).status).toBe('done')
+      expect(await keycloak.getUserGroupNames(directUser.username)).not.toContain(parent.name)
+    })
+  })
+
+  // =====================================================================
+  // start()/stop() — explicitly startable/stoppable, per the contract.
+  // =====================================================================
+  describe('start/stop lifecycle', () => {
+    it('processes events while started and genuinely stops once stopped', async () => {
+      const user = await makeUser()
+      const eventId = await insertOutboxEvent('user', user.id, 'created', {})
+
+      const worker = makeWorker(client, { pollIntervalMs: 20 })
+
+      worker.start()
+      const deadline = Date.now() + 10_000
+      while ((await outboxRow(eventId)).status === 'pending' && Date.now() < deadline) {
+        await sleep(25)
+      }
+      await worker.stop()
+      expect((await outboxRow(eventId)).status).toBe('done')
+
+      const secondUser = await makeUser()
+      const secondEventId = await insertOutboxEvent('user', secondUser.id, 'created', {})
+      // Long enough for several poll intervals, if the worker were still running.
+      await sleep(150)
+      expect((await outboxRow(secondEventId)).status).toBe('pending')
+
+      // Starting again picks the second event back up — proves stop() was a
+      // genuine pause, not a one-shot/permanent shutdown.
+      worker.start()
+      const deadline2 = Date.now() + 10_000
+      while ((await outboxRow(secondEventId)).status === 'pending' && Date.now() < deadline2) {
+        await sleep(25)
+      }
+      await worker.stop()
+      expect((await outboxRow(secondEventId)).status).toBe('done')
+    })
+  })
+})
