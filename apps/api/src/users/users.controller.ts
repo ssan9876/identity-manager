@@ -23,6 +23,7 @@ import { PrivilegeGuards } from '../authz/privilege.guards'
 import { RequirePermission } from '../authz/require-permission.decorator'
 import { DB_CLIENT } from '../common/db.token'
 import { NotFoundError, ValidationError } from '../common/errors'
+import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
 import { type Page, parsePageQuery } from '../common/pagination'
 import * as schema from '../db/schema/index'
@@ -80,22 +81,6 @@ const updateUserBodySchema = z
     attributes: z.record(z.unknown()).optional(),
   })
   .strict()
-
-/**
- * Parses an HTTP body against `bodySchema`, translating a Zod failure into
- * the same ValidationError -> 400 VALIDATION_FAILED shape every other input
- * check in this controller (parseId, parsePageQuery, validateAttributes)
- * already produces.
- */
-function parseBody<T>(bodySchema: z.ZodType<T>, body: unknown): T {
-  const result = bodySchema.safeParse(body)
-  if (!result.success) {
-    throw new ValidationError(
-      result.error.issues.map((issue) => `${issue.path.join('.') || 'body'}: ${issue.message}`),
-    )
-  }
-  return result.data
-}
 
 /**
  * Builds an audit `before`/`after` payload from explicitly named fields —

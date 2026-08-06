@@ -2,6 +2,7 @@ import { type CanActivate, type ExecutionContext, type INestApplication } from '
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { AuditWriter } from '../src/audit/audit.writer'
 import { JwtGuard } from '../src/auth/jwt.guard'
 import { PermissionEngine } from '../src/authz/permission.engine'
 import { PermissionGuard, type AuthorizedRequest } from '../src/authz/permission.guard'
@@ -47,6 +48,11 @@ describe('GET /org-units', () => {
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         OrgUnitsRepository,
         PermissionEngine,
+        // Milestone 3b, Task 3: OrgUnitsController's write handler now also
+        // depends on AuditWriter (to audit each mutation inside its
+        // transaction) — required here purely for DI resolution, since this
+        // suite only exercises the (unchanged) read routes.
+        AuditWriter,
       ],
     })
       .overrideGuard(JwtGuard)
@@ -111,8 +117,11 @@ describe('GET /org-units', () => {
     expect(res.body.code).toBe('NOT_FOUND')
   })
 
-  it('exposes no write routes', async () => {
-    await request(app.getHttpServer()).post('/org-units').send({ name: 'x' }).expect(404)
+  // Milestone 3b, Task 3 added POST /org-units — see
+  // test/org-units.write.spec.ts for its full behavior (permission/scope/
+  // audit/error-mapping checks). This pin narrows to what remains
+  // permanently true: there is no route to delete an org unit.
+  it('exposes no delete route', async () => {
     await request(app.getHttpServer()).delete(`/org-units/${rootId}`).expect(404)
   })
 })

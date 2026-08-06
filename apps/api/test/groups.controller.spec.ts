@@ -2,6 +2,7 @@ import { type CanActivate, type ExecutionContext, type INestApplication } from '
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { AuditWriter } from '../src/audit/audit.writer'
 import { JwtGuard } from '../src/auth/jwt.guard'
 import { PermissionEngine } from '../src/authz/permission.engine'
 import { PermissionGuard, type AuthorizedRequest } from '../src/authz/permission.guard'
@@ -52,6 +53,11 @@ describe('GET /groups', () => {
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         GroupsRepository,
         PermissionEngine,
+        // Milestone 3b, Task 3: GroupsController's write handlers now also
+        // depend on AuditWriter (to audit each mutation inside its
+        // transaction) — required here purely for DI resolution, since this
+        // suite only exercises the (unchanged) read routes.
+        AuditWriter,
       ],
     })
       .overrideGuard(JwtGuard)
@@ -148,8 +154,13 @@ describe('GET /groups', () => {
     expect(effective.body).toEqual([adaId])
   })
 
-  it('exposes no write routes', async () => {
-    await request(app.getHttpServer()).post('/groups').send({ name: 'x' }).expect(404)
+  // Milestone 3b, Task 3 added POST /groups, PATCH /groups/:id, and the
+  // member/child-group mutation routes — see test/groups.write.spec.ts for
+  // their full behavior (permission/scope/audit/cycle-guard checks). This
+  // pin narrows to what remains permanently true: there is no route to
+  // delete a whole GROUP (only individual members/child-groups can be
+  // detached from one).
+  it('exposes no route to delete a whole group', async () => {
     await request(app.getHttpServer()).delete(`/groups/${engId}`).expect(404)
   })
 

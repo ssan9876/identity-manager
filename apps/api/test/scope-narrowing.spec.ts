@@ -201,6 +201,11 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
           OrgUnitsRepository,
           PermissionEngine,
           PermissionGuard,
+          // Milestone 3b, Task 3: OrgUnitsController's write handler now
+          // also depends on AuditWriter — required here purely for DI
+          // resolution; this describe block only exercises the (unchanged)
+          // read routes.
+          AuditWriter,
           Reflector,
         ],
       })
@@ -311,6 +316,11 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
           GroupsRepository,
           PermissionEngine,
           PermissionGuard,
+          // Milestone 3b, Task 3: GroupsController's write handlers now
+          // also depend on AuditWriter — required here purely for DI
+          // resolution; this describe block only exercises the (unchanged)
+          // read routes.
+          AuditWriter,
           Reflector,
         ],
       })
