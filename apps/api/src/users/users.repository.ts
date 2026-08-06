@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common'
-import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, lte, ne, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type { AttributeDefinition, ValidationRules } from '../attributes/attribute-validator'
 import { DB_CLIENT } from '../common/db.token'
@@ -500,5 +500,55 @@ export class UsersRepository {
       .where(this.listFilters(filter))
 
     return row?.value ?? 0
+  }
+
+  /**
+   * Every `pending` user whose `start_date` has arrived (<= `onOrBeforeDate`,
+   * an ISO `YYYY-MM-DD` string, matching how `startDate`/`endDate` are
+   * already accepted and stored — see CreateUserInput's doc comment) —
+   * Milestone 7, Task 7's join half. `status = 'pending'` in the WHERE
+   * clause is what makes LifecycleJob's activation pass naturally
+   * idempotent: once a returned user has been transitioned to `active`, a
+   * second run's identical query no longer returns them at all, with no
+   * separate "already processed" bookkeeping needed. Unscoped
+   * (`scopePaths`-free) on purpose — this is a trusted, on-demand system
+   * script, not a request from a scoped actor (see LifecycleJob's own doc
+   * comment), so it must see every eligible user, not just some actor's
+   * subtree.
+   */
+  async listPendingWithStartDateOnOrBefore(onOrBeforeDate: string): Promise<User[]> {
+    const rows = await this.db
+      .select()
+      .from(users)
+      .where(
+        and(eq(users.status, 'pending'), isNotNull(users.startDate), lte(users.startDate, onOrBeforeDate)),
+      )
+      .orderBy(asc(users.id))
+
+    return rows as User[]
+  }
+
+  /**
+   * Every NOT-YET-`deactivated` user whose `end_date` has passed (<=
+   * `onOrBeforeDate`) — Milestone 7, Task 7's leaver half. `status <>
+   * 'deactivated'` (rather than restricting to `active`) deliberately also
+   * catches a `pending` or `suspended` user whose end date arrived without
+   * ever being activated (or while suspended) — an offboarded-before-ever-
+   * onboarded/resumed employee is exactly as much a leaver as an active one.
+   * `deactivated` is terminal (UsersRepository.changeStatus's own doc
+   * comment), so excluding it here is what makes this query naturally
+   * idempotent across repeated runs, the same mechanism
+   * `listPendingWithStartDateOnOrBefore` uses above.
+   */
+  async listNonDeactivatedWithEndDateOnOrBefore(onOrBeforeDate: string): Promise<User[]> {
+    const rows = await this.db
+      .select()
+      .from(users)
+      .where(
+        and(ne(users.status, 'deactivated'), isNotNull(users.endDate), lte(users.endDate, onOrBeforeDate)),
+      )
+      .orderBy(asc(users.id))
+
+    return rows as User[]
   }
 }
