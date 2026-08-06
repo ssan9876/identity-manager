@@ -17,12 +17,24 @@ import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import * as schema from '../src/db/schema/index'
 import { GroupsController } from '../src/groups/groups.controller'
 import { GroupsRepository } from '../src/groups/groups.repository'
+import { KEYCLOAK_ADMIN_CONFIG, KeycloakAdminClient } from '../src/keycloak/keycloak-admin.client'
 import { OrgUnitsController } from '../src/org-units/org-units.controller'
 import { OrgUnitsRepository, type OrgUnit } from '../src/org-units/org-units.repository'
 import { OutboxWriter } from '../src/outbox/outbox.writer'
+import { SyncStateRepository } from '../src/outbox/sync-state.repository'
 import { UsersController } from '../src/users/users.controller'
 import { UsersRepository, type User } from '../src/users/users.repository'
 import { type TestDatabase, withTestDatabase } from './support/pg'
+
+// Milestone 4, Task 4 — see the identical comment in users.write.spec.ts:
+// UsersController.deactivate now attempts a synchronous Keycloak call this
+// file's tests don't otherwise need, so it is pointed at an unreachable
+// local port (fails fast, logged and swallowed).
+const UNREACHABLE_KEYCLOAK_CONFIG = {
+  issuer: 'http://127.0.0.1:1/realms/unreachable',
+  clientId: 'irrelevant',
+  clientSecret: 'irrelevant',
+}
 
 /**
  * Stamps `request.principal` from whatever `getUsername()` returns AT
@@ -129,6 +141,10 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
         AuditWriter,
         OutboxWriter,
         Reflector,
+        // Milestone 4, Task 4 — see UNREACHABLE_KEYCLOAK_CONFIG's comment above.
+        { provide: KEYCLOAK_ADMIN_CONFIG, useValue: UNREACHABLE_KEYCLOAK_CONFIG },
+        KeycloakAdminClient,
+        SyncStateRepository,
       ],
     })
       .overrideGuard(JwtGuard)

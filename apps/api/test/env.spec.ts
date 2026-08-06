@@ -19,12 +19,38 @@ describe('loadEnv', () => {
       keycloakAdminClientId: 'idm-sync-service',
       keycloakAdminClientSecret: 'idm_sync_dev_secret_change_me',
       port: 3000,
+      syncWorkerEnabled: true,
     })
   })
 
   it('defaults the port when absent', () => {
     const { PORT, ...withoutPort } = valid
     expect(loadEnv(withoutPort).port).toBe(3000)
+  })
+
+  // Milestone 4, Task 4: the SyncWorker on/off switch. Defaults ON (see
+  // env.ts's own doc comment on SYNC_WORKER_ENABLED for why) and must be
+  // spellable as an explicit "false" — the exact case a naive
+  // `z.coerce.boolean()` gets wrong (every non-empty string, including the
+  // text "false", coerces to `true`).
+  describe('SYNC_WORKER_ENABLED', () => {
+    it('defaults to true when absent', () => {
+      expect(loadEnv(valid).syncWorkerEnabled).toBe(true)
+    })
+
+    it('is true when explicitly "true"', () => {
+      expect(loadEnv({ ...valid, SYNC_WORKER_ENABLED: 'true' }).syncWorkerEnabled).toBe(true)
+    })
+
+    it('is false when explicitly "false"', () => {
+      expect(loadEnv({ ...valid, SYNC_WORKER_ENABLED: 'false' }).syncWorkerEnabled).toBe(false)
+    })
+
+    it('rejects an unrecognized value rather than silently defaulting', () => {
+      expect(() => loadEnv({ ...valid, SYNC_WORKER_ENABLED: 'yes' })).toThrow(
+        /SYNC_WORKER_ENABLED/,
+      )
+    })
   })
 
   it('throws a descriptive error when DATABASE_URL is missing', () => {

@@ -12,6 +12,18 @@ const envSchema = z.object({
   KEYCLOAK_ADMIN_CLIENT_ID: z.string().min(1, 'KEYCLOAK_ADMIN_CLIENT_ID is required'),
   KEYCLOAK_ADMIN_CLIENT_SECRET: z.string().min(1, 'KEYCLOAK_ADMIN_CLIENT_SECRET is required'),
   PORT: z.coerce.number().int().positive().default(3000),
+  // Milestone 4, Task 4: the on/off switch for the SyncWorker's background
+  // polling loop (see main.ts's bootstrap). Defaults ON so `start:dev` (and
+  // any other real boot) drains the outbox without extra setup — but
+  // `vitest run` never calls main.ts's bootstrap() at all (no spec file
+  // imports it), so tests are unaffected by this default regardless of its
+  // value; the flag exists to let a real deployment opt OUT, e.g. running
+  // multiple app instances behind a load balancer with the worker enabled
+  // on only one of them. Spelled as a string enum, not `z.coerce.boolean()`
+  // — that coercion treats ANY non-empty string, including the literal text
+  // "false", as `true` (`Boolean("false") === true`), which would make the
+  // off switch impossible to actually flip via an env file.
+  SYNC_WORKER_ENABLED: z.enum(['true', 'false']).default('true'),
 })
 
 export interface Env {
@@ -21,6 +33,7 @@ export interface Env {
   keycloakAdminClientId: string
   keycloakAdminClientSecret: string
   port: number
+  syncWorkerEnabled: boolean
 }
 
 export function loadEnv(source: NodeJS.ProcessEnv): Env {
@@ -40,5 +53,6 @@ export function loadEnv(source: NodeJS.ProcessEnv): Env {
     keycloakAdminClientId: parsed.data.KEYCLOAK_ADMIN_CLIENT_ID,
     keycloakAdminClientSecret: parsed.data.KEYCLOAK_ADMIN_CLIENT_SECRET,
     port: parsed.data.PORT,
+    syncWorkerEnabled: parsed.data.SYNC_WORKER_ENABLED === 'true',
   }
 }

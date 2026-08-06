@@ -9,11 +9,27 @@ import { PermissionEngine } from '../src/authz/permission.engine'
 import { PermissionGuard, type AuthorizedRequest } from '../src/authz/permission.guard'
 import { PrivilegeGuards } from '../src/authz/privilege.guards'
 import { DB_CLIENT } from '../src/common/db.token'
+import { GroupsRepository } from '../src/groups/groups.repository'
+import { KEYCLOAK_ADMIN_CONFIG, KeycloakAdminClient } from '../src/keycloak/keycloak-admin.client'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { OutboxWriter } from '../src/outbox/outbox.writer'
+import { SyncStateRepository } from '../src/outbox/sync-state.repository'
 import { UsersController } from '../src/users/users.controller'
 import { UsersRepository } from '../src/users/users.repository'
 import { withTestDatabase } from './support/pg'
+
+// Milestone 4, Task 4: UsersController now depends on KeycloakAdminClient
+// (synchronous revocation on deactivate) and SyncStateRepository (the
+// `syncState` read shape) too. This suite never calls deactivate and never
+// needs a REAL Keycloak — connecting to a closed local port fails FAST
+// (ECONNREFUSED) rather than hanging, the same "unreachable" fixture
+// sync.worker.spec.ts already relies on — so this config only needs to be
+// well-formed, never actually reachable.
+const UNREACHABLE_KEYCLOAK_CONFIG = {
+  issuer: 'http://127.0.0.1:1/realms/unreachable',
+  clientId: 'irrelevant',
+  clientSecret: 'irrelevant',
+}
 
 // This suite tests UsersController in isolation from the real auth stack —
 // PermissionGuard is stubbed out below, same as before Milestone 3b. The
@@ -58,6 +74,14 @@ describe('GET /users', () => {
         PrivilegeGuards,
         AuditWriter,
         OutboxWriter,
+        // Milestone 4, Task 4: required for DI resolution only — see the
+        // UNREACHABLE_KEYCLOAK_CONFIG comment above. GroupsRepository is
+        // SyncStateRepository's own dependency (effective-membership
+        // lookups for the group/membership half of syncState derivation).
+        { provide: KEYCLOAK_ADMIN_CONFIG, useValue: UNREACHABLE_KEYCLOAK_CONFIG },
+        KeycloakAdminClient,
+        GroupsRepository,
+        SyncStateRepository,
       ],
     })
       .overrideGuard(JwtGuard)

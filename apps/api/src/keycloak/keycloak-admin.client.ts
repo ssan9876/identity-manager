@@ -187,8 +187,9 @@ function toKeycloakUser(raw: RawKeycloakUser): KeycloakUser {
  *     which admits only `sync_to_keycloak = true` keys — see its doc
  *     comment for why the enforcement point is there, not at the call site.
  *
- * Not wired into AppModule / any controller or worker yet — Milestone 4,
- * Task 3 does that.
+ * Wired into AppModule (Milestone 4, Task 4) so `SyncWorker`, `UsersController`
+ * (synchronous revocation) and the on-demand reconciliation job can all share
+ * one instance/token-cache.
  */
 @Injectable()
 export class KeycloakAdminClient {
@@ -551,6 +552,25 @@ export class KeycloakAdminClient {
         await this.assertOk(leaveRes, { resource: 'keycloak group', id: groupId })
       }
     }
+  }
+
+  /**
+   * Read-only: the user's CURRENT Keycloak group membership. Not one of
+   * Task 2's seven original methods — added for Milestone 4, Task 4's
+   * on-demand reconciliation job, which must independently REPORT group
+   * drift (what Keycloak currently has) before repairing it, rather than
+   * blindly re-asserting via `setUserGroups` and never knowing whether
+   * anything actually changed. Same GET `/users/{id}/groups` call
+   * `setUserGroups` already issues internally to compute its own diff,
+   * exposed here as a standalone read so a caller that only wants to
+   * COMPARE (not write) never has to trigger a write to get an answer.
+   */
+  async listUserGroups(username: string): Promise<KeycloakGroup[]> {
+    const id = await this.requireUserId(username)
+    const res = await this.request('GET', `/users/${id}/groups`)
+    await this.assertOk(res, { resource: 'keycloak user', id: username })
+    const rows = (await res.json()) as { id: string; name: string; path: string }[]
+    return rows.map((row) => ({ id: row.id, name: row.name, path: row.path }))
   }
 }
 

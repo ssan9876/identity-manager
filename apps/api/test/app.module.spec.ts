@@ -2,6 +2,7 @@ import { Test } from '@nestjs/testing'
 import type { INestApplication } from '@nestjs/common'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { AppModule } from '../src/app.module'
+import { SyncWorker } from '../src/outbox/sync.worker'
 
 /**
  * Smoke test for AppModule's real DI provider graph.
@@ -76,4 +77,28 @@ describe('AppModule', () => {
     },
     15_000,
   )
+
+  // Milestone 4, Task 4: SyncWorker is a registered AppModule provider (so
+  // `main.ts` can resolve and start a real one), but only `main.ts`'s own
+  // bootstrap() ever calls `.start()` — never a DI/Nest lifecycle hook. This
+  // is the regression pin for that: constructing AND initialising the whole
+  // real app graph — exactly what every other test in this file already
+  // does — must never leave the worker polling.
+  it('constructs SyncWorker through the real DI graph without ever starting it', async () => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile()
+
+    const app: INestApplication = moduleRef.createNestApplication()
+    await app.init()
+
+    const worker = app.get(SyncWorker)
+    expect(worker.isRunning).toBe(false)
+
+    // onApplicationShutdown must also be a harmless no-op here, since the
+    // worker was never started — proves app.close() (which every test in
+    // this suite calls) never throws or hangs because of it.
+    await app.close()
+    expect(worker.isRunning).toBe(false)
+  })
 })

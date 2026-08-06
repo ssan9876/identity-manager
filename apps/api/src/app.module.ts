@@ -14,9 +14,17 @@ import { createDbClient } from './db/client'
 import { GroupsController } from './groups/groups.controller'
 import { GroupsRepository } from './groups/groups.repository'
 import { HealthController } from './health/health.controller'
+import {
+  KEYCLOAK_ADMIN_CONFIG,
+  KeycloakAdminClient,
+  type KeycloakAdminClientConfig,
+} from './keycloak/keycloak-admin.client'
 import { OrgUnitsController } from './org-units/org-units.controller'
 import { OrgUnitsRepository } from './org-units/org-units.repository'
+import { OutboxRepository } from './outbox/outbox.repository'
 import { OutboxWriter } from './outbox/outbox.writer'
+import { SyncStateRepository } from './outbox/sync-state.repository'
+import { SyncWorker } from './outbox/sync.worker'
 import { UsersController } from './users/users.controller'
 import { UsersRepository } from './users/users.repository'
 
@@ -41,6 +49,21 @@ import { UsersRepository } from './users/users.repository'
       provide: DB_CLIENT,
       useFactory: () => createDbClient(loadEnv(process.env).databaseUrl).db,
     },
+    {
+      // Milestone 4, Task 4: shared by `SyncWorker`, `UsersController`
+      // (synchronous revocation) and anything else that needs to push
+      // state into Keycloak. Reuses the SAME env vars Task 2 already made
+      // mandatory in `loadEnv` (`KEYCLOAK_ADMIN_CLIENT_ID`/`_SECRET`).
+      provide: KEYCLOAK_ADMIN_CONFIG,
+      useFactory: (): KeycloakAdminClientConfig => {
+        const env = loadEnv(process.env)
+        return {
+          issuer: env.keycloakIssuer,
+          clientId: env.keycloakAdminClientId,
+          clientSecret: env.keycloakAdminClientSecret,
+        }
+      },
+    },
     JwtGuard,
     UsersRepository,
     OrgUnitsRepository,
@@ -52,6 +75,17 @@ import { UsersRepository } from './users/users.repository'
     AuditWriter,
     AuditRepository,
     OutboxWriter,
+    // Milestone 4, Task 4: registering these three constructs (never
+    // network I/O — see each class's own constructor) a real SyncWorker
+    // instance for every app boot, INCLUDING every test that compiles
+    // AppModule (app.module.spec.ts). That is safe: `start()` is never
+    // called by DI/a Nest lifecycle hook, only explicitly from `main.ts`'s
+    // `bootstrap()`, which no test ever executes — see SyncWorker's
+    // file-level doc comment.
+    KeycloakAdminClient,
+    OutboxRepository,
+    SyncWorker,
+    SyncStateRepository,
   ],
 })
 export class AppModule {}

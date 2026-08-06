@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional } from '@nestjs/common'
+import { Inject, Injectable, type OnApplicationShutdown, Optional } from '@nestjs/common'
 import { and, eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { DB_CLIENT } from '../common/db.token'
@@ -67,14 +67,22 @@ export function computeBackoffDelayMs(
  * applying the same event twice re-derives and re-asserts the same state,
  * producing no different outcome the second time. See `reconcileUser`.
  *
- * Not wired into AppModule or `main.ts` — this task deliberately leaves it
- * unregistered so it cannot run during tests or on app boot (see this
- * class's `start`/`stop`). A future task/script constructs and starts one
- * explicitly, the same way `db:migrate` is a standalone script rather than
- * something `main.ts` runs automatically.
+ * Registered in AppModule (Milestone 4, Task 4) as an ordinary provider, but
+ * `start()` is never called by DI/Nest lifecycle hooks — only `main.ts`'s
+ * `bootstrap()` calls it, gated by `env.syncWorkerEnabled`. That is what
+ * keeps it from running during tests: `vitest run` never executes
+ * `main.ts` (every spec file builds its own `Test.createTestingModule`, or
+ * — for `app.module.spec.ts` — compiles the real `AppModule` but only ever
+ * calls `app.init()`, never `bootstrap()`), so a `SyncWorker` instance may
+ * be freely CONSTRUCTED by DI in any test without ever being STARTED.
+ * `onApplicationShutdown` below (Nest's standard shutdown hook, wired via
+ * `app.enableShutdownHooks()` in main.ts) calls `stop()` unconditionally —
+ * safe even when `start()` was never called (see `stop()`'s own doc
+ * comment) — so a test that constructs the app and calls `app.close()`
+ * (e.g. app.module.spec.ts) exercises that path harmlessly too.
  */
 @Injectable()
-export class SyncWorker {
+export class SyncWorker implements OnApplicationShutdown {
   private readonly config: SyncWorkerConfig
   private timer: ReturnType<typeof setTimeout> | null = null
   private stopped = true
@@ -342,7 +350,21 @@ export class SyncWorker {
    * under the OLD name until something else re-synced them. Re-running
    * `reconcileUser` (idempotent — a no-op for anyone already correct) for
    * every CURRENTLY effective member closes that gap immediately instead
-   * of waiting for Task 4's on-demand reconciliation job.
+   * of waiting for the on-demand reconciliation job.
+   *
+   * KNOWN LIMIT, documented rather than closed (task-4-brief.md, Task 3
+   * concern (b) — cheap-or-document, not expand): this still only reaches
+   * members effective AT THE MOMENT this event is processed. A user removed
+   * from the group in the same window, before this event runs, is not
+   * fanned out to here (they are no longer in `listEffectiveUserMembers`'s
+   * result) — closing that would need this event to know who was a member
+   * BEFORE the removal, which nothing here currently records. `SyncState
+   * Repository`'s own doc comment documents the identical limit on the
+   * READ-model side. `ReconciliationJob` (Milestone 4, Task 4,
+   * outbox/reconciliation.job.ts) is the actual general backstop for both:
+   * it compares every user's CURRENT desired groups against Keycloak's
+   * CURRENT actual ones directly, independent of which fan-out did or
+   * did not reach them.
    */
   private async reconcileGroup(tx: DbHandle, groupId: string): Promise<void> {
     const group = await this.groupsRepository.findById(groupId, tx)
@@ -419,10 +441,10 @@ export class SyncWorker {
    * `pollIntervalMs` before draining again. Idempotent — calling `start`
    * while already started does nothing.
    *
-   * Nothing in this codebase calls this yet (see this class's file-level
-   * doc comment) — it exists so the worker CAN be started explicitly by
-   * whatever wires it up later, satisfying the "explicitly startable" half
-   * of Task 3's contract without this task adding a scheduler itself.
+   * Called only from `main.ts`'s `bootstrap()` (Milestone 4, Task 4), gated
+   * by `env.syncWorkerEnabled` — never from a Nest lifecycle hook on this
+   * class itself, which is what keeps every test safe (see this class's
+   * file-level doc comment).
    */
   start(): void {
     if (!this.stopped) {
@@ -430,6 +452,11 @@ export class SyncWorker {
     }
     this.stopped = false
     this.scheduleTick(0)
+  }
+
+  /** `true` once `start()` has run and `stop()` has not yet fully settled. */
+  get isRunning(): boolean {
+    return !this.stopped
   }
 
   private scheduleTick(delayMs: number): void {
@@ -469,5 +496,26 @@ export class SyncWorker {
       this.timer = null
     }
     await this.currentRun
+  }
+
+  /**
+   * Nest's standard shutdown hook — fires on `app.close()`, including the
+   * SIGTERM/SIGINT path `main.ts` enables via `app.enableShutdownHooks()`.
+   * Unconditional and idempotent: calling `stop()` when `start()` was never
+   * invoked is a harmless no-op (see `stop()`'s own doc comment), so this is
+   * safe to leave wired up regardless of whether this particular process
+   * ever actually started the worker — including every test that constructs
+   * an app via DI and closes it (e.g. app.module.spec.ts), where this fires
+   * but has nothing to do. This is what satisfies "shut down cleanly... so
+   * no in-flight event is left `processing` forever" for a GRACEFUL
+   * shutdown; an ungraceful kill (`taskkill /F`, SIGKILL) never reaches this
+   * method at all, but is already handled independently at the database
+   * level — see OutboxRepository.claimNext's doc comment: the claim lives
+   * inside a single open transaction, so a killed process simply never
+   * commits the `processing` write, and Postgres reverts the row to
+   * `pending` on connection loss.
+   */
+  async onApplicationShutdown(): Promise<void> {
+    await this.stop()
   }
 }

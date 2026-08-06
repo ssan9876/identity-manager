@@ -12,11 +12,31 @@ import { PrivilegeGuards } from '../src/authz/privilege.guards'
 import { RoleAssignmentsRepository } from '../src/authz/role-assignments.repository'
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
+import { GroupsRepository } from '../src/groups/groups.repository'
+import { KEYCLOAK_ADMIN_CONFIG, KeycloakAdminClient } from '../src/keycloak/keycloak-admin.client'
 import { OrgUnitsRepository, type OrgUnit } from '../src/org-units/org-units.repository'
 import { OutboxWriter } from '../src/outbox/outbox.writer'
+import { SyncStateRepository } from '../src/outbox/sync-state.repository'
 import { UsersController } from '../src/users/users.controller'
 import { UsersRepository, type User } from '../src/users/users.repository'
 import { type TestDatabase, withTestDatabase } from './support/pg'
+
+// Milestone 4, Task 4: UsersController's deactivate handler now attempts a
+// SYNCHRONOUS Keycloak setEnabled/revokeSessions before returning. This file
+// deliberately points that at an unreachable local port rather than a real
+// Keycloak container — connecting fails FAST (ECONNREFUSED), so every
+// deactivate test below incidentally exercises the "Keycloak down" branch
+// (logged, swallowed, mutation still succeeds — see
+// UsersController.revokeKeycloakAccess) for free. The behaviour this
+// specific failure path proves end-to-end (a live session actually dying,
+// syncState reflecting it) is covered properly, against a REAL Keycloak
+// container, by test/revocation.spec.ts — this file stays focused on audit
+// rows, same as before Milestone 4.
+const UNREACHABLE_KEYCLOAK_CONFIG = {
+  issuer: 'http://127.0.0.1:1/realms/unreachable',
+  clientId: 'irrelevant',
+  clientSecret: 'irrelevant',
+}
 
 /**
  * Stamps `request.principal` from whatever `getUsername()` returns AT
@@ -103,6 +123,11 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
         AuditWriter,
         OutboxWriter,
         Reflector,
+        // Milestone 4, Task 4 — see UNREACHABLE_KEYCLOAK_CONFIG's comment above.
+        { provide: KEYCLOAK_ADMIN_CONFIG, useValue: UNREACHABLE_KEYCLOAK_CONFIG },
+        KeycloakAdminClient,
+        GroupsRepository,
+        SyncStateRepository,
       ],
     })
       .overrideGuard(JwtGuard)
