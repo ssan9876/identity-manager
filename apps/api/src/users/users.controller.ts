@@ -104,8 +104,14 @@ const updateUserBodySchema = z
  * comment). `id` is omitted — it is already the audit row's own
  * `resourceId` — and `createdAt`/`updatedAt` are omitted as bookkeeping
  * that changes on every write and adds nothing to a before/after diff.
+ *
+ * Exported so ImportsController (Milestone 5) reuses this EXACT function for
+ * its own audit/outbox payloads rather than growing a second, divergence-prone
+ * copy — the same "share one function" rule the milestone brief states for
+ * the write path itself applies just as much to the snapshot helper the
+ * write path's audit/outbox calls depend on.
  */
-function snapshotUser(user: User): Record<string, unknown> {
+export function snapshotUser(user: User): Record<string, unknown> {
   return {
     status: user.status,
     primaryEmail: user.primaryEmail,

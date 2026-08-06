@@ -1,33 +1,17 @@
-import { useEffect, useState } from 'react'
 import { useAuth } from 'react-oidc-context'
-import { apiBaseUrl } from './auth/oidc-config'
+import { Link, Route, Routes } from 'react-router-dom'
+import HomePage from './home/HomePage'
+import SelfServicePage from './self-service/SelfServicePage'
 
-interface Principal {
-  subject: string
-  username: string
-  email: string | null
-}
-
+/**
+ * Top-level shell: the authentication gate (unchanged from Milestone 1 —
+ * still just a "Sign in" button, Keycloak's own hosted login page does the
+ * rest) plus, once authenticated, the route table. `/` keeps its original
+ * content (HomePage); `/self` is the self-service portal added in
+ * Milestone 6, Task 4.
+ */
 export default function App() {
   const auth = useAuth()
-  const [principal, setPrincipal] = useState<Principal | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (!auth.isAuthenticated || auth.user == null) {
-      setPrincipal(null)
-      return
-    }
-
-    void fetch(`${apiBaseUrl}/me`, {
-      headers: { Authorization: `Bearer ${auth.user.access_token}` },
-    })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`API returned ${res.status}`)
-        setPrincipal((await res.json()) as Principal)
-      })
-      .catch((cause: Error) => setError(cause.message))
-  }, [auth.isAuthenticated, auth.user])
 
   if (auth.isLoading) {
     return <p>Loading…</p>
@@ -45,27 +29,20 @@ export default function App() {
   }
 
   return (
-    <main>
-      <h1>Identity Manager</h1>
-      <p>
-        Signed in as{' '}
-        <strong data-testid="signed-in-as">{auth.user?.profile.preferred_username}</strong>
-      </p>
-
-      {error !== null && <p role="alert">Could not reach the API: {error}</p>}
-
-      {principal !== null && (
-        <dl>
-          <dt>API says username</dt>
-          <dd data-testid="me-username">{principal.username}</dd>
-          <dt>Subject</dt>
-          <dd data-testid="me-subject">{principal.subject}</dd>
-        </dl>
-      )}
-
-      <button type="button" onClick={() => void auth.signoutRedirect()}>
-        Sign out
-      </button>
-    </main>
+    <>
+      <nav aria-label="Primary">
+        <Link to="/">Home</Link>
+        {' | '}
+        <Link to="/self">My Profile</Link>
+        {' | '}
+        <button type="button" onClick={() => void auth.signoutRedirect()}>
+          Sign out
+        </button>
+      </nav>
+      <Routes>
+        <Route path="/" element={<HomePage />} />
+        <Route path="/self" element={<SelfServicePage />} />
+      </Routes>
+    </>
   )
 }

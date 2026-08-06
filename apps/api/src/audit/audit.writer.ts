@@ -32,6 +32,14 @@ export interface AuditEntry {
   resourceId: string | null
   before: unknown
   after: unknown
+  /**
+   * Set ONLY by a bulk import commit (Milestone 5, Task 2) — the same value
+   * on every audit row one `POST /imports/commit` request produces, so the
+   * import is reviewable as a unit afterwards (`WHERE batch_id = $1`).
+   * Omitted (-> `null`) by every other, single-record call site; optional
+   * here specifically so none of them need to change.
+   */
+  batchId?: string | null
 }
 
 @Injectable()
@@ -55,6 +63,7 @@ export class AuditWriter {
       resourceId: entry.resourceId,
       before: entry.before ?? null,
       after: entry.after ?? null,
+      batchId: entry.batchId ?? null,
     })
   }
 }
