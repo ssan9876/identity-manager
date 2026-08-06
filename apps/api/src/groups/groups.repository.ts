@@ -331,6 +331,26 @@ export class GroupsRepository {
   }
 
   /**
+   * Every group `userId` belongs to DIRECTLY — the mirror image of
+   * `listDirectUserMembers` just above (group -> its direct user ids); this
+   * goes user -> their direct group ids. Added for SelfServiceController
+   * (Milestone 6, Task 3), which shows a caller their DIRECT membership
+   * distinctly from the wider EFFECTIVE set `listEffectiveGroupsForUser`
+   * below already computes (which also walks upward through nested-group
+   * ancestors) — direct membership is always a subset of effective
+   * membership, never the reverse, so a client can compute "inherited only"
+   * as effective-minus-direct without a third query.
+   */
+  async listDirectGroupsForUser(userId: string): Promise<string[]> {
+    const rows = await this.db
+      .select({ groupId: groupUserMembers.groupId })
+      .from(groupUserMembers)
+      .where(eq(groupUserMembers.userId, userId))
+
+    return rows.map((row) => row.groupId)
+  }
+
+  /**
    * `db` defaults to `this.db` (the pool) exactly like every other method
    * above, but what it does with that handle is different: it always opens
    * its OWN nested transaction via `db.transaction(...)`, never runs its

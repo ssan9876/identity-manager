@@ -16,8 +16,18 @@ const OPEN_BY_DESIGN = new Set(['HealthController'])
  * OPEN_BY_DESIGN, by name, so every exemption this file honours is visible
  * in one place and adding one is a deliberate, reviewable act rather than an
  * inline string comparison buried in a loop.
+ *
+ * `SelfServiceController` (Milestone 6, Task 3) joins `MeController` here
+ * for the same reason: every route it exposes (`GET /self`, `PATCH /self`,
+ * `GET /self/groups`) resolves its target exclusively from the verified JWT
+ * principal, never from a permission grant — the brief requires it to work
+ * for a user holding no role at all (`PermissionEngine.resolveActor`
+ * requires only an ACTIVE user, never a role assignment). Gating it behind
+ * `PermissionGuard`/`@RequirePermission` would be a REGRESSION, not
+ * hardening: an ordinary employee with zero grants would be locked out of
+ * their own profile.
  */
-const AUTHENTICATION_ONLY = new Set(['MeController'])
+const AUTHENTICATION_ONLY = new Set(['MeController', 'SelfServiceController'])
 
 type Ctor = new (...args: never[]) => unknown
 
@@ -82,6 +92,7 @@ describe('guard coverage', () => {
         'MeController',
         'OrgUnitsController',
         'RoleAssignmentsController',
+        'SelfServiceController',
         'UsersController',
       ].sort(),
     )

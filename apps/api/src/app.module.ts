@@ -26,6 +26,7 @@ import { OutboxRepository } from './outbox/outbox.repository'
 import { OutboxWriter } from './outbox/outbox.writer'
 import { SyncStateRepository } from './outbox/sync-state.repository'
 import { SyncWorker } from './outbox/sync.worker'
+import { SelfServiceController } from './self-service/self-service.controller'
 import { UsersController } from './users/users.controller'
 import { UsersRepository } from './users/users.repository'
 
@@ -38,6 +39,7 @@ import { UsersRepository } from './users/users.repository'
     GroupsController,
     RoleAssignmentsController,
     ImportsController,
+    SelfServiceController,
   ],
   providers: [
     {

@@ -60,6 +60,35 @@ describe('group membership', () => {
     expect(await groups.listDirectUserMembers(group.id)).toEqual([])
   })
 
+  // listDirectGroupsForUser (Milestone 6, Task 3): the mirror-image query of
+  // listDirectUserMembers above — user -> their direct group ids, rather
+  // than group -> its direct user ids. Added for SelfServiceController.
+  it("lists a user's direct group memberships only, not a group unrelated to them", async () => {
+    const group = await groups.create({ name: 'Engineering' })
+    const other = await groups.create({ name: 'Sales' })
+    const user = await makeUser('ada')
+    await groups.addUser(group.id, user.id)
+    expect(await groups.listDirectGroupsForUser(user.id)).toEqual([group.id])
+    expect(await groups.listDirectGroupsForUser(user.id)).not.toContain(other.id)
+  })
+
+  it('does not climb into ancestor groups — that is listEffectiveGroupsForUser\'s job, not this one\'s', async () => {
+    const parent = await groups.create({ name: 'All Staff' })
+    const child = await groups.create({ name: 'Engineering' })
+    await groups.addChildGroup(parent.id, child.id)
+    const user = await makeUser('ada')
+    await groups.addUser(child.id, user.id)
+
+    expect(await groups.listDirectGroupsForUser(user.id)).toEqual([child.id])
+    const effective = await groups.listEffectiveGroupsForUser(user.id)
+    expect(effective.sort()).toEqual([parent.id, child.id].sort())
+  })
+
+  it('returns an empty list for a user in no groups', async () => {
+    const user = await makeUser('ada')
+    expect(await groups.listDirectGroupsForUser(user.id)).toEqual([])
+  })
+
   it('raises NotFoundError for a missing group or user', async () => {
     const group = await groups.create({ name: 'Engineering' })
     const user = await makeUser('ada')
