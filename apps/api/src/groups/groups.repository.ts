@@ -75,10 +75,40 @@ export class GroupsRepository {
     return (row as Group | undefined) ?? null
   }
 
-  async list(options: { limit: number; offset: number }): Promise<Group[]> {
+  /**
+   * A group with `orgUnitId = NULL` is GLOBAL (decision 1): visible to any
+   * actor holding `group:read`, regardless of scope — so it is included
+   * unconditionally, never run through the org-unit containment check. A
+   * scoped actor therefore sees global groups UNION groups within their
+   * subtree, which is exactly what the `OR EXISTS (...)` below expresses.
+   *
+   * `undefined`/`null` means unrestricted (no filter at all — matches
+   * PermissionEngine.scopePathsFor's contract exactly). An array — including
+   * `[]` — adds a real filter: with `[]`, the EXISTS branch can never match
+   * (`ANY` over an empty array is always false), so only global groups
+   * remain visible — never "everything." Do not spell this
+   * `if (scopePaths?.length)`; see scopePathsFor's doc comment for what that
+   * trap does to an actor entitled nowhere.
+   *
+   * `scopePaths` is bound as ONE array-typed parameter via `sql.param`,
+   * never interpolated into the query text — see permission.engine.ts:131.
+   */
+  private scopeFilter(scopePaths?: string[] | null) {
+    if (scopePaths === undefined || scopePaths === null) {
+      return undefined
+    }
+    return sql`(${groups.orgUnitId} IS NULL OR EXISTS (
+      SELECT 1 FROM org_units ou
+       WHERE ou.id = ${groups.orgUnitId}
+         AND ou.path <@ ANY (${sql.param(scopePaths)}::ltree[])
+    ))`
+  }
+
+  async list(options: { limit: number; offset: number; scopePaths?: string[] | null }): Promise<Group[]> {
     const rows = await this.db
       .select()
       .from(groups)
+      .where(this.scopeFilter(options.scopePaths))
       .orderBy(asc(groups.name))
       .limit(options.limit)
       .offset(options.offset)
@@ -86,10 +116,11 @@ export class GroupsRepository {
     return rows as Group[]
   }
 
-  async count(): Promise<number> {
+  async count(options: { scopePaths?: string[] | null } = {}): Promise<number> {
     const [row] = await this.db
       .select({ value: sql<number>`count(*)::int` })
       .from(groups)
+      .where(this.scopeFilter(options.scopePaths))
 
     return row?.value ?? 0
   }
@@ -99,17 +130,25 @@ export class GroupsRepository {
    * memberships), paginated and ordered exactly like `list()`. An empty
    * `ids` means "nothing matched" (a user in no groups, or a well-formed id
    * that isn't a real user) — returned as an empty page rather than sending
-   * `IN ()` to Postgres, which is invalid SQL.
+   * `IN ()` to Postgres, which is invalid SQL. `scopePaths` narrows exactly
+   * like `list()` — see `scopeFilter`.
    */
-  async listByIds(ids: string[], options: { limit: number; offset: number }): Promise<Group[]> {
+  async listByIds(
+    ids: string[],
+    options: { limit: number; offset: number; scopePaths?: string[] | null },
+  ): Promise<Group[]> {
     if (ids.length === 0) {
       return []
     }
 
+    const filters = [inArray(groups.id, ids)]
+    const scope = this.scopeFilter(options.scopePaths)
+    if (scope !== undefined) filters.push(scope)
+
     const rows = await this.db
       .select()
       .from(groups)
-      .where(inArray(groups.id, ids))
+      .where(and(...filters))
       .orderBy(asc(groups.name))
       .limit(options.limit)
       .offset(options.offset)
@@ -117,16 +156,20 @@ export class GroupsRepository {
     return rows as Group[]
   }
 
-  /** Matching count for `listByIds` — always agrees with it, same filter. */
-  async countByIds(ids: string[]): Promise<number> {
+  /** Matching count for `listByIds` — always agrees with it, same filters. */
+  async countByIds(ids: string[], scopePaths?: string[] | null): Promise<number> {
     if (ids.length === 0) {
       return 0
     }
 
+    const filters = [inArray(groups.id, ids)]
+    const scope = this.scopeFilter(scopePaths)
+    if (scope !== undefined) filters.push(scope)
+
     const [row] = await this.db
       .select({ value: sql<number>`count(*)::int` })
       .from(groups)
-      .where(inArray(groups.id, ids))
+      .where(and(...filters))
 
     return row?.value ?? 0
   }

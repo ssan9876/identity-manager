@@ -192,24 +192,61 @@ export class UsersRepository {
   }
 
   /**
-   * Builds the shared status/orgUnit WHERE clause for list() and count(), so
-   * the two can never drift apart on which rows they agree count as "in".
+   * Builds the shared status/orgUnit/scope WHERE clause for list() and
+   * count(), so the two can never drift apart on which rows they agree count
+   * as "in".
    *
    * Deactivated users are excluded from all default list and search views
    * (core design spec). An explicit `status` — including `status:
    * 'deactivated'` itself, so an admin can still find them — overrides that
    * default rather than combining with it.
+   *
+   * `scopePaths` follows PermissionEngine.scopePathsFor's contract exactly:
+   * `undefined`/`null` means unrestricted (no scope filter at all); an array
+   * — including `[]` — adds a real filter, and `[]` matches no row. Do not
+   * collapse this to `if (filter.scopePaths?.length)`: that would treat an
+   * actor entitled to `[]` (nowhere) the same as one passing `undefined`
+   * (everywhere). See PermissionEngine.scopePathsFor's doc comment.
    */
-  private listFilters(filter: { status?: UserStatus; orgUnitId?: string }) {
+  private listFilters(filter: { status?: UserStatus; orgUnitId?: string; scopePaths?: string[] | null }) {
     const filters = [
       filter.status !== undefined ? eq(users.status, filter.status) : ne(users.status, 'deactivated'),
     ]
     if (filter.orgUnitId !== undefined) filters.push(eq(users.orgUnitId, filter.orgUnitId))
+    if (filter.scopePaths !== undefined && filter.scopePaths !== null) {
+      filters.push(this.scopeFilter(filter.scopePaths))
+    }
     return and(...filters)
   }
 
+  /**
+   * `users` has no `path` column of its own — a user's location in the tree
+   * is only known via its `orgUnitId` FK — so scoping requires a correlated
+   * EXISTS against `org_units` rather than a direct `<@ ANY (...)` on this
+   * table. `scopePaths` is bound as ONE array-typed parameter via
+   * `sql.param`, never interpolated into the query text: Drizzle's `sql` tag
+   * splices a bare JS array in as a parenthesized list of individually-bound
+   * scalars (its IN/ANY convenience feature), not as one `ltree[]` value, and
+   * that shape cannot cast to `ltree[]` — see PermissionEngine.canIn's doc
+   * comment (permission.engine.ts:131) for the confirmed-against-Postgres
+   * explanation this follows.
+   */
+  private scopeFilter(scopePaths: string[]) {
+    return sql`EXISTS (
+      SELECT 1 FROM org_units ou
+       WHERE ou.id = ${users.orgUnitId}
+         AND ou.path <@ ANY (${sql.param(scopePaths)}::ltree[])
+    )`
+  }
+
   async list(
-    options: { limit: number; offset: number; status?: UserStatus; orgUnitId?: string },
+    options: {
+      limit: number
+      offset: number
+      status?: UserStatus
+      orgUnitId?: string
+      scopePaths?: string[] | null
+    },
   ): Promise<User[]> {
     const rows = await this.db
       .select()
@@ -222,7 +259,9 @@ export class UsersRepository {
     return rows as User[]
   }
 
-  async count(filter: { status?: UserStatus; orgUnitId?: string } = {}): Promise<number> {
+  async count(
+    filter: { status?: UserStatus; orgUnitId?: string; scopePaths?: string[] | null } = {},
+  ): Promise<number> {
     const [row] = await this.db
       .select({ value: sql<number>`count(*)::int` })
       .from(users)

@@ -133,10 +133,30 @@ export class OrgUnitsRepository {
     return rows[0]?.contained ?? false
   }
 
-  async list(options: { limit: number; offset: number }): Promise<OrgUnit[]> {
+  /**
+   * `undefined`/`null` means unrestricted (no filter at all — matches
+   * PermissionEngine.scopePathsFor's contract exactly). An array — including
+   * `[]` — adds a real filter; `[]` matches no row, it does NOT fall back to
+   * unrestricted. Do not spell this `if (scopePaths?.length)`; see
+   * scopePathsFor's doc comment for what that trap does to an actor entitled
+   * nowhere.
+   *
+   * `scopePaths` is bound as ONE array-typed parameter via `sql.param`,
+   * never interpolated into the query text — see
+   * permission.engine.ts:131 for why a bare `${scopePaths}` splice breaks.
+   */
+  private scopeFilter(scopePaths?: string[] | null) {
+    if (scopePaths === undefined || scopePaths === null) {
+      return undefined
+    }
+    return sql`${orgUnits.path} <@ ANY (${sql.param(scopePaths)}::ltree[])`
+  }
+
+  async list(options: { limit: number; offset: number; scopePaths?: string[] | null }): Promise<OrgUnit[]> {
     const rows = await this.db
       .select()
       .from(orgUnits)
+      .where(this.scopeFilter(options.scopePaths))
       .orderBy(asc(orgUnits.path))
       .limit(options.limit)
       .offset(options.offset)
@@ -144,10 +164,11 @@ export class OrgUnitsRepository {
     return rows as OrgUnit[]
   }
 
-  async count(): Promise<number> {
+  async count(options: { scopePaths?: string[] | null } = {}): Promise<number> {
     const [row] = await this.db
       .select({ value: sql<number>`count(*)::int` })
       .from(orgUnits)
+      .where(this.scopeFilter(options.scopePaths))
 
     return row?.value ?? 0
   }

@@ -46,17 +46,31 @@ Compose stack.
 **This build must not be deployed to a real network.**
 
 The entire HTTP surface shipped so far is **read-only** (`GET` only — no
-`POST`/`PUT`/`PATCH`/`DELETE` route exists anywhere). Every route now requires
+`POST`/`PUT`/`PATCH`/`DELETE` route exists anywhere). Every route requires
 both a valid Keycloak-issued JWT **and** a role assignment that grants the
 specific action being performed (e.g. `user:read`) — an unauthenticated
 request, or one from a principal whose roles don't grant the action, is
 rejected.
 
-What this does **not** yet do: enforce a role's org-unit *scope* per resource.
-Role assignments can be scoped (e.g. `help_desk` limited to Sales), but no
-controller narrows results by that scope today — any actor holding a
-qualifying read permission, at any scope, can read the entire directory (all
-users, org units, and groups), not just their own subtree. Closing that gap,
-and enforcing it on every write endpoint before one ships, is Milestone 3b's
-first task. Do not point this build at a real organization's data, and do not
-expose it beyond a local development environment before Milestone 3b lands.
+As of Milestone 3b Task 1, per-resource org-unit **scope** is also enforced,
+not just the permission itself. Role assignments can be scoped (e.g.
+`help_desk` limited to Sales); every list endpoint now filters its results
+(and its `total`) to the actor's scope, and every single-resource read
+(`GET /users/:id`, `GET /org-units/:id`, `GET /org-units/:id/subtree`,
+`GET /groups/:id`, `.../members`, `.../effective-members`) asserts the target
+is actually within that scope before returning it — an out-of-scope but
+existing resource returns **403**, not 404 (the directory's existence is not
+secret; its contents are). A global role assignment (`scopeOrgUnitId: null`)
+still sees everything, and a group with `orgUnitId: null` is global — visible
+to any actor holding `group:read` regardless of their own scope. An actor
+whose role grants an action at no reachable scope sees an empty page, never
+the unfiltered list.
+
+What this does **not** yet do: any of this is only wired into **read**
+endpoints. No write endpoint exists yet — adding one without the same
+`assertCanIn` + privilege-guard pairing would be a privilege-escalation bug,
+not merely a disclosure one, which is why Milestone 3b treats this task as a
+hard gate before any write route lands. Do not point this build at a real
+organization's data, and do not expose it beyond a local development
+environment before Milestone 3b's write endpoints (with their own checks)
+land.
