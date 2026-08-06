@@ -101,12 +101,16 @@ describe('PermissionGuard', () => {
     await users.changeStatus(ada.id, 'active')
   })
 
-  const grant = async (roleKey: 'read_only' | 'auditor') => {
+  const grant = async (
+    roleKey: 'read_only' | 'auditor' | 'help_desk',
+    scopeOrgUnitId?: string | null,
+  ) => {
     const users = new UsersRepository(ctx.db)
     const user = await users.findByEmail('ada@example.com')
-    await new RoleAssignmentsRepository(ctx.db).assign({
+    return new RoleAssignmentsRepository(ctx.db).assign({
       userId: user!.id,
       roleKey,
+      scopeOrgUnitId,
     })
   }
 
@@ -149,6 +153,67 @@ describe('PermissionGuard', () => {
 
     await ctx.pool.query('DELETE FROM role_assignments')
     await request(app.getHttpServer()).get('/probe/readable').expect(403)
+  })
+
+  // MILESTONE 3b GATE (pair). The final M3a whole-branch review found that
+  // PermissionGuard checks route entry only, so a SCOPED actor's request is
+  // never narrowed against any particular resource — that is what
+  // assertCanAnywhere in permission.guard.ts actually does today, no matter
+  // how the comment there used to read. The two tests below pin that gap in
+  // executable form: together they say "the engine knows, the HTTP layer
+  // never asks." See each test's own comment for what it proves and what is
+  // supposed to happen to it once Milestone 3b wires per-resource narrowing
+  // in — do not "fix" either test by weakening it when that day comes.
+  it('MILESTONE 3b GATE: a scoped actor reaches a route their role permits, with no per-resource check at all', async () => {
+    const orgUnits = new OrgUnitsRepository(ctx.db)
+    const users = new UsersRepository(ctx.db)
+    const ada = await users.findByEmail('ada@example.com')
+    const sales = await orgUnits.createChild(ada!.orgUnitId, 'Sales')
+
+    // A SCOPED assignment, not global — confirm the row this test actually
+    // exercises before trusting the request below.
+    const assignment = await grant('help_desk', sales.id)
+    expect(assignment.scopeOrgUnitId).toBe(sales.id)
+    expect(assignment.scopeOrgUnitId).not.toBeNull()
+
+    // MILESTONE 3b GATE. This passes TODAY only because PermissionGuard's
+    // check is assertCanAnywhere — "does this actor hold user:read
+    // anywhere?" — with no resource here to narrow against at all, exactly
+    // like the real UsersController routes (see permission.guard.ts). It
+    // would pass identically no matter which org unit ada were scoped to,
+    // or whether an out-of-scope org unit (e.g. Engineering — see the next
+    // test) existed, because nothing on this path ever looks. Once
+    // Milestone 3b wires per-resource narrowing in, this unqualified pass
+    // is expected to stop happening — this assertion should start FAILING
+    // then, and that failure is the correct signal 3b landed, not a
+    // regression to "fix" by loosening the test.
+    await request(app.getHttpServer()).get('/probe/readable').expect(200)
+  })
+
+  it('MILESTONE 3b GATE: the engine, asked directly about a resource outside that scope via canIn, already says no', async () => {
+    const orgUnits = new OrgUnitsRepository(ctx.db)
+    const users = new UsersRepository(ctx.db)
+    const ada = await users.findByEmail('ada@example.com')
+    const sales = await orgUnits.createChild(ada!.orgUnitId, 'Sales')
+    const engineering = await orgUnits.createChild(ada!.orgUnitId, 'Engineering')
+
+    // Same shape of assignment as the previous test: SCOPED, not global.
+    const assignment = await grant('help_desk', sales.id)
+    expect(assignment.scopeOrgUnitId).toBe(sales.id)
+    expect(assignment.scopeOrgUnitId).not.toBeNull()
+
+    // MILESTONE 3b GATE, the other half of the pair above.
+    // PermissionEngine.canIn is correct today and has been since Task 3 — it
+    // simply has no production caller yet (see permission.guard.ts: zero
+    // call sites). This is the information Milestone 3b needs in order to
+    // close the previous test's gap; its job is to start CALLING canIn from
+    // the read (and write) paths, not to change what canIn itself returns.
+    // This assertion should remain true, unchanged, after 3b lands — if it
+    // ever needs to change, something more fundamental broke.
+    const engine = new PermissionEngine(ctx.db)
+    const actor = await engine.resolveActor({ subject: 'kc-1', username: 'ada', email: null })
+    const allowed = await engine.canIn(actor, 'user:read', engineering.id)
+    expect(allowed).toBe(false)
   })
 
   // Guard-order defense: PermissionGuard reads request.principal, which only

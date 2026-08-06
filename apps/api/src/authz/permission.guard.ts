@@ -68,18 +68,17 @@ export class PermissionGuard implements CanActivate {
     // very next request" test, which exists specifically to pin this.
     const actor = await this.engine.resolveActor(request.principal)
 
-    // Gates route ENTRY only: does this actor hold `required` ANYWHERE at
-    // all? This is deliberately `assertCanAnywhere`, not a per-resource
-    // scope check — the engine has no `assertCan(actor, action, target?)`
-    // anymore (see permission.engine.ts): an optional target let "no target
-    // to check, this is a list route" and "a failed lookup" collapse into
-    // the same `undefined`, and the list-route branch resolved to an
-    // accidental allow (Task 3 review, Finding I-2). `canIn`/`assertCanIn`
-    // require an already-resolved target and belong to the controllers
-    // (narrowing a list by `scopePathsFor`, or checking a single identified
-    // resource) — that per-resource narrowing is this milestone's read
-    // controllers today and Milestone 3b's write paths next; it is never
-    // this guard's job.
+    // Gates route ENTRY only: "does this actor hold `required` ANYWHERE at
+    // all?" Deliberately `assertCanAnywhere`, not a per-resource check (see
+    // permission.engine.ts, Task 3 Finding I-2, for why there is no
+    // optional-target `assertCan` to call instead). TRUTH as of Milestone
+    // 3a: per-resource scope narrowing is NOT wired into any controller —
+    // an actor holding `required` at any scope reaches every route gated by
+    // it and sees every resource, regardless of org-unit scope. `canIn`,
+    // `assertCanIn`, and `scopePathsFor` on PermissionEngine exist and are
+    // correct but have ZERO production call sites today. Milestone 3b MUST
+    // wire them into every write path before it ships: the same gap that
+    // merely over-discloses on a read is privilege escalation on a write.
     this.engine.assertCanAnywhere(actor, required)
 
     request.actor = actor

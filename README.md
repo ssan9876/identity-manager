@@ -46,11 +46,17 @@ Compose stack.
 **This build must not be deployed to a real network.**
 
 The entire HTTP surface shipped so far is **read-only** (`GET` only — no
-`POST`/`PUT`/`PATCH`/`DELETE` route exists anywhere) and **authenticated-only**:
-every controller requires a valid Keycloak-issued JWT, but there is
-**no per-user authorization** yet. Any authenticated user can currently read
-the entire directory — users, org units, and groups — regardless of role or
-org-unit scope. The RBAC engine and audit log that enforce who may see or
-change what land in Milestone 3, which is also the gate for any write
-endpoint. Do not point this build at a real organization's data, and do not
-expose it beyond a local development environment before Milestone 3 lands.
+`POST`/`PUT`/`PATCH`/`DELETE` route exists anywhere). Every route now requires
+both a valid Keycloak-issued JWT **and** a role assignment that grants the
+specific action being performed (e.g. `user:read`) — an unauthenticated
+request, or one from a principal whose roles don't grant the action, is
+rejected.
+
+What this does **not** yet do: enforce a role's org-unit *scope* per resource.
+Role assignments can be scoped (e.g. `help_desk` limited to Sales), but no
+controller narrows results by that scope today — any actor holding a
+qualifying read permission, at any scope, can read the entire directory (all
+users, org units, and groups), not just their own subtree. Closing that gap,
+and enforcing it on every write endpoint before one ships, is Milestone 3b's
+first task. Do not point this build at a real organization's data, and do not
+expose it beyond a local development environment before Milestone 3b lands.
