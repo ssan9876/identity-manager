@@ -133,6 +133,12 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
   // REAL PermissionEngine instance the compiled module wires into
   // ImportsController — see that test's own comment.
   let engine: PermissionEngine
+  // Captured for the "unexpected error mid-batch" regression test below,
+  // which spies on the REAL UsersRepository instance the compiled module
+  // wires into ImportsController (the same DI singleton `this.users` inside
+  // the controller resolves to — NOT the throwaway `usersRepo()` instances
+  // fixture helpers below construct for direct, out-of-band setup calls).
+  let usersRepository: UsersRepository
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -154,6 +160,7 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
       .compile()
 
     engine = moduleRef.get(PermissionEngine)
+    usersRepository = moduleRef.get(UsersRepository)
     app = moduleRef.createNestApplication()
     app.useGlobalFilters(new DomainExceptionFilter())
     await app.init()
@@ -217,14 +224,13 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
   // POST /imports/preview
   // =======================================================================
   describe('POST /imports/preview', () => {
-    it('writes NOTHING — user, audit and outbox counts all unchanged — even for otherwise-valid rows', async () => {
+    it('writes NOTHING about a user — user and outbox counts unchanged, even for otherwise-valid rows', async () => {
       const org = await makeOrgUnit('Preview Root')
       const actor = await makeActiveUser('previewer', org.id)
       await grant(actor.id, 'user_admin', org.id)
       currentUsername = actor.username
 
       const usersBefore = await totalUserCount(ctx)
-      const auditBefore = await totalAuditCount(ctx)
       const outboxBefore = await totalOutboxCount(ctx)
 
       const csv = buildCsv([row({ orgUnitId: org.id }), row({ orgUnitId: org.id })])
@@ -239,8 +245,84 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
       expect(res.body.toCreate).toHaveLength(2)
 
       expect(await totalUserCount(ctx)).toBe(usersBefore)
-      expect(await totalAuditCount(ctx)).toBe(auditBefore)
       expect(await totalOutboxCount(ctx)).toBe(outboxBefore)
+    })
+
+    // docs/superpowers/audit-secrets.md H1 (mirrored in audit-injection.md):
+    // preview used to write ZERO audit rows under any circumstance, which is
+    // exactly what let cross-scope directory enumeration through this
+    // endpoint go completely untraced. It must now write EXACTLY ONE
+    // audit row per successful invocation — never one per candidate row
+    // (that would itself be an amplified write against the same unbounded
+    // row count the audit flags) — recording who ran it and how large.
+    it('writes exactly one invocation-level audit row per successful call, recording actor and row count', async () => {
+      const org = await makeOrgUnit('Preview Audit Root')
+      const actor = await makeActiveUser('audited-previewer', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const auditBefore = await totalAuditCount(ctx)
+      const csv = buildCsv([row({ orgUnitId: org.id }), row({ orgUnitId: org.id }), row({ orgUnitId: org.id })])
+
+      await request(app.getHttpServer()).post('/imports/preview').send({ csv }).expect(200)
+
+      expect(await totalAuditCount(ctx)).toBe(auditBefore + 1)
+
+      const { rows } = await ctx.pool.query<{
+        actor_user_id: string
+        action: string
+        resource_type: string
+        resource_id: string | null
+        after: { rowCount: number }
+      }>(
+        "SELECT actor_user_id, action, resource_type, resource_id, after FROM audit_log WHERE action = 'import:preview' AND actor_user_id = $1 ORDER BY id DESC LIMIT 1",
+        [actor.id],
+      )
+      expect(rows).toHaveLength(1)
+      expect(rows[0].resource_type).toBe('import')
+      expect(rows[0].resource_id).toBeNull()
+      expect(rows[0].after.rowCount).toBe(3)
+
+      // Never one row per CANDIDATE — three rows in the file must still
+      // produce exactly one audit row for this call, not three.
+      expect(await totalAuditCount(ctx)).toBe(auditBefore + 1)
+    })
+
+    // The other half of "rejected requests write zero audit rows": a
+    // request that never gets far enough to be a genuine enumeration
+    // attempt (malformed input, or no permission at all) must not be
+    // audited either — see the REQUIREMENTS section this fix wave was
+    // built against.
+    it('a malformed request (400) writes no audit row', async () => {
+      const org = await makeOrgUnit('Preview Reject Audit Root')
+      const actor = await makeActiveUser('reject-previewer', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const auditBefore = await totalAuditCount(ctx)
+
+      await request(app.getHttpServer())
+        .post('/imports/preview')
+        .send({ csv: 'employeeId,primaryEmail,username,firstName,lastName,orgUnitId\n"unterminated' })
+        .expect(400)
+
+      expect(await totalAuditCount(ctx)).toBe(auditBefore)
+    })
+
+    it('an actor with no user:create grant anywhere (403) writes no audit row', async () => {
+      const org = await makeOrgUnit('Preview Reject Perm Audit Root')
+      const actor = await makeActiveUser('reject-perm-previewer', org.id)
+      await grant(actor.id, 'read_only', org.id)
+      currentUsername = actor.username
+
+      const auditBefore = await totalAuditCount(ctx)
+
+      await request(app.getHttpServer())
+        .post('/imports/preview')
+        .send({ csv: buildCsv([row({ orgUnitId: org.id })]) })
+        .expect(403)
+
+      expect(await totalAuditCount(ctx)).toBe(auditBefore)
     })
 
     it('reports an out-of-scope row as a FAILURE, never a silent skip', async () => {
@@ -262,6 +344,117 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
       expect(res.body.summary.failed).toBe(1)
       expect(res.body.failures).toHaveLength(1)
       expect(res.body.failures[0].row).toBe(2)
+    })
+
+    // docs/superpowers/audit-secrets.md H1 — the flagship reproduction.
+    // resolveRow's existence lookups (findByEmployeeId/findByEmail/
+    // findByUsername) are globally UNSCOPED, so an actor holding
+    // user:create in ONE org unit could learn, for a victim they get 403 on
+    // via GET /users/:id: that the employeeId exists at all (routed to the
+    // UPDATE branch), AND — given that employeeId — whether a guessed
+    // email/username/orgUnitId is correct, one field at a time, since each
+    // WRONG guess emitted its own named "cannot be changed" reason
+    // alongside the scope rejection, and a CORRECT guess made that reason
+    // silently vanish. ~1,500 candidates/request, 2.9s, and (pre the audit
+    // row added above) zero trace.
+    describe('cross-scope disclosure on a scope-rejected row', () => {
+      it('discloses ONLY the scope rejection — no field-mismatch detail about a record the actor cannot read', async () => {
+        const root = await makeOrgUnit('Oracle Root')
+        const mine = await makeChildOrgUnit(root.id, 'Mine')
+        const theirs = await makeChildOrgUnit(root.id, 'Theirs')
+        const attacker = await makeActiveUser('attacker', mine.id)
+        await grant(attacker.id, 'user_admin', mine.id)
+        currentUsername = attacker.username
+
+        const tag = nextTag()
+        const victimEmployeeId = `EMP-SECRET-${tag}`
+        await usersRepo().create({
+          primaryEmail: `victim-${tag}@example.com`,
+          username: `victim-${tag}`,
+          firstName: 'Victim',
+          lastName: 'User',
+          orgUnitId: theirs.id,
+          employeeId: victimEmployeeId,
+        })
+
+        // Every field below is a WRONG guess (the real values are the
+        // victim's own, in `theirs` — the attacker cannot see them). Pre-fix,
+        // each wrong guess surfaced as its own named reason.
+        const csv = buildCsv([
+          {
+            employeeId: victimEmployeeId,
+            primaryEmail: `guess-${tag}@example.com`,
+            username: `guessuser-${tag}`,
+            firstName: 'A',
+            lastName: 'B',
+            orgUnitId: mine.id,
+          },
+        ])
+
+        const res = await request(app.getHttpServer())
+          .post('/imports/preview')
+          .send({ csv })
+          .expect(200)
+
+        expect(res.body.summary.failed).toBe(1)
+        const reasons: string[] = res.body.failures[0].reasons
+
+        // THE regression: pre-fix, this row's reasons additionally included
+        // "primaryEmail: cannot be changed...", "username: cannot be
+        // changed...", and "orgUnitId: cannot be changed..." alongside the
+        // scope rejection — confirming all three guesses were wrong. Only
+        // the scope/privilege rejection may appear now.
+        expect(reasons).toHaveLength(1)
+        expect(reasons[0]).toContain('not permitted')
+        const joined = reasons.join(' ')
+        expect(joined).not.toContain('primaryEmail')
+        expect(joined).not.toContain('username')
+        expect(joined).not.toContain('orgUnitId')
+        expect(joined).not.toContain('cannot be changed')
+      })
+
+      // Positive control: the fix narrows DISCLOSURE for an out-of-scope
+      // actor, not legitimate error detail for an in-scope one — an admin
+      // fixing a real typo in their own org unit still sees exactly which
+      // field is wrong.
+      it('an in-scope row still reports field-mismatch detail normally', async () => {
+        const org = await makeOrgUnit('Oracle InScope Root')
+        const actor = await makeActiveUser('inscope-previewer', org.id)
+        await grant(actor.id, 'user_admin', org.id)
+        currentUsername = actor.username
+
+        const tag = nextTag()
+        const employeeId = `EIS-${tag}`
+        await usersRepo().create({
+          primaryEmail: `inscope-${tag}@example.com`,
+          username: `inscope-${tag}`,
+          firstName: 'In',
+          lastName: 'Scope',
+          orgUnitId: org.id,
+          employeeId,
+        })
+
+        const csv = buildCsv([
+          {
+            employeeId,
+            primaryEmail: `wrong-${tag}@example.com`,
+            username: `wronguser-${tag}`,
+            firstName: 'In',
+            lastName: 'Scope',
+            orgUnitId: org.id,
+          },
+        ])
+
+        const res = await request(app.getHttpServer())
+          .post('/imports/preview')
+          .send({ csv })
+          .expect(200)
+
+        expect(res.body.summary.failed).toBe(1)
+        const joined: string = res.body.failures[0].reasons.join(' ')
+        expect(joined).toContain('primaryEmail')
+        expect(joined).toContain('username')
+      })
     })
 
     it('reports a duplicate employee_id within the same file rather than silently letting the last one win', async () => {
@@ -391,6 +584,32 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
         .send({ csv: buildCsv([row({ orgUnitId: org.id })]) })
         .expect(403)
       expect(res.body.code).toBe('FORBIDDEN')
+    })
+
+    // docs/superpowers/audit-injection.md HIGH finding: a JSON-escaped NUL
+    // (Unicode code point 0) is legal JSON, passes body-parser, every Zod
+    // check that existed pre-fix, and csv-parse — it only failed once it
+    // reached Postgres as a raw, non-DomainError exception, an unmapped
+    // 500. Confirmed live on exactly this endpoint (the "safe, read-only
+    // dry run"). Must now fail cleanly as an ordinary per-row validation
+    // failure, never a 500.
+    it('a NUL character in a CSV cell fails that row cleanly with 200, never a 500', async () => {
+      const org = await makeOrgUnit('Preview Nul Cell Root')
+      const actor = await makeActiveUser('nul-previewer', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const nul = String.fromCharCode(0)
+      const csv = buildCsv([row({ orgUnitId: org.id, firstName: `Fi${nul}rst` })])
+
+      const res = await request(app.getHttpServer())
+        .post('/imports/preview')
+        .send({ csv })
+        .expect(200)
+
+      expect(res.body.summary.toCreate).toBe(0)
+      expect(res.body.summary.failed).toBe(1)
+      expect(res.body.failures[0].reasons.join(' ')).toContain('firstName')
     })
   })
 
@@ -825,6 +1044,178 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
       expect(res.body.created).toBe(0)
       expect(res.body.failed).toBe(1)
       expect(res.body.failures[0].reasons.join(' ')).toContain('mysteryColumn')
+    })
+
+    // docs/superpowers/audit-injection.md HIGH finding — the fourth
+    // recurrence of this project's prototype-chain defect class, this time
+    // as silent key ELISION rather than pollution. Pre-fix: a CSV column
+    // literally named "__proto__" was silently discarded while the file
+    // still counted as "has extra headers", so the matched row's attributes
+    // were validated as {} (nothing failed) and UsersRepository.update wrote
+    // that {} WHOLESALE, destroying every existing custom attribute while
+    // reporting a clean 200 {updated:1, failed:0} — worse than the
+    // "mysteryColumn" control immediately above, which correctly fails the
+    // row. The bug was SILENT DATA DESTRUCTION reported as success, so this
+    // test does not stop at the status code: it asserts the stored
+    // attributes are byte-for-byte unchanged.
+    it('a CSV column named "__proto__" fails the row instead of silently wiping the matched user\'s attributes to {}', async () => {
+      const org = await makeOrgUnit('Proto Header Root')
+      const actor = await makeActiveUser('proto-committer', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const tag = nextTag()
+      const employeeId = `EPROTO-${tag}`
+      const originalAttributes = { deptA: 'Finance', costA: 'CC-42' }
+      const existing = await usersRepo().create({
+        primaryEmail: `proto-${tag}@example.com`,
+        username: `proto-${tag}`,
+        firstName: 'Before',
+        lastName: 'Attack',
+        orgUnitId: org.id,
+        employeeId,
+        attributes: originalAttributes,
+      })
+      expect(existing.attributes).toEqual(originalAttributes)
+
+      // Hand-written CSV text, matching the audit's own reproduction. Built
+      // as a plain string (never via buildCsv()'s row-object helper): the
+      // __proto__ hazard lives entirely inside csv.ts's own header-to-row
+      // zip, which only exists once this text is tokenized server-side — at
+      // the wire level a CSV file is just text, so there is no JS
+      // object-literal subtlety to route around here.
+      const csv =
+        'employeeId,primaryEmail,username,firstName,lastName,orgUnitId,__proto__\n' +
+        `${employeeId},${existing.primaryEmail},${existing.username},F,L,${org.id},anything`
+
+      const res = await request(app.getHttpServer())
+        .post('/imports/commit')
+        .send({ csv })
+        .expect(200)
+
+      // Pre-fix this was {updated: 1, failed: 0}. A __proto__ column must
+      // fail the row exactly like the "mysteryColumn" control case above —
+      // never succeed silently.
+      expect(res.body.created).toBe(0)
+      expect(res.body.updated).toBe(0)
+      expect(res.body.failed).toBe(1)
+      expect(res.body.failures[0].employeeId).toBe(employeeId)
+      expect(res.body.failures[0].reasons.join(' ')).toContain('__proto__')
+
+      // THE regression check that matters: the user's attributes must be
+      // completely untouched. A test that only checked failed:1 above would
+      // miss a recurrence where the row is correctly rejected for some
+      // OTHER reason while still, separately, wiping attributes as a side
+      // effect (they are two different code paths — resolveRow's rejection
+      // vs. UsersRepository.update's write).
+      const reloaded = await usersRepo().findById(existing.id)
+      expect(reloaded?.attributes).toEqual(originalAttributes)
+
+      // And genuinely no prototype pollution occurred either, while here.
+      expect(Object.getOwnPropertyNames(Object.prototype)).not.toContain('anything')
+    })
+
+    // docs/superpowers/audit-injection.md HIGH finding — the "sharp end":
+    // pre-fix, a NUL in row 2 of a 3-row commit left row 1 already
+    // committed, row 3 never attempted, and returned a bare 500 with NO
+    // batchId — the admin could not even identify what had been written.
+    // The root-cause fix (import-row.ts's shapeSchema now rejects a NUL
+    // before any row resolves to a create/update) means row 2 is now a
+    // clean per-row FAILURE from resolveRow itself, so rows 1 and 3 commit
+    // normally in the same request.
+    it('a NUL character in one row does not abort the batch — the other rows still commit and batchId is always returned', async () => {
+      const org = await makeOrgUnit('Commit Nul Sharp End Root')
+      const actor = await makeActiveUser('nul-committer', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const nul = String.fromCharCode(0)
+      const usersBefore = await totalUserCount(ctx)
+
+      const csv = buildCsv([
+        row({ orgUnitId: org.id }), // row 1: valid
+        row({ orgUnitId: org.id, firstName: `Fi${nul}rst` }), // row 2: NUL
+        row({ orgUnitId: org.id }), // row 3: valid
+      ])
+
+      const res = await request(app.getHttpServer())
+        .post('/imports/commit')
+        .send({ csv })
+        .expect(200)
+
+      expect(typeof res.body.batchId).toBe('string')
+      expect(res.body.created).toBe(2)
+      expect(res.body.failed).toBe(1)
+      expect(res.body.failures[0].row).toBe(3) // CSV row 2 -> rowNumber 3 (header + 1-based)
+      expect(res.body.failures[0].reasons.join(' ')).toContain('firstName')
+
+      expect(await totalUserCount(ctx)).toBe(usersBefore + 2)
+    })
+
+    // Separate from the root-cause fix above: this pins the DEFENSIVE fix
+    // (writeAttemptFailureReasons in imports.controller.ts) directly, for
+    // ANY unexpected error reached during the actual WRITE attempt — not
+    // just the NUL case, which the root-cause fix now intercepts earlier
+    // and therefore never reaches this code path at all. Simulates a raw,
+    // non-DomainError infrastructure failure (exactly the shape a `pg`
+    // encoding error had) on the SECOND row's write by spying on the real
+    // UsersRepository instance the compiled module wires into
+    // ImportsController.
+    it('an unexpected non-DomainError during a row write does not abort the batch — batchId and every other row\'s outcome are still returned', async () => {
+      const org = await makeOrgUnit('Commit Unexpected Error Root')
+      const actor = await makeActiveUser('unexpected-committer', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const usersBefore = await totalUserCount(ctx)
+      const csv = buildCsv([
+        row({ orgUnitId: org.id }),
+        row({ orgUnitId: org.id }),
+        row({ orgUnitId: org.id }),
+      ])
+
+      const realCreate = usersRepository.create.bind(usersRepository)
+      let callCount = 0
+      const spy = vi
+        .spyOn(usersRepository, 'create')
+        .mockImplementation(async (input, db) => {
+          callCount += 1
+          if (callCount === 2) {
+            // A raw Error, deliberately NOT a DomainError — simulates an
+            // infrastructure failure translateWriteError does not
+            // recognize (pre-fix, this is exactly what a NUL-encoding `pg`
+            // error looked like to this code path).
+            throw new Error('simulated infrastructure failure')
+          }
+          return realCreate(input, db)
+        })
+
+      try {
+        const res = await request(app.getHttpServer())
+          .post('/imports/commit')
+          .send({ csv })
+          .expect(200)
+
+        // THE regression: pre-fix, a non-DomainError here was RETHROWN out
+        // of the per-row loop (domainErrorReasons' rethrow-on-unknown
+        // behaviour), aborting the whole request as an unmapped 500 with
+        // NO batchId — losing the only handle on what the first row had
+        // already committed.
+        expect(typeof res.body.batchId).toBe('string')
+        expect(res.body.created).toBe(2)
+        expect(res.body.failed).toBe(1)
+        expect(res.body.failures).toHaveLength(1)
+        expect(res.body.failures[0].row).toBe(3) // the 2nd CSV row -> rowNumber 3
+
+        // The raw error message is logged server-side, never echoed to the
+        // caller — see writeAttemptFailureReasons' own doc comment.
+        expect(res.body.failures[0].reasons.join(' ')).not.toContain('simulated')
+
+        // Rows 1 and 3 genuinely committed despite row 2's failure.
+        expect(await totalUserCount(ctx)).toBe(usersBefore + 2)
+      } finally {
+        spy.mockRestore()
+      }
     })
   })
 })

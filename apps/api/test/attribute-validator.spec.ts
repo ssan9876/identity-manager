@@ -63,6 +63,17 @@ describe('validateAttributes', () => {
     })
   })
 
+  // docs/superpowers/audit-injection.md HIGH finding: a JSON-escaped NUL is
+  // legal JSON and passed every check that existed pre-fix, only failing
+  // once it reached Postgres (a jsonb-stored attribute value) as a raw,
+  // unmapped 500.
+  it('rejects a NUL character embedded in a string attribute value', () => {
+    const defs = [def({ key: 'notes', dataType: 'string' })]
+    const nul = String.fromCharCode(0)
+    expect(() => validateAttributes(defs, { notes: `a${nul}b` })).toThrow(AttributeValidationError)
+    expect(() => validateAttributes(defs, { notes: `a${nul}b` })).toThrow(/NUL/)
+  })
+
   it('enforces numeric bounds', () => {
     const defs = [
       def({ key: 'headcount', dataType: 'number', validationRules: { min: 1, max: 10 } }),

@@ -132,7 +132,22 @@ export class UsersRepository {
         .insert(users)
         .values({
           primaryEmail: input.primaryEmail,
-          username: input.username,
+          // LOW finding (docs/superpowers/audit-injection.md): unnormalised
+          // Unicode input (NFD, RTL overrides, ZWJ, homoglyphs) was stored
+          // verbatim. `users_username_unique` and PermissionEngine.resolveActor
+          // both already agree exactly on `lower(username)` — this is NOT an
+          // ambiguous-principal-resolution bug, Postgres's own `lower()`
+          // folding rejects a same-fold collision with 409 regardless — but
+          // NFC "café" and NFD "café" fold to DIFFERENT byte sequences even
+          // after lower(), so both currently succeed as two visually
+          // IDENTICAL, distinct accounts (a display-layer impersonation risk:
+          // displayName is shown to every user in the directory). This is the
+          // only site that ever sets `username` on a user — see
+          // UsersRepository.update's own doc comment for why PATCH excludes
+          // it — so normalising here, once, on write closes the gap: two
+          // requests differing only in normalisation form now collide on the
+          // SAME stored NFC form and correctly 409 via the unique index.
+          username: input.username.normalize('NFC'),
           firstName: input.firstName,
           lastName: input.lastName,
           displayName: `${input.firstName} ${input.lastName}`.trim(),

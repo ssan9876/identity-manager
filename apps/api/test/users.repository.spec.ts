@@ -50,6 +50,36 @@ describe('UsersRepository', () => {
     await expect(users.create(input({ username: 'ada2' }))).rejects.toThrow()
   })
 
+  // LOW finding (docs/superpowers/audit-injection.md): unnormalised Unicode
+  // usernames were stored verbatim, so an NFD-typed username and its NFC
+  // (pre-composed) equivalent — visually IDENTICAL to a human, byte-distinct
+  // to Postgres's lower()-based unique index — could both exist as separate
+  // accounts. Not a resolution-ambiguity bug (lower() already agrees with
+  // PermissionEngine.resolveActor exactly), but a display-layer
+  // impersonation risk this closes by normalising on write.
+  it('normalises a username to NFC on write, so an NFD-typed username collides with its NFC equivalent instead of creating a second, visually-identical account', async () => {
+    const combiningAcute = String.fromCharCode(0x301)
+    const nfd = `cafe${combiningAcute}user` // "e" + combining acute — NOT pre-composed
+    const nfc = nfd.normalize('NFC') // pre-composed "é" — what a human would normally type
+
+    // Sanity: these really are two different byte sequences that really do
+    // represent the same visual identity — otherwise this test proves nothing.
+    expect(nfd).not.toBe(nfc)
+    expect(nfd.normalize('NFC')).toBe(nfc)
+
+    const created = await users.create(input({ username: nfd, primaryEmail: 'nfd@example.com' }))
+    // Stored form is NFC, not the raw NFD bytes the caller sent.
+    expect(created.username).toBe(nfc)
+    expect(created.username).not.toBe(nfd)
+
+    // A second signup using the pre-composed NFC form of the SAME visual
+    // username must now collide, not create a second, visually-identical
+    // account.
+    await expect(
+      users.create(input({ username: nfc, primaryEmail: 'nfc@example.com' })),
+    ).rejects.toThrow()
+  })
+
   it('finds by email case-insensitively', async () => {
     await users.create(input())
     expect((await users.findByEmail('ADA@EXAMPLE.COM'))?.username).toBe('ada')

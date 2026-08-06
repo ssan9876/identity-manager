@@ -86,11 +86,46 @@ type RowResolution =
  * that would abort the whole request. Anything that is NOT a DomainError is
  * a genuine bug (see common/errors.ts) and is rethrown to surface as a 500,
  * exactly like every other handler in this codebase.
+ *
+ * Used by `resolveRow`/`resolveCreateRow`/`resolveUpdateRow` below — every
+ * call site there wraps a PURE READ (a permission check, an attribute
+ * validation, a manager lookup) performed BEFORE any write is attempted, so
+ * an unrecognized throw there really is a bug worth surfacing loudly. It is
+ * deliberately NOT used for `commit`'s own per-row WRITE attempt — see
+ * `writeAttemptFailureReasons` below for why that one specific call site
+ * needs a non-rethrowing sibling instead.
  */
 function domainErrorReasons(error: unknown): string[] {
   if (error instanceof ValidationError) return error.issues
   if (error instanceof DomainError) return [error.message]
   throw error
+}
+
+/**
+ * `commit`'s per-row catch around the actual `this.users.create`/`update`
+ * write attempt uses THIS, not `domainErrorReasons` above — the one
+ * deliberate difference between the two. A DomainError here (typically a
+ * `translateWriteError` ConflictError/NotFoundError surfacing from a race
+ * against `resolveRow`'s own earlier, non-transactional reads) still
+ * reports its normal specific message. But anything else must NEVER
+ * rethrow: doing so aborts the whole `commit` request mid-loop, and the
+ * caller never receives `batchId` — the only handle for auditing or
+ * reversing whatever earlier rows in the SAME request already committed
+ * (docs/superpowers/audit-injection.md HIGH finding — a NUL-encoding error
+ * on row 2 used to leave row 1 committed, row 3 never attempted, and return
+ * a bare 500 with no way to identify what was written). Logged server-side
+ * (this codebase's established best-effort `console.error` convention —
+ * see UsersController.revokeKeycloakAccess) with full detail for an
+ * operator to investigate; reported to the caller as a generic reason that
+ * never echoes raw driver internals, and — critically — the loop continues
+ * to the next row rather than aborting the request.
+ */
+function writeAttemptFailureReasons(error: unknown): string[] {
+  if (error instanceof ValidationError) return error.issues
+  if (error instanceof DomainError) return [error.message]
+  const message = error instanceof Error ? error.message : String(error)
+  console.error(`[imports.controller] row write failed with an unexpected error: ${message}`)
+  return ['an unexpected error occurred while writing this row']
 }
 
 /**
@@ -120,9 +155,15 @@ async function appendManagerReason(
  *
  * THE FOUR THINGS THAT MATTER MOST (from the milestone brief), and where
  * each is enforced:
- *  1. Preview writes nothing — `preview()` below calls `resolveRow` only,
- *     which performs reads alone (no INSERT/UPDATE statement anywhere in
- *     that call graph); the write path is exclusively inside `commit()`.
+ *  1. Preview writes nothing ABOUT A USER — `preview()` below calls
+ *     `resolveRow` only, which performs reads alone (no user INSERT/UPDATE
+ *     statement anywhere in that call graph, and no outbox event); the
+ *     user-facing write path is exclusively inside `commit()`. The one
+ *     deliberate exception, added for docs/superpowers/audit-secrets.md
+ *     finding H1, is a single append-only audit row per PREVIEW INVOCATION
+ *     (actor, row count, timestamp — never per candidate row) so mass
+ *     cross-scope probing through this endpoint is no longer silent — see
+ *     `preview()`'s own doc comment.
  *  2. Reuses the existing single-record write paths — `commit()` calls
  *     `this.users.create`/`this.users.update`, `this.auditWriter.record`,
  *     `this.outboxWriter.record`: the SAME functions UsersController's
@@ -184,16 +225,48 @@ export class ImportsController {
 
   /**
    * Dry-run diff: every row is resolved exactly as `commit` would resolve
-   * it, but nothing is written — `resolveRow` never calls
-   * `this.users.create`/`update`, `this.auditWriter.record`, or
-   * `this.outboxWriter.record`; it only reads. 200, not 201: nothing is
-   * created by this request.
+   * it, but nothing about a USER is written — `resolveRow` never calls
+   * `this.users.create`/`update` or `this.outboxWriter.record`; it only
+   * reads. 200, not 201: nothing is created by this request.
+   *
+   * The ONE exception is the invocation-level audit row written
+   * immediately below, once `parseAndPrepare` has already succeeded —
+   * docs/superpowers/audit-secrets.md finding H1 (mirrored in
+   * audit-injection.md): `resolveRow` performs globally UNSCOPED
+   * `findByEmployeeId`/`findByEmail`/`findByUsername` lookups and reports
+   * per-field mismatches as named reasons, so an actor holding
+   * `user:create` in ONE org unit can enumerate email/username/employeeId
+   * existence and confirm guessed field values for users anywhere in the
+   * directory — entirely silently, since this endpoint previously wrote
+   * NOTHING at all, ever. `resolveUpdateRow` now also stops disclosing
+   * per-field detail the moment scope/privilege rejects a row (the other
+   * half of that finding), but a scoped actor probing rows they ARE
+   * entitled to touch is unaffected by that — this audit row is what makes
+   * mass probing visible after the fact either way: one row per HTTP
+   * invocation (actor, row count, timestamp via `created_at`), never one
+   * per candidate row — `audit_log` is append-only, so turning THIS into a
+   * per-row log would itself become a second amplified write for the exact
+   * unbounded-row-count endpoint the audit flags.
    */
   @Post('preview')
   @HttpCode(HttpStatus.OK)
   @RequirePermission('user:create')
   async preview(@Body() body: unknown, @Req() request: AuthorizedRequest): Promise<ImportPreviewResponse> {
     const { rows, fileHasExtraHeaders, definitions } = await this.parseAndPrepare(body)
+
+    // Only reached once parsing/permission have already succeeded — a
+    // rejected request (bad CSV, no permission anywhere) writes nothing,
+    // same contract as every other write handler in this codebase.
+    await this.db.transaction(async (tx) => {
+      await this.auditWriter.record(tx, {
+        actorUserId: request.actor.userId,
+        action: 'import:preview',
+        resourceType: 'import',
+        resourceId: null,
+        before: null,
+        after: { rowCount: rows.length },
+      })
+    })
 
     const toCreate: ImportPreviewCreateRow[] = []
     const toUpdate: ImportPreviewUpdateRow[] = []
@@ -334,7 +407,7 @@ export class ImportsController {
         failures.push({
           row: resolution.row,
           employeeId: resolution.employeeId,
-          reasons: domainErrorReasons(error),
+          reasons: writeAttemptFailureReasons(error),
         })
       }
     }
@@ -434,6 +507,54 @@ export class ImportsController {
     fileHasExtraHeaders: boolean,
     definitions: AttributeDefinition[],
   ): Promise<RowResolution> {
+    // Scope AND privilege are checked FIRST, before anything else about
+    // this row is computed or disclosed — docs/superpowers/audit-secrets.md
+    // H1 (mirrored in audit-injection.md): resolveRow's own caller already
+    // resolves `existing` via a GLOBALLY UNSCOPED findByEmployeeId lookup,
+    // so an out-of-scope actor already learns "this employeeId exists
+    // somewhere" the moment a row lands here at all. The three field-
+    // mismatch reasons below would ADDITIONALLY confirm, one guessed field
+    // at a time, exactly which of primaryEmail/username/orgUnitId is
+    // correct for a record that actor cannot even read via
+    // GET /users/:id (403 today) — each wrong guess emits its own named
+    // reason, and a correct guess makes it silently vanish, turning this
+    // endpoint into a per-field confirmation oracle: ~1,500 candidate rows
+    // per request, no trace (preview writes nothing — see the audit row
+    // this class's `preview()` now writes per INVOCATION to close that
+    // half). Once scope OR privilege rejects, this returns IMMEDIATELY
+    // with that rejection alone — the mismatch, manager-resolvability, and
+    // attribute-validity checks below never run and never leak anything
+    // about this specific row.
+    const scopeReasons: string[] = []
+    try {
+      // Finding L-3 (docs/superpowers/audit-authz.md): an UPDATE row is
+      // narrowed with 'user:update', not 'user:create' — this is the update
+      // branch (resolveRow already matched an EXISTING user by employeeId;
+      // see resolveCreateRow just below for the create branch, which
+      // correctly uses 'user:create'). Not exploitable today (every role
+      // holding 'user:create' also holds 'user:update' — see ROLE_PERMISSIONS
+      // in authz/actions.ts — and this whole controller's routes are gated
+      // on 'user:create' at PermissionGuard besides), but it was a
+      // route/action mismatch that would misauthorize silently the moment
+      // that catalog fact ever changed.
+      await this.engine.assertCanIn(actor, 'user:update', existing.orgUnitId)
+    } catch (error) {
+      scopeReasons.push(...domainErrorReasons(error))
+    }
+
+    try {
+      await this.privileges.assertCanModifyPrincipal(actor, existing.id)
+    } catch (error) {
+      scopeReasons.push(...domainErrorReasons(error))
+    }
+
+    if (scopeReasons.length > 0) {
+      return { kind: 'failure', row: rowNumber, employeeId: row.employeeId, reasons: scopeReasons }
+    }
+
+    // From here on the actor has proven they may act on THIS record — the
+    // checks below (and their results) are safe to run and disclose.
+
     // These three are the exact fields UpdateUserInput cannot express — see
     // this method's caller's doc comment for why a mismatch is a reported
     // failure rather than a silent partial-apply.
@@ -451,28 +572,6 @@ export class ImportsController {
       reasons.push(
         'orgUnitId: cannot be changed via import; does not match the existing user with this employeeId',
       )
-    }
-
-    try {
-      // Finding L-3 (docs/superpowers/audit-authz.md): an UPDATE row is
-      // narrowed with 'user:update', not 'user:create' — this is the update
-      // branch (resolveRow already matched an EXISTING user by employeeId;
-      // see resolveCreateRow just below for the create branch, which
-      // correctly uses 'user:create'). Not exploitable today (every role
-      // holding 'user:create' also holds 'user:update' — see ROLE_PERMISSIONS
-      // in authz/actions.ts — and this whole controller's routes are gated
-      // on 'user:create' at PermissionGuard besides), but it was a
-      // route/action mismatch that would misauthorize silently the moment
-      // that catalog fact ever changed.
-      await this.engine.assertCanIn(actor, 'user:update', existing.orgUnitId)
-    } catch (error) {
-      reasons.push(...domainErrorReasons(error))
-    }
-
-    try {
-      await this.privileges.assertCanModifyPrincipal(actor, existing.id)
-    } catch (error) {
-      reasons.push(...domainErrorReasons(error))
     }
 
     await appendManagerReason(this.users, row.managerId, reasons)

@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
-import { validateAttributes } from '../attributes/attribute-validator'
+import { rawAttributesSchema, validateAttributes } from '../attributes/attribute-validator'
 import { JwtGuard } from '../auth/jwt.guard'
 import { AuditWriter } from '../audit/audit.writer'
 import type { Action } from '../authz/actions'
@@ -25,17 +25,21 @@ import { ForbiddenError, NotFoundError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
 import { type Page, parsePageQuery } from '../common/pagination'
+import { noNulChar } from '../common/http/safe-string'
 import * as schema from '../db/schema/index'
 import { OutboxWriter } from '../outbox/outbox.writer'
 import { UsersRepository } from '../users/users.repository'
 import { GroupsRepository, type Group } from './groups.repository'
 
+// noNulChar wraps every free-text field — see docs/superpowers/audit-
+// injection.md's HIGH "JSON-escaped NUL" finding and safe-string.ts's own
+// doc comment.
 const createGroupBodySchema = z
   .object({
-    name: z.string().min(1).max(255),
-    description: z.string().min(1).max(1024).optional(),
+    name: noNulChar(z.string().min(1).max(255)),
+    description: noNulChar(z.string().min(1).max(1024)).optional(),
     orgUnitId: z.string().uuid().optional(),
-    attributes: z.record(z.unknown()).optional(),
+    attributes: rawAttributesSchema,
   })
   .strict()
 
@@ -46,9 +50,9 @@ const createGroupBodySchema = z
 // scope transfer is out of this milestone's PATCH surface.
 const updateGroupBodySchema = z
   .object({
-    name: z.string().min(1).max(255).optional(),
-    description: z.string().min(1).max(1024).nullable().optional(),
-    attributes: z.record(z.unknown()).optional(),
+    name: noNulChar(z.string().min(1).max(255)).optional(),
+    description: noNulChar(z.string().min(1).max(1024)).nullable().optional(),
+    attributes: rawAttributesSchema,
   })
   .strict()
 

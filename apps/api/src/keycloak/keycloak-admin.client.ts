@@ -135,7 +135,19 @@ export function buildSyncedAttributes(
     definitions.filter((definition) => definition.syncToKeycloak).map((definition) => definition.key),
   )
 
-  const result: Record<string, string[]> = {}
+  // Object.create(null), not {} — sweep from docs/superpowers/audit-
+  // injection.md's HIGH `__proto__` finding (see attribute-validator.ts's
+  // rawAttributesSchema doc comment for the full root-cause writeup this
+  // project has now been bitten by four times). Not reachable today (no
+  // write path exists for attribute_definitions, so `key` can only ever be
+  // one of a fixed, developer-seeded set — never attacker-controlled), but
+  // this is exactly the kind of untrusted-key-onto-a-plain-object-literal
+  // sink the audit asked to be swept, and the value here can be a genuine
+  // Object (an array, after Array.isArray splits it — see below), which
+  // WOULD actually reassign `result`'s own prototype rather than merely
+  // no-op silently, the moment a write path for attribute_definitions ever
+  // lands.
+  const result: Record<string, string[]> = Object.create(null)
   for (const [key, value] of Object.entries(attributes)) {
     if (!syncableKeys.has(key)) continue
     if (value === null || value === undefined) continue

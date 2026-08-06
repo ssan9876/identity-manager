@@ -1,13 +1,18 @@
 import { Body, Controller, Get, Inject, Patch, Req, UseGuards } from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
-import { type AttributeDefinition, validateAttributes } from '../attributes/attribute-validator'
+import {
+  type AttributeDefinition,
+  rawAttributesSchema,
+  validateAttributes,
+} from '../attributes/attribute-validator'
 import { type AuthenticatedRequest, JwtGuard } from '../auth/jwt.guard'
 import { AuditWriter } from '../audit/audit.writer'
 import { type Actor, PermissionEngine } from '../authz/permission.engine'
 import { DB_CLIENT } from '../common/db.token'
 import { NotFoundError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
+import { noNulChar } from '../common/http/safe-string'
 import * as schema from '../db/schema/index'
 import { type Group, GroupsRepository } from '../groups/groups.repository'
 import { OutboxWriter } from '../outbox/outbox.writer'
@@ -50,10 +55,13 @@ const SELF_EDITABLE_CORE_FIELDS = ['location'] as const
  * non-editable field is a 400 naming the field, never a silent drop" a
  * property of the schema, not a convention the handler has to remember.
  */
+// noNulChar — see docs/superpowers/audit-injection.md's HIGH "JSON-escaped
+// NUL" finding (confirmed live on PATCH /self, which needs no role, so any
+// authenticated user can trigger it) and safe-string.ts's own doc comment.
 const selfUpdateBodySchema = z
   .object({
-    location: z.string().min(1).max(255).nullable().optional(),
-    attributes: z.record(z.unknown()).optional(),
+    location: noNulChar(z.string().min(1).max(255)).nullable().optional(),
+    attributes: rawAttributesSchema,
   })
   .strict()
 

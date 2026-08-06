@@ -335,6 +335,89 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
         .expect(400)
       expect(res.body.code).toBe('VALIDATION_FAILED')
     })
+
+    // docs/superpowers/audit-injection.md HIGH finding — the JSON half of
+    // the __proto__ silent-elision bug (the CSV half is covered in
+    // imports.write.spec.ts). Pre-fix, `z.record(z.unknown())` silently
+    // dropped a "__proto__" key WHILE PARSING (zod's own built-in
+    // prototype-pollution defence, in `ParseStatus.mergeObjectSync`, refuses
+    // to assign that key regardless of whether it's a genuine own property
+    // — with no error raised), so `attributes: {"__proto__": {...}}` became
+    // `attributes: {}` before validateAttributes ever ran, and the request
+    // returned 201 with `attributes: {}` — nothing failed, the key just
+    // vanished. Must now 400 exactly like an ordinary unrecognized key
+    // (e.g. "constructor", already covered by the malformed-body test
+    // above) already does.
+    it('rejects a "__proto__" JSON attribute key with 400, never silently dropping it to {}', async () => {
+      const org = await makeOrgUnit('Proto Attr Root')
+      const actor = await makeActiveUser('proto-attr-creator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const tag = nextTag()
+      const email = `protoattr-${tag}@example.com`
+      // Raw JSON TEXT, not a JS object literal: `{__proto__: {x: 1}}`
+      // written as a JS literal SETS the resulting object's actual
+      // prototype instead of creating an own property (JSON.stringify-ing
+      // it would then silently produce "{}", defeating this test before it
+      // even reaches the server — see attribute-validator.spec.ts's own
+      // comment on the identical hazard). `.type('json')` makes superagent
+      // send this string VERBATIM rather than re-serializing it (confirmed
+      // against the installed superagent@10.3.0's `_end`, lib/node/index.js:
+      // it skips JSON.stringify entirely whenever the outgoing data is
+      // already a string), so the SERVER's own JSON.parse is what creates
+      // the genuine own "__proto__" property — exactly like a real
+      // attacker's request over the wire.
+      const body =
+        `{"primaryEmail":"${email}","username":"protoattr-${tag}","firstName":"Proto",` +
+        `"lastName":"Attr","orgUnitId":"${org.id}","attributes":{"__proto__":{"x":1}}}`
+
+      const res = await request(app.getHttpServer())
+        .post('/users')
+        .type('json')
+        .send(body)
+        .expect(400)
+
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+      expect(res.body.issues.join(' ')).toContain('__proto__')
+
+      // No user was created either — this must fail before any write, not
+      // succeed with the key merely missing from the response.
+      expect(await usersRepo().findByEmail(email)).toBeNull()
+    })
+
+    // docs/superpowers/audit-injection.md HIGH finding: a JSON-escaped NUL
+    // (Unicode code point 0) is legal JSON and passed every check that
+    // existed pre-fix (body-parser, Zod's .min()/.max()), only failing once
+    // it reached Postgres as a raw, non-DomainError exception — an unmapped
+    // 500. Confirmed live on exactly this endpoint. Must now be a clean 400
+    // naming the field, writing no audit row, before the value can ever
+    // reach the driver.
+    it('rejects a NUL character in "firstName" with 400 VALIDATION_FAILED naming the field, never an unmapped 500', async () => {
+      const org = await makeOrgUnit('Nul Field Root')
+      const actor = await makeActiveUser('nul-creator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const before = await totalAuditCount(ctx)
+      const tag = nextTag()
+      const nul = String.fromCharCode(0)
+
+      const res = await request(app.getHttpServer())
+        .post('/users')
+        .send({
+          primaryEmail: `nulfield-${tag}@example.com`,
+          username: `nulfield-${tag}`,
+          firstName: `Fi${nul}rst`,
+          lastName: 'Last',
+          orgUnitId: org.id,
+        })
+        .expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+      expect(res.body.issues.join(' ')).toContain('firstName')
+
+      expect(await totalAuditCount(ctx)).toBe(before)
+    })
   })
 
   // =======================================================================

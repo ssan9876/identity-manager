@@ -275,6 +275,31 @@ describe('org unit write endpoints (Milestone 3b, Task 3)', () => {
       expect(await totalAuditCount(ctx)).toBe(before)
     })
 
+    // docs/superpowers/audit-injection.md HIGH finding: a JSON-escaped NUL
+    // (Unicode code point 0) is legal JSON and passed every check that
+    // existed pre-fix (body-parser, Zod's .min()/.max()), only failing once
+    // it reached Postgres as a raw, non-DomainError exception — an unmapped
+    // 500. Confirmed live on exactly this endpoint. Must now be a clean 400
+    // naming the field, before the value can ever reach the driver.
+    it('rejects a NUL character in "name" with 400 VALIDATION_FAILED naming the field, never an unmapped 500', async () => {
+      const bootstrap = await makeOrgUnit('Nul Validation Root')
+      const actor = await makeActiveUser('nul-creator', bootstrap.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const before = await totalAuditCount(ctx)
+      const nul = String.fromCharCode(0)
+
+      const res = await request(app.getHttpServer())
+        .post('/org-units')
+        .send({ name: `nul${nul}test` })
+        .expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+      expect(res.body.issues.join(' ')).toContain('name')
+
+      expect(await totalAuditCount(ctx)).toBe(before)
+    })
+
     it('rejects two siblings that resolve to the same label with 409 CONFLICT, and the failed attempt writes no audit row', async () => {
       const parent = await makeOrgUnit('Duplicate Sibling Root')
       const actor = await makeActiveUser('creator', parent.id)

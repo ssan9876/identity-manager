@@ -11,13 +11,17 @@ import { ForbiddenError, NotFoundError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
 import { type Page, parsePageQuery } from '../common/pagination'
+import { noNulChar } from '../common/http/safe-string'
 import * as schema from '../db/schema/index'
 import { OutboxWriter } from '../outbox/outbox.writer'
 import { OrgUnitsRepository, type OrgUnit } from './org-units.repository'
 
+// noNulChar — see docs/superpowers/audit-injection.md's HIGH "JSON-escaped
+// NUL" finding (confirmed live on POST /org-units) and safe-string.ts's own
+// doc comment.
 const createOrgUnitBodySchema = z
   .object({
-    name: z.string().min(1).max(255),
+    name: noNulChar(z.string().min(1).max(255)),
     parentId: z.string().uuid().optional(),
   })
   .strict()

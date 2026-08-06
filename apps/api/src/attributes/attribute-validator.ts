@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { ValidationError } from '../common/errors'
+import { noNulChar } from '../common/http/safe-string'
 
 export type AttributeDataType = 'string' | 'number' | 'boolean' | 'date' | 'enum'
 
@@ -74,7 +75,12 @@ function fieldSchema(definition: AttributeDefinition): z.ZodTypeAny {
       // timeout — by whichever change first exposes a write path for
       // `attribute_definitions`.
       if (rules.pattern !== undefined) schema = schema.regex(new RegExp(rules.pattern))
-      return schema
+      // docs/superpowers/audit-injection.md HIGH finding: a custom string
+      // attribute value is jsonb-stored — reject an embedded NUL here,
+      // after any custom pattern (which might otherwise happen to allow
+      // one through, e.g. a permissive `.*`), before it can ever reach
+      // Postgres as an unmapped 500.
+      return noNulChar(schema)
     }
     case 'number': {
       let schema = z.number()
@@ -189,6 +195,41 @@ function sanitizePayload(value: unknown): unknown {
   Object.defineProperties(payload, Object.getOwnPropertyDescriptors(input))
   return payload
 }
+
+/**
+ * Zod schema for the RAW `attributes` field on every write body (POST/PATCH
+ * users, groups, self) — deliberately NOT `z.record(z.unknown())`.
+ *
+ * Zod's own object/record merge step (`ParseStatus.mergeObjectSync`, in
+ * `zod/v3/helpers/parseUtil`) unconditionally refuses to assign a key
+ * literally named "__proto__" into its result object, regardless of whether
+ * that key is a genuine own property or an inherited accessor — a built-in
+ * defence against prototype pollution. That protection has a side effect
+ * this project has already been bitten by: `z.record(z.unknown())` parses
+ * `{"__proto__": {...}, "ok": "v"}` down to `{ok: "v"}` with NO error at
+ * all — the key is not merely rejected, it is silently gone, and by the
+ * time `validateAttributes` below ever sees the result, there is nothing
+ * left to flag as unrecognized. `ZodRecord` has no "unknown key" concept to
+ * catch this the way `ZodObject(...).strict()` does: `.strict()` computes
+ * its own `extraKeys` via `for...in ctx.data` BEFORE the same merge step
+ * runs and reports them (confirmed directly against the installed
+ * zod@3.25.76 source) — `z.record()` has no equivalent pass. This is the
+ * root cause of the JSON half of docs/superpowers/audit-injection.md's HIGH
+ * `__proto__` finding (the CSV half is csv.ts/import-row.ts's own
+ * Object.create(null) fix).
+ *
+ * `z.unknown()` does not inspect or rebuild the value's keys at all, so a
+ * genuine own "__proto__" property survives untouched into
+ * `validateAttributes`, which already handles it correctly end to end
+ * (`sanitizePayload`'s descriptor copy onto `Object.create(null)`, then
+ * `buildAttributeSchema(...).strict()`'s own `extraKeys` scan) — reporting
+ * it as `Unrecognized key(s) in object: '__proto__'`, the exact same message
+ * any other unrecognized key gets. All structural validation (is it an
+ * object; which keys are recognized; are their values well-typed) happens
+ * exactly once, downstream, in `validateAttributes` — this schema's only job
+ * is to not destroy evidence before that check ever runs.
+ */
+export const rawAttributesSchema = z.unknown().optional()
 
 export function validateAttributes(
   definitions: AttributeDefinition[],

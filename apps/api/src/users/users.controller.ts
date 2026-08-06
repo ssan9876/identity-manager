@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
-import { validateAttributes } from '../attributes/attribute-validator'
+import { rawAttributesSchema, validateAttributes } from '../attributes/attribute-validator'
 import { JwtGuard } from '../auth/jwt.guard'
 import { AuditWriter } from '../audit/audit.writer'
 import { PermissionEngine } from '../authz/permission.engine'
@@ -25,6 +25,7 @@ import { DB_CLIENT } from '../common/db.token'
 import { NotFoundError, ValidationError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
+import { noNulChar } from '../common/http/safe-string'
 import { type Page, parsePageQuery } from '../common/pagination'
 import * as schema from '../db/schema/index'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
@@ -60,20 +61,24 @@ const isoDateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'must be an ISO date (YYYY-MM-DD)')
 
+// noNulChar wraps every free-text field (never orgUnitId/managerId, already
+// UUID-constrained, or startDate/endDate, already ISO-date-regex-
+// constrained) — see docs/superpowers/audit-injection.md's HIGH
+// "JSON-escaped NUL" finding and safe-string.ts's own doc comment.
 const createUserBodySchema = z
   .object({
-    primaryEmail: z.string().min(1).max(320).email(),
-    username: z.string().min(1).max(128),
-    firstName: z.string().min(1).max(128),
-    lastName: z.string().min(1).max(128),
+    primaryEmail: noNulChar(z.string().min(1).max(320).email()),
+    username: noNulChar(z.string().min(1).max(128)),
+    firstName: noNulChar(z.string().min(1).max(128)),
+    lastName: noNulChar(z.string().min(1).max(128)),
     orgUnitId: z.string().uuid(),
-    employeeId: z.string().min(1).max(64).optional(),
-    jobTitle: z.string().min(1).max(255).optional(),
+    employeeId: noNulChar(z.string().min(1).max(64)).optional(),
+    jobTitle: noNulChar(z.string().min(1).max(255)).optional(),
     managerId: z.string().uuid().optional(),
-    location: z.string().min(1).max(255).optional(),
+    location: noNulChar(z.string().min(1).max(255)).optional(),
     startDate: isoDateSchema.optional(),
     endDate: isoDateSchema.optional(),
-    attributes: z.record(z.unknown()).optional(),
+    attributes: rawAttributesSchema,
   })
   .strict()
 
@@ -84,15 +89,15 @@ const createUserBodySchema = z
 // milestone's PATCH surface.
 const updateUserBodySchema = z
   .object({
-    firstName: z.string().min(1).max(128).optional(),
-    lastName: z.string().min(1).max(128).optional(),
-    jobTitle: z.string().min(1).max(255).nullable().optional(),
-    employeeId: z.string().min(1).max(64).nullable().optional(),
+    firstName: noNulChar(z.string().min(1).max(128)).optional(),
+    lastName: noNulChar(z.string().min(1).max(128)).optional(),
+    jobTitle: noNulChar(z.string().min(1).max(255)).nullable().optional(),
+    employeeId: noNulChar(z.string().min(1).max(64)).nullable().optional(),
     managerId: z.string().uuid().nullable().optional(),
-    location: z.string().min(1).max(255).nullable().optional(),
+    location: noNulChar(z.string().min(1).max(255)).nullable().optional(),
     startDate: isoDateSchema.nullable().optional(),
     endDate: isoDateSchema.nullable().optional(),
-    attributes: z.record(z.unknown()).optional(),
+    attributes: rawAttributesSchema,
   })
   .strict()
 

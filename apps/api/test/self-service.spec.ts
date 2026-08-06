@@ -296,6 +296,31 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       expect(outboxRows[0].event_type).toBe('updated')
     })
 
+    // docs/superpowers/audit-injection.md HIGH finding: a JSON-escaped NUL
+    // (Unicode code point 0) is legal JSON and passed every check that
+    // existed pre-fix, only failing once it reached Postgres as a raw,
+    // non-DomainError exception — an unmapped 500. Confirmed live on
+    // exactly this endpoint, and worth its own regression test beyond the
+    // POST /org-units one: PATCH /self needs NO role at all, so any
+    // authenticated user — not just an admin — could trigger it. Must now
+    // be a clean 400 naming the field, writing no audit row, before the
+    // value can ever reach the driver.
+    it('rejects a NUL character in "location" with 400 VALIDATION_FAILED naming the field, never an unmapped 500', async () => {
+      const org = await makeOrgUnit('Nul Location Root')
+      const actor = await makeActiveUser('actor', org.id)
+      currentUsername = actor.username
+      const nul = String.fromCharCode(0)
+
+      const res = await request(app.getHttpServer())
+        .patch('/self')
+        .send({ location: `loc${nul}x` })
+        .expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+      expect(res.body.issues.join(' ')).toContain('location')
+
+      expect(await auditRowsFor(ctx, actor.id)).toHaveLength(0)
+    })
+
     describe('rejects each forbidden core field by name, never silently dropping it', () => {
       const FORBIDDEN_CORE_FIELDS: Record<string, unknown> = {
         status: 'suspended',
@@ -387,6 +412,44 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
         .expect(400)
       expect(res.body.code).toBe('VALIDATION_FAILED')
       expect(res.body.issues.join(' ')).toContain('costCenter')
+    })
+
+    // docs/superpowers/audit-injection.md HIGH finding — the JSON half of
+    // the __proto__ silent-elision bug, PATCH/merge variant. Pre-fix,
+    // `z.record(z.unknown())` silently dropped the "__proto__" key WHILE
+    // PARSING (zod's own built-in prototype-pollution defence in
+    // `ParseStatus.mergeObjectSync` refuses to assign that key regardless of
+    // whether it is a genuine own property, with no error raised), so
+    // `attributes: {"__proto__": "x"}` became `attributes: {}` before
+    // validateAttributes ever ran — and because PATCH /self MERGES onto the
+    // existing attributes (never a wholesale replace, see this describe
+    // block's "merges..." test below), an empty patch is a silent no-op
+    // 200, not a visible data loss. It is still the same underlying bug:
+    // the request named an invalid key and was reported as a clean success
+    // instead of a 400, exactly like any other unrecognized key already is.
+    it('rejects a "__proto__" JSON attribute key with 400, rather than silently succeeding as a no-op', async () => {
+      const org = await makeOrgUnit('Proto Attr Root')
+      const actor = await makeActiveUser('actor', org.id)
+      currentUsername = actor.username
+
+      // Raw JSON text, not a JS object literal: `{__proto__: 'x'}` written
+      // as a JS literal is a no-op assignment (attempting to set the
+      // object's prototype to a non-object value), which would produce a
+      // genuinely EMPTY object client-side and never exercise this scenario
+      // at all — see attribute-validator.spec.ts's own comment on the
+      // identical hazard. `.type('json')` sends the string VERBATIM
+      // (confirmed against the installed superagent@10.3.0: `_end` in
+      // lib/node/index.js skips JSON.stringify whenever the outgoing data
+      // is already a string), so the SERVER's own JSON.parse is what
+      // creates the genuine own "__proto__" property.
+      const res = await request(app.getHttpServer())
+        .patch('/self')
+        .type('json')
+        .send('{"attributes":{"__proto__":"x"}}')
+        .expect(400)
+
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+      expect(res.body.issues.join(' ')).toContain('__proto__')
     })
 
     it('rejects a non-self-editable but active attribute by name, and leaves its existing value untouched', async () => {

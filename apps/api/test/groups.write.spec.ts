@@ -295,6 +295,54 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       expect(res.body.code).toBe('VALIDATION_FAILED')
     })
 
+    // docs/superpowers/audit-injection.md HIGH finding — same
+    // z.record(z.unknown()) silent-elision bug as POST /users (see
+    // users.write.spec.ts's identical regression test for the full
+    // mechanism). Pre-fix this returned 201 with attributes: {}.
+    it('rejects a "__proto__" JSON attribute key with 400, never silently dropping it to {}', async () => {
+      const org = await makeOrgUnit('Proto Attr Root')
+      const actor = await makeActiveUser('proto-creator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const tag = nextTag()
+      // Raw JSON text, not a JS object literal — see users.write.spec.ts's
+      // POST /users regression test for why. `.type('json')` sends the
+      // string verbatim.
+      const body = `{"name":"Proto Group ${tag}","orgUnitId":"${org.id}","attributes":{"__proto__":{"x":1}}}`
+
+      const res = await request(app.getHttpServer())
+        .post('/groups')
+        .type('json')
+        .send(body)
+        .expect(400)
+
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+      expect(res.body.issues.join(' ')).toContain('__proto__')
+    })
+
+    // docs/superpowers/audit-injection.md HIGH finding: a JSON-escaped NUL
+    // is legal JSON and passed every pre-fix check, only failing once it
+    // reached Postgres as an unmapped 500. Confirmed live on POST /groups.
+    it('rejects a NUL character in "name" with 400 VALIDATION_FAILED naming the field, never an unmapped 500', async () => {
+      const org = await makeOrgUnit('Nul Group Root')
+      const actor = await makeActiveUser('nul-creator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+      const nul = String.fromCharCode(0)
+
+      const before = await totalAuditCount(ctx)
+
+      const res = await request(app.getHttpServer())
+        .post('/groups')
+        .send({ name: `grp${nul}x`, orgUnitId: org.id })
+        .expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+      expect(res.body.issues.join(' ')).toContain('name')
+
+      expect(await totalAuditCount(ctx)).toBe(before)
+    })
+
     it('rejects a duplicate group name with 409 CONFLICT naming the right constraint, and the failed attempt writes no audit row', async () => {
       const org = await makeOrgUnit('Duplicate Root')
       const actor = await makeActiveUser('creator', org.id)
