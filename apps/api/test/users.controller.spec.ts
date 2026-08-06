@@ -10,6 +10,7 @@ import { PermissionGuard, type AuthorizedRequest } from '../src/authz/permission
 import { PrivilegeGuards } from '../src/authz/privilege.guards'
 import { DB_CLIENT } from '../src/common/db.token'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
+import { OutboxWriter } from '../src/outbox/outbox.writer'
 import { UsersController } from '../src/users/users.controller'
 import { UsersRepository } from '../src/users/users.repository'
 import { withTestDatabase } from './support/pg'
@@ -56,6 +57,7 @@ describe('GET /users', () => {
         // this suite only exercises the (unchanged) read routes.
         PrivilegeGuards,
         AuditWriter,
+        OutboxWriter,
       ],
     })
       .overrideGuard(JwtGuard)

@@ -27,6 +27,7 @@ import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
 import { type Page, parsePageQuery } from '../common/pagination'
 import * as schema from '../db/schema/index'
+import { OutboxWriter } from '../outbox/outbox.writer'
 import { UsersRepository, type User, type UserStatus } from './users.repository'
 
 const statusSchema = z
@@ -119,6 +120,7 @@ export class UsersController {
     @Inject(PermissionEngine) private readonly engine: PermissionEngine,
     @Inject(PrivilegeGuards) private readonly privileges: PrivilegeGuards,
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
+    @Inject(OutboxWriter) private readonly outboxWriter: OutboxWriter,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
   ) {}
 
@@ -217,6 +219,13 @@ export class UsersController {
         after: snapshotUser(user),
       })
 
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'user',
+        aggregateId: user.id,
+        eventType: 'created',
+        payload: { ...snapshotUser(user), action: 'user:create' },
+      })
+
       return user
     })
   }
@@ -287,6 +296,13 @@ export class UsersController {
         after: snapshotUser(updated),
       })
 
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'user',
+        aggregateId: id,
+        eventType: 'updated',
+        payload: { ...snapshotUser(updated), action: 'user:update' },
+      })
+
       return updated
     })
   }
@@ -322,6 +338,18 @@ export class UsersController {
         resourceId: id,
         before: snapshotUser(current),
         after: snapshotUser(updated),
+      })
+
+      // No 'deleted' event type exists (there is no delete for users, ever
+      // — see this handler's own doc comment). Removal propagates as
+      // 'status_changed' carrying `deactivated` — already present as
+      // snapshotUser(updated).status, since deactivate is the only path
+      // that lands a user on that terminal status.
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'user',
+        aggregateId: id,
+        eventType: 'status_changed',
+        payload: { ...snapshotUser(updated), action: 'user:deactivate' },
       })
 
       return updated

@@ -16,6 +16,7 @@ import { GroupsRepository } from './groups/groups.repository'
 import { HealthController } from './health/health.controller'
 import { OrgUnitsController } from './org-units/org-units.controller'
 import { OrgUnitsRepository } from './org-units/org-units.repository'
+import { OutboxWriter } from './outbox/outbox.writer'
 import { UsersController } from './users/users.controller'
 import { UsersRepository } from './users/users.repository'
 
@@ -50,6 +51,7 @@ import { UsersRepository } from './users/users.repository'
     RoleAssignmentsRepository,
     AuditWriter,
     AuditRepository,
+    OutboxWriter,
   ],
 })
 export class AppModule {}

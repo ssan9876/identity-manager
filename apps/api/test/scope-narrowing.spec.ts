@@ -15,6 +15,7 @@ import { GroupsController } from '../src/groups/groups.controller'
 import { GroupsRepository } from '../src/groups/groups.repository'
 import { OrgUnitsController } from '../src/org-units/org-units.controller'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
+import { OutboxWriter } from '../src/outbox/outbox.writer'
 import { UsersController } from '../src/users/users.controller'
 import { UsersRepository } from '../src/users/users.repository'
 import { type TestDatabase, withTestDatabase } from './support/pg'
@@ -78,9 +79,11 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
           // Milestone 3b, Task 2: UsersController's write handlers also
           // depend on PrivilegeGuards and AuditWriter now — required here
           // purely for DI resolution; this describe block only exercises
-          // the (unchanged) read routes.
+          // the (unchanged) read routes. Milestone 4, Task 1 adds
+          // OutboxWriter alongside AuditWriter for the same reason.
           PrivilegeGuards,
           AuditWriter,
+          OutboxWriter,
           Reflector,
         ],
       })
@@ -204,8 +207,10 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
           // Milestone 3b, Task 3: OrgUnitsController's write handler now
           // also depends on AuditWriter — required here purely for DI
           // resolution; this describe block only exercises the (unchanged)
-          // read routes.
+          // read routes. Milestone 4, Task 1 adds OutboxWriter alongside it
+          // for the same reason.
           AuditWriter,
+          OutboxWriter,
           Reflector,
         ],
       })
@@ -319,8 +324,10 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
           // Milestone 3b, Task 3: GroupsController's write handlers now
           // also depend on AuditWriter — required here purely for DI
           // resolution; this describe block only exercises the (unchanged)
-          // read routes.
+          // read routes. Milestone 4, Task 1 adds OutboxWriter alongside it
+          // for the same reason.
           AuditWriter,
+          OutboxWriter,
           Reflector,
         ],
       })
@@ -494,9 +501,11 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
           // Milestone 3b, Task 2: UsersController's write handlers also
           // depend on PrivilegeGuards and AuditWriter now — required here
           // purely for DI resolution; this describe block only exercises
-          // the (unchanged) read routes.
+          // the (unchanged) read routes. Milestone 4, Task 1 adds
+          // OutboxWriter alongside AuditWriter for the same reason.
           PrivilegeGuards,
           AuditWriter,
+          OutboxWriter,
         ],
       })
         .overrideGuard(JwtGuard)

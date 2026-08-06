@@ -10,6 +10,7 @@ import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { OrgUnitsController } from '../src/org-units/org-units.controller'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
+import { OutboxWriter } from '../src/outbox/outbox.writer'
 import { withTestDatabase } from './support/pg'
 
 // This suite tests OrgUnitsController in isolation from the real auth stack
@@ -51,8 +52,10 @@ describe('GET /org-units', () => {
         // Milestone 3b, Task 3: OrgUnitsController's write handler now also
         // depends on AuditWriter (to audit each mutation inside its
         // transaction) — required here purely for DI resolution, since this
-        // suite only exercises the (unchanged) read routes.
+        // suite only exercises the (unchanged) read routes. Milestone 4,
+        // Task 1 adds OutboxWriter alongside it for the same reason.
         AuditWriter,
+        OutboxWriter,
       ],
     })
       .overrideGuard(JwtGuard)

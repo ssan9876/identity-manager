@@ -8,6 +8,7 @@ import { NotFoundError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
 import * as schema from '../db/schema/index'
+import { OutboxWriter } from '../outbox/outbox.writer'
 import { ALL_ROLE_KEYS, type RoleKey } from './actions'
 import { PermissionGuard, type AuthorizedRequest } from './permission.guard'
 import { PrivilegeGuards } from './privilege.guards'
@@ -92,6 +93,7 @@ export class RoleAssignmentsController {
     @Inject(RoleAssignmentsRepository) private readonly roleAssignments: RoleAssignmentsRepository,
     @Inject(PrivilegeGuards) private readonly privileges: PrivilegeGuards,
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
+    @Inject(OutboxWriter) private readonly outboxWriter: OutboxWriter,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
   ) {}
 
@@ -135,6 +137,20 @@ export class RoleAssignmentsController {
         resourceId: assignment.id,
         before: null,
         after: snapshotRoleAssignment(assignment),
+      })
+
+      // aggregateType 'user', not a bespoke 'role_assignment' type (there is
+      // no such value in the outbox vocabulary): Keycloak cares about the
+      // resulting USER state (their group/role membership as a whole), not
+      // our internal assignment row — see this controller's own file-level
+      // doc comment on why the audit anchor and the outbox anchor
+      // deliberately differ here (audit: the assignment's own id; outbox:
+      // the target user's id).
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'user',
+        aggregateId: userId,
+        eventType: 'updated',
+        payload: { ...snapshotRoleAssignment(assignment), action: 'role:assign' },
       })
 
       return assignment
@@ -192,6 +208,13 @@ export class RoleAssignmentsController {
         resourceId: assignmentId,
         before: snapshotRoleAssignment(current),
         after: null,
+      })
+
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'user',
+        aggregateId: userId,
+        eventType: 'updated',
+        payload: { ...snapshotRoleAssignment(current), action: 'role:revoke' },
       })
 
       return {

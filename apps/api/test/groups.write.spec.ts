@@ -14,6 +14,7 @@ import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { GroupsController } from '../src/groups/groups.controller'
 import { GroupsRepository } from '../src/groups/groups.repository'
 import { OrgUnitsRepository, type OrgUnit } from '../src/org-units/org-units.repository'
+import { OutboxWriter } from '../src/outbox/outbox.writer'
 import { UsersRepository } from '../src/users/users.repository'
 import { type TestDatabase, withTestDatabase } from './support/pg'
 
@@ -93,6 +94,7 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
         PermissionEngine,
         PermissionGuard,
         AuditWriter,
+        OutboxWriter,
         Reflector,
       ],
     })

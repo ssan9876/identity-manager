@@ -13,6 +13,7 @@ import { RoleAssignmentsRepository } from '../src/authz/role-assignments.reposit
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { OrgUnitsRepository, type OrgUnit } from '../src/org-units/org-units.repository'
+import { OutboxWriter } from '../src/outbox/outbox.writer'
 import { UsersController } from '../src/users/users.controller'
 import { UsersRepository, type User } from '../src/users/users.repository'
 import { type TestDatabase, withTestDatabase } from './support/pg'
@@ -100,6 +101,7 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
         PermissionGuard,
         PrivilegeGuards,
         AuditWriter,
+        OutboxWriter,
         Reflector,
       ],
     })

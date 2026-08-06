@@ -12,6 +12,7 @@ import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
 import { type Page, parsePageQuery } from '../common/pagination'
 import * as schema from '../db/schema/index'
+import { OutboxWriter } from '../outbox/outbox.writer'
 import { OrgUnitsRepository, type OrgUnit } from './org-units.repository'
 
 const createOrgUnitBodySchema = z
@@ -42,6 +43,7 @@ export class OrgUnitsController {
     @Inject(OrgUnitsRepository) private readonly orgUnits: OrgUnitsRepository,
     @Inject(PermissionEngine) private readonly engine: PermissionEngine,
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
+    @Inject(OutboxWriter) private readonly outboxWriter: OutboxWriter,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
   ) {}
 
@@ -139,6 +141,13 @@ export class OrgUnitsController {
         resourceId: unit.id,
         before: null,
         after: snapshotOrgUnit(unit),
+      })
+
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'org_unit',
+        aggregateId: unit.id,
+        eventType: 'created',
+        payload: { ...snapshotOrgUnit(unit), action: 'org_unit:create' },
       })
 
       return unit
