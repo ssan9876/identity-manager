@@ -53,7 +53,23 @@ export function parseCsv(content: string): ParsedCsv {
 
   const headers = matrix[0]
   const rows = matrix.slice(1).map((line) => {
-    const row: Record<string, string> = {}
+    // Object.create(null), not {}: a header literally named "__proto__" is
+    // legitimate, attacker-controlled input this function must not treat
+    // specially. On an ordinary {}, `row['__proto__'] = line[i]` invokes
+    // Object.prototype's __proto__ ACCESSOR SETTER instead of creating an
+    // own property — a silent no-op for a string value (the spec-defined
+    // behaviour) — so the header's cell value simply vanishes: no own key
+    // is ever created, `Object.entries(row)` never sees it, yet
+    // extraHeaders() (which works off the header STRING list, not this
+    // object) still correctly counts it as an extra column. That mismatch
+    // is what let a `__proto__` CSV column silently wipe a matched user's
+    // `attributes` to `{}` (docs/superpowers/audit-injection.md HIGH
+    // finding — the fourth recurrence of this defect class in this
+    // project). A null-prototype object has no inherited __proto__ setter,
+    // so the assignment below always creates a genuine own property
+    // regardless of the header's name, exactly like buildAttributeSchema's
+    // own shape object (attribute-validator.ts).
+    const row: Record<string, string> = Object.create(null)
     headers.forEach((header, i) => {
       row[header] = line[i] ?? ''
     })

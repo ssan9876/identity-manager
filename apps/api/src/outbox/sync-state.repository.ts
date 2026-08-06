@@ -27,6 +27,20 @@ type LatestAggregateEventRow = {
   status: 'pending' | 'processing' | 'done' | 'failed'
 }
 
+/**
+ * Same shape as `LatestAggregateEventRow`, plus `payload` — needed ONLY for
+ * `membership`-aggregate rows (see `resolveForUsers`'s use of it below,
+ * finding H3, docs/superpowers/audit-integrity.md): a `group`-aggregate
+ * event's affected set is always "whoever is CURRENTLY an effective member",
+ * but a `membership`-aggregate event additionally carries `payload.userId`/
+ * `payload.childGroupId`, recorded by the controller at WRITE time, before
+ * a removal's edge is deleted — the only way to name a user who was REMOVED
+ * and is therefore no longer discoverable by walking current membership.
+ */
+type LatestMembershipEventRow = LatestAggregateEventRow & {
+  payload: Record<string, unknown>
+}
+
 /** `'done'` is deliberately excluded — a healthy latest attempt contributes nothing here. */
 function unsettledStatus(status: LatestAggregateEventRow['status']): 'pending' | 'failed' | null {
   if (status === 'failed') return 'failed'
@@ -82,18 +96,30 @@ function worseOf(
  * `'synced'`). `DISTINCT ON (aggregate_id) ... ORDER BY aggregate_id, id
  * DESC` picks that latest row directly in Postgres.
  *
- * KNOWN LIMIT (same class of gap as SyncWorker's `reconcileGroup` doc
- * comment on decision 3, and explicitly called out as lower-priority,
- * document-don't-expand in task-4-brief.md): the group/membership half
- * walks users' CURRENT effective group membership
- * (`GroupsRepository.listEffectiveUserMembers`). A user who was REMOVED
+ * FIXED GAP, formerly a documented KNOWN LIMIT (finding H3, docs/
+ * superpowers/audit-integrity.md): the group/membership half used to walk
+ * ONLY users' CURRENT effective group membership
+ * (`GroupsRepository.listEffectiveUserMembers`) — so a user who was REMOVED
  * from a group in the same window that removal's own outbox event
- * dead-lettered is no longer an effective member of that group by the time
- * this query runs, so that dead-letter will not surface against THAT user
- * here — the `outbox_events` row itself remains visible/queryable directly
- * by aggregate regardless, just not folded into this specific user's
- * derived state. The on-demand reconciliation job (ReconciliationJob) is
- * the general backstop for drift this narrow edge could leave behind.
+ * dead-lettered was, by definition, no longer in that set, and the
+ * dead-letter surfaced against nobody. That was the worst case this whole
+ * class exists to prevent: the removal was never applied to Keycloak, yet
+ * `GET /users` reported `syncState: 'synced'`. Fixed by additionally
+ * consulting the troubled `membership` event's own `payload` — the
+ * controller records `payload.userId` (direct add/remove) or
+ * `payload.childGroupId` (nested add/remove) at WRITE time, before the edge
+ * is deleted (see GroupsController's membership handlers), so a removed
+ * user stays discoverable from the event itself even though the current
+ * membership table no longer names them. `payload.childGroupId` still
+ * resolves via CURRENT membership under the child (see
+ * SyncWorker.reconcileMembership's own doc comment for why that direction
+ * is safe: the child itself is never removed by an edge change, only the
+ * parent link is), so only the DIRECT `payload.userId` case needed this
+ * fix — but both are folded in identically below for one code path. A
+ * `group`-aggregate event (the group's own fields, not a membership edge)
+ * has no "removed user" concept and is unaffected — it keeps walking
+ * current effective membership, which is what
+ * `SyncWorker.reconcileGroup` itself fans out to.
  */
 @Injectable()
 export class SyncStateRepository {
@@ -134,7 +160,7 @@ export class SyncStateRepository {
         ),
       this.latestUserEvents(ids),
       this.latestEventsForAggregateType('group'),
-      this.latestEventsForAggregateType('membership'),
+      this.latestMembershipEvents(),
     ])
 
     const troubledUsers = new Map<string, 'pending' | 'failed'>()
@@ -144,12 +170,35 @@ export class SyncStateRepository {
     }
 
     const affectedByGroup = new Map<string, 'pending' | 'failed'>()
-    for (const row of [...groupEvents, ...membershipEvents]) {
+    for (const row of groupEvents) {
       const status = unsettledStatus(row.status)
       if (status === null) continue
       const memberIds = await this.groups.listEffectiveUserMembers(row.aggregate_id)
       for (const memberId of memberIds) {
         raiseWorst(affectedByGroup, memberId, status)
+      }
+    }
+
+    // Finding H3 (docs/superpowers/audit-integrity.md): mirrors
+    // SyncWorker.reconcileMembership's OWN affected-set computation exactly
+    // — `payload.userId` names a direct add/remove's single affected user
+    // DIRECTLY (still discoverable even after a removal deletes the edge);
+    // `payload.childGroupId` affects every user CURRENTLY effective under
+    // that child. A troubled event can carry either, so both are checked
+    // per row rather than assuming one.
+    for (const row of membershipEvents) {
+      const status = unsettledStatus(row.status)
+      if (status === null) continue
+
+      const payload = row.payload as { userId?: unknown; childGroupId?: unknown }
+      if (typeof payload.userId === 'string') {
+        raiseWorst(affectedByGroup, payload.userId, status)
+      }
+      if (typeof payload.childGroupId === 'string') {
+        const memberIds = await this.groups.listEffectiveUserMembers(payload.childGroupId)
+        for (const memberId of memberIds) {
+          raiseWorst(affectedByGroup, memberId, status)
+        }
       }
     }
 
@@ -191,13 +240,28 @@ export class SyncStateRepository {
    * an equality prefix (`aggregate_type`) followed by the exact
    * `DISTINCT ON`/`ORDER BY` columns.
    */
-  private async latestEventsForAggregateType(
-    aggregateType: 'group' | 'membership',
-  ): Promise<LatestAggregateEventRow[]> {
+  private async latestEventsForAggregateType(aggregateType: 'group'): Promise<LatestAggregateEventRow[]> {
     const { rows } = await this.db.execute<LatestAggregateEventRow>(sql`
       SELECT DISTINCT ON (aggregate_id) aggregate_id, status
         FROM outbox_events
        WHERE aggregate_type = ${aggregateType}
+       ORDER BY aggregate_id, id DESC
+    `)
+    return rows
+  }
+
+  /**
+   * Same query as `latestEventsForAggregateType('membership')` would be,
+   * additionally selecting `payload` — a separate method (not a shared one
+   * parameterized on aggregate type) because ONLY `membership` rows need it
+   * (finding H3; see `resolveForUsers`'s use of the result, and
+   * `LatestMembershipEventRow`'s own doc comment for why).
+   */
+  private async latestMembershipEvents(): Promise<LatestMembershipEventRow[]> {
+    const { rows } = await this.db.execute<LatestMembershipEventRow>(sql`
+      SELECT DISTINCT ON (aggregate_id) aggregate_id, status, payload
+        FROM outbox_events
+       WHERE aggregate_type = 'membership'
        ORDER BY aggregate_id, id DESC
     `)
     return rows

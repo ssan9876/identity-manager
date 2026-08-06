@@ -1,13 +1,18 @@
 import { Body, Controller, Get, Inject, Patch, Req, UseGuards } from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
-import { type AttributeDefinition, validateAttributes } from '../attributes/attribute-validator'
+import {
+  type AttributeDefinition,
+  rawAttributesSchema,
+  validateAttributes,
+} from '../attributes/attribute-validator'
 import { type AuthenticatedRequest, JwtGuard } from '../auth/jwt.guard'
 import { AuditWriter } from '../audit/audit.writer'
 import { type Actor, PermissionEngine } from '../authz/permission.engine'
 import { DB_CLIENT } from '../common/db.token'
 import { NotFoundError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
+import { noNulChar } from '../common/http/safe-string'
 import * as schema from '../db/schema/index'
 import { type Group, GroupsRepository } from '../groups/groups.repository'
 import { OutboxWriter } from '../outbox/outbox.writer'
@@ -50,10 +55,13 @@ const SELF_EDITABLE_CORE_FIELDS = ['location'] as const
  * non-editable field is a 400 naming the field, never a silent drop" a
  * property of the schema, not a convention the handler has to remember.
  */
+// noNulChar — see docs/superpowers/audit-injection.md's HIGH "JSON-escaped
+// NUL" finding (confirmed live on PATCH /self, which needs no role, so any
+// authenticated user can trigger it) and safe-string.ts's own doc comment.
 const selfUpdateBodySchema = z
   .object({
-    location: z.string().min(1).max(255).nullable().optional(),
-    attributes: z.record(z.unknown()).optional(),
+    location: noNulChar(z.string().min(1).max(255)).nullable().optional(),
+    attributes: rawAttributesSchema,
   })
   .strict()
 
@@ -232,10 +240,25 @@ export class SelfServiceController {
    * already set on this same user (anything not self-editable) would be
    * silently erased the moment this user touched any ONE self-editable
    * attribute — exactly the "silent drop" the brief prohibits, just aimed
-   * at a different set of fields than the 400-by-name case. Merging onto
-   * `current.attributes` (loaded inside this same transaction, so it can
-   * never be a stale read racing a concurrent write) preserves every
-   * attribute this request didn't name.
+   * at a different set of fields than the 400-by-name case.
+   *
+   * Merging onto `current.attributes` uses `findByIdForUpdate`
+   * (`SELECT ... FOR UPDATE`), not a plain read — finding H4
+   * (docs/superpowers/audit-integrity.md). A plain `SELECT` inside a
+   * transaction takes NO lock and gives no repeatable read under Postgres's
+   * default READ COMMITTED: two concurrent `PATCH /self` calls could both
+   * read the same starting `attributes`, both merge their own patch onto
+   * that same stale snapshot, and whichever's `UPDATE` commits last would
+   * silently overwrite the other's already-committed change — measured
+   * 30/30 by the audit, including against a concurrent admin edit. (An
+   * EARLIER version of this comment claimed the opposite — that loading
+   * `current` "inside this same transaction" made a stale read impossible;
+   * that claim was false, and the plain read it described is exactly what
+   * reproduced the race.) `findByIdForUpdate` closes it: a second concurrent
+   * caller's own locked read blocks until the first's transaction commits,
+   * then observes the committed result rather than racing it, so its merge
+   * is always computed against up-to-date data. See
+   * `self-service.spec.ts`'s 30-iteration regression coverage.
    */
   @Patch()
   async update(
@@ -260,7 +283,7 @@ export class SelfServiceController {
         : validateAttributes(selfEditableDefinitions, parsed.attributes)
 
     const updated = await this.db.transaction(async (tx) => {
-      const current = await this.users.findById(actor.userId, tx)
+      const current = await this.users.findByIdForUpdate(actor.userId, tx)
       if (current === null) {
         throw new NotFoundError('user', actor.userId)
       }

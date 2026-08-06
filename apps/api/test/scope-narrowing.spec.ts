@@ -8,6 +8,7 @@ import { JwtGuard } from '../src/auth/jwt.guard'
 import { PermissionEngine } from '../src/authz/permission.engine'
 import { PermissionGuard, type AuthorizedRequest } from '../src/authz/permission.guard'
 import { PrivilegeGuards } from '../src/authz/privilege.guards'
+import { RoleAssignmentsController } from '../src/authz/role-assignments.controller'
 import { RoleAssignmentsRepository } from '../src/authz/role-assignments.repository'
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
@@ -346,6 +347,10 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
           AuditWriter,
           OutboxWriter,
           Reflector,
+          // Finding L-2 (docs/superpowers/audit-authz.md): GroupsController
+          // now loads the target user for the ?userId= scope check —
+          // required here for DI resolution. See the "?userId=" tests below.
+          UsersRepository,
         ],
       })
         .overrideGuard(JwtGuard)
@@ -444,6 +449,32 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
       const res = await request(app.getHttpServer()).get(`/groups?userId=${samId}`).expect(200)
       expect(res.body.total).toBe(1)
       expect(res.body.items.map((g: { name: string }) => g.name)).toEqual(['Sales Team'])
+    })
+
+    // Finding L-2 (docs/superpowers/audit-authz.md): the test above proves
+    // the RESULTING groups are narrowed; this proves the USER named by
+    // ?userId= is now scope-checked too. Before this fix, a Sales-scoped
+    // helen could query an Engineering user's id and get 200 back (an empty
+    // or narrowed page, but still 200 — confirming the id resolves to a
+    // real user) even though GET /users/<that id> itself 403s her directly.
+    it('?userId= 403s for a user outside the actor\'s own scope, even though GET /groups?userId= for an in-scope user (above) 200s', async () => {
+      const orgUnits = new OrgUnitsRepository(ctx.db)
+      const users = new UsersRepository(ctx.db)
+      // A THIRD org unit, disjoint from Sales (helen's own scope) — not the
+      // shared 'Engineering' fixture, so this test cannot accidentally pass
+      // because of some other test's leftover state.
+      const marketing = await orgUnits.createChild(rootId, 'Marketing L2')
+      const eve = await users.create({
+        primaryEmail: 'eve-l2@example.com',
+        username: 'eve-l2',
+        firstName: 'Eve',
+        lastName: 'Marketer',
+        orgUnitId: marketing.id,
+      })
+      await users.changeStatus(eve.id, 'active')
+
+      const res = await request(app.getHttpServer()).get(`/groups?userId=${eve.id}`).expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
     })
 
     it('a global role sees every group, including the out-of-scope one', async () => {
@@ -584,6 +615,196 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
       const res = await request(app.getHttpServer()).get('/groups').expect(200)
       expect(res.body.total).toBe(1)
       expect(res.body.items.map((g: { id: string }) => g.id)).toEqual([globalGroupId])
+    })
+  })
+
+  // ---------------------------------------------------------------------
+  // POST/DELETE /users/:id/roles — finding H-1 (docs/superpowers/audit-authz.md).
+  //
+  // Every OTHER describe block in this file pins the scope-narrowing
+  // property for a resource's own GET routes. This file had NO
+  // role-assignment section at all before this fix — a real gap, not an
+  // oversight noticed and skipped: `role-assignments.write.spec.ts` only
+  // ever targets users INSIDE the acting super_admin's own scope, so
+  // nothing anywhere in the original 554-test suite ever constructed a
+  // target principal the actor could not reach. That is exactly the shape
+  // every other block in this file exists to cover for every other
+  // resource, and exactly the shape H-1 fell through. Fixtures below
+  // reproduce the live audit finding verbatim: `acme` (containing
+  // `acme.sales`) and a fully disjoint `otherco` root.
+  //
+  // Deliberately declared LAST in this file, and deliberately never calls
+  // `resetTables` — see its own inline comment for why: every block ABOVE
+  // this one either only exercises READ routes or seeds fixtures by calling
+  // repositories directly, so `resetTables`'s `DELETE FROM users` between
+  // their tests never conflicts with anything. THIS block makes real HTTP
+  // writes through RoleAssignmentsController, so once the fix lands, its
+  // positive-control test legitimately commits a real `audit_log` row —
+  // and `audit_log` is append-only (no test, ever, in any file, deletes
+  // from it), so any user it references can never be deleted again for the
+  // rest of this process. Running last means no later block's
+  // `resetTables` ever attempts that delete.
+  // ---------------------------------------------------------------------
+  describe('POST/DELETE /users/:id/roles (role assignment)', () => {
+    let app: INestApplication
+    let currentUsername = ''
+
+    beforeAll(async () => {
+      const moduleRef = await Test.createTestingModule({
+        controllers: [RoleAssignmentsController],
+        providers: [
+          { provide: DB_CLIENT, useFactory: () => ctx.db },
+          RoleAssignmentsRepository,
+          UsersRepository,
+          PermissionEngine,
+          PermissionGuard,
+          PrivilegeGuards,
+          AuditWriter,
+          OutboxWriter,
+          Reflector,
+        ],
+      })
+        .overrideGuard(JwtGuard)
+        .useValue(stubJwtGuard(() => currentUsername))
+        .compile()
+
+      app = moduleRef.createNestApplication()
+      app.useGlobalFilters(new DomainExceptionFilter())
+      await app.init()
+    })
+
+    afterAll(async () => {
+      await app?.close()
+    })
+
+    // No `beforeEach`/`resetTables` — see the describe-level comment above.
+    // Every fixture below is uniquely tagged (`nextTag()`) and rows
+    // accumulate for the life of this block's own Testcontainer, the same
+    // convention role-assignments.write.spec.ts uses for the identical
+    // reason (see that file's own header comment).
+    let fixtureSeq = 0
+    function nextTag(): string {
+      fixtureSeq += 1
+      return `h1${fixtureSeq}`
+    }
+
+    async function totalAuditCount(): Promise<number> {
+      const { rows } = await ctx.pool.query<{ count: number }>(
+        'SELECT count(*)::int AS count FROM audit_log',
+      )
+      return rows[0]?.count ?? 0
+    }
+
+    async function totalOutboxCount(): Promise<number> {
+      const { rows } = await ctx.pool.query<{ count: number }>(
+        'SELECT count(*)::int AS count FROM outbox_events',
+      )
+      return rows[0]?.count ?? 0
+    }
+
+    async function makeActiveUser(role: string, orgUnitId: string) {
+      const tag = nextTag()
+      const users = new UsersRepository(ctx.db)
+      const created = await users.create({
+        primaryEmail: `${role}-${tag}@example.com`,
+        username: `${role}-${tag}`,
+        firstName: 'Test',
+        lastName: 'User',
+        orgUnitId,
+      })
+      return users.changeStatus(created.id, 'active')
+    }
+
+    /** `acme` (containing `acme.sales`) and a fully disjoint `otherco` root — the live audit reproduction's exact org shape. */
+    async function makeDisjointOrgs(): Promise<{ salesId: string; othercoId: string }> {
+      const orgUnits = new OrgUnitsRepository(ctx.db)
+      const acme = await orgUnits.createRoot(`Acme ${nextTag()}`)
+      const sales = await orgUnits.createChild(acme.id, `Sales ${nextTag()}`)
+      const otherco = await orgUnits.createRoot(`OtherCo ${nextTag()}`)
+      return { salesId: sales.id, othercoId: otherco.id }
+    }
+
+    // THE headline reproduction: pre-fix, this returned 201 — a Sales-scoped
+    // super_admin granting itself-equivalent privilege to a principal it
+    // cannot even read, in an org tree it has no relationship to at all.
+    it('rejects granting a role to a victim outside the actor\'s scope, with 403 and writes no audit row or outbox event', async () => {
+      const { salesId, othercoId } = await makeDisjointOrgs()
+      const admin = await makeActiveUser('admin', salesId)
+      const roles = new RoleAssignmentsRepository(ctx.db)
+      await roles.assign({ userId: admin.id, roleKey: 'super_admin', scopeOrgUnitId: salesId })
+      const victim = await makeActiveUser('victim', othercoId)
+      currentUsername = admin.username
+
+      const auditBefore = await totalAuditCount()
+      const outboxBefore = await totalOutboxCount()
+
+      const res = await request(app.getHttpServer())
+        .post(`/users/${victim.id}/roles`)
+        .send({ roleKey: 'super_admin', scopeOrgUnitId: salesId })
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await totalAuditCount()).toBe(auditBefore)
+      expect(await totalOutboxCount()).toBe(outboxBefore)
+    })
+
+    // The revoke direction is symmetric per the audit report: a grant that
+    // legitimately exists inside the victim's own tree (only a GLOBAL actor
+    // could have made it) still cannot be stripped by the Sales-scoped actor.
+    it('rejects revoking a victim\'s role from outside the actor\'s scope, with 403 and writes no NEW audit row or outbox event', async () => {
+      const { salesId, othercoId } = await makeDisjointOrgs()
+      const roles = new RoleAssignmentsRepository(ctx.db)
+
+      // Bootstrap a GLOBAL actor purely to create the pre-existing grant —
+      // this models "some other, legitimately global admin already granted
+      // the victim a role," not a step the Sales-scoped admin performs.
+      const bootstrap = await makeActiveUser('bootstrap', salesId)
+      await roles.assign({ userId: bootstrap.id, roleKey: 'super_admin', scopeOrgUnitId: null })
+      const admin = await makeActiveUser('admin', salesId)
+      await roles.assign({ userId: admin.id, roleKey: 'super_admin', scopeOrgUnitId: salesId })
+      const victim = await makeActiveUser('victim', othercoId)
+
+      currentUsername = bootstrap.username
+      const created = await request(app.getHttpServer())
+        .post(`/users/${victim.id}/roles`)
+        .send({ roleKey: 'read_only', scopeOrgUnitId: salesId })
+        .expect(201)
+      const assignmentId = created.body.id as string
+
+      const auditBefore = await totalAuditCount()
+      const outboxBefore = await totalOutboxCount()
+
+      currentUsername = admin.username
+      const res = await request(app.getHttpServer())
+        .delete(`/users/${victim.id}/roles/${assignmentId}`)
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await totalAuditCount()).toBe(auditBefore)
+      expect(await totalOutboxCount()).toBe(outboxBefore)
+    })
+
+    // Positive control, in the SAME fixture shape as the finding above: the
+    // fix narrows WHO may be targeted, not the legitimate operation. The
+    // Sales-scoped admin can still grant a role to a colleague who actually
+    // lives in acme.sales.
+    it('an in-scope role assignment still succeeds (201), proving the fix does not just break the feature', async () => {
+      const { salesId } = await makeDisjointOrgs()
+      const admin = await makeActiveUser('admin', salesId)
+      const roles = new RoleAssignmentsRepository(ctx.db)
+      await roles.assign({ userId: admin.id, roleKey: 'super_admin', scopeOrgUnitId: salesId })
+      const colleague = await makeActiveUser('colleague', salesId)
+      currentUsername = admin.username
+
+      const res = await request(app.getHttpServer())
+        .post(`/users/${colleague.id}/roles`)
+        .send({ roleKey: 'help_desk', scopeOrgUnitId: salesId })
+        .expect(201)
+      expect(res.body.userId).toBe(colleague.id)
+
+      await request(app.getHttpServer())
+        .delete(`/users/${colleague.id}/roles/${res.body.id}`)
+        .expect(200)
     })
   })
 })

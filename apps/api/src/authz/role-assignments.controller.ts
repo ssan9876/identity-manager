@@ -9,7 +9,9 @@ import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
 import * as schema from '../db/schema/index'
 import { OutboxWriter } from '../outbox/outbox.writer'
+import { UsersRepository } from '../users/users.repository'
 import { ALL_ROLE_KEYS, type RoleKey } from './actions'
+import { PermissionEngine } from './permission.engine'
 import { PermissionGuard, type AuthorizedRequest } from './permission.guard'
 import { PrivilegeGuards } from './privilege.guards'
 import { RequirePermission } from './require-permission.decorator'
@@ -63,34 +65,54 @@ function snapshotRoleAssignment(assignment: RoleAssignment): Record<string, unkn
  * UsersController/GroupsController/OrgUnitsController already use for THEIR
  * own entities, extended to this one — not on the target user's id.
  *
- * THE THREE CHECKS every route below runs, all load-bearing, none subsuming
- * another (task-4-brief.md, citing the M3a review):
+ * THE FOUR CHECKS every route below runs, all load-bearing, none subsuming
+ * another (task-4-brief.md, citing the M3a review; check 4 added post-launch
+ * for finding H-1, docs/superpowers/audit-authz.md):
  *   1. `PermissionGuard` (class-level, below): does this actor hold
  *      `role:assign` ANYWHERE at all? Only `super_admin` does, in today's
  *      static catalog (see ROLE_PERMISSIONS in actions.ts) — every other
  *      role is denied entry to every route on this controller before a
  *      single query runs.
- *   2. `PrivilegeGuards.assertCanAssignRole(actor, roleKey, scopeOrgUnitId)`:
+ *   2. `PermissionEngine.assertCanIn(actor, 'role:assign', target.orgUnitId)`:
+ *      may this actor reach the TARGET PRINCIPAL at all? This is the check
+ *      H-1 found missing: `assertCanAssignRole` below validates the scope of
+ *      the GRANT, never the location of the GRANTEE, and
+ *      `assertCanModifyPrincipal` compares rank only — its own doc comment
+ *      says explicitly that callers MUST additionally pair it with this
+ *      exact call. Every other write endpoint in this codebase that loads a
+ *      principal by id already pairs the two (users.controller.ts's
+ *      update/deactivate, imports.controller.ts's row update); this
+ *      controller — "the most security-sensitive writes in the system," per
+ *      this file's own header — was the one place that didn't. Without it, a
+ *      `super_admin` scoped to Sales could grant/revoke roles on principals
+ *      in org units they cannot read, update, or even see.
+ *   3. `PrivilegeGuards.assertCanAssignRole(actor, roleKey, scopeOrgUnitId)`:
  *      may THIS actor grant THIS role at THIS scope? A SCOPED holding must
  *      never produce a GLOBAL grant — that is the escalation path that turns
  *      a departmental account into a domain-wide one.
- *   3. `PrivilegeGuards.assertCanModifyPrincipal(actor, targetUserId)`: does
+ *   4. `PrivilegeGuards.assertCanModifyPrincipal(actor, targetUserId)`: does
  *      the TARGET outrank the actor? Independent of scope entirely — a
  *      `help_desk` scoped to Sales must not be able to touch a GLOBAL
  *      `super_admin` who happens to sit in Sales.
- * Milestone 3a proved (2) and (3) are independent: rank alone permits peer
+ * Milestone 3a proved (3) and (4) are independent: rank alone permits peer
  * help-desks in disjoint subtrees to touch each other; scope alone permits
- * the Sales-super_admin-in-Sales escalation above. Shipping only some of
- * these three is the bug this controller exists not to have — see
- * role-assignments.write.spec.ts's file header for which rejection paths
- * are actually reachable through THIS controller given today's role
- * catalog, and why.
+ * the Sales-super_admin-in-Sales escalation above. (2) is independent of
+ * both: it answers "can the actor reach this PERSON," which neither of the
+ * other two ever asks — (3) asks about the grant's scope, (4) asks about
+ * rank, and a target can simultaneously be within-scope-of-the-grant AND
+ * outrank-nothing AND still live in an org unit the actor cannot see.
+ * Shipping only some of these four is the bug this controller exists not to
+ * have — see role-assignments.write.spec.ts's file header for which
+ * rejection paths are actually reachable through THIS controller given
+ * today's role catalog, and why.
  */
 @Controller('users')
 @UseGuards(JwtGuard, PermissionGuard)
 export class RoleAssignmentsController {
   constructor(
     @Inject(RoleAssignmentsRepository) private readonly roleAssignments: RoleAssignmentsRepository,
+    @Inject(UsersRepository) private readonly users: UsersRepository,
+    @Inject(PermissionEngine) private readonly engine: PermissionEngine,
     @Inject(PrivilegeGuards) private readonly privileges: PrivilegeGuards,
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
     @Inject(OutboxWriter) private readonly outboxWriter: OutboxWriter,
@@ -98,17 +120,28 @@ export class RoleAssignmentsController {
   ) {}
 
   /**
-   * Both privilege checks run BEFORE the transaction opens: `roleKey` and
-   * `scopeOrgUnitId` come straight from the request body and the target
-   * `userId` comes straight from the URL — nothing has to be loaded from the
-   * database first for either check to evaluate, exactly like
-   * UsersController.create's pre-transaction `assertCanIn` (see its doc
-   * comment). A rejection from either throws before the transaction ever
-   * opens, so there is nothing to roll back and no audit row is ever
-   * written. `RoleAssignmentsRepository.assign` still performs its own
-   * existence checks (target user, scope org unit) inside the transaction,
-   * so a bogus id 404s cleanly rather than 500ing, same as every other
-   * write endpoint this milestone.
+   * All three pre-transaction checks run BEFORE the transaction opens:
+   * `roleKey` and `scopeOrgUnitId` come straight from the request body, and
+   * the target `userId` comes straight from the URL — loading the target
+   * user row is the only DB access any of the three needs, and it happens
+   * once, up front, exactly like UsersController.create's pre-transaction
+   * `assertCanIn` (see its doc comment). A rejection from any one throws
+   * before the transaction ever opens, so there is nothing to roll back and
+   * no audit row is ever written. `RoleAssignmentsRepository.assign` still
+   * performs its own existence checks (target user, scope org unit) inside
+   * the transaction, so a bogus id 404s cleanly rather than 500ing, same as
+   * every other write endpoint this milestone.
+   *
+   * The `assertCanIn` call below is check 2 of the class doc comment's FOUR
+   * CHECKS — finding H-1 (docs/superpowers/audit-authz.md): it loads the
+   * target user and asks "can this actor reach THIS PERSON at all," which
+   * `assertCanAssignRole` (scope of the grant) and `assertCanModifyPrincipal`
+   * (rank of the target) never ask between them. Ordered FIRST, before the
+   * other two: there is no reason to reveal "you may not grant this role at
+   * this scope" or "you may not touch a principal this senior" to an actor
+   * who cannot reach the target user in the first place — a 404 for a
+   * missing target, and now a 403 for an unreachable one, both happen before
+   * either of the other two checks runs.
    */
   @Post(':id/roles')
   @RequirePermission('role:assign')
@@ -120,6 +153,12 @@ export class RoleAssignmentsController {
     const userId = parseId(rawUserId)
     const parsed = parseBody(assignRoleBodySchema, body)
     const scopeOrgUnitId = parsed.scopeOrgUnitId ?? null
+
+    const target = await this.users.findById(userId)
+    if (target === null) {
+      throw new NotFoundError('user', userId)
+    }
+    await this.engine.assertCanIn(request.actor, 'role:assign', target.orgUnitId)
 
     await this.privileges.assertCanAssignRole(request.actor, parsed.roleKey, scopeOrgUnitId)
     await this.privileges.assertCanModifyPrincipal(request.actor, userId)
@@ -175,6 +214,22 @@ export class RoleAssignmentsController {
    * `:assignmentId` must belong to `:id` — a well-formed assignment id that
    * exists but belongs to a DIFFERENT user 404s exactly like a nonexistent
    * one, never silently acting on it through the "wrong" URL.
+   *
+   * All three checks below are passed `tx` explicitly, same finding-C1
+   * reason as UsersController.update/deactivate (see their doc comments):
+   * this handler already holds one pool connection for `tx`, and letting any
+   * of them fall back to its pooled default would check out a second one
+   * for the lifetime of a query that runs while the first is still held.
+   *
+   * The `assertCanIn` call is check 2 of the class doc comment's FOUR
+   * CHECKS — finding H-1's revoke-direction symmetry
+   * (docs/superpowers/audit-authz.md): granting demands the actor can reach
+   * the target user (see `assign` above); revoking must demand exactly the
+   * same thing, against the SAME target this grant already belongs to
+   * (`current.userId`, loaded from the row above — never re-trust `userId`
+   * off the URL a second time), or a Sales-scoped super_admin could strip a
+   * role from a principal outside their scope even though they could never
+   * have granted it in the first place.
    */
   @Delete(':id/roles/:assignmentId')
   @RequirePermission('role:assign')
@@ -192,12 +247,19 @@ export class RoleAssignmentsController {
         throw new NotFoundError('role assignment', assignmentId)
       }
 
+      const target = await this.users.findById(current.userId, tx)
+      if (target === null) {
+        throw new NotFoundError('user', current.userId)
+      }
+      await this.engine.assertCanIn(request.actor, 'role:assign', target.orgUnitId, tx)
+
       await this.privileges.assertCanAssignRole(
         request.actor,
         current.roleKey,
         current.scopeOrgUnitId,
+        tx,
       )
-      await this.privileges.assertCanModifyPrincipal(request.actor, current.userId)
+      await this.privileges.assertCanModifyPrincipal(request.actor, current.userId, tx)
 
       await this.roleAssignments.revoke(assignmentId, tx)
 

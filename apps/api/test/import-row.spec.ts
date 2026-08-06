@@ -113,4 +113,29 @@ describe('parseImportRowShape', () => {
     if (!result.ok) throw new Error('expected ok')
     expect(result.row.rawAttributes).toEqual({ costCenter: 'CC-1' })
   })
+
+  // docs/superpowers/audit-injection.md HIGH finding, second half: even
+  // after csv.ts stops dropping a "__proto__" header on the way INTO `raw`,
+  // this function's own `rawAttributes[key] = trimmed` loop (previously
+  // built on a plain {}) would silently drop it a SECOND time on the way
+  // OUT into rawAttributes. Object.create(null) here closes that.
+  it('collects a "__proto__" extra header into rawAttributes as a genuine own key, never silently dropping it', () => {
+    // Simulates exactly what csv.ts's own post-fix row object looks like: a
+    // null-prototype object with __proto__ assigned as a real own property
+    // (bracket-assignment on an ordinary {} would silently no-op here,
+    // which is precisely the bug this reproduces the FIX for).
+    const raw: Record<string, string> = Object.create(null)
+    Object.assign(raw, VALID_RAW)
+    raw['__proto__'] = 'anything'
+    expect(Object.prototype.hasOwnProperty.call(raw, '__proto__')).toBe(true)
+
+    const result = parseImportRowShape(raw, true)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('expected ok')
+
+    const rawAttributes = result.row.rawAttributes
+    expect(rawAttributes).toBeDefined()
+    expect(Object.prototype.hasOwnProperty.call(rawAttributes, '__proto__')).toBe(true)
+    expect(rawAttributes?.['__proto__']).toBe('anything')
+  })
 })

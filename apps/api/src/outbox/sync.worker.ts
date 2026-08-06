@@ -1,5 +1,5 @@
 import { Inject, Injectable, type OnApplicationShutdown, Optional } from '@nestjs/common'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { DB_CLIENT } from '../common/db.token'
 import * as schema from '../db/schema/index'
@@ -29,6 +29,18 @@ const DEFAULT_CONFIG: SyncWorkerConfig = {
   maxDelayMs: 10 * 60_000,
   pollIntervalMs: 5_000,
 }
+
+/**
+ * The high 32 bits of the per-user advisory lock key `reconcileUser` takes
+ * (see its own doc comment) — paired with `pg_advisory_xact_lock(key1, key2)`
+ * so the resulting 64-bit key space is disjoint from
+ * `GroupsRepository.GROUP_GRAPH_LOCK_ID` (0x1d3a_0001), which uses the
+ * single-bigint-argument form: Postgres packs that form's `bigint` as
+ * `(key1 << 32) | key2`, so any single-bigint value below 2^32 — as
+ * `GROUP_GRAPH_LOCK_ID` is — always has high bits `0` and can never collide
+ * with a two-argument call whose first argument is this nonzero namespace.
+ */
+const SYNC_USER_LOCK_NAMESPACE = 0x1d3a_0002
 
 /**
  * Exponential backoff with EQUAL jitter (delay is always in
@@ -227,8 +239,50 @@ export class SyncWorker implements OnApplicationShutdown {
    * Reads `users` fresh via `tx` and reasserts the WHOLE desired state on
    * every call, never a delta — calling this twice in a row for the same
    * user is a no-op the second time (proven by the idempotence test).
+   *
+   * FIRST ACTION, before any read: takes a per-user advisory lock scoped to
+   * the CALLER's transaction — finding H2 (docs/superpowers/audit-
+   * integrity.md): `OutboxRepository.claimNext` enforces strict ordering
+   * only per `(aggregate_type, aggregate_id)`, but a `user`, a `group` and a
+   * `membership` event are three DIFFERENT aggregates that all fan into
+   * THIS method for the SAME user — `claimNext` therefore happily hands them
+   * to different workers in parallel. Without a lock, two workers can each
+   * read this user's effective groups, race their own sequence of Keycloak
+   * calls, and whichever calls `setUserGroups` LAST wins regardless of who
+   * read fresher data — reproduced 20/20 in both directions (an admin's
+   * group removal silently restored by a stale concurrent worker) by
+   * sync.worker.spec.ts's "cross-aggregate races" tests.
+   *
+   * `pg_advisory_xact_lock` is held until the END of the OUTER transaction
+   * (commit or rollback), never released early by a `ROLLBACK TO SAVEPOINT`
+   * — confirmed against Postgres's own documented behaviour and already
+   * relied on by `GroupsRepository.addChildGroup`'s identical-shape
+   * `GROUP_GRAPH_LOCK_ID` (see its doc comment: "pg_advisory_xact_lock taken
+   * inside the savepoint is still scoped to the outer transaction"). `tx`
+   * here is frequently the NESTED savepoint `runOnce` opens for
+   * `applyEvent` (see that method's doc comment), so taking the lock via
+   * `tx` still scopes it to `runOnce`'s own OUTER `db.transaction(...)` —
+   * i.e. for as long as THIS worker holds its claim on the triggering event,
+   * covering every Keycloak round trip this call makes, not just the
+   * Postgres reads. A second worker calling `reconcileUser` for the SAME
+   * `userId` — whether fanned out from a `group`/`membership` event or
+   * claimed directly as a `user` event — blocks here until the first
+   * worker's whole `runOnce()` transaction ends, then re-reads (this method
+   * always re-reads fresh, never trusts a value read before the lock) the
+   * now-current state. Serializing per USER, not per aggregate row, is what
+   * closes the gap: the three aggregate types are different rows, but they
+   * all mutate the same entity's Keycloak state, which is the unit that
+   * actually needs to be serialized.
+   *
+   * `hashtext` takes `text`; the explicit `::text` cast is required because
+   * `userId` is otherwise bound as an untyped parameter Postgres cannot
+   * resolve to `hashtext`'s single overload without it.
    */
   private async reconcileUser(tx: DbHandle, userId: string): Promise<void> {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(${SYNC_USER_LOCK_NAMESPACE}, hashtext(${userId}::text))`,
+    )
+
     const user = await this.usersRepository.findById(userId, tx)
     if (user === null) {
       // There is no delete for users (terminal status is `deactivated`) —
@@ -240,7 +294,7 @@ export class SyncWorker implements OnApplicationShutdown {
       throw new Error(`sync worker: no user found for id ${userId}`)
     }
 
-    const definitions = await this.usersRepository.listActiveAttributeDefinitions()
+    const definitions = await this.usersRepository.listActiveAttributeDefinitions(tx)
 
     // Only an 'active' user is treated as a live principal anywhere else in
     // this system (PermissionEngine.resolveActor requires it). Mirroring
@@ -285,7 +339,7 @@ export class SyncWorker implements OnApplicationShutdown {
       keycloakUserId = existing.id
     }
 
-    await this.syncEffectiveGroups(user.id, user.username)
+    await this.syncEffectiveGroups(tx, user.id, user.username)
 
     await tx
       .insert(externalIdentities)
@@ -321,17 +375,29 @@ export class SyncWorker implements OnApplicationShutdown {
    * `setUserGroups` (Task 2) diffs against Keycloak's actual current
    * membership and issues only the adds/removes needed, so calling this
    * with an unchanged desired set is a zero-write no-op.
+   *
+   * Takes `tx` and threads it into both `GroupsRepository` reads below —
+   * finding C1 (docs/superpowers/audit-integrity.md): this method runs from
+   * inside `reconcileUser`, itself always inside the worker's own open
+   * transaction (the outer claim transaction, or the nested savepoint for a
+   * fanned-out call — see `runOnce`'s doc comment). Defaulting either read
+   * to the pool here would check out a second connection for the lifetime
+   * of a query that runs while the worker's own transaction connection is
+   * still held, permanently pinning 2 of the pool's connections per
+   * in-flight claim while `SyncWorker` drains — the same shape as the HTTP
+   * write handlers' fix, just for the worker's own transaction instead of a
+   * request's.
    */
-  private async syncEffectiveGroups(userId: string, username: string): Promise<void> {
-    const effectiveGroupIds = await this.groupsRepository.listEffectiveGroupsForUser(userId)
+  private async syncEffectiveGroups(tx: DbHandle, userId: string, username: string): Promise<void> {
+    const effectiveGroupIds = await this.groupsRepository.listEffectiveGroupsForUser(userId, tx)
     const localGroups =
       effectiveGroupIds.length === 0
         ? []
-        : await this.groupsRepository.listByIds(effectiveGroupIds, {
-            limit: effectiveGroupIds.length,
-            offset: 0,
-            scopePaths: null,
-          })
+        : await this.groupsRepository.listByIds(
+            effectiveGroupIds,
+            { limit: effectiveGroupIds.length, offset: 0, scopePaths: null },
+            tx,
+          )
 
     const keycloakGroupIds: string[] = []
     for (const group of localGroups) {
@@ -374,7 +440,7 @@ export class SyncWorker implements OnApplicationShutdown {
 
     await this.keycloak.ensureGroup(group.name)
 
-    const memberIds = await this.groupsRepository.listEffectiveUserMembers(groupId)
+    const memberIds = await this.groupsRepository.listEffectiveUserMembers(groupId, tx)
     for (const memberId of memberIds) {
       await this.reconcileUser(tx, memberId)
     }
@@ -408,7 +474,7 @@ export class SyncWorker implements OnApplicationShutdown {
       affected.add(payload.userId)
     }
     if (typeof payload.childGroupId === 'string') {
-      const members = await this.groupsRepository.listEffectiveUserMembers(payload.childGroupId)
+      const members = await this.groupsRepository.listEffectiveUserMembers(payload.childGroupId, tx)
       for (const memberId of members) {
         affected.add(memberId)
       }

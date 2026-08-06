@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { AuditWriter } from '../src/audit/audit.writer'
 import { GroupsRepository } from '../src/groups/groups.repository'
 import { KeycloakAdminClient } from '../src/keycloak/keycloak-admin.client'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
@@ -8,7 +9,7 @@ import { ReconciliationJob } from '../src/outbox/reconciliation.job'
 import { SyncWorker } from '../src/outbox/sync.worker'
 import { type User, UsersRepository } from '../src/users/users.repository'
 import { startKeycloak, type TestKeycloak } from './support/keycloak'
-import { withTestDatabase } from './support/pg'
+import { type TestDatabase, withTestDatabase } from './support/pg'
 
 const SYNC_CLIENT_ID = 'idm-sync-service'
 const SYNC_CLIENT_SECRET = 'idm_sync_dev_secret_change_me'
@@ -40,6 +41,7 @@ describe('ReconciliationJob (Milestone 4, Task 4)', () => {
       client,
       new OutboxWriter(),
       new SyncWorker(ctx.db, new OutboxRepository(), usersRepo(), groupsRepo(), client),
+      new AuditWriter(),
       ctx.db,
     )
 
@@ -61,6 +63,23 @@ describe('ReconciliationJob (Milestone 4, Task 4)', () => {
   function nextTag(): string {
     fixtureSeq += 1
     return `${fixtureSeq}`
+  }
+
+  interface AuditLogRow {
+    actor_user_id: string | null
+    action: string
+    resource_type: string
+    resource_id: string | null
+    before: Record<string, unknown> | null
+    after: Record<string, unknown> | null
+  }
+
+  async function auditRowsFor(ctx: TestDatabase, resourceId: string): Promise<AuditLogRow[]> {
+    const { rows } = await ctx.pool.query<AuditLogRow>(
+      "SELECT * FROM audit_log WHERE resource_type = 'user' AND resource_id = $1 ORDER BY id ASC",
+      [resourceId],
+    )
+    return rows
   }
 
   async function makeUser(): Promise<User> {
@@ -186,6 +205,65 @@ describe('ReconciliationJob (Milestone 4, Task 4)', () => {
     // Re-asserted: a deactivated user's Keycloak account stays disabled,
     // regardless of what an operator did directly against Keycloak.
     expect((await client.findUserByUsername(user.username))?.enabled).toBe(false)
+  })
+
+  // =====================================================================
+  // Finding M2 (docs/superpowers/audit-integrity.md): binding constraint 7
+  // requires every mutation be "audited AND outboxed in one transaction" —
+  // `enqueueRepair` wrote an outbox event only. Measured by the audit over
+  // exactly this scenario (a suspended user manually re-enabled directly in
+  // Keycloak): "Keycloak account re-disabled, 0 audit rows written." Fixed:
+  // an `actorUserId: null` audit row now lands in the SAME transaction as
+  // the outbox event, `before` = the observed Keycloak state, `after` =
+  // desired state + the drift reasons.
+  // =====================================================================
+  describe('audits its own repairs (finding M2, docs/superpowers/audit-integrity.md)', () => {
+    it('writes an actorUserId:null audit row when it repairs a deactivated user re-enabled directly in Keycloak', async () => {
+      const user = await makeUser()
+      await usersRepo().changeStatus(user.id, 'active')
+
+      const job = makeJob()
+      await job.run()
+      await usersRepo().changeStatus(user.id, 'deactivated')
+      await job.run() // converges: disabled in Keycloak too
+      expect((await client.findUserByUsername(user.username))?.enabled).toBe(false)
+
+      const auditRowsBeforeDrift = await auditRowsFor(ctx, user.id)
+
+      // Bypasses this system entirely, exactly like the audit's own repro.
+      await client.setEnabled(user.username, true)
+      expect((await client.findUserByUsername(user.username))?.enabled).toBe(true)
+
+      const report = await job.run()
+      const drift = report.usersWithDrift.find((d) => d.userId === user.id)
+      expect(drift?.reasons).toContain('enabled_mismatch')
+      expect((await client.findUserByUsername(user.username))?.enabled).toBe(false)
+
+      const auditRows = await auditRowsFor(ctx, user.id)
+      expect(auditRows.length).toBe(auditRowsBeforeDrift.length + 1)
+
+      const repairRow = auditRows[auditRows.length - 1]!
+      expect(repairRow.action).toBe('reconciliation:repair')
+      expect(repairRow.actor_user_id).toBeNull()
+      // before = the OBSERVED (drifted) Keycloak state — genuinely enabled.
+      expect(repairRow.before?.enabled).toBe(true)
+      // after = the DESIRED state this repair will assert — deactivated
+      // users are always desired-disabled — plus why.
+      expect(repairRow.after?.status).toBe('deactivated')
+      expect(repairRow.after?.reasons).toEqual(['enabled_mismatch'])
+    })
+
+    it('writes no audit row for a user with no drift', async () => {
+      const user = await makeUser()
+      await usersRepo().changeStatus(user.id, 'active')
+
+      const job = makeJob()
+      await job.run()
+      const afterFirst = await auditRowsFor(ctx, user.id)
+
+      await job.run() // fully converged — no drift this time
+      expect(await auditRowsFor(ctx, user.id)).toEqual(afterFirst)
+    })
   })
 
   // =====================================================================

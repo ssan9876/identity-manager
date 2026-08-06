@@ -150,7 +150,13 @@ describe('group membership', () => {
     // and a cycle is committed, which makes effective-membership expansion
     // depend on UNION dedup rather than on the graph actually being a DAG.
     for (let i = 0; i < 20; i++) {
-      await ctx.pool.query('TRUNCATE TABLE group_group_members CASCADE')
+      // finding H1 (docs/superpowers/audit-integrity.md): TRUNCATE is not
+      // among the runtime role's grants on ANY table (only SELECT/INSERT/
+      // UPDATE/DELETE — see db/roles.ts), so this between-iteration reset
+      // runs on the OWNER pool. Everything under test below — addChildGroup,
+      // the cycle race itself — still runs as the runtime role via `groups`
+      // (constructed on `ctx.db`).
+      await ctx.ownerPool.query('TRUNCATE TABLE group_group_members CASCADE')
       const a = await groups.findByName('A') ?? (await groups.create({ name: 'A' }))
       const b = await groups.findByName('B') ?? (await groups.create({ name: 'B' }))
 

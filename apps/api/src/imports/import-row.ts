@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { noNulChar } from '../common/http/safe-string'
 
 /**
  * The columns every import row MUST supply. `employeeId` is required here
@@ -44,16 +45,22 @@ const isoDateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'must be an ISO date (YYYY-MM-DD)')
 
+// noNulChar wraps every free-text field below (never orgUnitId/managerId,
+// already UUID-constrained, or startDate/endDate, already ISO-date-regex-
+// constrained — neither shape can contain a NUL and pass) — see
+// docs/superpowers/audit-injection.md's HIGH "JSON-escaped NUL" finding and
+// safe-string.ts's own doc comment for why this must be rejected here,
+// before a row can ever reach Postgres.
 const shapeSchema = z.object({
-  employeeId: z.string().min(1, 'required'),
-  primaryEmail: z.string().min(1, 'required').max(320).email('must be a well-formed email'),
-  username: z.string().min(1, 'required').max(128),
-  firstName: z.string().min(1, 'required').max(128),
-  lastName: z.string().min(1, 'required').max(128),
+  employeeId: noNulChar(z.string().min(1, 'required')),
+  primaryEmail: noNulChar(z.string().min(1, 'required').max(320).email('must be a well-formed email')),
+  username: noNulChar(z.string().min(1, 'required').max(128)),
+  firstName: noNulChar(z.string().min(1, 'required').max(128)),
+  lastName: noNulChar(z.string().min(1, 'required').max(128)),
   orgUnitId: z.string().min(1, 'required').uuid('must be a UUID'),
-  jobTitle: z.string().max(255).nullable(),
+  jobTitle: noNulChar(z.string().max(255)).nullable(),
   managerId: z.string().uuid('must be a UUID').nullable(),
-  location: z.string().max(255).nullable(),
+  location: noNulChar(z.string().max(255)).nullable(),
   startDate: isoDateSchema.nullable(),
   endDate: isoDateSchema.nullable(),
 })
@@ -121,7 +128,14 @@ export function parseImportRowShape(
 
   let rawAttributes: Record<string, string> | undefined
   if (fileHasExtraHeaders) {
-    rawAttributes = {}
+    // Object.create(null), not {} — same reason as csv.ts's own row object
+    // (see its doc comment): `raw` now correctly carries a genuine own
+    // "__proto__" key when that's the header name (csv.ts's fix), and
+    // `rawAttributes[key] = trimmed` below must not silently swallow it a
+    // SECOND time on its way into this bag. This was the second of the two
+    // sites the audit named (csv.ts:55-61 and here) — fixing only one and
+    // not the other leaves the exact same silent-elision bug one hop later.
+    rawAttributes = Object.create(null) as Record<string, string>
     for (const [key, value] of Object.entries(raw)) {
       if (KNOWN_HEADERS.has(key)) continue
       const trimmed = value.trim()

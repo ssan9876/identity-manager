@@ -3,6 +3,7 @@ import { loadEnv } from '../src/config/env'
 
 const valid = {
   DATABASE_URL: 'postgres://idm:pw@localhost:5432/identity_manager',
+  RUNTIME_DATABASE_URL: 'postgres://idm_app:pw@localhost:5432/identity_manager',
   KEYCLOAK_ISSUER: 'http://localhost:8080/realms/identity-manager',
   KEYCLOAK_AUDIENCE: 'idm-api',
   KEYCLOAK_ADMIN_CLIENT_ID: 'idm-sync-service',
@@ -14,12 +15,16 @@ describe('loadEnv', () => {
   it('parses a valid environment', () => {
     expect(loadEnv(valid)).toEqual({
       databaseUrl: valid.DATABASE_URL,
+      runtimeDatabaseUrl: valid.RUNTIME_DATABASE_URL,
       keycloakIssuer: valid.KEYCLOAK_ISSUER,
       keycloakAudience: 'idm-api',
       keycloakAdminClientId: 'idm-sync-service',
       keycloakAdminClientSecret: 'idm_sync_dev_secret_change_me',
       port: 3000,
       syncWorkerEnabled: true,
+      dbPoolMax: 10,
+      bodyLimitBytes: 10 * 1024 * 1024,
+      importMaxRows: 5_000,
     })
   })
 
@@ -53,9 +58,78 @@ describe('loadEnv', () => {
     })
   })
 
+  // Finding C1 (docs/superpowers/audit-integrity.md): the pool's `max` is
+  // now tunable per deployment rather than only ever pg's own hardcoded
+  // default — see db/client.ts's DbClientOptions doc comment.
+  describe('DB_POOL_MAX', () => {
+    it('defaults to 10 (pg-pool\'s own default) when absent', () => {
+      expect(loadEnv(valid).dbPoolMax).toBe(10)
+    })
+
+    it('honors an explicit override', () => {
+      expect(loadEnv({ ...valid, DB_POOL_MAX: '25' }).dbPoolMax).toBe(25)
+    })
+
+    it('rejects a non-positive value rather than silently disabling the pool', () => {
+      expect(() => loadEnv({ ...valid, DB_POOL_MAX: '0' })).toThrow(/DB_POOL_MAX/)
+      expect(() => loadEnv({ ...valid, DB_POOL_MAX: '-1' })).toThrow(/DB_POOL_MAX/)
+    })
+
+    it('rejects a non-numeric value', () => {
+      expect(() => loadEnv({ ...valid, DB_POOL_MAX: 'lots' })).toThrow(/DB_POOL_MAX/)
+    })
+  })
+
+  // Finding M6 (docs/superpowers/audit-integrity.md): an explicit,
+  // configurable ceiling replacing express's accidental 100 KiB default.
+  describe('BODY_LIMIT_BYTES', () => {
+    it('defaults to 10 MiB when absent', () => {
+      expect(loadEnv(valid).bodyLimitBytes).toBe(10 * 1024 * 1024)
+    })
+
+    it('honors an explicit override', () => {
+      expect(loadEnv({ ...valid, BODY_LIMIT_BYTES: '2048' }).bodyLimitBytes).toBe(2048)
+    })
+
+    it('rejects a non-positive value', () => {
+      expect(() => loadEnv({ ...valid, BODY_LIMIT_BYTES: '0' })).toThrow(/BODY_LIMIT_BYTES/)
+    })
+  })
+
+  // Finding M6 (docs/superpowers/audit-integrity.md): the other half — an
+  // explicit, configurable row-count ceiling for bulk import.
+  describe('IMPORT_MAX_ROWS', () => {
+    it('defaults to 5,000 when absent', () => {
+      expect(loadEnv(valid).importMaxRows).toBe(5_000)
+    })
+
+    it('honors an explicit override', () => {
+      expect(loadEnv({ ...valid, IMPORT_MAX_ROWS: '100' }).importMaxRows).toBe(100)
+    })
+
+    it('rejects a non-positive value', () => {
+      expect(() => loadEnv({ ...valid, IMPORT_MAX_ROWS: '0' })).toThrow(/IMPORT_MAX_ROWS/)
+    })
+  })
+
   it('throws a descriptive error when DATABASE_URL is missing', () => {
     const { DATABASE_URL, ...broken } = valid
     expect(() => loadEnv(broken)).toThrow(/DATABASE_URL/)
+  })
+
+  // Finding H1 (docs/superpowers/audit-integrity.md): the RUNTIME
+  // connection the app/SyncWorker actually connect as — see env.ts's own
+  // doc comment. Required with no default and no fallback to DATABASE_URL:
+  // an operator who forgets to set it must get a boot-time error, not an
+  // app silently running with owner privileges.
+  it('throws a descriptive error when RUNTIME_DATABASE_URL is missing', () => {
+    const { RUNTIME_DATABASE_URL, ...broken } = valid
+    expect(() => loadEnv(broken)).toThrow(/RUNTIME_DATABASE_URL/)
+  })
+
+  it('does not fall back to DATABASE_URL when RUNTIME_DATABASE_URL is present', () => {
+    expect(loadEnv(valid).runtimeDatabaseUrl).toBe(valid.RUNTIME_DATABASE_URL)
+    expect(loadEnv(valid).runtimeDatabaseUrl).not.toBe(loadEnv(valid).databaseUrl)
   })
 
   it('rejects a non-URL issuer', () => {

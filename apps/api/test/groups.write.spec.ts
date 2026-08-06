@@ -91,6 +91,10 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       providers: [
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         GroupsRepository,
+        // Findings M-1/M-2/L-2 (docs/superpowers/audit-authz.md):
+        // GroupsController now loads the target user for the ?userId= and
+        // addMember scope checks — required here for DI resolution.
+        UsersRepository,
         PermissionEngine,
         PermissionGuard,
         AuditWriter,
@@ -173,14 +177,39 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       expect(rows[0].after?.orgUnitId).toBe(org.id)
     })
 
-    // Decision 1, applied to creation: a group created with no orgUnitId is
-    // GLOBAL, and per GroupsController.create's doc comment that check is
-    // SKIPPED (not escalated to a global-grant requirement) — a SCOPED
-    // actor holding group:create may create one.
-    it('creates a GLOBAL group (orgUnitId omitted) for a SCOPED actor, with no assertCanIn check', async () => {
+    // Finding M-2 (docs/superpowers/audit-authz.md): decision 1 originally
+    // let ANY actor holding group:create at ANY scope create a GLOBAL group
+    // (orgUnitId omitted) with no assertCanIn check at all. That is now
+    // gated behind a GLOBAL grant of group:create — see GroupsController
+    // .create's doc comment for why (SyncWorker pushes group membership
+    // into real Keycloak groups, making "any scope, anywhere" too broad a
+    // grant for something with cross-org reach). This test used to assert
+    // 201 for a SCOPED actor; it now pins the corrected 403.
+    it('rejects creating a GLOBAL group (orgUnitId omitted) for a SCOPED actor, with 403 and no audit row', async () => {
       const org = await makeOrgUnit('Global Create Root')
       const actor = await makeActiveUser('scoped-creator', org.id)
       await grant(actor.id, 'user_admin', org.id) // SCOPED, not global
+      currentUsername = actor.username
+
+      const before = await totalAuditCount(ctx)
+      const tag = nextTag()
+
+      const res = await request(app.getHttpServer())
+        .post('/groups')
+        .send({ name: `All Staff ${tag}` })
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await totalAuditCount(ctx)).toBe(before)
+    })
+
+    // Positive control for the fix above: a GLOBAL grant of group:create
+    // still creates a global group exactly as before — the fix narrows WHO
+    // may do this, it does not remove the ability.
+    it('creates a GLOBAL group (orgUnitId omitted) for a GLOBAL actor, audited once', async () => {
+      const org = await makeOrgUnit('Global Create Allowed Root')
+      const actor = await makeActiveUser('global-creator', org.id)
+      await grant(actor.id, 'user_admin', null) // GLOBAL
       currentUsername = actor.username
 
       const tag = nextTag()
@@ -264,6 +293,54 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
         .send({ name: `Attr Test ${tag}`, orgUnitId: org.id, attributes: { costCenter: 'CC-1' } })
         .expect(400)
       expect(res.body.code).toBe('VALIDATION_FAILED')
+    })
+
+    // docs/superpowers/audit-injection.md HIGH finding — same
+    // z.record(z.unknown()) silent-elision bug as POST /users (see
+    // users.write.spec.ts's identical regression test for the full
+    // mechanism). Pre-fix this returned 201 with attributes: {}.
+    it('rejects a "__proto__" JSON attribute key with 400, never silently dropping it to {}', async () => {
+      const org = await makeOrgUnit('Proto Attr Root')
+      const actor = await makeActiveUser('proto-creator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const tag = nextTag()
+      // Raw JSON text, not a JS object literal — see users.write.spec.ts's
+      // POST /users regression test for why. `.type('json')` sends the
+      // string verbatim.
+      const body = `{"name":"Proto Group ${tag}","orgUnitId":"${org.id}","attributes":{"__proto__":{"x":1}}}`
+
+      const res = await request(app.getHttpServer())
+        .post('/groups')
+        .type('json')
+        .send(body)
+        .expect(400)
+
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+      expect(res.body.issues.join(' ')).toContain('__proto__')
+    })
+
+    // docs/superpowers/audit-injection.md HIGH finding: a JSON-escaped NUL
+    // is legal JSON and passed every pre-fix check, only failing once it
+    // reached Postgres as an unmapped 500. Confirmed live on POST /groups.
+    it('rejects a NUL character in "name" with 400 VALIDATION_FAILED naming the field, never an unmapped 500', async () => {
+      const org = await makeOrgUnit('Nul Group Root')
+      const actor = await makeActiveUser('nul-creator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+      const nul = String.fromCharCode(0)
+
+      const before = await totalAuditCount(ctx)
+
+      const res = await request(app.getHttpServer())
+        .post('/groups')
+        .send({ name: `grp${nul}x`, orgUnitId: org.id })
+        .expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+      expect(res.body.issues.join(' ')).toContain('name')
+
+      expect(await totalAuditCount(ctx)).toBe(before)
     })
 
     it('rejects a duplicate group name with 409 CONFLICT naming the right constraint, and the failed attempt writes no audit row', async () => {
@@ -352,9 +429,11 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       expect(await auditRowsFor(ctx, group.id)).toHaveLength(0)
     })
 
-    // The brief's explicit contract: "A global group (org_unit_id = NULL)
-    // is writable by a scoped actor holding the action."
-    it('updates a GLOBAL group as a SCOPED actor, with no assertCanIn check', async () => {
+    // Finding M-2 (docs/superpowers/audit-authz.md) supersedes the brief's
+    // original contract ("a global group is writable by a scoped actor
+    // holding the action"): a global group now requires a GLOBAL grant of
+    // group:update, mirroring create — see `requireGroup`'s doc comment.
+    it('rejects updating a GLOBAL group as a SCOPED actor, with 403 and no audit row', async () => {
       const org = await makeOrgUnit('Global Update Root')
       const actor = await makeActiveUser('scoped-updater', org.id)
       await grant(actor.id, 'user_admin', org.id) // SCOPED, not global
@@ -364,8 +443,26 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       const res = await request(app.getHttpServer())
         .patch(`/groups/${globalGroup.id}`)
         .send({ description: 'Managed by a scoped actor' })
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await auditRowsFor(ctx, globalGroup.id)).toHaveLength(0)
+    })
+
+    // Positive control: a GLOBAL grant of group:update can still manage a
+    // global group exactly as before.
+    it('updates a GLOBAL group as a GLOBAL actor, audited once', async () => {
+      const org = await makeOrgUnit('Global Update Allowed Root')
+      const actor = await makeActiveUser('global-updater', org.id)
+      await grant(actor.id, 'user_admin', null) // GLOBAL
+      const globalGroup = await groupsRepo().create({ name: `Global Target ${nextTag()}` })
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .patch(`/groups/${globalGroup.id}`)
+        .send({ description: 'Managed by a global actor' })
         .expect(200)
-      expect(res.body.description).toBe('Managed by a scoped actor')
+      expect(res.body.description).toBe('Managed by a global actor')
       expect(res.body.orgUnitId).toBeNull()
 
       expect(await auditRowsFor(ctx, globalGroup.id)).toHaveLength(1)
@@ -469,10 +566,15 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       expect(rows[1].after).toBeNull()
     })
 
-    // Membership is scoped by the GROUP, not by the member's own org unit —
-    // GroupsController.addMember/removeMember never check the target
-    // user's orgUnitId (see the doc comment above those handlers).
-    it('adds a member from a completely different org unit, since membership narrows on the group, not the member', async () => {
+    // Finding M-2 (docs/superpowers/audit-authz.md) reverses this: ADDING a
+    // member now narrows on the member's own org unit too, not just the
+    // group's — see GroupsController.addMember's doc comment for why
+    // (SyncWorker pushes membership into real Keycloak groups, so "any
+    // directory user, into any in-scope group" was a cross-org access grant
+    // hiding behind group:manage_members). `removeMember` is UNCHANGED —
+    // see the "rejects adding a member to an out-of-scope group" test below
+    // and groups.write.spec.ts generally for its still-group-only shape.
+    it('rejects adding a member from a completely different, out-of-scope org unit, with 403 and no audit row', async () => {
       const org = await makeOrgUnit('Member Group Root')
       const otherOrg = await makeOrgUnit('Member User Root')
       const actor = await makeActiveUser('manager', org.id)
@@ -481,10 +583,33 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       const target = await makeActiveUser('outsider', otherOrg.id)
       currentUsername = actor.username
 
-      await request(app.getHttpServer())
+      const res = await request(app.getHttpServer())
+        .post(`/groups/${group.id}/members`)
+        .send({ userId: target.id })
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await auditRowsFor(ctx, group.id)).toHaveLength(0)
+    })
+
+    // Positive control for the fix above, and unchanged coverage for the
+    // ordinary case: a member from WITHIN the actor's own scope is
+    // unaffected (see also "adds a user to an in-scope group..." earlier in
+    // this file, which already covers the same-org-unit case end to end).
+    it('adds a member whose org unit is a DESCENDANT of the group\'s own scope, since assertCanIn narrows by subtree, not exact match', async () => {
+      const root = await makeOrgUnit('Member Subtree Root')
+      const child = await makeChildOrgUnit(root.id, 'Member Subtree Child')
+      const actor = await makeActiveUser('manager', root.id)
+      await grant(actor.id, 'user_admin', root.id)
+      const group = await groupsRepo().create({ name: `Team ${nextTag()}`, orgUnitId: root.id })
+      const target = await makeActiveUser('member', child.id)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
         .post(`/groups/${group.id}/members`)
         .send({ userId: target.id })
         .expect(201)
+      expect(res.body).toEqual({ groupId: group.id, userId: target.id })
     })
 
     it('rejects adding a member to an out-of-scope group with 403 and writes no audit row', async () => {
@@ -506,10 +631,34 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       expect(await auditRowsFor(ctx, group.id)).toHaveLength(0)
     })
 
-    it('adds and removes a member on a GLOBAL group as a SCOPED actor, with no assertCanIn check', async () => {
+    // Finding M-2 (docs/superpowers/audit-authz.md): managing membership of
+    // a GLOBAL group now requires a GLOBAL grant of group:manage_members
+    // (this actor is merely SCOPED) — see `requireGroup`'s doc comment. This
+    // test used to assert 201/200; it now pins the corrected 403 on the
+    // very first call (add), before removal is ever attempted.
+    it('rejects adding a member to a GLOBAL group as a SCOPED actor, with 403 and no audit row', async () => {
       const org = await makeOrgUnit('Global Member Root')
       const actor = await makeActiveUser('scoped-manager', org.id)
       await grant(actor.id, 'user_admin', org.id) // SCOPED, not global
+      const globalGroup = await groupsRepo().create({ name: `Global Team ${nextTag()}` })
+      const target = await makeActiveUser('member', org.id)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .post(`/groups/${globalGroup.id}/members`)
+        .send({ userId: target.id })
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await auditRowsFor(ctx, globalGroup.id)).toHaveLength(0)
+    })
+
+    // Positive control: a GLOBAL grant of group:manage_members can still add
+    // and remove a global group's members exactly as before.
+    it('adds and removes a member on a GLOBAL group as a GLOBAL actor, audited twice', async () => {
+      const org = await makeOrgUnit('Global Member Allowed Root')
+      const actor = await makeActiveUser('global-manager', org.id)
+      await grant(actor.id, 'user_admin', null) // GLOBAL
       const globalGroup = await groupsRepo().create({ name: `Global Team ${nextTag()}` })
       const target = await makeActiveUser('member', org.id)
       currentUsername = actor.username
@@ -624,10 +773,84 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       expect(await auditRowsFor(ctx, parent.id)).toHaveLength(0)
     })
 
-    it('nests under a GLOBAL parent group as a SCOPED actor, with no assertCanIn check', async () => {
+    // Finding M-1 (docs/superpowers/audit-authz.md) — the headline
+    // reproduction: the PARENT check above narrows correctly, but
+    // `addChildGroup` never narrowed against the CHILD. An actor could
+    // therefore nest a foreign, out-of-scope group under a group they
+    // legitimately control and read its full roster through
+    // GET /:id/effective-members — a read-amplification through a WRITE
+    // endpoint. Deliberately uses an IN-SCOPE parent (not a global one): the
+    // bug was never specific to global groups, only most conveniently
+    // reached through one — see addChildGroup's doc comment.
+    it('rejects nesting a foreign, out-of-scope group as a CHILD under an in-scope parent, with 403 and no audit row — and its roster stays hidden', async () => {
+      const root = await makeOrgUnit('Child Scope Root')
+      const scopeOrg = await makeChildOrgUnit(root.id, 'In Scope')
+      const otherOrg = await makeChildOrgUnit(root.id, 'Out Of Scope')
+      const actor = await makeActiveUser('scoped-manager', scopeOrg.id)
+      await grant(actor.id, 'user_admin', scopeOrg.id)
+      const parent = await groupsRepo().create({ name: `Sales Team ${nextTag()}`, orgUnitId: scopeOrg.id })
+      const secretGroup = await groupsRepo().create({
+        name: `OtherCo Secret ${nextTag()}`,
+        orgUnitId: otherOrg.id,
+      })
+      const victim = await makeActiveUser('victim', otherOrg.id)
+      await groupsRepo().addUser(secretGroup.id, victim.id)
+      currentUsername = actor.username
+
+      // Baseline: the actor cannot reach the foreign group directly.
+      await request(app.getHttpServer()).get(`/groups/${secretGroup.id}`).expect(403)
+
+      const before = await totalAuditCount(ctx)
+      const res = await request(app.getHttpServer())
+        .post(`/groups/${parent.id}/child-groups`)
+        .send({ childId: secretGroup.id })
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await auditRowsFor(ctx, parent.id)).toHaveLength(0)
+      expect(await totalAuditCount(ctx)).toBe(before)
+
+      // The nest never happened, so the read-amplification never opens up:
+      // the parent's own effective-members still shows nobody, in
+      // particular never the victim.
+      const members = await request(app.getHttpServer())
+        .get(`/groups/${parent.id}/effective-members`)
+        .expect(200)
+      expect(members.body).toEqual([])
+    })
+
+    // Finding M-2 (docs/superpowers/audit-authz.md): managing a GLOBAL
+    // parent's children now requires a GLOBAL grant of
+    // group:manage_members, same as every other global-group mutation — see
+    // `requireGroup`'s doc comment. This ALSO independently closes the
+    // literal original M-1 reproduction (create-your-own-global-group, then
+    // nest a foreign group under it): a SCOPED-only actor can no longer even
+    // reach the create step (see the POST /groups tests above), let alone
+    // this one.
+    it('rejects nesting under a GLOBAL parent group as a SCOPED actor, with 403 and no audit row', async () => {
       const org = await makeOrgUnit('Global Nest Root')
       const actor = await makeActiveUser('scoped-manager', org.id)
       await grant(actor.id, 'user_admin', org.id) // SCOPED, not global
+      const globalParent = await groupsRepo().create({ name: `Global Parent ${nextTag()}` })
+      const child = await groupsRepo().create({ name: `Child ${nextTag()}`, orgUnitId: org.id })
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .post(`/groups/${globalParent.id}/child-groups`)
+        .send({ childId: child.id })
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await auditRowsFor(ctx, globalParent.id)).toHaveLength(0)
+    })
+
+    // Positive control: a GLOBAL grant of group:manage_members can still
+    // nest a child under a global parent exactly as before, and an
+    // IN-SCOPE child under it is unaffected by the M-1 fix either.
+    it('nests an in-scope child under a GLOBAL parent group as a GLOBAL actor, audited once', async () => {
+      const org = await makeOrgUnit('Global Nest Allowed Root')
+      const actor = await makeActiveUser('global-manager', org.id)
+      await grant(actor.id, 'user_admin', null) // GLOBAL
       const globalParent = await groupsRepo().create({ name: `Global Parent ${nextTag()}` })
       const child = await groupsRepo().create({ name: `Child ${nextTag()}`, orgUnitId: org.id })
       currentUsername = actor.username

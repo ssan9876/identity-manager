@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
-import { validateAttributes } from '../attributes/attribute-validator'
+import { rawAttributesSchema, validateAttributes } from '../attributes/attribute-validator'
 import { JwtGuard } from '../auth/jwt.guard'
 import { AuditWriter } from '../audit/audit.writer'
 import type { Action } from '../authz/actions'
@@ -21,20 +21,25 @@ import { PermissionEngine, type Actor } from '../authz/permission.engine'
 import { PermissionGuard, type AuthorizedRequest } from '../authz/permission.guard'
 import { RequirePermission } from '../authz/require-permission.decorator'
 import { DB_CLIENT } from '../common/db.token'
-import { NotFoundError } from '../common/errors'
+import { ForbiddenError, NotFoundError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
 import { type Page, parsePageQuery } from '../common/pagination'
+import { noNulChar } from '../common/http/safe-string'
 import * as schema from '../db/schema/index'
 import { OutboxWriter } from '../outbox/outbox.writer'
+import { UsersRepository } from '../users/users.repository'
 import { GroupsRepository, type Group } from './groups.repository'
 
+// noNulChar wraps every free-text field — see docs/superpowers/audit-
+// injection.md's HIGH "JSON-escaped NUL" finding and safe-string.ts's own
+// doc comment.
 const createGroupBodySchema = z
   .object({
-    name: z.string().min(1).max(255),
-    description: z.string().min(1).max(1024).optional(),
+    name: noNulChar(z.string().min(1).max(255)),
+    description: noNulChar(z.string().min(1).max(1024)).optional(),
     orgUnitId: z.string().uuid().optional(),
-    attributes: z.record(z.unknown()).optional(),
+    attributes: rawAttributesSchema,
   })
   .strict()
 
@@ -45,9 +50,9 @@ const createGroupBodySchema = z
 // scope transfer is out of this milestone's PATCH surface.
 const updateGroupBodySchema = z
   .object({
-    name: z.string().min(1).max(255).optional(),
-    description: z.string().min(1).max(1024).nullable().optional(),
-    attributes: z.record(z.unknown()).optional(),
+    name: noNulChar(z.string().min(1).max(255)).optional(),
+    description: noNulChar(z.string().min(1).max(1024)).nullable().optional(),
+    attributes: rawAttributesSchema,
   })
   .strict()
 
@@ -78,6 +83,7 @@ function snapshotGroup(group: Group): Record<string, unknown> {
 export class GroupsController {
   constructor(
     @Inject(GroupsRepository) private readonly groups: GroupsRepository,
+    @Inject(UsersRepository) private readonly users: UsersRepository,
     @Inject(PermissionEngine) private readonly engine: PermissionEngine,
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
     @Inject(OutboxWriter) private readonly outboxWriter: OutboxWriter,
@@ -102,6 +108,25 @@ export class GroupsController {
       // and a well-formed one that matches no membership (nonexistent user,
       // or a real user in no groups) is an empty page — not the full list.
       const userId = parseId(String(query.userId))
+
+      // L-2 (docs/superpowers/audit-authz.md): the user named by ?userId=
+      // must itself be reachable under user:read before their membership is
+      // disclosed — otherwise this filter is an oracle: a Sales admin could
+      // confirm an Engineering user's existence AND membership just by
+      // querying it, even though GET /users/<that id> itself 403s them
+      // directly. Only the resulting GROUPS were ever narrowed before this
+      // fix; the USER named by the filter was not.
+      //
+      // A nonexistent id is deliberately NOT distinguished here — this
+      // branch's existing contract (see the comment above) already folds
+      // "nonexistent user" and "real user in no groups" into the same empty
+      // page, and this fix does not add a new 404/403 oracle on top of that:
+      // only an id that resolves to a real, OUT-OF-SCOPE user is rejected.
+      const target = await this.users.findById(userId)
+      if (target !== null) {
+        await this.engine.assertCanIn(request.actor, 'user:read', target.orgUnitId)
+      }
+
       const effectiveGroupIds = await this.groups.listEffectiveGroupsForUser(userId)
 
       const [items, total] = await Promise.all([
@@ -150,19 +175,22 @@ export class GroupsController {
   }
 
   /**
-   * A group created with no `orgUnitId` is GLOBAL (decision 1) — there is no
-   * org unit to check `assertCanIn` against, so the check is skipped
-   * entirely, exactly like `requireGroup` already skips it for an EXISTING
-   * global group below. This is deliberate, not an oversight: decision 1
-   * already lets any actor holding `group:update`/`group:manage_members`
-   * anywhere freely manage an existing global group, so letting any actor
-   * holding `group:create` anywhere be the one who FIRST creates it is
-   * consistent with that, not a new escalation — a scoped actor gains
-   * nothing here they couldn't already reach by asking any other holder to
-   * create an empty global group once. This is intentionally DIFFERENT from
-   * OrgUnitsController.create's root case: an org-unit root has no
-   * equivalent "anyone holding the action may manage it" rule to be
-   * consistent WITH.
+   * A group created with no `orgUnitId` is GLOBAL (decision 1). Superseded
+   * by finding M-2 (docs/superpowers/audit-authz.md): this method used to
+   * skip `assertCanIn` entirely for that case, on the reasoning that decision
+   * 1 already lets any actor holding `group:update`/`group:manage_members`
+   * anywhere freely manage an EXISTING global group, so letting any actor
+   * holding `group:create` anywhere be the one who first creates one was
+   * "not a new escalation." That reasoning did not account for
+   * `SyncWorker.reconcileUser` pushing local group membership into REAL
+   * Keycloak groups — a downstream authorization primitive — which makes
+   * "any scope, anywhere" a materially different, and too broad, a grant for
+   * something with cross-org reach. `group:create` on a global group now
+   * requires the SAME thing `requireGroup` below now requires to manage an
+   * EXISTING one, and the same thing `OrgUnitsController.create` already
+   * requires for a root org unit: a GLOBAL grant
+   * (`scopePathsFor(actor, action) === null`), not merely a grant of the
+   * action at SOME scope.
    */
   @Post()
   @RequirePermission('group:create')
@@ -171,6 +199,11 @@ export class GroupsController {
 
     if (parsed.orgUnitId !== undefined) {
       await this.engine.assertCanIn(request.actor, 'group:create', parsed.orgUnitId)
+    } else {
+      const scopePaths = await this.engine.scopePathsFor(request.actor, 'group:create')
+      if (scopePaths !== null) {
+        throw new ForbiddenError('creating a global group requires a global grant of group:create')
+      }
     }
 
     const definitions = await this.groups.listActiveAttributeDefinitions()
@@ -209,10 +242,12 @@ export class GroupsController {
 
   /**
    * Loads the CURRENT row inside the same transaction that performs the
-   * mutation and writes the audit row, narrows via `requireGroup` (skipped
-   * for a global group — decision 1), then updates. A rejection throws
-   * before any write, so there is nothing to roll back and no audit row is
-   * ever written. Same shape as UsersController.update.
+   * mutation and writes the audit row, narrows via `requireGroup` (a scoped
+   * group requires reaching its org unit; a global group requires a GLOBAL
+   * grant of `group:update` as of finding M-2 — see `requireGroup`'s own doc
+   * comment), then updates. A rejection throws before any write, so there is
+   * nothing to roll back and no audit row is ever written. Same shape as
+   * UsersController.update.
    */
   @Patch(':id')
   @RequirePermission('group:update')
@@ -265,15 +300,25 @@ export class GroupsController {
   /**
    * The four membership-mutation handlers below (add/remove user member,
    * add/remove child group) all narrow against the PARENT group named in
-   * the URL (`:id`) — never against the user or child group being
-   * attached/detached. This mirrors GET :id/members's own read shape (a
-   * user's own org unit is never checked either): membership is a fact
-   * about the GROUP's roster, not about the member, so "does this actor
-   * reach this group" is the entire scope question. `resourceType`/
+   * the URL (`:id`) — never against the child group or the user being
+   * removed. This mirrors GET :id/members's own read shape: membership is a
+   * fact about the GROUP's roster, not about the member, so "does this actor
+   * reach this group" is most of the scope question. `resourceType`/
    * `resourceId` on every audit row below are likewise always the parent
    * group's, not the member's — the same anchor `group:create`/
    * `group:update` use — so a query for "every audited change to group X"
    * naturally includes its membership history.
+   *
+   * `addMember`, below, is the one exception to "the member is never
+   * scope-checked" (finding M-2, docs/superpowers/audit-authz.md): ADDING a
+   * member is what actually confers access (`SyncWorker` pushes membership
+   * into real Keycloak groups — a downstream authorization primitive), so
+   * the user being added must be reachable under `group:manage_members`
+   * exactly like the group itself is, or a Sales-scoped admin could place
+   * any directory user into a Sales-synced Keycloak group.
+   * `removeMember` deliberately keeps the OLD, group-only shape: revoking
+   * membership never grants anything, so there is nothing for a member-side
+   * check to protect against there.
    */
   @Post(':id/members')
   @RequirePermission('group:manage_members')
@@ -287,6 +332,12 @@ export class GroupsController {
 
     return this.db.transaction(async (tx) => {
       await this.requireGroup(id, request.actor, 'group:manage_members', tx)
+
+      const member = await this.users.findById(parsed.userId, tx)
+      if (member === null) {
+        throw new NotFoundError('user', parsed.userId)
+      }
+      await this.engine.assertCanIn(request.actor, 'group:manage_members', member.orgUnitId, tx)
 
       await this.groups.addUser(id, parsed.userId, tx)
 
@@ -360,6 +411,20 @@ export class GroupsController {
    * it propagates straight out of this callback, rolling back the whole
    * transaction — no edge is inserted and no audit row is written, and
    * `DomainExceptionFilter` maps `CYCLE_DETECTED` to 409.
+   *
+   * Finding M-1 (docs/superpowers/audit-authz.md): `requireGroup` above
+   * narrows only against the PARENT (`id`) — this is the one membership
+   * mutation where that is not the whole scope question, because nesting
+   * pulls an entire out-of-scope GROUP (and everything reachable under it)
+   * into a container the actor already controls, which then changes what
+   * `GET /:id/effective-members` discloses. The child-side check below
+   * closes that: a CHILD with a real org unit must independently be
+   * reachable under `group:manage_members`, exactly as if the actor were
+   * acting on it directly. A GLOBAL child (`orgUnitId === null`) is
+   * deliberately exempt — decision 1 already makes a global group visible to
+   * (and, post finding M-2, manageable only by a global holder in its own
+   * right) every actor holding the relevant action, so nesting one under an
+   * in-scope parent adds no NEW containment to check.
    */
   @Post(':id/child-groups')
   @RequirePermission('group:manage_members')
@@ -373,6 +438,14 @@ export class GroupsController {
 
     return this.db.transaction(async (tx) => {
       await this.requireGroup(id, request.actor, 'group:manage_members', tx)
+
+      const child = await this.groups.findById(parsed.childId, tx)
+      if (child === null) {
+        throw new NotFoundError('group', parsed.childId)
+      }
+      if (child.orgUnitId !== null) {
+        await this.engine.assertCanIn(request.actor, 'group:manage_members', child.orgUnitId, tx)
+      }
 
       await this.groups.addChildGroup(id, parsed.childId, tx)
 
@@ -437,11 +510,9 @@ export class GroupsController {
 
   /**
    * Loads the group, 404ing if it doesn't exist, then narrows for `action`:
-   * a group with `orgUnitId = NULL` is GLOBAL (decision 1) — visible to and
-   * writable by any actor holding `action` at any scope, so the check is
-   * skipped entirely; there is no subtree to contain. Otherwise
-   * `assertCanIn` decides: out-of-scope but existing -> 403 (decision 2),
-   * never 404.
+   * a group with a real `orgUnitId` is scoped — `assertCanIn` decides,
+   * out-of-scope but existing -> 403 (decision 2), never 404. A group with
+   * `orgUnitId = NULL` is GLOBAL (decision 1), handled by the branch below.
    *
    * Shared by every read handler above (which call this with just an id,
    * defaulting to `group:read` against the pooled connection) AND every
@@ -450,6 +521,16 @@ export class GroupsController {
    * audit write) — one place decides "does this actor reach this group," so
    * the two paths can never silently diverge on what "global" or
    * "out of scope" means.
+   *
+   * `db` is forwarded into `assertCanIn` below, not just into
+   * `this.groups.findById` — this is finding C1
+   * (docs/superpowers/audit-integrity.md): loading the group ON `tx` but
+   * then checking scope against the POOL is exactly the bug the audit
+   * reproduced through this method ("`requireGroup(..., tx)` loads the row
+   * on `tx` but then calls `engine.assertCanIn` on the pool"), and it is
+   * what let a single stuck connection multiply into two per in-flight
+   * write across every one of this controller's five write handlers below.
+   * See test/pool-exhaustion.spec.ts.
    */
   private async requireGroup(
     id: string,
@@ -461,9 +542,34 @@ export class GroupsController {
     if (group === null) {
       throw new NotFoundError('group', id)
     }
+
     if (group.orgUnitId !== null) {
-      await this.engine.assertCanIn(actor, action, group.orgUnitId)
+      await this.engine.assertCanIn(actor, action, group.orgUnitId, db)
+      return group
     }
+
+    // GLOBAL group (orgUnitId === null). Finding M-2 (docs/superpowers/
+    // audit-authz.md): decision 1's ORIGINAL rule — visible to and writable
+    // by any actor holding `action` at ANY scope — is left exactly as-is for
+    // READS (`group:read`; the default above): any scope holder may still
+    // see any global group, unchanged. It does NOT hold for a WRITE action
+    // (`group:update`/`group:manage_members`, passed explicitly by every
+    // write handler below) any more: `SyncWorker.reconcileUser` pushes local
+    // group membership into REAL Keycloak groups — a downstream
+    // authorization primitive with cross-org reach — so managing a group
+    // with no containing org unit now requires the SAME thing
+    // `OrgUnitsController.create` already requires for a root org unit: a
+    // GLOBAL grant of `action` (`scopePathsFor(actor, action) === null`),
+    // not merely a grant of `action` at SOME scope. `scopePathsFor` takes no
+    // `db`/`tx` (it never queries — see its own doc comment), so there is
+    // nothing to redirect onto `db` here.
+    if (action !== 'group:read') {
+      const scopePaths = await this.engine.scopePathsFor(actor, action)
+      if (scopePaths !== null) {
+        throw new ForbiddenError(`managing a global group requires a global grant of ${action}`)
+      }
+    }
+
     return group
   }
 }

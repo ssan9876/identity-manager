@@ -1,10 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type { AttributeDefinition } from '../attributes/attribute-validator'
+import { AuditWriter } from '../audit/audit.writer'
 import { DB_CLIENT } from '../common/db.token'
 import * as schema from '../db/schema/index'
 import { GroupsRepository } from '../groups/groups.repository'
-import { buildSyncedAttributes, KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
+import { buildSyncedAttributes, type KeycloakUser, KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
+import { snapshotUser } from '../users/users.controller'
 import { type User, UsersRepository, type UserStatus } from '../users/users.repository'
 import { OutboxWriter } from './outbox.writer'
 import { SyncWorker } from './sync.worker'
@@ -108,6 +110,7 @@ export class ReconciliationJob {
     @Inject(KeycloakAdminClient) private readonly keycloak: KeycloakAdminClient,
     @Inject(OutboxWriter) private readonly outboxWriter: OutboxWriter,
     @Inject(SyncWorker) private readonly syncWorker: SyncWorker,
+    @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
   ) {}
 
@@ -132,10 +135,10 @@ export class ReconciliationJob {
 
         for (const user of page) {
           checked += 1
-          const reasons = await this.detectDrift(user, definitions)
+          const { reasons, observed } = await this.detectDrift(user, definitions)
           if (reasons.length > 0) {
             drifted.push({ userId: user.id, username: user.username, reasons })
-            await this.enqueueRepair(user, reasons)
+            await this.enqueueRepair(user, reasons, observed)
             enqueued += 1
           }
         }
@@ -154,15 +157,22 @@ export class ReconciliationJob {
 
   /**
    * Compares Keycloak's CURRENT representation of `user` against desired
-   * state, reporting every axis that differs. Returns `['missing_in_keycloak']`
-   * alone when the user does not exist in Keycloak at all — there is
+   * state, reporting every axis that differs, ALONGSIDE the raw observed
+   * Keycloak state itself (`observed`) — finding M2 (docs/superpowers/
+   * audit-integrity.md): `enqueueRepair` needs it verbatim as the audit
+   * row's `before`, so it is threaded back out here rather than re-fetched
+   * a second time. Returns `{ reasons: ['missing_in_keycloak'], observed:
+   * null }` when the user does not exist in Keycloak at all — there is
    * nothing further to compare, and the repair path (create, via the
    * ordinary `reconcileUser`) is the same either way.
    */
-  private async detectDrift(user: User, definitions: AttributeDefinition[]): Promise<DriftReason[]> {
+  private async detectDrift(
+    user: User,
+    definitions: AttributeDefinition[],
+  ): Promise<{ reasons: DriftReason[]; observed: KeycloakUser | null }> {
     const existing = await this.keycloak.findUserByUsername(user.username)
     if (existing === null) {
-      return ['missing_in_keycloak']
+      return { reasons: ['missing_in_keycloak'], observed: null }
     }
 
     const reasons: DriftReason[] = []
@@ -184,7 +194,7 @@ export class ReconciliationJob {
       reasons.push('group_mismatch')
     }
 
-    return reasons
+    return { reasons, observed: existing }
   }
 
   /** Same flattened-effective-membership computation SyncWorker.syncEffectiveGroups uses, resolved to NAMES for comparison. */
@@ -209,9 +219,39 @@ export class ReconciliationJob {
    * contract — see outbox.writer.ts); the actual repair, once drained,
    * re-derives and re-asserts full desired state exactly like any other
    * `user`-aggregate event, never replaying this payload.
+   *
+   * ALSO writes an audit row, in the SAME transaction as the outbox event —
+   * finding M2 (docs/superpowers/audit-integrity.md): binding constraint 7
+   * requires every mutation be "audited AND outboxed in one transaction,"
+   * and automated repair is still a change to identity state (the measured
+   * repro: a suspended user manually re-enabled directly in Keycloak,
+   * re-disabled by this job, with zero audit rows written pre-fix) — "who
+   * disabled this account, and why" must be answerable even when the
+   * answer is "the system did, because it drifted." `actorUserId: null` is
+   * the existing convention for a trusted, on-demand system action with no
+   * human actor to attribute it to — the same one `LifecycleJob` and
+   * `RuleApplier` already use (see either's own doc comment); this was the
+   * one write path in that category that had not adopted it yet. `before`
+   * is the OBSERVED Keycloak state `detectDrift` already fetched (verbatim,
+   * not re-fetched); `after` is the DESIRED state this repair will assert
+   * once drained, plus `reasons` for why — matching the audit's own
+   * suggested shape.
    */
-  private async enqueueRepair(user: User, reasons: DriftReason[]): Promise<void> {
+  private async enqueueRepair(
+    user: User,
+    reasons: DriftReason[],
+    observed: KeycloakUser | null,
+  ): Promise<void> {
     await this.db.transaction(async (tx) => {
+      await this.auditWriter.record(tx, {
+        actorUserId: null,
+        action: 'reconciliation:repair',
+        resourceType: 'user',
+        resourceId: user.id,
+        before: observed,
+        after: { ...snapshotUser(user), reasons },
+      })
+
       await this.outboxWriter.record(tx, {
         aggregateType: 'user',
         aggregateId: user.id,

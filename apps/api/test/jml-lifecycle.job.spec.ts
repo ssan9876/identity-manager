@@ -1,5 +1,6 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { AuditWriter } from '../src/audit/audit.writer'
+import { InvalidTransitionError } from '../src/common/errors'
 import { GroupsRepository } from '../src/groups/groups.repository'
 import { JmlRulesRepository } from '../src/jml/jml-rules.repository'
 import { LifecycleJob } from '../src/jml/lifecycle.job'
@@ -239,6 +240,90 @@ describe('LifecycleJob (Milestone 7, Task 7)', () => {
 
       expect(rule.enabled).toBe(false)
       expect(await groupsRepo().listDirectUserMembers(group.id)).not.toContain(user.id)
+    })
+  })
+
+  // =====================================================================
+  // Finding M5 (docs/superpowers/audit-integrity.md): a `pending` leaver
+  // (end_date passed before ever being activated) used to be silently
+  // skipped, forever, on EVERY run — `pending -> deactivated` was not a
+  // legal transition, so `changeStatus` threw `InvalidTransitionError`,
+  // caught and turned into a bare `console.warn`. Fixed two ways: the
+  // transition matrix now permits it (UsersRepository.ALLOWED_TRANSITIONS),
+  // and whatever the scheduler still cannot action is reported, not merely
+  // logged.
+  // =====================================================================
+  describe('never-onboarded leavers, and reporting what could not be actioned', () => {
+    it('a pending user whose end_date has passed is deactivated directly, not skipped forever', async () => {
+      const tag = nextTag()
+      const username = `${tag}@example.com`.toLowerCase()
+      const created = await usersRepo().create({
+        primaryEmail: username,
+        username,
+        firstName: 'Never',
+        lastName: `Onboarded${tag}`,
+        orgUnitId,
+        endDate: PAST_DATE,
+      })
+      expect(created.status).toBe('pending') // never activated
+
+      const report = await makeJob().run()
+
+      expect(report.deactivatedUserIds).toContain(created.id)
+      expect(report.skipped).toEqual([])
+      const reloaded = await usersRepo().findById(created.id)
+      expect(reloaded?.status).toBe('deactivated')
+
+      // Their Keycloak account is disabled — desired `enabled` is `false`
+      // for any non-'active' status (SyncWorker.reconcileUser) — so this is
+      // a bookkeeping/visibility fix, not an open-access one; still worth
+      // confirming the transition didn't somehow leave them reachable.
+      const kcUser = await client.findUserByUsername(username)
+      // Nothing has synced them to Keycloak yet in this test (no outbox
+      // drain here) — the point is Postgres itself, not sync timing.
+      expect(kcUser).toBeNull()
+    })
+
+    it('a healthy run with nothing unactionable reports an empty skipped list', async () => {
+      const report = await makeJob().run()
+      expect(report.skipped).toEqual([])
+    })
+
+    it('a genuine race (the row transitions out from under the job) is recorded in `skipped`, never silently dropped', async () => {
+      const user = await makeActiveUserWithEndDate(PAST_DATE)
+
+      // Simulates the row changing between `listNonDeactivatedWith
+      // EndDateOnOrBefore`'s SELECT and this candidate's own transaction —
+      // a genuine, if rare, race that must still be reported rather than
+      // vanishing into a log line. Scoped to THIS user's own deactivate
+      // call; every other call passes straight through to the real
+      // implementation.
+      const original = UsersRepository.prototype.changeStatus
+      const spy = vi
+        .spyOn(UsersRepository.prototype, 'changeStatus')
+        .mockImplementation(async function (
+          this: UsersRepository,
+          ...args: Parameters<typeof original>
+        ) {
+          const [id, next] = args
+          if (id === user.id && next === 'deactivated') {
+            throw new InvalidTransitionError('simulated race: row already transitioned')
+          }
+          return original.apply(this, args)
+        })
+
+      try {
+        const report = await makeJob().run()
+
+        expect(report.deactivatedUserIds).not.toContain(user.id)
+        expect(report.skipped).toContainEqual({
+          userId: user.id,
+          phase: 'deactivate',
+          reason: 'simulated race: row already transitioned',
+        })
+      } finally {
+        spy.mockRestore()
+      }
     })
   })
 

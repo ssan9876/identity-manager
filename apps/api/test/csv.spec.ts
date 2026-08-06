@@ -68,4 +68,32 @@ describe('parseCsv', () => {
     const result = parseCsv('employeeId,primaryEmail\nE1,e1@example.com\n\nE2,e2@example.com\n')
     expect(result.rows).toHaveLength(2)
   })
+
+  // docs/superpowers/audit-injection.md HIGH finding: on an ordinary {},
+  // `row[header] = value` for header === '__proto__' invokes
+  // Object.prototype's __proto__ ACCESSOR SETTER instead of creating an own
+  // property — a silent no-op for a string value — so the cell's value
+  // vanished with no error, while extraHeaders() (header-string-list-driven,
+  // unaffected by this bug) still correctly counted the column as "extra".
+  // That mismatch is what let a __proto__ CSV column silently wipe a
+  // matched user's attributes to {} (the fourth recurrence of this defect
+  // class in this project). Object.create(null) (csv.ts) closes it.
+  it('preserves a "__proto__" header as a genuine own key on each row, never silently dropping its cell value', () => {
+    const result = parseCsv('employeeId,__proto__\nE1,anything')
+    expect(result.headers).toEqual(['employeeId', '__proto__'])
+
+    const row = result.rows[0]
+    expect(Object.prototype.hasOwnProperty.call(row, '__proto__')).toBe(true)
+    expect(row.__proto__).toBe('anything')
+    expect(row.employeeId).toBe('E1')
+    expect(Object.keys(row).sort()).toEqual(['__proto__', 'employeeId'])
+  })
+
+  it('causes no actual Object.prototype pollution while parsing a "__proto__" header', () => {
+    parseCsv('employeeId,__proto__\nE1,anything')
+
+    expect(Object.getOwnPropertyNames(Object.prototype)).not.toContain('anything')
+    const freshProbe: Record<string, unknown> = {}
+    expect(Object.getPrototypeOf(freshProbe)).toBe(Object.prototype)
+  })
 })

@@ -229,6 +229,50 @@ describe('RuleApplier (Milestone 7, Task 6)', () => {
       expect(result.skippedReason).toBe('invalid_attribute')
       expect(await auditRowsFor(ctx, 'user', user.id)).toEqual([])
     })
+
+    // Finding H4 (docs/superpowers/audit-integrity.md): "the same shape
+    // exists in JML set_attribute" — this method reads current.attributes,
+    // merges, and writes back exactly like SelfServiceController.update did
+    // pre-fix. Two rules (or the same rule re-triggered, or a concurrent
+    // human edit) touching the same user's attributes at once could lose
+    // one to a stale-read merge. Uses `findByIdForUpdate` for the same
+    // reason and the same fix — see this method's own doc comment.
+    it(
+      '20 concurrent set_attribute applications for the SAME user, each a DIFFERENT key, never lose one to a stale-read merge',
+      async () => {
+        const user = await makeActiveUser()
+        const N = 20
+        const keys = Array.from({ length: N }, () => `h4jml-${nextTag()}`)
+        await ctx.db.insert(
+          attributeDefinitions,
+        ).values(
+          keys.map((key) => ({
+            key,
+            label: key,
+            dataType: 'string' as const,
+            required: false,
+            appliesTo: 'user' as const,
+            isActive: true,
+          })),
+        )
+
+        const results = await Promise.all(
+          keys.map((key, i) =>
+            applier().apply(
+              matched({ action: 'set_attribute', actionParams: { key, value: `v${i}` } }),
+              user.id,
+            ),
+          ),
+        )
+        expect(results.every((r) => r.applied)).toBe(true)
+
+        const reloaded = await usersRepo().findById(user.id)
+        for (let i = 0; i < N; i++) {
+          expect(reloaded?.attributes[keys[i]]).toBe(`v${i}`)
+        }
+      },
+      30_000,
+    )
   })
 
   describe('deactivate', () => {

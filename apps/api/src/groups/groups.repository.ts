@@ -239,9 +239,15 @@ export class GroupsRepository {
    * `IN ()` to Postgres, which is invalid SQL. `scopePaths` narrows exactly
    * like `list()` — see `scopeFilter`.
    */
+  // `db` is an OPTIONAL trailing handle, defaulting to the injected pooled
+  // connection (`this.db`) - same contract as create/findById/update above.
+  // Added for SyncWorker.syncEffectiveGroups (finding C1,
+  // docs/superpowers/audit-integrity.md), which now threads its open
+  // transaction through here instead of defaulting to the pool.
   async listByIds(
     ids: string[],
     options: { limit: number; offset: number; scopePaths?: string[] | null },
+    db: NodePgDatabase<typeof schema> = this.db,
   ): Promise<Group[]> {
     if (ids.length === 0) {
       return []
@@ -251,7 +257,7 @@ export class GroupsRepository {
     const scope = this.scopeFilter(options.scopePaths)
     if (scope !== undefined) filters.push(scope)
 
-    const rows = await this.db
+    const rows = await db
       .select()
       .from(groups)
       .where(and(...filters))
@@ -466,9 +472,18 @@ export class GroupsRepository {
    * Every user in this group or any descendant group.
    * UNION (not UNION ALL) is load-bearing: it de-duplicates the frontier, so
    * the recursion terminates even against a graph that somehow contains a cycle.
+   *
+   * `db` is an OPTIONAL trailing handle, defaulting to the injected pooled
+   * connection (`this.db`) - same contract as create/findById/update above.
+   * Added for SyncWorker.reconcileGroup/reconcileMembership (finding C1,
+   * docs/superpowers/audit-integrity.md), which now thread their open
+   * transaction through here instead of defaulting to the pool.
    */
-  async listEffectiveUserMembers(groupId: string): Promise<string[]> {
-    const { rows } = await this.db.execute<{ user_id: string }>(sql`
+  async listEffectiveUserMembers(
+    groupId: string,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<string[]> {
+    const { rows } = await db.execute<{ user_id: string }>(sql`
       WITH RECURSIVE reachable AS (
         SELECT ${groupId}::uuid AS id
         UNION
@@ -484,9 +499,19 @@ export class GroupsRepository {
     return rows.map((row) => row.user_id)
   }
 
-  /** Every group this user belongs to directly, plus all of their ancestors. */
-  async listEffectiveGroupsForUser(userId: string): Promise<string[]> {
-    const { rows } = await this.db.execute<{ group_id: string }>(sql`
+  /**
+   * Every group this user belongs to directly, plus all of their ancestors.
+   *
+   * `db` is an OPTIONAL trailing handle, defaulting to the injected pooled
+   * connection (`this.db`) - same contract, added for the same reason
+   * (SyncWorker.syncEffectiveGroups; finding C1), as
+   * `listEffectiveUserMembers` above.
+   */
+  async listEffectiveGroupsForUser(
+    userId: string,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<string[]> {
+    const { rows } = await db.execute<{ group_id: string }>(sql`
       WITH RECURSIVE ancestors AS (
         SELECT gum.group_id AS id
           FROM group_user_members gum

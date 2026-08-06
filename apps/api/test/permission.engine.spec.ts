@@ -70,6 +70,22 @@ describe('PermissionEngine', () => {
     ).rejects.toBeInstanceOf(ForbiddenError)
   })
 
+  // Finding M-3 (docs/superpowers/audit-authz.md), defence-in-depth half:
+  // `resolveActor` now binds `principal.username` via `sql.param`, so
+  // Drizzle can never again splice it as a parenthesized SQL list. `JwtGuard`
+  // is the PRIMARY fix (see jwt.guard.spec.ts's own M-3 section) and now
+  // rejects a non-string `preferred_username` before it ever reaches here —
+  // `Principal.username: string` makes this unreachable through any real
+  // call site, which is why the cast below is required. Pre-fix, this exact
+  // call (against a real "god" user) silently RESOLVED — `["god"]` spliced
+  // into `lower(('god'))`, matching the real row — instead of rejecting.
+  it('does not let a non-string username value silently resolve to a real user, even bypassing TypeScript (defence in depth for M-3)', async () => {
+    await makeUser('god', rootId)
+
+    const forged = { subject: 'kc-x', username: ['god'] as unknown as string, email: null }
+    await expect(engine.resolveActor(forged)).rejects.toThrow()
+  })
+
   it('denies a principal whose local user is pending (not yet active)', async () => {
     // Deliberately bypasses makeUser: UsersRepository.create() defaults new
     // users to `pending`, and that default must be denied, not granted.
@@ -216,7 +232,11 @@ describe('PermissionEngine', () => {
   // the catalog fix resolves this call site automatically, with no change
   // to permission.engine.ts itself.
   it('grantingAssignments (via canAnywhere) does not throw for a role_key colliding with an inherited Object.prototype property, and correctly denies', async () => {
-    await ctx.pool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'constructor'`)
+    // finding H1 (docs/superpowers/audit-integrity.md): ALTER TYPE requires
+    // owning the type, so this test-only simulation of catalog drift must
+    // run as the OWNER role — ctx.pool (the RUNTIME role) cannot do this in
+    // production either, which is now enforced rather than incidental.
+    await ctx.ownerPool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'constructor'`)
     const user = await makeUser('ada', rootId)
     await ctx.pool.query(
       'INSERT INTO role_assignments (user_id, role_key, scope_org_unit_id) VALUES ($1, $2::role_key, NULL)',

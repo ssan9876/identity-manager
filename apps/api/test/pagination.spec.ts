@@ -41,6 +41,25 @@ describe('parsePageQuery', () => {
     expect(() => parsePageQuery({ limit: '2.5' })).toThrow(ValidationError)
   })
 
+  // LOW finding: `z.coerce.number()` alone accepts a single-element ARRAY,
+  // not just a scalar — `?limit[]=5` parses (via Express's `qs`) to
+  // `{ limit: ['5'] }`, and `Number(['5'])` is `5` (Array.prototype.toString
+  // joins a one-element array with no separator before the numeric
+  // coercion ever sees it). A two-element array already correctly 400s
+  // (`Number(['5','6'])` is `NaN`), which is what made this easy to miss.
+  it('rejects an array value for limit, even a single-element one, rather than silently coercing it', () => {
+    expect(() => parsePageQuery({ limit: ['5'] })).toThrow(ValidationError)
+    expect(() => parsePageQuery({ limit: ['5', '6'] })).toThrow(ValidationError)
+  })
+
+  it('rejects an array value for offset, even a single-element one', () => {
+    expect(() => parsePageQuery({ offset: ['5'] })).toThrow(ValidationError)
+  })
+
+  it('still accepts a bare numeric value passed directly (not just a query-string numeral)', () => {
+    expect(parsePageQuery({ limit: 10, offset: 5 })).toEqual({ limit: 10, offset: 5 })
+  })
+
   it('names the offending field in the issues list', () => {
     try {
       parsePageQuery({ limit: 'lots' })

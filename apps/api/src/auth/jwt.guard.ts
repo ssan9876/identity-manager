@@ -69,13 +69,37 @@ export class JwtGuard implements CanActivate {
       })
 
       const subject = payload.sub
-      const username = payload.preferred_username as string | undefined
+      const username = payload.preferred_username
 
       // A valid signature is necessary but not sufficient: without a subject
       // or username there is no identity to hand downstream authorization
       // code, and defaulting to '' would silently fabricate one. Fail closed
       // exactly like any other invalid token, with the same generic message.
-      if (!subject || !username) {
+      //
+      // Finding M-3 (docs/superpowers/audit-authz.md): the previous
+      // `payload.preferred_username as string | undefined` cast suppressed
+      // the compiler without checking anything at runtime, and `!username`
+      // only rejects FALSY values — a non-string, TRUTHY claim (an array, a
+      // number, an object) sailed through with `Principal.username: string`
+      // becoming a type lie. That value then flowed straight into
+      // `PermissionEngine.resolveActor`'s query, where Drizzle's `sql`
+      // template splices a bare JS array specially: `preferred_username:
+      // ["god"]` degraded to `lower(('god'))` — authenticating as "god" —
+      // and a 2-element array became a row constructor that threw an
+      // unhandled 500. Explicit `typeof` checks on BOTH claims (not just
+      // `username`) reject every non-string shape here, at the
+      // authentication boundary, with the same generic message every other
+      // invalid token gets — no new information disclosure, and
+      // `resolveActor` can no longer receive anything but a genuine,
+      // non-empty string. `subject.length === 0` is checked too (the
+      // original `!subject` caught an empty string; a bare `typeof` check
+      // alone would not have).
+      if (
+        typeof subject !== 'string' ||
+        subject.length === 0 ||
+        typeof username !== 'string' ||
+        username.length === 0
+      ) {
         throw new UnauthorizedException('invalid token')
       }
 
