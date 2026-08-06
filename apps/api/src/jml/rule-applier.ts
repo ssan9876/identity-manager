@@ -193,6 +193,15 @@ export class RuleApplier {
    * this system already honours. An unrecognised/inactive key is a
    * misconfigured rule, not a crash: fail closed, log, and report
    * `skippedReason: 'invalid_attribute'`.
+   *
+   * Loads `current` via `findByIdForUpdate` (`SELECT ... FOR UPDATE`), not a
+   * plain read — finding H4 (docs/superpowers/audit-integrity.md) names
+   * this exact read-merge-write shape as sharing `SelfServiceController.
+   * update`'s lost-update hazard: a plain read takes no lock, so this merge
+   * could race a concurrent `PATCH /self` or `PATCH /users/:id` on the same
+   * user and silently discard whichever committed first. See
+   * `UsersRepository.findByIdForUpdate`'s own doc comment for the Postgres
+   * mechanics.
    */
   private async applySetAttribute(
     rule: { id: string; name: string },
@@ -223,7 +232,7 @@ export class RuleApplier {
     let result: ApplyResult = { applied: false, skippedReason: 'user_not_found' }
 
     await this.db.transaction(async (tx) => {
-      const current = await this.users.findById(userId, tx)
+      const current = await this.users.findByIdForUpdate(userId, tx)
       if (current === null) {
         return
       }

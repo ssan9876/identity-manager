@@ -448,6 +448,45 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
       expect(rows[0].after?.username).toBe(target.username)
     })
 
+    // Finding M1 (docs/superpowers/audit-integrity.md): `displayName` is
+    // DERIVED from `patch.firstName ?? current.firstName` / `patch.lastName
+    // ?? current.lastName` inside UsersRepository.update, from an UNLOCKED
+    // `current` read — same lost-update mechanism as H4's attribute merge.
+    // Two concurrent PATCHes, one naming only firstName and one naming only
+    // lastName, each recomputed displayName from their own stale half.
+    it(
+      '30 iterations of two concurrent PATCH /users/:id (firstName vs lastName) leave displayName reflecting BOTH (30/30)',
+      async () => {
+        const org = await makeOrgUnit('DisplayName Race Root')
+        const actor = await makeActiveUser('updater', org.id)
+        await grant(actor.id, 'user_admin', org.id)
+        currentUsername = actor.username
+
+        for (let i = 0; i < 30; i++) {
+          const target = await makeActiveUser('target', org.id)
+          const firstName = `RaceFirst${i}`
+          const lastName = `RaceLast${i}`
+
+          const [resA, resB] = await Promise.all([
+            request(app.getHttpServer()).patch(`/users/${target.id}`).send({ firstName }),
+            request(app.getHttpServer()).patch(`/users/${target.id}`).send({ lastName }),
+          ])
+          expect(resA.status).toBe(200)
+          expect(resB.status).toBe(200)
+
+          const reloaded = await usersRepo().findById(target.id)
+          expect(reloaded?.firstName).toBe(firstName)
+          expect(reloaded?.lastName).toBe(lastName)
+          // The headline regression assertion: pre-fix, this was 30/30
+          // wrong — displayName recomputed from whichever half was already
+          // stale by the time each request's own write landed, permanently
+          // desynced from the fields it is supposed to derive from.
+          expect(reloaded?.displayName).toBe(`${firstName} ${lastName}`)
+        }
+      },
+      30_000,
+    )
+
     it('leaves attributes untouched when the request body omits the key entirely', async () => {
       const org = await makeOrgUnit('Attr Preserve Root')
       const actor = await makeActiveUser('updater', org.id)

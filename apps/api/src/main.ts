@@ -1,7 +1,9 @@
 import 'reflect-metadata'
 import { NestFactory } from '@nestjs/core'
+import type { NestExpressApplication } from '@nestjs/platform-express'
 import { AppModule } from './app.module'
 import { DomainExceptionFilter } from './common/domain-exception.filter'
+import { payloadTooLargeMiddleware } from './common/http/payload-too-large.middleware'
 import { loadEnv } from './config/env'
 import { SyncWorker } from './outbox/sync.worker'
 
@@ -22,7 +24,24 @@ import { SyncWorker } from './outbox/sync.worker'
  */
 async function bootstrap(): Promise<void> {
   const env = loadEnv(process.env)
-  const app = await NestFactory.create(AppModule)
+
+  // `bodyParser: false` + explicit `useBodyParser` calls below — finding M6
+  // (docs/superpowers/audit-integrity.md): letting Nest register its OWN
+  // default parser first (the ordinary `NestFactory.create(AppModule)` path
+  // every other controller in this codebase implicitly relied on) leaves
+  // express's accidental 100 KiB default in place; a SECOND parser
+  // registered afterward via `useBodyParser` never gets a chance to apply
+  // its own limit, because express's `body-parser` skips re-parsing a
+  // request whose body a PRIOR middleware already consumed. Disabling the
+  // default and registering both parsers ourselves is what makes
+  // `BODY_LIMIT_BYTES` the one, explicit, configurable limit actually in
+  // effect, replacing the accidental one rather than merely sitting beside
+  // it unused.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bodyParser: false })
+  app.useBodyParser('json', { limit: env.bodyLimitBytes })
+  app.useBodyParser('urlencoded', { limit: env.bodyLimitBytes, extended: true })
+  app.use(payloadTooLargeMiddleware(env.bodyLimitBytes))
+
   app.enableCors({ origin: ['http://localhost:5173'], credentials: true })
   app.useGlobalFilters(new DomainExceptionFilter())
   app.enableShutdownHooks()

@@ -50,6 +50,22 @@ async function main(): Promise<void> {
     console.log(`[jml:lifecycle] activated ${report.activatedUserIds.length} user(s)`)
     console.log(`[jml:lifecycle] deactivated ${report.deactivatedUserIds.length} user(s)`)
     console.log(`[jml:lifecycle] applied ${report.ruleActionsApplied} rule action(s)`)
+
+    // Finding M5 (docs/superpowers/audit-integrity.md): the report, not a
+    // log line buried mid-run, is now the record of anything left
+    // unactioned — surfaced here so an operator (or a monitored cron
+    // wrapper) sees it without having to grep every run's console output.
+    // A non-empty list on an otherwise-healthy run is worth investigating:
+    // the transition matrix should make every REACHABLE due state
+    // actionable, so a skip here is either a genuine, ordinary race (the
+    // row moved on between selection and this transaction) or a gap in
+    // that matrix, same class as the one this finding closed.
+    if (report.skipped.length > 0) {
+      console.warn(`[jml:lifecycle] ${report.skipped.length} due user(s) could not be actioned:`)
+      for (const skip of report.skipped) {
+        console.warn(`[jml:lifecycle]   ${skip.phase} skipped for ${skip.userId} — ${skip.reason}`)
+      }
+    }
   } finally {
     await pool.end()
   }

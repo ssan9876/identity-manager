@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common'
-import { eq, sql } from 'drizzle-orm'
+import { desc, eq, sql } from 'drizzle-orm'
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import * as schema from '../db/schema/index'
 import { outboxEvents } from '../db/schema/outbox-events'
 import type { DbHandle, OutboxAggregateType, OutboxEventType } from './outbox.writer'
 
@@ -164,4 +166,74 @@ export class OutboxRepository {
       .set({ status: 'failed', attempts: input.attempts, lastError: input.lastError })
       .where(eq(outboxEvents.id, id))
   }
+
+  /**
+   * Every currently dead-lettered event, newest first — finding H3
+   * (docs/superpowers/audit-integrity.md): "there is no operator-facing
+   * view of dead letters at all. No controller reads `outbox_events`; the
+   * derived per-user `syncState` is the only surface, and it has [a] hole."
+   * `SyncStateRepository` stays the per-USER read model; this is the
+   * OPERATOR-facing complement — a permanently-failed event can be a
+   * `group`/`membership` fan-out that never cleanly attributes to any
+   * single user (see SyncWorker.markUserSyncFailed's doc comment on why
+   * only a direct `user`-aggregate dead-letter regresses
+   * `external_identities`), so this table is the only place SOME dead
+   * letters are visible at all, not merely a convenience view of what
+   * `syncState` already shows.
+   *
+   * Deliberately takes an explicit `db` (the pool, via the controller's own
+   * injected `DB_CLIENT`), not a `tx` — a plain paginated read needs no
+   * transactional/locking semantics, and `DbHandle` (every OTHER method on
+   * this class) would reject the pooled handle by type; widening to
+   * `NodePgDatabase<typeof schema>` here, explicitly rather than defaulted,
+   * keeps every existing `tx`-only call site unchanged while still refusing
+   * to silently assume a handle the caller didn't provide.
+   */
+  async listFailed(
+    db: NodePgDatabase<typeof schema>,
+    options: { limit: number; offset: number },
+  ): Promise<DeadLetterEvent[]> {
+    const rows = await db
+      .select()
+      .from(outboxEvents)
+      .where(eq(outboxEvents.status, 'failed'))
+      .orderBy(desc(outboxEvents.id))
+      .limit(options.limit)
+      .offset(options.offset)
+
+    return rows.map((row) => ({
+      id: Number(row.id),
+      aggregateType: row.aggregateType,
+      aggregateId: row.aggregateId,
+      eventType: row.eventType,
+      payload: row.payload as Record<string, unknown>,
+      attempts: row.attempts,
+      lastError: row.lastError,
+      createdAt: row.createdAt,
+      nextAttemptAt: row.nextAttemptAt,
+    }))
+  }
+
+  /** Matching count for `listFailed` — always agrees with it, same filter. */
+  async countFailed(db: NodePgDatabase<typeof schema>): Promise<number> {
+    const [row] = await db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(outboxEvents)
+      .where(eq(outboxEvents.status, 'failed'))
+
+    return row?.value ?? 0
+  }
+}
+
+/** One dead-lettered (`status = 'failed'`) event, as `listFailed` reports it to an operator. */
+export interface DeadLetterEvent {
+  id: number
+  aggregateType: OutboxAggregateType
+  aggregateId: string
+  eventType: OutboxEventType
+  payload: Record<string, unknown>
+  attempts: number
+  lastError: string | null
+  createdAt: Date
+  nextAttemptAt: Date
 }

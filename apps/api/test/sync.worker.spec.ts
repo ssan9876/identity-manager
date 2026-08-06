@@ -1,6 +1,9 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { GroupsRepository } from '../src/groups/groups.repository'
-import { KeycloakAdminClient } from '../src/keycloak/keycloak-admin.client'
+import {
+  KeycloakAdminClient,
+  type KeycloakAdminClientConfig,
+} from '../src/keycloak/keycloak-admin.client'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { OutboxRepository } from '../src/outbox/outbox.repository'
 import { computeBackoffDelayMs, SyncWorker, type SyncWorkerConfig } from '../src/outbox/sync.worker'
@@ -27,6 +30,78 @@ function unreachableClient(): KeycloakAdminClient {
     clientId: 'irrelevant',
     clientSecret: 'irrelevant',
   })
+}
+
+/**
+ * A REAL `KeycloakAdminClient` (a subclass, not a hand-rolled double — a
+ * separate class implementing the same shape would not be assignable where
+ * `KeycloakAdminClient` is required, since the real class carries private
+ * fields) whose group-related calls can be paused deterministically from a
+ * test. Built for finding H2's own regression coverage below: the auditor's
+ * reproduction needed one worker "inside ensureGroup" — i.e. past its
+ * effective-group READ but not yet through its Keycloak WRITE — while a
+ * second, unthrottled worker fully drains a conflicting change for the same
+ * user. A `setTimeout`-based sleep alone cannot GUARANTEE the read already
+ * happened before the test acts; a `reached` signal fired at the top of the
+ * gated call, awaited before the test proceeds, can.
+ */
+class GatedKeycloakAdminClient extends KeycloakAdminClient {
+  private gate: Promise<void> = Promise.resolve()
+  private releaseGate: () => void = () => {}
+  private reachedResolve: (() => void) | null = null
+  /** Resolves once a gated call has fired AND is blocked on the current gate — i.e. its caller's own reads have already completed. */
+  reached: Promise<void> = Promise.resolve()
+
+  constructor(config: KeycloakAdminClientConfig) {
+    super(config)
+  }
+
+  /** Arms a fresh gate + reached-signal for the next controlled call. */
+  arm(): void {
+    this.gate = new Promise((resolve) => {
+      this.releaseGate = resolve
+    })
+    this.reached = new Promise((resolve) => {
+      this.reachedResolve = resolve
+    })
+  }
+
+  /** Lets every call currently blocked on the armed gate proceed. */
+  release(): void {
+    this.releaseGate()
+  }
+
+  /**
+   * Signals "reached" on the first gated call after `arm()`, then blocks
+   * until `release()`. Once released, adds a small FIXED handicap before
+   * letting the real call through — the same "slow, not down" shape the
+   * auditor's own reproduction used (Keycloak at 120 ms/call), just applied
+   * surgically from the point of interleaving onward instead of uniformly:
+   * it gives a concurrent, un-gated worker processing a DIFFERENT event for
+   * the SAME user room to complete its own full read-then-write cycle
+   * first, so a stale write landing after it is a genuine, reliably
+   * reproduced race rather than a coin flip decided by incidental
+   * call-count/scheduling asymmetry between the two workers.
+   */
+  private async passGate(): Promise<void> {
+    this.reachedResolve?.()
+    this.reachedResolve = null
+    await this.gate
+    await new Promise((resolve) => setTimeout(resolve, 75))
+  }
+
+  override async ensureGroup(name: string): ReturnType<KeycloakAdminClient['ensureGroup']> {
+    await this.passGate()
+    return super.ensureGroup(name)
+  }
+
+  override async setUserGroups(
+    username: string,
+    groupIds: readonly string[],
+  ): ReturnType<KeycloakAdminClient['setUserGroups']> {
+    await this.passGate()
+    return super.setUserGroups(username, groupIds)
+  }
 }
 
 interface OutboxRow {
@@ -524,6 +599,137 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
       expect((await outboxRow(removeDirectEvent)).status).toBe('done')
       expect(await keycloak.getUserGroupNames(directUser.username)).not.toContain(parent.name)
     })
+  })
+
+  // =====================================================================
+  // Cross-aggregate races on the SAME user (finding H2, docs/superpowers/
+  // audit-integrity.md): `OutboxRepository.claimNext` enforces strict
+  // ordering only per `(aggregate_type, aggregate_id)`. A `user` event and a
+  // `membership` event for the SAME user are two DIFFERENT aggregates, so
+  // `claimNext` happily hands them to two workers in parallel — but both
+  // fan into `reconcileUser` for the same entity. Pre-fix, whichever worker
+  // called `setUserGroups` LAST won regardless of who read fresher data;
+  // reproduced 20/20 in both directions by the auditor. The fix takes a
+  // per-user `pg_advisory_xact_lock` as the very first thing `reconcileUser`
+  // does (see its own doc comment), so these tests double as a lock
+  // regression AND as the proof that `syncEffectiveGroups`'s reads (already
+  // on `tx`, not the pool, since the C1 fix) are re-taken AFTER the lock,
+  // not reused stale from before it.
+  // =====================================================================
+  describe('cross-aggregate races on the same user (finding H2)', () => {
+    /** Creates an active user, seeds their DIRECT membership, and drains one 'created' event to converge Postgres and Keycloak before the race begins. */
+    async function setupConvergedUser(groups: Awaited<ReturnType<typeof makeGroup>>[]): Promise<User> {
+      const user = await makeUser()
+      await usersRepo().changeStatus(user.id, 'active')
+      for (const group of groups) {
+        await groupsRepo().addUser(group.id, user.id)
+      }
+      await insertOutboxEvent('user', user.id, 'created', {})
+      const processed = await makeWorker(client).drain()
+      expect(processed).toBeGreaterThan(0)
+      return user
+    }
+
+    it(
+      'ADD direction: a stale worker must never silently drop a group an admin just added (20/20)',
+      async () => {
+        for (let i = 0; i < 20; i++) {
+          const g1 = await makeGroup('H2 Add G1')
+          const g2 = await makeGroup('H2 Add G2')
+          const user = await setupConvergedUser([g1])
+
+          const gated = new GatedKeycloakAdminClient({
+            issuer: keycloak.issuer,
+            clientId: SYNC_CLIENT_ID,
+            clientSecret: SYNC_CLIENT_SECRET,
+          })
+          const workerSlow = makeWorker(gated)
+          const workerFast = makeWorker(client)
+
+          gated.arm()
+          // Worker A: an unrelated 'user' event forces a full reconcile,
+          // whose group read (still {g1} — the admin hasn't acted yet) is
+          // what goes stale.
+          const updateEventId = await insertOutboxEvent('user', user.id, 'updated', {})
+          const slowPromise = workerSlow.runOnce()
+          await gated.reached // A has read {g1} and is paused before its first group-related Keycloak call
+
+          // The admin adds g2 WHILE A is mid-flight.
+          await groupsRepo().addUser(g2.id, user.id)
+          const membershipEventId = await insertOutboxEvent('membership', g2.id, 'membership_changed', {
+            groupId: g2.id,
+            userId: user.id,
+          })
+          // Worker B: claims the resulting membership event. Pre-fix, races
+          // A freely. Post-fix, blocks on the per-user lock A already holds
+          // until A's whole transaction commits.
+          const fastPromise = workerFast.runOnce()
+
+          gated.release()
+          await slowPromise
+          await fastPromise
+
+          expect((await outboxRow(updateEventId)).status).toBe('done')
+          expect((await outboxRow(membershipEventId)).status).toBe('done')
+
+          // The headline regression assertion: Postgres and Keycloak must
+          // agree. Pre-fix this was 20/20 postgres={g1,g2} keycloak={g1} —
+          // A's stale write, landing last, silently dropped the add.
+          const kcGroups = new Set(await keycloak.getUserGroupNames(user.username))
+          expect(kcGroups).toEqual(new Set([g1.name, g2.name]))
+        }
+      },
+      120_000,
+    )
+
+    it(
+      'REMOVE direction: a stale worker must never silently restore a group an admin just removed (20/20)',
+      async () => {
+        for (let i = 0; i < 20; i++) {
+          const g1 = await makeGroup('H2 Remove G1')
+          const g2 = await makeGroup('H2 Remove G2')
+          const user = await setupConvergedUser([g1, g2])
+
+          const gated = new GatedKeycloakAdminClient({
+            issuer: keycloak.issuer,
+            clientId: SYNC_CLIENT_ID,
+            clientSecret: SYNC_CLIENT_SECRET,
+          })
+          const workerSlow = makeWorker(gated)
+          const workerFast = makeWorker(client)
+
+          gated.arm()
+          const updateEventId = await insertOutboxEvent('user', user.id, 'updated', {})
+          const slowPromise = workerSlow.runOnce()
+          await gated.reached // A has read {g1,g2} and is paused before its first group-related Keycloak call
+
+          // The admin removes g2 WHILE A is mid-flight — the
+          // security-relevant direction: access must actually be revoked.
+          await groupsRepo().removeUser(g2.id, user.id)
+          const membershipEventId = await insertOutboxEvent('membership', g2.id, 'membership_changed', {
+            groupId: g2.id,
+            userId: user.id,
+          })
+          const fastPromise = workerFast.runOnce()
+
+          gated.release()
+          await slowPromise
+          await fastPromise
+
+          expect((await outboxRow(updateEventId)).status).toBe('done')
+          expect((await outboxRow(membershipEventId)).status).toBe('done')
+
+          // Pre-fix this was 20/20 postgres={g1} keycloak={g1,g2} — the
+          // admin's removal was applied, then a stale concurrent worker put
+          // it back. Every outbox event still ends 'done' either way, which
+          // is exactly what makes this the worst kind of divergence: nothing
+          // about the bookkeeping looks wrong.
+          const kcGroups = new Set(await keycloak.getUserGroupNames(user.username))
+          expect(kcGroups).toEqual(new Set([g1.name]))
+        }
+      },
+      120_000,
+    )
   })
 
   // =====================================================================

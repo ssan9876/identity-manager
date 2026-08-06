@@ -1,3 +1,4 @@
+import { AuditWriter } from '../audit/audit.writer'
 import { loadEnv } from '../config/env'
 import { createDbClient } from '../db/client'
 import { GroupsRepository } from '../groups/groups.repository'
@@ -29,6 +30,7 @@ async function main(): Promise<void> {
       clientSecret: env.keycloakAdminClientSecret,
     })
     const outboxWriter = new OutboxWriter()
+    const auditWriter = new AuditWriter()
     const syncWorker = new SyncWorker(
       db,
       new OutboxRepository(),
@@ -43,6 +45,7 @@ async function main(): Promise<void> {
       keycloak,
       outboxWriter,
       syncWorker,
+      auditWriter,
       db,
     )
 

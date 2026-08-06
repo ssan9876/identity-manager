@@ -14,7 +14,7 @@ import { createDbClient } from './db/client'
 import { GroupsController } from './groups/groups.controller'
 import { GroupsRepository } from './groups/groups.repository'
 import { HealthController } from './health/health.controller'
-import { ImportsController } from './imports/imports.controller'
+import { IMPORTS_CONFIG, ImportsController, type ImportsConfig } from './imports/imports.controller'
 import {
   KEYCLOAK_ADMIN_CONFIG,
   KeycloakAdminClient,
@@ -22,6 +22,7 @@ import {
 } from './keycloak/keycloak-admin.client'
 import { OrgUnitsController } from './org-units/org-units.controller'
 import { OrgUnitsRepository } from './org-units/org-units.repository'
+import { OutboxController } from './outbox/outbox.controller'
 import { OutboxRepository } from './outbox/outbox.repository'
 import { OutboxWriter } from './outbox/outbox.writer'
 import { SyncStateRepository } from './outbox/sync-state.repository'
@@ -40,6 +41,7 @@ import { UsersRepository } from './users/users.repository'
     RoleAssignmentsController,
     ImportsController,
     SelfServiceController,
+    OutboxController,
   ],
   providers: [
     {
@@ -69,6 +71,16 @@ import { UsersRepository } from './users/users.repository'
           clientId: env.keycloakAdminClientId,
           clientSecret: env.keycloakAdminClientSecret,
         }
+      },
+    },
+    {
+      // Finding M6 (docs/superpowers/audit-integrity.md): the explicit,
+      // configurable row-count cap on bulk import — see ImportsController's
+      // own doc comment.
+      provide: IMPORTS_CONFIG,
+      useFactory: (): ImportsConfig => {
+        const env = loadEnv(process.env)
+        return { maxRows: env.importMaxRows }
       },
     },
     JwtGuard,

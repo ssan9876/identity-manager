@@ -110,6 +110,20 @@ describe('UsersRepository', () => {
     expect(done.deactivatedAt).toBeInstanceOf(Date)
   })
 
+  // Finding M5 (docs/superpowers/audit-integrity.md): a leaver whose
+  // end_date passes before they were ever activated is exactly as much a
+  // leaver as an active one (see
+  // listNonDeactivatedWithEndDateOnOrBefore's own doc comment) — this
+  // transition must be reachable directly, not only via 'active'.
+  it('allows pending directly to deactivated — a leaver who never onboarded', async () => {
+    const user = await users.create(input())
+    expect(user.status).toBe('pending')
+
+    const done = await users.changeStatus(user.id, 'deactivated')
+    expect(done.status).toBe('deactivated')
+    expect(done.deactivatedAt).toBeInstanceOf(Date)
+  })
+
   it('treats deactivated as terminal', async () => {
     const user = await users.create(input())
     await users.changeStatus(user.id, 'active')

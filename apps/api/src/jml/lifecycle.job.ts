@@ -13,10 +13,31 @@ import { JmlRulesRepository } from './jml-rules.repository'
 import { RuleApplier } from './rule-applier'
 import { matchRules } from './rule-engine'
 
+/**
+ * One due user this run could NOT action, and why — finding M5
+ * (docs/superpowers/audit-integrity.md): before the `pending -> deactivated`
+ * transition fix (UsersRepository.ALLOWED_TRANSITIONS), a never-onboarded
+ * leaver was skipped this way on EVERY run, forever, with the only trace a
+ * `console.warn` nobody watching the process's stdout would ever see. That
+ * specific cause is now closed, but the catch-and-skip machinery itself
+ * stays — a genuine race (the row changed between the SELECT and this
+ * transaction) is still possible and still must not abort the whole run —
+ * so the report, not a log line, is now the record of anything left
+ * unactioned, for `lifecycle-cli.ts` (or any other caller) to surface
+ * instead of silently moving on.
+ */
+export interface LifecycleSkip {
+  userId: string
+  phase: 'activate' | 'deactivate'
+  reason: string
+}
+
 export interface LifecycleReport {
   activatedUserIds: string[]
   deactivatedUserIds: string[]
   ruleActionsApplied: number
+  /** Every due user this run selected but could not transition. Empty on a clean run — never silently dropped. */
+  skipped: LifecycleSkip[]
 }
 
 /** Today's date as an ISO `YYYY-MM-DD` string, in UTC — `Date#toISOString` always renders UTC regardless of the host process's local timezone, so this is stable across environments. */
@@ -63,8 +84,8 @@ export class LifecycleJob {
   ) {}
 
   async run(today: string = isoToday()): Promise<LifecycleReport> {
-    const activated = await this.activateDueUsers(today)
-    const deactivated = await this.deactivateDueUsers(today)
+    const { transitioned: activated, skipped: activateSkipped } = await this.activateDueUsers(today)
+    const { transitioned: deactivated, skipped: deactivateSkipped } = await this.deactivateDueUsers(today)
 
     let ruleActionsApplied = 0
     for (const user of activated) {
@@ -78,6 +99,7 @@ export class LifecycleJob {
       activatedUserIds: activated.map((user) => user.id),
       deactivatedUserIds: deactivated.map((user) => user.id),
       ruleActionsApplied,
+      skipped: [...activateSkipped, ...deactivateSkipped],
     }
   }
 
@@ -88,11 +110,18 @@ export class LifecycleJob {
    * `InvalidTransitionError` is caught and skipped rather than aborting the
    * whole run: a benign race (the row moved on between the SELECT above and
    * this transaction) must never take down processing for every OTHER due
-   * user in the same pass.
+   * user in the same pass. Finding M5 (docs/superpowers/audit-integrity.md):
+   * a skip is still recorded into the returned report, not just logged —
+   * see `LifecycleSkip`'s own doc comment for why silent skipping was itself
+   * part of the finding, independent of the specific `pending ->
+   * deactivated` cause that made this branch fire on EVERY run.
    */
-  private async activateDueUsers(today: string): Promise<User[]> {
+  private async activateDueUsers(
+    today: string,
+  ): Promise<{ transitioned: User[]; skipped: LifecycleSkip[] }> {
     const due = await this.usersRepository.listPendingWithStartDateOnOrBefore(today)
     const activated: User[] = []
+    const skipped: LifecycleSkip[] = []
 
     for (const candidate of due) {
       try {
@@ -127,13 +156,14 @@ export class LifecycleJob {
       } catch (error) {
         if (error instanceof InvalidTransitionError) {
           console.warn(`[jml:lifecycle] skipped activation for ${candidate.id} — ${error.message}`)
+          skipped.push({ userId: candidate.id, phase: 'activate', reason: error.message })
           continue
         }
         throw error
       }
     }
 
-    return activated
+    return { transitioned: activated, skipped }
   }
 
   /**
@@ -147,9 +177,12 @@ export class LifecycleJob {
    * written inside the transaction is the durability fallback either way —
    * see `revokeKeycloakAccessBestEffort`'s doc comment.
    */
-  private async deactivateDueUsers(today: string): Promise<User[]> {
+  private async deactivateDueUsers(
+    today: string,
+  ): Promise<{ transitioned: User[]; skipped: LifecycleSkip[] }> {
     const due = await this.usersRepository.listNonDeactivatedWithEndDateOnOrBefore(today)
     const deactivated: User[] = []
+    const skipped: LifecycleSkip[] = []
 
     for (const candidate of due) {
       try {
@@ -185,13 +218,14 @@ export class LifecycleJob {
       } catch (error) {
         if (error instanceof InvalidTransitionError) {
           console.warn(`[jml:lifecycle] skipped deactivation for ${candidate.id} — ${error.message}`)
+          skipped.push({ userId: candidate.id, phase: 'deactivate', reason: error.message })
           continue
         }
         throw error
       }
     }
 
-    return deactivated
+    return { transitioned: deactivated, skipped }
   }
 
   /** Evaluates and applies every enabled rule for `trigger` against `user`; returns how many actions were applied. */

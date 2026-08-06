@@ -79,18 +79,27 @@ describe('SyncStateRepository (Milestone 4, Task 4)', () => {
     return groupsRepo().create({ name: `${label} ${nextTag()}` })
   }
 
-  /** Inserts one outbox row with an EXPLICIT status — bypassing the worker entirely, to pin exact scenarios. */
+  /**
+   * Inserts one outbox row with an EXPLICIT status — bypassing the worker
+   * entirely, to pin exact scenarios. `payload` defaults to `{}` (fine for
+   * `user`/`group` rows, which resolveForUsers never reads); a `membership`
+   * row exercising finding H3's fix (docs/superpowers/audit-integrity.md)
+   * needs a REALISTIC payload — every real emitter always populates
+   * `userId` or `childGroupId` (see GroupsController's/RuleApplier's own
+   * membership-event call sites) — passed explicitly by the caller.
+   */
   async function insertOutboxEvent(
     aggregateType: 'user' | 'group' | 'membership',
     aggregateId: string,
     status: 'pending' | 'processing' | 'done' | 'failed',
     eventType: 'created' | 'updated' | 'status_changed' | 'membership_changed' = 'updated',
+    payload: Record<string, unknown> = {},
   ): Promise<number> {
     const { rows } = await ctx.pool.query<{ id: string }>(
       `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, status)
-       VALUES ($1, $2, $3, '{}'::jsonb, $4)
+       VALUES ($1, $2, $3, $4::jsonb, $5)
        RETURNING id`,
-      [aggregateType, aggregateId, eventType, status],
+      [aggregateType, aggregateId, eventType, JSON.stringify(payload), status],
     )
     return Number(rows[0]!.id)
   }
@@ -190,7 +199,77 @@ describe('SyncStateRepository (Milestone 4, Task 4)', () => {
       await insertOutboxEvent('user', user.id, 'done', 'created')
       await setExternalIdentity(user.id, 'synced')
 
-      await insertOutboxEvent('membership', group.id, 'failed', 'membership_changed')
+      // Realistic payload — every real emitter always names either userId
+      // or childGroupId (see GroupsController's/RuleApplier's own
+      // membership-event call sites).
+      await insertOutboxEvent('membership', group.id, 'failed', 'membership_changed', {
+        groupId: group.id,
+        userId: user.id,
+      })
+
+      expect(await syncStates().resolveForUser(user.id)).toBe('failed')
+    })
+
+    // THE gap finding H3 (docs/superpowers/audit-integrity.md) exists to
+    // close: the complementary cases above (a CURRENT member of a
+    // dead-lettered group/membership event reads 'failed') all worked
+    // pre-fix, which is what made this one so easy to miss — a member who
+    // was REMOVED is, by definition, no longer in `listEffectiveUserMembers`
+    // by the time this query runs, so deriving the affected set from
+    // CURRENT membership alone means the removal's own dead letter surfaces
+    // against nobody. This is the security-relevant direction: "looks
+    // synced" here means "the removal was never actually applied to
+    // Keycloak."
+    it('surfaces a REMOVED member as failed via a dead-lettered membership REMOVAL event naming them in payload.userId', async () => {
+      const group = await makeGroup('Removal Group')
+      const user = await makeUser()
+      await groupsRepo().addUser(group.id, user.id)
+
+      await insertOutboxEvent('user', user.id, 'done', 'created')
+      await setExternalIdentity(user.id, 'synced')
+
+      // The admin's removal actually happened at the Postgres level —
+      // group_user_members no longer names this user.
+      await groupsRepo().removeUser(group.id, user.id)
+      expect(await groupsRepo().listEffectiveUserMembers(group.id)).not.toContain(user.id)
+
+      // ...but the removal's OWN outbox event dead-lettered before it ever
+      // reached Keycloak. payload.userId is what the controller recorded
+      // BEFORE deleting the edge (see GroupsController.removeMember) — the
+      // only way to still name this user now that the edge is gone.
+      await insertOutboxEvent('membership', group.id, 'failed', 'membership_changed', {
+        groupId: group.id,
+        userId: user.id,
+      })
+
+      // Pre-fix this read 'synced' — external_identities still says
+      // synced (a dead-lettered membership/group event never regresses it,
+      // by design — see SyncWorker.markUserSyncFailed), and walking CURRENT
+      // effective membership never reaches a user who was just removed.
+      expect(await syncStates().resolveForUser(user.id)).toBe('failed')
+    })
+
+    it('surfaces a REMOVED nested member via payload.childGroupId, walking that child\'s CURRENT membership', async () => {
+      const parent = await makeGroup('Removal Parent')
+      const child = await makeGroup('Removal Child')
+      await groupsRepo().addChildGroup(parent.id, child.id)
+      const user = await makeUser()
+      await groupsRepo().addUser(child.id, user.id)
+
+      await insertOutboxEvent('user', user.id, 'done', 'created')
+      await setExternalIdentity(user.id, 'synced')
+
+      // A child-group UNLINK from the parent dead-letters. The user is
+      // still a member of the CHILD (only the parent<->child edge changed),
+      // so this direction is reachable via CURRENT membership under the
+      // child named in payload.childGroupId — see
+      // SyncWorker.reconcileMembership's own doc comment for why the child
+      // side, unlike a direct userId removal, is never itself deleted by
+      // this edge change.
+      await insertOutboxEvent('membership', parent.id, 'failed', 'membership_changed', {
+        parentGroupId: parent.id,
+        childGroupId: child.id,
+      })
 
       expect(await syncStates().resolveForUser(user.id)).toBe('failed')
     })

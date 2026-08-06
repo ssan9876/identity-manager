@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { Body, Controller, HttpCode, HttpStatus, Inject, Post, Req, UseGuards } from '@nestjs/common'
+import { Body, Controller, HttpCode, HttpStatus, Inject, Optional, Post, Req, UseGuards } from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
 import type { AttributeDefinition } from '../attributes/attribute-validator'
@@ -28,6 +28,22 @@ import { parseCsv } from './csv'
 import { extraHeaders, missingRequiredHeaders, parseImportRowShape, type ShapeParsedRow } from './import-row'
 
 const importBodySchema = z.object({ csv: z.string() }).strict()
+
+/** DI token for `ImportsConfig` — same reasoning as KEYCLOAK_ADMIN_CONFIG (a plain TS interface erases at runtime, so it cannot be a constructor-injected token on its own). */
+export const IMPORTS_CONFIG = Symbol('IMPORTS_CONFIG')
+
+export interface ImportsConfig {
+  /** Ceiling on DATA rows (header excluded) one preview/commit request may carry. */
+  maxRows: number
+}
+
+// Same value as env.ts's IMPORT_MAX_ROWS default — kept independent (not
+// imported from env.ts) so this controller has a sane bound even when
+// constructed directly, outside AppModule's DI graph (every existing test
+// in imports.write.spec.ts does exactly that, with no IMPORTS_CONFIG
+// provider) — same pattern SyncWorker's DEFAULT_CONFIG uses for its own
+// @Optional() config token.
+const DEFAULT_IMPORTS_CONFIG: ImportsConfig = { maxRows: 5_000 }
 
 export interface ImportRowFailure {
   row: number
@@ -61,6 +77,16 @@ export interface ImportCommitResponse {
   batchId: string
   created: number
   updated: number
+  /**
+   * Rows that matched an existing `employeeId` but whose resolved
+   * `UpdateUserInput` was field-for-field identical to the current row —
+   * finding M4 (docs/superpowers/audit-integrity.md): re-running an
+   * unchanged file used to still write a full round of no-op `user:update`
+   * audit rows (`before` === `after`) and Keycloak sync events every time.
+   * Counted separately from `updated`, which now means "the row genuinely
+   * changed something."
+   */
+  unchanged: number
   failed: number
   failures: ImportRowFailure[]
 }
@@ -129,6 +155,46 @@ function writeAttemptFailureReasons(error: unknown): string[] {
 }
 
 /**
+ * Set-equality on two flat string-keyed attribute bags, `===` per value —
+ * sufficient for every `AttributeDataType` this system has
+ * (`'string' | 'number' | 'boolean' | 'date' | 'enum'`, attribute-
+ * validator.ts): none is array- or object-valued, so a shallow comparison
+ * is a full comparison, no recursive/deep-equal needed.
+ */
+function attributesEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const aKeys = Object.keys(a)
+  const bKeys = Object.keys(b)
+  if (aKeys.length !== bKeys.length) return false
+  return aKeys.every((key) => Object.hasOwn(b, key) && a[key] === b[key])
+}
+
+/**
+ * True when applying `input` to `current` would change NOTHING — finding M4
+ * (docs/superpowers/audit-integrity.md): "re-running the identical file
+ * updates rather than duplicates" held for user rows, but not for audit/
+ * outbox rows, which grew by a full batch on every re-run even when every
+ * field already matched. Only fields `input` actually NAMES are compared
+ * (an `undefined` field, per UpdateUserInput's own contract, means "this
+ * request doesn't touch it" — never itself a source of "changed"); every
+ * field `resolveUpdateRow` builds is always named for a real import row
+ * (see its own doc comment), so in practice this compares the row's whole
+ * writable surface, but the function stays correct even for a partial
+ * input.
+ */
+function isNoopUpdate(input: UpdateUserInput, current: User): boolean {
+  if (input.firstName !== undefined && input.firstName !== current.firstName) return false
+  if (input.lastName !== undefined && input.lastName !== current.lastName) return false
+  if (input.jobTitle !== undefined && input.jobTitle !== current.jobTitle) return false
+  if (input.employeeId !== undefined && input.employeeId !== current.employeeId) return false
+  if (input.managerId !== undefined && input.managerId !== current.managerId) return false
+  if (input.location !== undefined && input.location !== current.location) return false
+  if (input.startDate !== undefined && input.startDate !== current.startDate) return false
+  if (input.endDate !== undefined && input.endDate !== current.endDate) return false
+  if (input.attributes !== undefined && !attributesEqual(input.attributes, current.attributes)) return false
+  return true
+}
+
+/**
  * Shared by both resolveCreateRow and resolveUpdateRow: manager resolvability
  * has no scope dimension and no create-vs-update variant (unlike orgUnitId),
  * so there is exactly one way to check it — mirrors the single-record
@@ -179,6 +245,8 @@ async function appendManagerReason(
 @Controller('imports')
 @UseGuards(JwtGuard, PermissionGuard)
 export class ImportsController {
+  private readonly config: ImportsConfig
+
   constructor(
     @Inject(UsersRepository) private readonly users: UsersRepository,
     @Inject(OrgUnitsRepository) private readonly orgUnits: OrgUnitsRepository,
@@ -187,7 +255,10 @@ export class ImportsController {
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
     @Inject(OutboxWriter) private readonly outboxWriter: OutboxWriter,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
-  ) {}
+    @Optional() @Inject(IMPORTS_CONFIG) config?: Partial<ImportsConfig>,
+  ) {
+    this.config = { ...DEFAULT_IMPORTS_CONFIG, ...config }
+  }
 
   /**
    * Parses and validates the request's CSV body identically for both
@@ -201,6 +272,18 @@ export class ImportsController {
    * matters for the undefined-vs-{} distinction on `attributes`) and the
    * active attribute definitions (fetched once per request, not once per
    * row, same batching rationale as SyncStateRepository).
+   *
+   * Also enforces `this.config.maxRows` — finding M6 (docs/superpowers/
+   * audit-integrity.md): "the no row-count or file-size cap open item is
+   * real, but the damage is bounded by something nobody chose" (express's
+   * own accidental ~100 KiB body limit, which capped a request at roughly
+   * 800 rows purely by accident — see `main.ts`'s own `BODY_LIMIT_BYTES`
+   * fix for the other, deliberate half). Checked here, structurally, the
+   * same way `missingRequiredHeaders` already is: a whole-request rejection
+   * with a clear 400 VALIDATION_FAILED naming the actual and allowed counts,
+   * BEFORE a single row is resolved (permission-checked, looked up,
+   * written) — never a truncated silent partial-apply, and never a chance
+   * for `commit`'s per-row loop to run unbounded.
    */
   private async parseAndPrepare(
     body: unknown,
@@ -215,6 +298,12 @@ export class ImportsController {
     const missing = missingRequiredHeaders(headers)
     if (missing.length > 0) {
       throw new ValidationError([`csv: missing required column(s): ${missing.join(', ')}`])
+    }
+
+    if (rows.length > this.config.maxRows) {
+      throw new ValidationError([
+        `csv: too many rows (${rows.length}); the maximum per request is ${this.config.maxRows}`,
+      ])
     }
 
     const fileHasExtraHeaders = extraHeaders(headers).length > 0
@@ -338,6 +427,7 @@ export class ImportsController {
     const batchId = randomUUID()
     let created = 0
     let updated = 0
+    let unchanged = 0
     const failures: ImportRowFailure[] = []
     const seen = new Map<string, number>()
 
@@ -380,6 +470,18 @@ export class ImportsController {
             })
           })
           created += 1
+        } else if (isNoopUpdate(resolution.input, resolution.current)) {
+          // Finding M4 (docs/superpowers/audit-integrity.md): the resolved
+          // update would change nothing — skip the write (and both
+          // records) entirely rather than writing a `before` === `after`
+          // audit row and a no-op Keycloak sync event. `resolution.current`
+          // is a non-transactional read taken during `resolveRow`, same as
+          // every other field this branch already trusted (e.g. the
+          // primaryEmail/username/orgUnitId equality checks above it) — a
+          // rare concurrent change in the gap would at worst cost one
+          // legitimate update on a LATER re-run of the same file, not
+          // silent data loss.
+          unchanged += 1
         } else {
           await this.db.transaction(async (tx) => {
             const updatedUser = await this.users.update(resolution.userId, resolution.input, tx)
@@ -412,7 +514,7 @@ export class ImportsController {
       }
     }
 
-    return { batchId, created, updated, failed: failures.length, failures }
+    return { batchId, created, updated, unchanged, failed: failures.length, failures }
   }
 
   /**
@@ -634,13 +736,25 @@ export class ImportsController {
 
     await appendManagerReason(this.users, row.managerId, reasons)
 
+    // Residual half of the cross-scope enumeration oracle from fix wave C
+    // (docs/superpowers/fix-wave-c-report.md's own "Concerns" note,
+    // audit-secrets.md): `findByEmail`/`findByUsername` are GLOBAL,
+    // unscoped lookups — the ROW's own target org unit passed the scope
+    // check above, but the EXISTING colliding user they find can be a
+    // completely different, OUT-OF-SCOPE victim anywhere in the directory.
+    // The old message (`a user with email "X" already exists`) confirmed
+    // that victim's existence and echoed the guessed value back verbatim,
+    // turning an in-scope "create" attempt into a directory-wide
+    // email/username oracle. "not available" still correctly rejects the
+    // row (the row IS un-creatable either way) without confirming WHY a
+    // specific guessed value is taken, and never echoes it back.
     const existingByEmail = await this.users.findByEmail(row.primaryEmail)
     if (existingByEmail !== null) {
-      reasons.push(`primaryEmail: a user with email "${row.primaryEmail}" already exists`)
+      reasons.push('primaryEmail: not available')
     }
     const existingByUsername = await this.users.findByUsername(row.username)
     if (existingByUsername !== null) {
-      reasons.push(`username: a user with username "${row.username}" already exists`)
+      reasons.push('username: not available')
     }
 
     // Unconditional — mirrors UsersController.create's own unconditional

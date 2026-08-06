@@ -13,7 +13,7 @@ import { RoleAssignmentsRepository } from '../src/authz/role-assignments.reposit
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { attributeDefinitions } from '../src/db/schema/attribute-definitions'
-import { ImportsController } from '../src/imports/imports.controller'
+import { IMPORTS_CONFIG, ImportsController } from '../src/imports/imports.controller'
 import { REQUIRED_IMPORT_HEADERS } from '../src/imports/import-row'
 import { OrgUnitsRepository, type OrgUnit } from '../src/org-units/org-units.repository'
 import { OutboxWriter } from '../src/outbox/outbox.writer'
@@ -457,6 +457,117 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
       })
     })
 
+    // Residual half of the enumeration oracle, left open by fix wave C
+    // (fix-wave-c-report.md's own "Concerns" note): resolveCreateRow's
+    // findByEmail/findByUsername checks are GLOBAL and UNSCOPED — unlike
+    // the update-row case above, scope for a CREATE is checked against the
+    // row's OWN target org unit, which genuinely IS in scope here; the
+    // leak is that the COLLIDING existing user can be anyone, anywhere,
+    // and the old message confirmed exactly who by echoing "already
+    // exists" for a guessed value.
+    describe('create-row email/username collision no longer confirms an out-of-scope victim (finding, docs/superpowers/fix-wave-c-report.md concerns)', () => {
+      it('an in-scope create row naming an out-of-scope victim\'s email gets a non-confirming reason, never "already exists"', async () => {
+        const root = await makeOrgUnit('Create Oracle Root')
+        const mine = await makeChildOrgUnit(root.id, 'Create Mine')
+        const theirs = await makeChildOrgUnit(root.id, 'Create Theirs')
+        const attacker = await makeActiveUser('create-attacker', mine.id)
+        await grant(attacker.id, 'user_admin', mine.id)
+        currentUsername = attacker.username
+
+        const tag = nextTag()
+        const victimEmail = `secret-victim-${tag}@example.com`
+        await usersRepo().create({
+          primaryEmail: victimEmail,
+          username: `secret-victim-${tag}`,
+          firstName: 'Secret',
+          lastName: 'Victim',
+          orgUnitId: theirs.id,
+        })
+
+        // A genuinely NEW employeeId (never seen before) — this row goes
+        // through resolveCreateRow, not resolveUpdateRow — targeting the
+        // attacker's OWN in-scope org unit, but GUESSING the victim's real
+        // email.
+        const csv = buildCsv([row({ orgUnitId: mine.id, primaryEmail: victimEmail })])
+
+        const res = await request(app.getHttpServer())
+          .post('/imports/preview')
+          .send({ csv })
+          .expect(200)
+
+        expect(res.body.summary.failed).toBe(1)
+        const reasons: string[] = res.body.failures[0].reasons
+        const joined = reasons.join(' ')
+
+        // Still correctly rejected — the row IS un-creatable (a real
+        // collision), just without confirming it by name or echoing the
+        // guessed value back.
+        expect(joined).toContain('primaryEmail')
+        expect(joined).not.toContain('already exists')
+        expect(joined).not.toContain(victimEmail)
+      })
+
+      it('an in-scope create row naming an out-of-scope victim\'s username gets a non-confirming reason, never "already exists"', async () => {
+        const root = await makeOrgUnit('Create Oracle Root 2')
+        const mine = await makeChildOrgUnit(root.id, 'Create Mine 2')
+        const theirs = await makeChildOrgUnit(root.id, 'Create Theirs 2')
+        const attacker = await makeActiveUser('create-attacker2', mine.id)
+        await grant(attacker.id, 'user_admin', mine.id)
+        currentUsername = attacker.username
+
+        const tag = nextTag()
+        const victimUsername = `secret-victim-user-${tag}`
+        await usersRepo().create({
+          primaryEmail: `${victimUsername}@example.com`,
+          username: victimUsername,
+          firstName: 'Secret',
+          lastName: 'Victim',
+          orgUnitId: theirs.id,
+        })
+
+        const csv = buildCsv([row({ orgUnitId: mine.id, username: victimUsername })])
+
+        const res = await request(app.getHttpServer())
+          .post('/imports/preview')
+          .send({ csv })
+          .expect(200)
+
+        expect(res.body.summary.failed).toBe(1)
+        const reasons: string[] = res.body.failures[0].reasons
+        const joined = reasons.join(' ')
+
+        expect(joined).toContain('username')
+        expect(joined).not.toContain('already exists')
+        expect(joined).not.toContain(victimUsername)
+      })
+
+      it('commit still correctly refuses to create a row whose email collides, writing no user despite the softer message', async () => {
+        const org = await makeOrgUnit('Create Oracle Commit Root')
+        const actor = await makeActiveUser('create-commit-actor', org.id)
+        await grant(actor.id, 'user_admin', org.id)
+        currentUsername = actor.username
+
+        const tag = nextTag()
+        const existingEmail = `already-here-${tag}@example.com`
+        await usersRepo().create({
+          primaryEmail: existingEmail,
+          username: `already-here-${tag}`,
+          firstName: 'Already',
+          lastName: 'Here',
+          orgUnitId: org.id,
+        })
+
+        const usersBefore = await totalUserCount(ctx)
+        const csv = buildCsv([row({ orgUnitId: org.id, primaryEmail: existingEmail })])
+
+        const res = await request(app.getHttpServer()).post('/imports/commit').send({ csv }).expect(200)
+        expect(res.body.created).toBe(0)
+        expect(res.body.failed).toBe(1)
+        expect(res.body.failures[0].reasons.join(' ')).toContain('primaryEmail: not available')
+        expect(await totalUserCount(ctx)).toBe(usersBefore)
+      })
+    })
+
     it('reports a duplicate employee_id within the same file rather than silently letting the last one win', async () => {
       const org = await makeOrgUnit('Preview Dup Root')
       const actor = await makeActiveUser('dup-previewer', org.id)
@@ -653,7 +764,7 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
       }
     })
 
-    it('re-running the identical file updates rather than duplicating', async () => {
+    it('re-running the identical file matches and reports rows unchanged, rather than duplicating OR re-writing them (finding M4, docs/superpowers/audit-integrity.md)', async () => {
       const org = await makeOrgUnit('Commit Idempotent Root')
       const actor = await makeActiveUser('idempotent-committer', org.id)
       await grant(actor.id, 'user_admin', org.id)
@@ -669,23 +780,79 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
         .expect(200)
       expect(first.body.created).toBe(2)
       expect(first.body.updated).toBe(0)
+      expect(first.body.unchanged).toBe(0)
       expect(await totalUserCount(ctx)).toBe(usersBefore + 2)
+
+      const auditBefore = await totalAuditCount(ctx)
+      const outboxBefore = await totalOutboxCount(ctx)
 
       const second = await request(app.getHttpServer())
         .post('/imports/commit')
         .send({ csv })
         .expect(200)
       expect(second.body.created).toBe(0)
-      expect(second.body.updated).toBe(2)
+      // THE headline M4 regression assertion: pre-fix this was
+      // `updated: 2` — a full round of no-op user:update audit rows
+      // (before === after) and Keycloak sync events on every re-run of an
+      // unchanged file. Every field in this row is IDENTICAL to what run 1
+      // already wrote, so nothing should be written a second time.
+      expect(second.body.updated).toBe(0)
+      expect(second.body.unchanged).toBe(2)
       expect(second.body.failed).toBe(0)
 
       // No new users were added on the second run — same two rows, matched
-      // and updated by employee_id.
+      // by employee_id.
       expect(await totalUserCount(ctx)).toBe(usersBefore + 2)
+      // ...and, now, no new audit or outbox rows either.
+      expect(await totalAuditCount(ctx)).toBe(auditBefore)
+      expect(await totalOutboxCount(ctx)).toBe(outboxBefore)
 
       // Different batch_id per commit request, even though the same file
-      // was reused — each run is its own reviewable unit.
+      // was reused — each run is its own reviewable unit (the batchId
+      // itself is still minted even when every row turns out unchanged).
       expect(second.body.batchId).not.toBe(first.body.batchId)
+    })
+
+    it('a re-run where ONE row genuinely changed writes exactly one audit/outbox pair, not a full round', async () => {
+      const org = await makeOrgUnit('Commit Partial Change Root')
+      const actor = await makeActiveUser('partial-committer', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const unchangedRow = row({ orgUnitId: org.id })
+      const changingRow = row({ orgUnitId: org.id })
+      const firstCsv = buildCsv([unchangedRow, changingRow])
+
+      const first = await request(app.getHttpServer())
+        .post('/imports/commit')
+        .send({ csv: firstCsv })
+        .expect(200)
+      expect(first.body.created).toBe(2)
+
+      // Re-run with the SAME employeeId for both rows, but a genuinely new
+      // jobTitle for only one of them.
+      const secondCsv = buildCsv([
+        unchangedRow,
+        { ...changingRow, jobTitle: 'Genuinely New Title' },
+      ])
+
+      const auditBefore = await totalAuditCount(ctx)
+      const outboxBefore = await totalOutboxCount(ctx)
+
+      const second = await request(app.getHttpServer())
+        .post('/imports/commit')
+        .send({ csv: secondCsv })
+        .expect(200)
+
+      expect(second.body.created).toBe(0)
+      expect(second.body.updated).toBe(1)
+      expect(second.body.unchanged).toBe(1)
+      expect(second.body.failed).toBe(0)
+
+      // Exactly one new audit row and one new outbox event — for the row
+      // that actually changed, never for the one that didn't.
+      expect(await totalAuditCount(ctx)).toBe(auditBefore + 1)
+      expect(await totalOutboxCount(ctx)).toBe(outboxBefore + 1)
     })
 
     it('a file mixing valid and invalid rows commits the valid ones and reports the rest — never a whole-batch rollback', async () => {
@@ -1217,5 +1384,155 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
         spy.mockRestore()
       }
     })
+  })
+})
+
+/**
+ * Finding M6 (docs/superpowers/audit-integrity.md): "no explicit row-count
+ * or file-size cap" — the practical ceiling before this fix was ~800 rows,
+ * an ACCIDENT of express's own default 100 KiB body limit, not a control
+ * anyone chose. A SEPARATE, small Nest app (its own `IMPORTS_CONFIG`
+ * provider set to `maxRows: 3`) rather than reusing the main describe
+ * block's app above — the point of this cap is to be CONFIGURABLE, and a
+ * tiny configured value here proves the wiring without generating a
+ * multi-thousand-row CSV just to cross the real production default.
+ */
+describe('bulk import row-count cap (finding M6, docs/superpowers/audit-integrity.md)', () => {
+  const ctx = withTestDatabase()
+  let app: INestApplication
+  let currentUsername = ''
+  let orgUnitId: string
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      controllers: [ImportsController],
+      providers: [
+        { provide: DB_CLIENT, useFactory: () => ctx.db },
+        { provide: IMPORTS_CONFIG, useValue: { maxRows: 3 } },
+        UsersRepository,
+        OrgUnitsRepository,
+        PermissionEngine,
+        PermissionGuard,
+        PrivilegeGuards,
+        AuditWriter,
+        OutboxWriter,
+        Reflector,
+      ],
+    })
+      .overrideGuard(JwtGuard)
+      .useValue(stubJwtGuard(() => currentUsername))
+      .compile()
+
+    app = moduleRef.createNestApplication()
+    app.useGlobalFilters(new DomainExceptionFilter())
+    await app.init()
+
+    orgUnitId = (await new OrgUnitsRepository(ctx.db).createRoot(`Import Cap Root ${Date.now()}`)).id
+  })
+
+  afterAll(async () => {
+    await app?.close()
+  })
+
+  let fixtureSeq = 0
+  function nextTag(): string {
+    fixtureSeq += 1
+    return `impcap${fixtureSeq}`
+  }
+
+  async function makeActiveAdmin(): Promise<User> {
+    const tag = nextTag()
+    const usersRepository = new UsersRepository(ctx.db)
+    const created = await usersRepository.create({
+      primaryEmail: `${tag}@example.com`,
+      username: `impcap-${tag}`,
+      firstName: 'Cap',
+      lastName: 'Admin',
+      orgUnitId,
+    })
+    const active = await usersRepository.changeStatus(created.id, 'active')
+    await new RoleAssignmentsRepository(ctx.db).assign({
+      userId: active.id,
+      roleKey: 'user_admin',
+      scopeOrgUnitId: orgUnitId,
+    })
+    return active
+  }
+
+  function csvRow(tag: string): Record<string, string> {
+    return {
+      employeeId: `E-${tag}`,
+      primaryEmail: `${tag}@example.com`,
+      username: `user-${tag}`,
+      firstName: 'First',
+      lastName: 'Last',
+      orgUnitId,
+    }
+  }
+
+  async function totalAuditCount(): Promise<number> {
+    const { rows } = await ctx.pool.query<{ count: number }>('SELECT count(*)::int AS count FROM audit_log')
+    return rows[0]?.count ?? 0
+  }
+  async function totalOutboxCount(): Promise<number> {
+    const { rows } = await ctx.pool.query<{ count: number }>('SELECT count(*)::int AS count FROM outbox_events')
+    return rows[0]?.count ?? 0
+  }
+  async function totalUserCount(): Promise<number> {
+    const { rows } = await ctx.pool.query<{ count: number }>('SELECT count(*)::int AS count FROM users')
+    return rows[0]?.count ?? 0
+  }
+
+  it('POST /imports/commit rejects a file over the configured row cap, 400 naming both counts, before any row is touched', async () => {
+    const admin = await makeActiveAdmin()
+    currentUsername = admin.username
+
+    const rows = [1, 2, 3, 4].map((n) => csvRow(`over-${nextTag()}-${n}`))
+    const csv = buildCsv(rows)
+
+    const auditBefore = await totalAuditCount()
+    const outboxBefore = await totalOutboxCount()
+    const usersBefore = await totalUserCount()
+
+    const res = await request(app.getHttpServer()).post('/imports/commit').send({ csv }).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+    expect(res.body.issues.join(' ')).toContain('4') // actual
+    expect(res.body.issues.join(' ')).toContain('3') // configured max
+
+    // Rejected before any row is touched — zero audit rows, zero outbox
+    // events, zero users created, exactly like every other whole-request
+    // rejection this codebase already guarantees (missing header, bad
+    // permission, malformed CSV).
+    expect(await totalAuditCount()).toBe(auditBefore)
+    expect(await totalOutboxCount()).toBe(outboxBefore)
+    expect(await totalUserCount()).toBe(usersBefore)
+  })
+
+  it('POST /imports/preview is ALSO rejected over the cap — the whole request, not just commit — writing no invocation audit row either', async () => {
+    const admin = await makeActiveAdmin()
+    currentUsername = admin.username
+    const rows = [1, 2, 3, 4].map((n) => csvRow(`prevover-${nextTag()}-${n}`))
+    const csv = buildCsv(rows)
+
+    const auditBefore = await totalAuditCount()
+    const res = await request(app.getHttpServer()).post('/imports/preview').send({ csv }).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+
+    // preview's own invocation-level audit row (audit-secrets.md H1) is
+    // written only once parseAndPrepare has already SUCCEEDED — the row
+    // cap check lives inside parseAndPrepare, so a request rejected by it
+    // must not reach that write either.
+    expect(await totalAuditCount()).toBe(auditBefore)
+  })
+
+  it('a file at exactly the configured cap is accepted, not rejected off-by-one', async () => {
+    const admin = await makeActiveAdmin()
+    currentUsername = admin.username
+    const rows = [1, 2, 3].map((n) => csvRow(`atcap-${nextTag()}-${n}`))
+    const csv = buildCsv(rows)
+
+    const res = await request(app.getHttpServer()).post('/imports/commit').send({ csv }).expect(200)
+    expect(res.body.created).toBe(3)
+    expect(res.body.failed).toBe(0)
   })
 })

@@ -1,17 +1,24 @@
 import { type CanActivate, type ExecutionContext, type INestApplication } from '@nestjs/common'
+import { Reflector } from '@nestjs/core'
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { AuditWriter } from '../src/audit/audit.writer'
 import { JwtGuard } from '../src/auth/jwt.guard'
 import { PermissionEngine } from '../src/authz/permission.engine'
+import { PermissionGuard } from '../src/authz/permission.guard'
+import { PrivilegeGuards } from '../src/authz/privilege.guards'
+import { RoleAssignmentsRepository } from '../src/authz/role-assignments.repository'
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { attributeDefinitions } from '../src/db/schema/attribute-definitions'
 import { GroupsRepository } from '../src/groups/groups.repository'
+import { KEYCLOAK_ADMIN_CONFIG, KeycloakAdminClient } from '../src/keycloak/keycloak-admin.client'
 import { OrgUnitsRepository, type OrgUnit } from '../src/org-units/org-units.repository'
 import { OutboxWriter } from '../src/outbox/outbox.writer'
+import { SyncStateRepository } from '../src/outbox/sync-state.repository'
 import { SelfServiceController } from '../src/self-service/self-service.controller'
+import { UsersController } from '../src/users/users.controller'
 import { UsersRepository, type User } from '../src/users/users.repository'
 import { type TestDatabase, withTestDatabase } from './support/pg'
 
@@ -32,6 +39,33 @@ function stubJwtGuard(getUsername: () => string): CanActivate {
         username: getUsername(),
         email: null,
       }
+      return true
+    },
+  }
+}
+
+/**
+ * Resolves the principal from an `x-test-username` REQUEST HEADER rather
+ * than a shared closure variable — needed for finding H4's self-vs-admin
+ * race test below, which fires two requests for TWO DIFFERENT actors
+ * (the target user, and an admin) truly concurrently via `Promise.all`. A
+ * shared `currentUsername` variable (every other stub in this suite) cannot
+ * express that: both requests' guards would read whatever the LAST
+ * synchronous assignment left behind, resolving both to the SAME actor
+ * regardless of which request the header was "meant" for. Each supertest
+ * call sets its own header via `.set('x-test-username', ...)`, so the
+ * per-request value travels with the request itself instead of racing a
+ * variable.
+ */
+function stubJwtGuardByHeader(): CanActivate {
+  return {
+    canActivate(context: ExecutionContext): boolean {
+      const req = context
+        .switchToHttp()
+        .getRequest<{ principal?: unknown; headers: Record<string, string | string[] | undefined> }>()
+      const raw = req.headers['x-test-username']
+      const username = Array.isArray(raw) ? raw[0] : raw
+      req.principal = { subject: 'self-service-h4-test', username: username ?? '', email: null }
       return true
     },
   }
@@ -533,6 +567,60 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       expect(reloaded?.attributes[editableKey]).toBe('New')
     })
 
+    // Finding H4 (docs/superpowers/audit-integrity.md, HIGH): the merge used
+    // to read `current.attributes` with a PLAIN (unlocked) SELECT, compute
+    // `{...current.attributes, ...attributePatch}`, and write that back —
+    // a classic lost update under READ COMMITTED. Two concurrent requests
+    // could both read the same starting snapshot, both merge their own
+    // patch onto it, and whichever's UPDATE committed LAST silently
+    // overwrote the other's already-committed change. Measured 30/30 by the
+    // audit. `findByIdForUpdate` (SELECT ... FOR UPDATE) fixes it: a second
+    // concurrent caller's own locked read now blocks until the first
+    // commits, then merges onto the up-to-date result instead of racing it.
+    it(
+      '30 concurrent PATCH /self calls, each setting a DIFFERENT attribute, never lose one to a stale-read merge (30/30)',
+      async () => {
+        const org = await makeOrgUnit('H4 Concurrent Merge Root')
+        const actor = await makeActiveUser('actor', org.id)
+        currentUsername = actor.username
+
+        const N = 30
+        const keys = Array.from({ length: N }, () => `h4self-${nextTag()}`)
+        await ctx.db.insert(attributeDefinitions).values(
+          keys.map((key) => ({
+            key,
+            label: key,
+            dataType: 'string' as const,
+            required: false,
+            appliesTo: 'user' as const,
+            isActive: true,
+            selfEditable: true,
+          })),
+        )
+
+        const responses = await Promise.all(
+          keys.map((key, i) =>
+            request(app.getHttpServer())
+              .patch('/self')
+              .send({ attributes: { [key]: `value-${i}` } }),
+          ),
+        )
+
+        expect(responses.map((r) => r.status)).toEqual(Array(N).fill(200))
+
+        const reloaded = await usersRepo().findById(actor.id)
+        for (let i = 0; i < N; i++) {
+          // The headline regression assertion: pre-fix, this was 30/30
+          // fewer than N keys surviving — every request but the last
+          // committer's merged onto a snapshot that predates every OTHER
+          // request's own (already-committed-by-the-time-this-one-wrote)
+          // change, silently dropping it.
+          expect(reloaded?.attributes[keys[i]]).toBe(`value-${i}`)
+        }
+      },
+      30_000,
+    )
+
     it('a deactivated user gets 403 on PATCH too, and writes no audit row', async () => {
       const org = await makeOrgUnit('Patch Deactivated Root')
       const actor = await makeActiveUser('actor', org.id)
@@ -609,4 +697,167 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       expect(res.body.code).toBe('FORBIDDEN')
     })
   })
+})
+
+/**
+ * Finding H4's SECOND measured race (docs/superpowers/audit-integrity.md):
+ * "self-service racing an admin edit" — `PATCH /self` (merge) concurrent
+ * with `PATCH /users/:id` (wholesale replace) on the SAME user, each naming
+ * a DIFFERENT attribute key. `UsersController.update`'s own wholesale
+ * replace is unchanged and intentional (see UpdateUserInput's doc comment) —
+ * an admin write that lands chronologically LAST is ALLOWED to discard a
+ * self-service attribute, by design. What must never happen, with or
+ * without a fix, is the ADMIN's attribute vanishing: the whole reason
+ * self-service merges instead of replacing is "a self-service edit cannot
+ * erase admin-set attributes outside the caller's scope" — under the
+ * pre-fix race, self-service's own STALE read (taken before the admin's
+ * write) could still get merged and then blindly overwrite AFTER the
+ * admin's write had already landed, erasing it despite self "winning" the
+ * write race. `findByIdForUpdate` closes exactly that interleaving (see
+ * self-service.controller.ts's own doc comment) — proven here against a
+ * SEPARATE, combined module wiring both controllers, since this needs two
+ * genuinely different actors racing each other.
+ */
+describe('PATCH /self racing PATCH /users/:id (finding H4, docs/superpowers/audit-integrity.md)', () => {
+  const ctx = withTestDatabase()
+  let app: INestApplication
+  let orgUnitId: string
+  let adminUsername: string
+
+  const UNREACHABLE_KEYCLOAK_CONFIG = {
+    issuer: 'http://127.0.0.1:1/realms/unreachable',
+    clientId: 'irrelevant',
+    clientSecret: 'irrelevant',
+  }
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      controllers: [SelfServiceController, UsersController],
+      providers: [
+        { provide: DB_CLIENT, useFactory: () => ctx.db },
+        UsersRepository,
+        GroupsRepository,
+        PermissionEngine,
+        PermissionGuard,
+        PrivilegeGuards,
+        RoleAssignmentsRepository,
+        AuditWriter,
+        OutboxWriter,
+        Reflector,
+        { provide: KEYCLOAK_ADMIN_CONFIG, useValue: UNREACHABLE_KEYCLOAK_CONFIG },
+        KeycloakAdminClient,
+        SyncStateRepository,
+      ],
+    })
+      .overrideGuard(JwtGuard)
+      .useValue(stubJwtGuardByHeader())
+      .compile()
+
+    app = moduleRef.createNestApplication()
+    app.useGlobalFilters(new DomainExceptionFilter())
+    await app.init()
+
+    orgUnitId = (await new OrgUnitsRepository(ctx.db).createRoot(`H4 Self Vs Admin Root ${Date.now()}`)).id
+
+    const usersRepo = new UsersRepository(ctx.db)
+    const tag = `h4admin-${Date.now()}`
+    const created = await usersRepo.create({
+      primaryEmail: `${tag}@example.com`,
+      username: tag,
+      firstName: 'H4',
+      lastName: 'Admin',
+      orgUnitId,
+    })
+    const admin = await usersRepo.changeStatus(created.id, 'active')
+    adminUsername = admin.username
+    await new RoleAssignmentsRepository(ctx.db).assign({
+      userId: admin.id,
+      roleKey: 'user_admin',
+      scopeOrgUnitId: orgUnitId,
+    })
+  })
+
+  afterAll(async () => {
+    await app?.close()
+  })
+
+  let fixtureSeq = 0
+  function nextTag(): string {
+    fixtureSeq += 1
+    return `h4sa${fixtureSeq}`
+  }
+
+  it(
+    "30 iterations of a 1 admin vs 4 self-service concurrent write fan-in never lose the ADMIN's attribute to a stale self-service merge (30/30)",
+    async () => {
+      const usersRepo = new UsersRepository(ctx.db)
+      const N = 30
+      // A single 2-way race is too narrow to reliably land the specific bad
+      // interleaving (self reads before the admin write, self writes after
+      // it) — real scheduling could go either way on any given pair. Fanning
+      // in several self-service writers against the SAME row, all racing
+      // the ONE admin write, mirrors how the self-vs-self test above gets
+      // its own reliability: more contenders on one row means it only takes
+      // ONE of them to read-before/write-after the admin's commit.
+      const SELF_WRITERS = 4
+
+      for (let i = 0; i < N; i++) {
+        const tag = nextTag()
+        const adminKey = `h4sa-admin-${tag}`
+        const selfKeys = Array.from({ length: SELF_WRITERS }, (_, j) => `h4sa-self-${tag}-${j}`)
+
+        await ctx.db.insert(attributeDefinitions).values([
+          {
+            key: adminKey,
+            label: adminKey,
+            dataType: 'string',
+            required: false,
+            appliesTo: 'user',
+            isActive: true,
+            selfEditable: false,
+          },
+          ...selfKeys.map((key) => ({
+            key,
+            label: key,
+            dataType: 'string' as const,
+            required: false,
+            appliesTo: 'user' as const,
+            isActive: true,
+            selfEditable: true,
+          })),
+        ])
+
+        const created = await usersRepo.create({
+          primaryEmail: `${tag}@example.com`,
+          username: tag,
+          firstName: 'Target',
+          lastName: tag,
+          orgUnitId,
+        })
+        const target = await usersRepo.changeStatus(created.id, 'active')
+
+        const adminRequest = request(app.getHttpServer())
+          .patch(`/users/${target.id}`)
+          .set('x-test-username', adminUsername)
+          .send({ attributes: { [adminKey]: 'fromAdmin' } })
+        const selfRequests = selfKeys.map((key) =>
+          request(app.getHttpServer())
+            .patch('/self')
+            .set('x-test-username', target.username)
+            .send({ attributes: { [key]: 'fromSelf' } }),
+        )
+
+        const responses = await Promise.all([adminRequest, ...selfRequests])
+        expect(responses.map((r) => r.status)).toEqual(Array(1 + SELF_WRITERS).fill(200))
+
+        const reloaded = await usersRepo.findById(target.id)
+        // The headline regression assertion: pre-fix, this was 30/30
+        // missing at least once across the run — SOME self-service writer's
+        // stale-read merge, landing after the admin's commit, silently
+        // wiped it out even though self "won" the write race.
+        expect(reloaded?.attributes[adminKey]).toBe('fromAdmin')
+      }
+    },
+    60_000,
+  )
 })

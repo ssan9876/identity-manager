@@ -21,6 +21,8 @@ describe('loadEnv', () => {
       port: 3000,
       syncWorkerEnabled: true,
       dbPoolMax: 10,
+      bodyLimitBytes: 10 * 1024 * 1024,
+      importMaxRows: 5_000,
     })
   })
 
@@ -73,6 +75,38 @@ describe('loadEnv', () => {
 
     it('rejects a non-numeric value', () => {
       expect(() => loadEnv({ ...valid, DB_POOL_MAX: 'lots' })).toThrow(/DB_POOL_MAX/)
+    })
+  })
+
+  // Finding M6 (docs/superpowers/audit-integrity.md): an explicit,
+  // configurable ceiling replacing express's accidental 100 KiB default.
+  describe('BODY_LIMIT_BYTES', () => {
+    it('defaults to 10 MiB when absent', () => {
+      expect(loadEnv(valid).bodyLimitBytes).toBe(10 * 1024 * 1024)
+    })
+
+    it('honors an explicit override', () => {
+      expect(loadEnv({ ...valid, BODY_LIMIT_BYTES: '2048' }).bodyLimitBytes).toBe(2048)
+    })
+
+    it('rejects a non-positive value', () => {
+      expect(() => loadEnv({ ...valid, BODY_LIMIT_BYTES: '0' })).toThrow(/BODY_LIMIT_BYTES/)
+    })
+  })
+
+  // Finding M6 (docs/superpowers/audit-integrity.md): the other half — an
+  // explicit, configurable row-count ceiling for bulk import.
+  describe('IMPORT_MAX_ROWS', () => {
+    it('defaults to 5,000 when absent', () => {
+      expect(loadEnv(valid).importMaxRows).toBe(5_000)
+    })
+
+    it('honors an explicit override', () => {
+      expect(loadEnv({ ...valid, IMPORT_MAX_ROWS: '100' }).importMaxRows).toBe(100)
+    })
+
+    it('rejects a non-positive value', () => {
+      expect(() => loadEnv({ ...valid, IMPORT_MAX_ROWS: '0' })).toThrow(/IMPORT_MAX_ROWS/)
     })
   })
 

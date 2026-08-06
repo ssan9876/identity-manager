@@ -33,6 +33,24 @@ const envSchema = z.object({
   // finding C1 for why the pool's size and timeout behaviour are both
   // load-bearing for availability, not just performance tuning.
   DB_POOL_MAX: z.coerce.number().int().positive().default(10),
+  // Explicit, configurable ceiling on the whole request body `main.ts`'s
+  // body parser will accept, replacing express's ACCIDENTAL 100 KiB default
+  // (finding M6, docs/superpowers/audit-integrity.md: "the practical
+  // ceiling is ~800 rows / ~7s per request... that is an accidental
+  // control: it disappears the instant anyone sets `bodyParser: { limit }`
+  // for a legitimate reason"). 10 MiB comfortably covers a several-thousand
+  // -row CSV import (the largest legitimate request this API accepts) while
+  // still bounding worst-case memory use — see main.ts's own doc comment.
+  BODY_LIMIT_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+  // Explicit, configurable ceiling on the number of DATA rows one
+  // `POST /imports/preview`/`/commit` request may carry — the other half of
+  // finding M6. Import commit is ~10ms/row of serial, blocking work
+  // (task-2-brief.md's own measurement), so this bounds worst-case request
+  // duration and memory, independent of whatever the body-size limit above
+  // happens to be. 5,000 rows is comfortably above every legitimate import
+  // this system has been measured against (up to 700 rows) while still
+  // being a real, enforced ceiling rather than "whatever fits in the body".
+  IMPORT_MAX_ROWS: z.coerce.number().int().positive().default(5_000),
 })
 
 export interface Env {
@@ -44,6 +62,8 @@ export interface Env {
   port: number
   syncWorkerEnabled: boolean
   dbPoolMax: number
+  bodyLimitBytes: number
+  importMaxRows: number
 }
 
 export function loadEnv(source: NodeJS.ProcessEnv): Env {
@@ -65,5 +85,7 @@ export function loadEnv(source: NodeJS.ProcessEnv): Env {
     port: parsed.data.PORT,
     syncWorkerEnabled: parsed.data.SYNC_WORKER_ENABLED === 'true',
     dbPoolMax: parsed.data.DB_POOL_MAX,
+    bodyLimitBytes: parsed.data.BODY_LIMIT_BYTES,
+    importMaxRows: parsed.data.IMPORT_MAX_ROWS,
   }
 }

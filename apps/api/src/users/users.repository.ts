@@ -70,8 +70,18 @@ export interface UpdateUserInput {
   attributes?: Record<string, unknown>
 }
 
+// `pending -> deactivated` (finding M5, docs/superpowers/audit-integrity.md):
+// a leaver whose end_date passes before they were ever activated is exactly
+// as much a leaver as an active one — see
+// `listNonDeactivatedWithEndDateOnOrBefore`'s own doc comment, which already
+// documents that intent. Omitting this transition made that intent
+// unreachable by construction: `LifecycleJob.deactivateDueUsers` selects
+// such a user, then `changeStatus(id, 'deactivated')` unconditionally threw
+// `InvalidTransitionError` for every single one, forever (caught and
+// `console.warn`'d — see that method's own doc comment for why silent
+// skipping is itself part of the finding).
 const ALLOWED_TRANSITIONS: Record<UserStatus, readonly UserStatus[]> = {
-  pending: ['active'],
+  pending: ['active', 'deactivated'],
   active: ['suspended', 'deactivated'],
   suspended: ['active', 'deactivated'],
   deactivated: [],
@@ -178,6 +188,44 @@ export class UsersRepository {
     return (row as User | undefined) ?? null
   }
 
+  /**
+   * Same as `findById`, but `SELECT ... FOR UPDATE`: takes a row-level write
+   * lock on this user for the rest of the caller's transaction, so a SECOND
+   * concurrent caller's own `findByIdForUpdate` on the same id BLOCKS until
+   * the first commits, then reads the first's committed result rather than
+   * racing it — Postgres's documented READ COMMITTED + `FOR UPDATE`
+   * behaviour: a blocked `SELECT ... FOR UPDATE` that is unblocked by the
+   * blocker's COMMIT re-fetches the just-committed row version, not the
+   * snapshot it originally requested.
+   *
+   * Exists for finding H4 (docs/superpowers/audit-integrity.md): a caller
+   * that reads `current`, computes something derived from it (a merged
+   * `attributes` object, a recomputed `displayName`), and writes that
+   * derived value back is a lost-update hazard under a PLAIN `findById` —
+   * two concurrent callers can both read the same starting row, both
+   * compute against that same stale snapshot, and whichever writes last
+   * silently discards the other's change, taking no lock and colliding with
+   * nothing on the way in. `SelfServiceController.update` (attribute merge)
+   * and `RuleApplier.applySetAttribute` (JML `set_attribute`, identical
+   * merge shape) both call this instead of `findById` for exactly that
+   * reason; see their own doc comments. Contrast `changeStatus`, which needs
+   * no row lock at all because its own conditional `UPDATE ... WHERE status
+   * IN (...)` already makes the decision and the write one atomic step
+   * (EvalPlanQual) — a lock is the right tool only when the WRITE's value
+   * itself depends on a separately-computed READ, which a plain conditional
+   * UPDATE's WHERE clause cannot express for an arbitrary jsonb merge.
+   */
+  async findByIdForUpdate(id: string, db: NodePgDatabase<typeof schema> = this.db): Promise<User | null> {
+    const [row] = await db
+      .select()
+      .from(users)
+      .where(eq(users.id, id))
+      .for('update')
+      .limit(1)
+
+    return (row as User | undefined) ?? null
+  }
+
   async findByEmail(email: string): Promise<User | null> {
     const [row] = await this.db
       .select()
@@ -249,13 +297,29 @@ export class UsersRepository {
    *     question than editing a user in place — it would need its own
    *     scope check against the DESTINATION unit, not just the current
    *     one, which is outside what this task specifies.
+   *
+   * Reads `current` via `findByIdForUpdate` (`SELECT ... FOR UPDATE`), not
+   * a plain read — finding M1 (docs/superpowers/audit-integrity.md):
+   * `displayName` is DERIVED from `patch.firstName ?? current.firstName` /
+   * `patch.lastName ?? current.lastName` below, so a stale `current` under
+   * concurrency produces a stale derived value with the SAME lost-update
+   * mechanism as H4's attribute merge — two concurrent PATCHes, one naming
+   * only `firstName` and one naming only `lastName`, each recompute
+   * `displayName` from their own unlocked, stale half, measured 30/30. Every
+   * caller of this method runs inside its own transaction already (see this
+   * method's own `db` parameter doc comment), so the lock is released the
+   * moment that transaction ends — no caller needs to change to benefit.
+   * `displayName` is shown to every other user in the directory (see
+   * SelfServiceController's own doc comment on why `firstName`/`lastName`
+   * are excluded from self-service for exactly this reason), so a
+   * permanently-inconsistent derived value is a real, not cosmetic, defect.
    */
   async update(
     id: string,
     patch: UpdateUserInput,
     db: NodePgDatabase<typeof schema> = this.db,
   ): Promise<User> {
-    const current = await this.findById(id, db)
+    const current = await this.findByIdForUpdate(id, db)
     if (current === null) {
       throw new NotFoundError('user', id)
     }
