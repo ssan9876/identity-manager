@@ -3,6 +3,7 @@ import { loadEnv } from '../src/config/env'
 
 const valid = {
   DATABASE_URL: 'postgres://idm:pw@localhost:5432/identity_manager',
+  RUNTIME_DATABASE_URL: 'postgres://idm_app:pw@localhost:5432/identity_manager',
   KEYCLOAK_ISSUER: 'http://localhost:8080/realms/identity-manager',
   KEYCLOAK_AUDIENCE: 'idm-api',
   KEYCLOAK_ADMIN_CLIENT_ID: 'idm-sync-service',
@@ -14,6 +15,7 @@ describe('loadEnv', () => {
   it('parses a valid environment', () => {
     expect(loadEnv(valid)).toEqual({
       databaseUrl: valid.DATABASE_URL,
+      runtimeDatabaseUrl: valid.RUNTIME_DATABASE_URL,
       keycloakIssuer: valid.KEYCLOAK_ISSUER,
       keycloakAudience: 'idm-api',
       keycloakAdminClientId: 'idm-sync-service',
@@ -113,6 +115,21 @@ describe('loadEnv', () => {
   it('throws a descriptive error when DATABASE_URL is missing', () => {
     const { DATABASE_URL, ...broken } = valid
     expect(() => loadEnv(broken)).toThrow(/DATABASE_URL/)
+  })
+
+  // Finding H1 (docs/superpowers/audit-integrity.md): the RUNTIME
+  // connection the app/SyncWorker actually connect as — see env.ts's own
+  // doc comment. Required with no default and no fallback to DATABASE_URL:
+  // an operator who forgets to set it must get a boot-time error, not an
+  // app silently running with owner privileges.
+  it('throws a descriptive error when RUNTIME_DATABASE_URL is missing', () => {
+    const { RUNTIME_DATABASE_URL, ...broken } = valid
+    expect(() => loadEnv(broken)).toThrow(/RUNTIME_DATABASE_URL/)
+  })
+
+  it('does not fall back to DATABASE_URL when RUNTIME_DATABASE_URL is present', () => {
+    expect(loadEnv(valid).runtimeDatabaseUrl).toBe(valid.RUNTIME_DATABASE_URL)
+    expect(loadEnv(valid).runtimeDatabaseUrl).not.toBe(loadEnv(valid).databaseUrl)
   })
 
   it('rejects a non-URL issuer', () => {

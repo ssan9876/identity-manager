@@ -232,7 +232,11 @@ describe('PermissionEngine', () => {
   // the catalog fix resolves this call site automatically, with no change
   // to permission.engine.ts itself.
   it('grantingAssignments (via canAnywhere) does not throw for a role_key colliding with an inherited Object.prototype property, and correctly denies', async () => {
-    await ctx.pool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'constructor'`)
+    // finding H1 (docs/superpowers/audit-integrity.md): ALTER TYPE requires
+    // owning the type, so this test-only simulation of catalog drift must
+    // run as the OWNER role — ctx.pool (the RUNTIME role) cannot do this in
+    // production either, which is now enforced rather than incidental.
+    await ctx.ownerPool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'constructor'`)
     const user = await makeUser('ada', rootId)
     await ctx.pool.query(
       'INSERT INTO role_assignments (user_id, role_key, scope_org_unit_id) VALUES ($1, $2::role_key, NULL)',

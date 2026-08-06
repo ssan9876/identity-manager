@@ -258,9 +258,14 @@ describe('PrivilegeGuards', () => {
   // the review demonstrated it live (`ALTER TYPE role_key ADD VALUE
   // 'ghost_role'`), so the regression is pinned against genuine Postgres
   // behaviour, not a hand-typed fixture.
+  // The ALTER TYPE calls below run on ctx.ownerPool, not ctx.pool: finding
+  // H1 (docs/superpowers/audit-integrity.md) — widening an enum requires
+  // owning the type, which the RUNTIME role deliberately does not. Every
+  // subsequent step in each test (the INSERT using the new value, and every
+  // method under test) still runs as the runtime role.
   describe('role_key catalog drift (Finding I-1)', () => {
     it('does not let an unrecognized role on the ACTOR inflate their rank past a real denial', async () => {
-      await ctx.pool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'ghost_role'`)
+      await ctx.ownerPool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'ghost_role'`)
 
       const ghost = await makeUser('ghost', rootId)
       const boss = await makeUser('boss', rootId)
@@ -281,7 +286,7 @@ describe('PrivilegeGuards', () => {
     })
 
     it('fails loud (throws), not open, when the TARGET holds an unrecognized role', async () => {
-      await ctx.pool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'ghost_role'`)
+      await ctx.ownerPool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'ghost_role'`)
 
       const plain = await makeUser('plain', rootId)
       const ghost = await makeUser('ghost', rootId)
@@ -318,7 +323,7 @@ describe('PrivilegeGuards', () => {
   // end-to-end against a real Postgres, exactly as the review reproduced it.
   describe('role_key values colliding with an inherited Object.prototype property (Finding I-1, fix round 2)', () => {
     it('denies (never resolves) when the TARGET holds only "constructor"', async () => {
-      await ctx.pool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'constructor'`)
+      await ctx.ownerPool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'constructor'`)
 
       const plain = await makeUser('plain', rootId)
       const colliding = await makeUser('colliding', rootId)
@@ -335,7 +340,7 @@ describe('PrivilegeGuards', () => {
     })
 
     it('denies (never resolves) when the TARGET holds only "toString"', async () => {
-      await ctx.pool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'toString'`)
+      await ctx.ownerPool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'toString'`)
 
       const plain = await makeUser('plain', rootId)
       const colliding = await makeUser('colliding', rootId)
@@ -352,7 +357,7 @@ describe('PrivilegeGuards', () => {
     })
 
     it('does not let an ACTOR holding only "constructor" modify a real super_admin', async () => {
-      await ctx.pool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'constructor'`)
+      await ctx.ownerPool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'constructor'`)
 
       const colliding = await makeUser('colliding', rootId)
       const boss = await makeUser('boss', rootId)
@@ -373,7 +378,7 @@ describe('PrivilegeGuards', () => {
     })
 
     it('ranks an actor holding "constructor" plus a real role by the real role alone', async () => {
-      await ctx.pool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'constructor'`)
+      await ctx.ownerPool.query(`ALTER TYPE role_key ADD VALUE IF NOT EXISTS 'constructor'`)
 
       const mixed = await makeUser('mixed', rootId)
       await ctx.pool.query(

@@ -3,6 +3,7 @@ import path from 'node:path'
 import { drizzle } from 'drizzle-orm/node-postgres'
 import { migrate } from 'drizzle-orm/node-postgres/migrator'
 import type { Pool } from 'pg'
+import { provisionRuntimeRole, type RuntimeRoleCredentials } from './roles'
 
 const REQUIRED_EXTENSIONS = ['ltree'] as const
 
@@ -15,11 +16,16 @@ const REQUIRED_EXTENSIONS = ['ltree'] as const
 export const MIGRATIONS_FOLDER = path.resolve(process.cwd(), 'src/db/migrations')
 
 /**
- * Extensions are created here rather than in a generated migration because
- * drizzle-kit does not emit CREATE EXTENSION statements. This runs first and
- * is safe to repeat.
+ * `pool` must be connected as the OWNER role — applying schema migrations,
+ * (re)defining `audit_log_append_only()`, and provisioning the RUNTIME role
+ * (`db/roles.ts`) all require owning the objects involved. `runtimeRole` is
+ * a required argument, not an optional one with a skip-if-absent default:
+ * the whole point of finding H1's fix is that the runtime role's privileges
+ * are asserted every time migrations run, not something a caller can forget
+ * to pass. `migrate-cli.ts` derives it from `RUNTIME_DATABASE_URL`;
+ * `test/support/pg.ts` passes the throwaway container's own test role.
  */
-export async function runMigrations(pool: Pool): Promise<void> {
+export async function runMigrations(pool: Pool, runtimeRole: RuntimeRoleCredentials): Promise<void> {
   for (const extension of REQUIRED_EXTENSIONS) {
     await pool.query(`CREATE EXTENSION IF NOT EXISTS ${extension}`)
   }
@@ -32,6 +38,14 @@ export async function runMigrations(pool: Pool): Promise<void> {
 
   await migrate(drizzle(pool), { migrationsFolder: MIGRATIONS_FOLDER })
   await enforceAuditAppendOnly(pool)
+
+  // Finding H1 (docs/superpowers/audit-integrity.md): re-asserted last, on
+  // every migrate run, so the runtime role's restricted privileges — and
+  // its total lack of ownership/CREATE — can never silently drift from what
+  // this function just created, and so a table added by a future migration
+  // is granted to it automatically (provisionRuntimeRole reads the table
+  // list fresh from pg_tables rather than a hardcoded registry).
+  await provisionRuntimeRole(pool, runtimeRole)
 }
 
 /**

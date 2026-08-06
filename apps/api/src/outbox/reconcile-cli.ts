@@ -16,10 +16,17 @@ import { SyncWorker } from './sync.worker'
  * Mirrors `db/migrate-cli.ts`'s split exactly: a plain `tsx` script wired to
  * `pnpm run reconcile`, in the same on-demand style as `db:migrate` — no
  * scheduler (see the milestone plan / task-4-brief.md).
+ *
+ * Connects as the RUNTIME role (finding H1, docs/superpowers/
+ * audit-integrity.md), not the OWNER: everything this job does — reading
+ * users/groups, writing an outbox event and an audit row — is ordinary DML
+ * the runtime role already holds. It is operationally part of "the
+ * application," not a schema-owning migration step, so it gets no more
+ * database privilege than the API process itself does.
  */
 async function main(): Promise<void> {
   const env = loadEnv(process.env)
-  const { db, pool } = createDbClient(env.databaseUrl, { max: env.dbPoolMax })
+  const { db, pool } = createDbClient(env.runtimeDatabaseUrl, { max: env.dbPoolMax })
 
   try {
     const usersRepository = new UsersRepository(db)

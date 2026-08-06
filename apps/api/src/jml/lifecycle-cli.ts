@@ -17,10 +17,16 @@ import { RuleApplier } from './rule-applier'
  * `outbox/reconcile-cli.ts` exactly: a plain `tsx` script wired to `pnpm run
  * jml:lifecycle`, in the same on-demand style — no scheduler, no cron (see
  * the milestone plan, decision 4).
+ *
+ * Connects as the RUNTIME role (finding H1, docs/superpowers/
+ * audit-integrity.md) — same reasoning as reconcile-cli.ts: every write this
+ * job makes (status transitions, rule actions, audit rows, outbox events) is
+ * ordinary DML the runtime role already holds, and it is part of "the
+ * application" operationally, not a schema-owning migration step.
  */
 async function main(): Promise<void> {
   const env = loadEnv(process.env)
-  const { db, pool } = createDbClient(env.databaseUrl, { max: env.dbPoolMax })
+  const { db, pool } = createDbClient(env.runtimeDatabaseUrl, { max: env.dbPoolMax })
 
   try {
     const usersRepository = new UsersRepository(db)

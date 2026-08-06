@@ -94,9 +94,16 @@ interface SeededActor {
  * Talks to Postgres directly, on its own pool — independent of the app
  * process this script spawns, so seeding/cleanup work whether or not that
  * process is up.
+ *
+ * Connects as the RUNTIME role (finding H1, docs/superpowers/
+ * audit-integrity.md), deliberately: every write here (create a user,
+ * activate it, assign a role, delete each on cleanup) is exactly the shape
+ * of DML the real application performs, so seeding this way doubles as a
+ * live check that the runtime role's grants are actually sufficient for
+ * ordinary app operation — not just a theoretical grant list.
  */
-async function seedActor(databaseUrl: string): Promise<SeededActor> {
-  const { db, pool } = createDbClient(databaseUrl)
+async function seedActor(runtimeDatabaseUrl: string): Promise<SeededActor> {
+  const { db, pool } = createDbClient(runtimeDatabaseUrl)
 
   try {
     const orgUnits = new OrgUnitsRepository(db)
@@ -329,7 +336,7 @@ async function main(): Promise<void> {
   // does not depend on the app process below, so it runs first and its
   // cleanup is guaranteed via the outer `finally` regardless of how the
   // server checks turn out.
-  const seeded = await seedActor(env.databaseUrl)
+  const seeded = await seedActor(env.runtimeDatabaseUrl)
 
   let exitCode = 0
   try {

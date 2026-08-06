@@ -52,10 +52,17 @@ import { UsersRepository } from './users/users.repository'
       },
     },
     {
+      // Finding H1 (docs/superpowers/audit-integrity.md): the RUNTIME
+      // connection, not the OWNER one — this is what makes every controller/
+      // repository/SyncWorker (all inject DB_CLIENT) run as a role that owns
+      // nothing and cannot alter its own schema. Deliberately
+      // `env.runtimeDatabaseUrl` with NO fallback to `env.databaseUrl` — see
+      // config/env.ts's doc comment: a missing RUNTIME_DATABASE_URL must
+      // fail loadEnv, not silently boot the app with owner privileges.
       provide: DB_CLIENT,
       useFactory: () => {
         const env = loadEnv(process.env)
-        return createDbClient(env.databaseUrl, { max: env.dbPoolMax }).db
+        return createDbClient(env.runtimeDatabaseUrl, { max: env.dbPoolMax }).db
       },
     },
     {

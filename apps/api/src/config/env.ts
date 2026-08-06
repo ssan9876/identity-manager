@@ -1,7 +1,26 @@
 import { z } from 'zod'
 
 const envSchema = z.object({
+  // The OWNER/MIGRATION connection — owns the schema (every table, every
+  // sequence, the audit_log_append_only() trigger function) and is the
+  // only credential `db:migrate` (db/migrate-cli.ts) ever connects with.
+  // NEVER used by the running application or the sync worker — see
+  // RUNTIME_DATABASE_URL below, and docs/superpowers/audit-integrity.md
+  // finding H1: a role that both serves runtime traffic AND owns/can-alter
+  // its own schema can simply redefine any guard it dislikes, DDL included.
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  // The RUNTIME connection — what the API process and the SyncWorker (both
+  // share this via the DB_CLIENT DI token, app.module.ts) actually connect
+  // as. This role owns nothing and cannot ALTER/DROP/CREATE OR REPLACE any
+  // object (no CREATE on the schema): `db:migrate`, connected as the OWNER
+  // above, provisions it with exactly the DML it needs — full
+  // SELECT/INSERT/UPDATE/DELETE on ordinary tables, but only SELECT/INSERT
+  // on audit_log (db/roles.ts's provisionRuntimeRole; finding H1). No
+  // fallback to DATABASE_URL when this is absent — deliberately: a missing
+  // RUNTIME_DATABASE_URL fails loadEnv outright (same as every other
+  // required field here) rather than silently booting the app with owner
+  // privileges, which would quietly undo the whole fix.
+  RUNTIME_DATABASE_URL: z.string().min(1, 'RUNTIME_DATABASE_URL is required'),
   KEYCLOAK_ISSUER: z.string().url('KEYCLOAK_ISSUER must be a valid URL'),
   KEYCLOAK_AUDIENCE: z.string().min(1, 'KEYCLOAK_AUDIENCE is required'),
   // The Keycloak Admin REST client's OWN service-account credentials
@@ -55,6 +74,7 @@ const envSchema = z.object({
 
 export interface Env {
   databaseUrl: string
+  runtimeDatabaseUrl: string
   keycloakIssuer: string
   keycloakAudience: string
   keycloakAdminClientId: string
@@ -78,6 +98,7 @@ export function loadEnv(source: NodeJS.ProcessEnv): Env {
 
   return {
     databaseUrl: parsed.data.DATABASE_URL,
+    runtimeDatabaseUrl: parsed.data.RUNTIME_DATABASE_URL,
     keycloakIssuer: parsed.data.KEYCLOAK_ISSUER.replace(/\/$/, ''),
     keycloakAudience: parsed.data.KEYCLOAK_AUDIENCE,
     keycloakAdminClientId: parsed.data.KEYCLOAK_ADMIN_CLIENT_ID,
