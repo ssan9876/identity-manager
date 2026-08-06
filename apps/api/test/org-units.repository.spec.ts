@@ -54,7 +54,12 @@ describe('OrgUnitsRepository', () => {
   let repo: OrgUnitsRepository
 
   beforeEach(async () => {
-    await ctx.pool.query('TRUNCATE TABLE org_units CASCADE')
+    // DELETE, not TRUNCATE ... CASCADE: TRUNCATE structurally cascades
+    // transitively (org_units -> users -> audit_log) regardless of row
+    // counts, and audit_log's append-only trigger unconditionally rejects
+    // that. This describe block never creates users, so a plain DELETE
+    // needs nothing else first.
+    await ctx.pool.query('DELETE FROM org_units')
     repo = new OrgUnitsRepository(ctx.db)
   })
 

@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing'
 import request from 'supertest'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { JwtGuard } from '../src/auth/jwt.guard'
+import { PermissionGuard } from '../src/authz/permission.guard'
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { OrgUnitsController } from '../src/org-units/org-units.controller'
@@ -25,6 +26,8 @@ describe('GET /org-units', () => {
     })
       .overrideGuard(JwtGuard)
       .useValue({ canActivate: () => true })
+      .overrideGuard(PermissionGuard)
+      .useValue({ canActivate: () => true })
       .compile()
 
     app = moduleRef.createNestApplication()
@@ -37,7 +40,13 @@ describe('GET /org-units', () => {
   })
 
   beforeEach(async () => {
-    await ctx.pool.query('TRUNCATE TABLE users, org_units CASCADE')
+    // DELETE, not TRUNCATE ... CASCADE: TRUNCATE on `users` always
+    // structurally cascades into audit_log via its actor_user_id foreign
+    // key, and audit_log's append-only trigger unconditionally rejects that.
+    // DELETE respects each table's own onDelete action instead (audit_log is
+    // 'restrict' and unreferenced here, so it's never touched).
+    await ctx.pool.query('DELETE FROM users')
+    await ctx.pool.query('DELETE FROM org_units')
     const repo = new OrgUnitsRepository(ctx.db)
     const root = await repo.createRoot('Acme Corp')
     rootId = root.id

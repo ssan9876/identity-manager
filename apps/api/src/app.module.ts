@@ -1,6 +1,12 @@
 import { Module } from '@nestjs/common'
 import { JWT_GUARD_OPTIONS, JwtGuard, type JwtGuardOptions } from './auth/jwt.guard'
 import { MeController } from './auth/me.controller'
+import { AuditRepository } from './audit/audit.repository'
+import { AuditWriter } from './audit/audit.writer'
+import { PermissionEngine } from './authz/permission.engine'
+import { PermissionGuard } from './authz/permission.guard'
+import { PrivilegeGuards } from './authz/privilege.guards'
+import { RoleAssignmentsRepository } from './authz/role-assignments.repository'
 import { DB_CLIENT } from './common/db.token'
 import { loadEnv } from './config/env'
 import { createDbClient } from './db/client'
@@ -36,6 +42,12 @@ import { UsersRepository } from './users/users.repository'
     UsersRepository,
     OrgUnitsRepository,
     GroupsRepository,
+    PermissionEngine,
+    PermissionGuard,
+    PrivilegeGuards,
+    RoleAssignmentsRepository,
+    AuditWriter,
+    AuditRepository,
   ],
 })
 export class AppModule {}

@@ -13,6 +13,7 @@ const STATUS_BY_CODE: Record<string, HttpStatus> = {
   INVALID_TRANSITION: HttpStatus.CONFLICT,
   CYCLE_DETECTED: HttpStatus.CONFLICT,
   VALIDATION_FAILED: HttpStatus.BAD_REQUEST,
+  FORBIDDEN: HttpStatus.FORBIDDEN,
 }
 
 /**

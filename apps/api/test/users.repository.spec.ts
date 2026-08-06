@@ -9,7 +9,13 @@ describe('UsersRepository', () => {
   let orgUnitId: string
 
   beforeEach(async () => {
-    await ctx.pool.query('TRUNCATE TABLE users, org_units CASCADE')
+    // DELETE, not TRUNCATE ... CASCADE: TRUNCATE on `users` always
+    // structurally cascades into audit_log via its actor_user_id foreign
+    // key, and audit_log's append-only trigger unconditionally rejects that.
+    // DELETE respects each table's own onDelete action instead (audit_log is
+    // 'restrict' and unreferenced here, so it's never touched).
+    await ctx.pool.query('DELETE FROM users')
+    await ctx.pool.query('DELETE FROM org_units')
     users = new UsersRepository(ctx.db)
     const orgUnits = new OrgUnitsRepository(ctx.db)
     orgUnitId = (await orgUnits.createRoot('Acme Corp')).id
@@ -47,6 +53,21 @@ describe('UsersRepository', () => {
   it('finds by email case-insensitively', async () => {
     await users.create(input())
     expect((await users.findByEmail('ADA@EXAMPLE.COM'))?.username).toBe('ada')
+  })
+
+  it('finds by username case-insensitively', async () => {
+    await users.create(input())
+    expect((await users.findByUsername('ADA'))?.primaryEmail).toBe('ada@example.com')
+  })
+
+  it('findByUsername matches on username, not email', async () => {
+    await users.create(input())
+    // 'ada@example.com' is this user's email, not their username ('ada') --
+    // pins that findByUsername compares against the username column, not
+    // primaryEmail. A caller that needs "the user PermissionEngine.
+    // resolveActor would resolve for this principal" must get null here,
+    // not a false-positive match on the email column.
+    expect(await users.findByUsername('ada@example.com')).toBeNull()
   })
 
   it('allows pending to active to suspended to deactivated', async () => {

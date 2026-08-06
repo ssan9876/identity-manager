@@ -1,29 +1,24 @@
 import { Controller, Get, Inject, Param, Query, UseGuards } from '@nestjs/common'
 import { z } from 'zod'
 import { JwtGuard } from '../auth/jwt.guard'
+import { PermissionGuard } from '../authz/permission.guard'
+import { RequirePermission } from '../authz/require-permission.decorator'
 import { NotFoundError, ValidationError } from '../common/errors'
+import { parseId } from '../common/http/parse-id'
 import { type Page, parsePageQuery } from '../common/pagination'
 import { UsersRepository, type User, type UserStatus } from './users.repository'
 
-const uuidSchema = z.string().uuid()
 const statusSchema = z
   .enum(['pending', 'active', 'suspended', 'deactivated'])
   .optional()
 
-function parseId(raw: string): string {
-  const parsed = uuidSchema.safeParse(raw)
-  if (!parsed.success) {
-    throw new ValidationError([`id: must be a UUID`])
-  }
-  return parsed.data
-}
-
 @Controller('users')
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, PermissionGuard)
 export class UsersController {
   constructor(@Inject(UsersRepository) private readonly users: UsersRepository) {}
 
   @Get()
+  @RequirePermission('user:read')
   async list(@Query() query: Record<string, unknown>): Promise<Page<User>> {
     const page = parsePageQuery(query)
 
@@ -33,7 +28,9 @@ export class UsersController {
     }
 
     const orgUnitId =
-      query.orgUnitId === undefined ? undefined : parseId(String(query.orgUnitId))
+      query.orgUnitId === undefined
+        ? undefined
+        : parseId(String(query.orgUnitId), 'orgUnitId')
 
     const filter = { status: status.data as UserStatus | undefined, orgUnitId }
 
@@ -46,6 +43,7 @@ export class UsersController {
   }
 
   @Get(':id')
+  @RequirePermission('user:read')
   async findOne(@Param('id') rawId: string): Promise<User> {
     const id = parseId(rawId)
     const user = await this.users.findById(id)

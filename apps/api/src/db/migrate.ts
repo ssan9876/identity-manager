@@ -31,4 +31,43 @@ export async function runMigrations(pool: Pool): Promise<void> {
   }
 
   await migrate(drizzle(pool), { migrationsFolder: MIGRATIONS_FOLDER })
+  await enforceAuditAppendOnly(pool)
+}
+
+/**
+ * The audit log's append-only property is enforced by the database, not by
+ * application discipline. A compromised or buggy service must not be able to
+ * rewrite history.
+ */
+async function enforceAuditAppendOnly(pool: Pool): Promise<void> {
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION audit_log_append_only() RETURNS trigger AS $$
+    BEGIN
+      RAISE EXCEPTION 'audit_log is append-only; % is not permitted', TG_OP;
+    END;
+    $$ LANGUAGE plpgsql;
+  `)
+
+  await pool.query(`DROP TRIGGER IF EXISTS audit_log_no_update ON audit_log`)
+  await pool.query(`
+    CREATE TRIGGER audit_log_no_update BEFORE UPDATE ON audit_log
+    FOR EACH STATEMENT EXECUTE FUNCTION audit_log_append_only();
+  `)
+
+  await pool.query(`DROP TRIGGER IF EXISTS audit_log_no_delete ON audit_log`)
+  await pool.query(`
+    CREATE TRIGGER audit_log_no_delete BEFORE DELETE ON audit_log
+    FOR EACH STATEMENT EXECUTE FUNCTION audit_log_append_only();
+  `)
+
+  // TRUNCATE bypasses row-oriented DELETE triggers entirely — Postgres fires
+  // a separate BEFORE TRUNCATE event, which needs its own trigger. The owning
+  // role (the same `idm` role migrations and the app runtime both connect
+  // as) can always TRUNCATE a table it owns, so this cannot be closed by
+  // revoking a privilege; it must be a trigger, like UPDATE/DELETE above.
+  await pool.query(`DROP TRIGGER IF EXISTS audit_log_no_truncate ON audit_log`)
+  await pool.query(`
+    CREATE TRIGGER audit_log_no_truncate BEFORE TRUNCATE ON audit_log
+    FOR EACH STATEMENT EXECUTE FUNCTION audit_log_append_only();
+  `)
 }

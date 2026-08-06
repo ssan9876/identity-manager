@@ -42,3 +42,7 @@ export class ValidationError extends DomainError {
     super(message)
   }
 }
+
+export class ForbiddenError extends DomainError {
+  readonly code = 'FORBIDDEN'
+}
