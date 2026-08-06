@@ -14,20 +14,96 @@ the full design.
 - pnpm 9+
 - Docker (for Postgres and Keycloak via Docker Compose)
 
-## Starting the dev stack
+`pnpm run setup` (below) checks all three itself and tells you exactly which
+one is missing rather than failing partway through.
+
+## Quickstart
+
+Three commands, run in order from a clean clone, reach a browser session you
+can sign in to and use:
 
 ```bash
-docker compose up -d
-cp .env.example .env
-pnpm install
-pnpm --filter @idm/api db:migrate
-pnpm --filter @idm/api start:dev
+pnpm run setup            # start Postgres + Keycloak, install deps, migrate the database
+pnpm run bootstrap:admin  # create your local admin account — the anti-lockout, safe to re-run
+pnpm dev                  # start the API and the web console together
 ```
 
-`docker compose up -d` starts Postgres (`5432`) and Keycloak (`8080`/`9000`).
-The API reads its configuration from `.env` (see `.env.example`) and listens
-on `PORT` (default `3000`). `db:migrate` does more than apply schema changes
-here — see "Database roles" below before assuming it's a one-line no-op step.
+**Always type `run`.** `setup` collides with a real, unrelated pnpm built-in
+(`pnpm setup` — "Sets up pnpm" itself). A bare `pnpm setup` silently runs
+pnpm's own command instead of this project's script, every time, on every
+pnpm version this was checked against. `pnpm run setup` is the only form
+that reaches this repo's script. `bootstrap:admin` and `dev` don't collide
+with anything and work with or without `run` — `pnpm run setup` is called
+out here only because getting it wrong doesn't even fail loudly.
+
+### 1. `pnpm run setup`
+
+- Runs preflight checks — Docker daemon reachable, ports `5432`/`8080`/`9000`/
+  `3000`/`5173` free, Node ≥20, pnpm ≥9 — and fails with a specific,
+  actionable message (never a stack trace) for whichever one isn't true. If
+  a port is already taken by something other than this project's own
+  Compose stack, it names the container or process holding it.
+- Starts the Compose stack (`docker compose up -d`) and waits for Postgres to
+  report healthy **and** for Keycloak's realm discovery endpoint to answer —
+  Keycloak takes 20-40 seconds to come up on a first start, and this step
+  exists specifically so nothing races ahead of it.
+- Copies `.env.example` → `.env` (the API's config, at the repo root) and
+  `apps/web/.env.example` → `apps/web/.env` (the web console's Vite config —
+  Vite only ever reads `.env` from its own project directory, never the repo
+  root) if they don't already exist. Never overwrites an existing `.env`.
+- Runs `pnpm install`.
+- Runs `db:migrate`, which applies the schema **and** provisions the runtime
+  database role — see "Database roles" below; this is not a one-line no-op
+  step.
+
+Ends by printing exactly what to run next:
+
+```
+[setup] setup complete.
+
+Next steps:
+  1. pnpm run bootstrap:admin   (creates your local admin account — safe to re-run)
+  2. pnpm dev                   (starts the API and the web console together)
+  3. Open http://localhost:5173 and sign in with:
+       username: admin@example.com
+       password: dev_password_change_me
+```
+
+### 2. `pnpm run bootstrap:admin`
+
+Without this step, signing in gets you **403 on everything**. Authorization
+requires a local `users` row whose `username` matches your Keycloak
+`preferred_username`, plus a role grant — a fresh install has neither, and
+there is no path through the UI to fix it, because the UI needs exactly the
+permission you don't have yet. This command is the anti-lockout: it creates
+(or reuses) a local user for a given Keycloak username, activates it,
+creates a root org unit if the directory is empty, and grants it global
+`super_admin`.
+
+```bash
+pnpm run bootstrap:admin                    # defaults to admin@example.com, the seeded dev user
+pnpm run bootstrap:admin someone@else.com   # or bootstrap any other Keycloak username
+```
+
+**Idempotent** — run it as many times as you like. It reports what it did or
+what already existed, and a repeat run never fails or duplicates anything.
+
+It is a local operator script — like `db:migrate` — not an HTTP endpoint: it
+talks to the database directly and grants a privilege no request is ever
+allowed to grant itself. See "SECURITY STATUS" below.
+
+### 3. `pnpm dev`
+
+Starts the API and the web console together, with clearly labelled,
+interleaved output, e.g. `[api] ...` / `[web] ...`. Ctrl-C stops both.
+
+Open **http://localhost:5173** and sign in with the seeded dev credentials:
+
+- **username:** `admin@example.com`
+- **password:** `dev_password_change_me`
+
+You should land on a People list showing at least the admin user you just
+bootstrapped.
 
 ## Database roles
 
@@ -37,7 +113,7 @@ closes. `.env.example` documents both; the short version:
 
 | | `DATABASE_URL` (OWNER) | `RUNTIME_DATABASE_URL` (RUNTIME) |
 |---|---|---|
-| Who connects as it | `db:migrate` only | the API process, the SyncWorker, `reconcile`, `jml:lifecycle`, `smoke:dev` |
+| Who connects as it | `db:migrate` only | the API process, the SyncWorker, `reconcile`, `jml:lifecycle`, `smoke:dev`, `bootstrap:admin` |
 | Owns the schema | yes | no |
 | `CREATE` on schema `public` | yes | **no** |
 | DML on ordinary tables | yes | full SELECT/INSERT/UPDATE/DELETE |
@@ -140,6 +216,19 @@ independent and neither check subsumes the other — shipping only some of
 these three is the bug. Revoking a role requires the same three checks as
 granting it, evaluated against the grant being removed, so revocation cannot
 be used as a side door around assignment's own narrowing.
+
+**`pnpm run bootstrap:admin` bypasses all three checks above, deliberately.**
+It is a local operator script — like `db:migrate`, `reconcile` and
+`jml:lifecycle` — not an HTTP route, and it is not wired into the Nest
+application at all; nothing makes it reachable over the network. Anyone able
+to run it already holds `RUNTIME_DATABASE_URL` (or a shell on the box that
+has it), which is already enough to read and write every row in the
+directory directly — granting `super_admin` through this script adds no
+capability beyond what that access already implies, it just does it through
+the application's own repositories instead of raw SQL. It exists because a
+fresh install otherwise has no way to grant its first role at all: every
+grant path the API exposes requires the grantor to already hold
+`role:assign`, which nobody does yet on an empty database.
 
 Do not point this build at a real organization's data, and do not expose it
 beyond a local development environment: there is still **no CI**, so every

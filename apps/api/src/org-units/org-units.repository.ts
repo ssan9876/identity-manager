@@ -161,6 +161,27 @@ export class OrgUnitsRepository {
     return (row as OrgUnit | undefined) ?? null
   }
 
+  /**
+   * The first org unit in the system by `path` ordering (matching `list`'s
+   * own ordering, so this is "whatever `list` would show first"), or `null`
+   * if none exists yet. Deliberately not restricted to roots
+   * (`parentId === null`) — any existing org unit is a perfectly good home
+   * for a newly-created user, and this repository has no cheaper way to ask
+   * "is the org_units table empty" than a `LIMIT 1` select.
+   *
+   * Exists for `bootstrap-admin` (apps/api/src/admin/bootstrap-admin.ts):
+   * the anti-lockout script only needs SOME org unit to satisfy `users`'
+   * NOT NULL `org_unit_id` FK, and reusing whatever already exists — rather
+   * than minting a fresh root unconditionally — is what makes a second run
+   * against a database that already has one idempotent instead of
+   * accumulating an extra root org unit on every run.
+   */
+  async findFirst(db: NodePgDatabase<typeof schema> = this.db): Promise<OrgUnit | null> {
+    const [row] = await db.select().from(orgUnits).orderBy(asc(orgUnits.path)).limit(1)
+
+    return (row as OrgUnit | undefined) ?? null
+  }
+
   async findSubtree(rootId: string): Promise<OrgUnit[]> {
     const root = await this.findById(rootId)
     if (root === null) {
