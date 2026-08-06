@@ -1,15 +1,41 @@
-import { type INestApplication } from '@nestjs/common'
+import { type CanActivate, type ExecutionContext, type INestApplication } from '@nestjs/common'
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
+import { AuditWriter } from '../src/audit/audit.writer'
 import { JwtGuard } from '../src/auth/jwt.guard'
-import { PermissionGuard } from '../src/authz/permission.guard'
+import { PermissionEngine } from '../src/authz/permission.engine'
+import { PermissionGuard, type AuthorizedRequest } from '../src/authz/permission.guard'
+import { PrivilegeGuards } from '../src/authz/privilege.guards'
 import { DB_CLIENT } from '../src/common/db.token'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { UsersController } from '../src/users/users.controller'
 import { UsersRepository } from '../src/users/users.repository'
 import { withTestDatabase } from './support/pg'
+
+// This suite tests UsersController in isolation from the real auth stack —
+// PermissionGuard is stubbed out below, same as before Milestone 3b. The
+// difference is that the controller now depends on `request.actor` (set by
+// the real guard in production) to narrow its results, so the stub must set
+// one too. It attaches a GLOBAL assignment (scopeOrgUnitId: null) so
+// scopePathsFor/canIn resolve unrestricted, matching this suite's original
+// "sees everything" behaviour — scoped-actor narrowing itself is covered by
+// test/scope-narrowing.spec.ts, not here.
+const UNRESTRICTED_ACTOR: AuthorizedRequest['actor'] = {
+  userId: '00000000-0000-0000-0000-0000000000a1',
+  username: 'unrestricted-test-actor',
+  orgUnitId: '00000000-0000-0000-0000-0000000000a1',
+  assignments: [{ roleKey: 'super_admin', scopeOrgUnitId: null, scopePath: null }],
+}
+
+const stubPermissionGuard: CanActivate = {
+  canActivate(context: ExecutionContext): boolean {
+    const request = context.switchToHttp().getRequest<AuthorizedRequest>()
+    request.actor = UNRESTRICTED_ACTOR
+    return true
+  },
+}
 
 describe('GET /users', () => {
   const ctx = withTestDatabase()
@@ -22,12 +48,20 @@ describe('GET /users', () => {
       providers: [
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         UsersRepository,
+        PermissionEngine,
+        // Milestone 3b, Task 2: UsersController's write handlers now also
+        // depend on PrivilegeGuards and AuditWriter (to pair assertCanIn
+        // with assertCanModifyPrincipal and to audit each mutation inside
+        // its transaction) — required here purely for DI resolution, since
+        // this suite only exercises the (unchanged) read routes.
+        PrivilegeGuards,
+        AuditWriter,
       ],
     })
       .overrideGuard(JwtGuard)
       .useValue({ canActivate: () => true })
       .overrideGuard(PermissionGuard)
-      .useValue({ canActivate: () => true })
+      .useValue(stubPermissionGuard)
       .compile()
 
     app = moduleRef.createNestApplication()
@@ -124,9 +158,13 @@ describe('GET /users', () => {
     expect(res.body.code).toBe('VALIDATION_FAILED')
   })
 
-  it('exposes no write routes', async () => {
-    await request(app.getHttpServer()).post('/users').send({ username: 'x' }).expect(404)
-    await request(app.getHttpServer()).patch('/users/abc').send({}).expect(404)
+  // Milestone 3b, Task 2 added POST /users and PATCH /users/:id — see
+  // test/users.write.spec.ts for their full behavior (permission/scope/
+  // privilege checks, transactional audit, error mapping). This pin
+  // narrows to what remains permanently true: there is no DELETE route for
+  // users, ever — removal is a transition to `deactivated`, which is
+  // terminal (see UsersRepository.changeStatus's doc comment).
+  it('exposes no delete route', async () => {
     await request(app.getHttpServer()).delete('/users/abc').expect(404)
   })
 

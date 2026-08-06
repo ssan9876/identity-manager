@@ -71,14 +71,25 @@ export class PermissionGuard implements CanActivate {
     // Gates route ENTRY only: "does this actor hold `required` ANYWHERE at
     // all?" Deliberately `assertCanAnywhere`, not a per-resource check (see
     // permission.engine.ts, Task 3 Finding I-2, for why there is no
-    // optional-target `assertCan` to call instead). TRUTH as of Milestone
-    // 3a: per-resource scope narrowing is NOT wired into any controller —
-    // an actor holding `required` at any scope reaches every route gated by
-    // it and sees every resource, regardless of org-unit scope. `canIn`,
-    // `assertCanIn`, and `scopePathsFor` on PermissionEngine exist and are
-    // correct but have ZERO production call sites today. Milestone 3b MUST
-    // wire them into every write path before it ships: the same gap that
-    // merely over-discloses on a read is privilege escalation on a write.
+    // optional-target `assertCan` to call instead). This is intentionally
+    // NOT the whole authorization decision for a scoped actor — it only
+    // decides whether the route is reachable at all.
+    //
+    // TRUTH as of Milestone 3b: per-resource scope narrowing IS wired, but
+    // NOT here — it lives in each controller, one layer downstream. Every
+    // list handler additionally calls `scopePathsFor(actor, action)` and
+    // filters through the repository; every single-resource handler
+    // additionally loads the target and calls `assertCanIn(actor, action,
+    // target.orgUnitId)` before returning it (global groups, `orgUnitId =
+    // NULL`, are the one documented exception — see GroupsController). An
+    // actor holding `required` only at a narrow scope now reaches this
+    // route (this check passes) but sees only their own subtree once
+    // inside it. Both checks are load-bearing and neither subsumes the
+    // other: this one denies an actor who holds `required` nowhere at all
+    // before a single query runs; the controller-level ones deny an actor
+    // who holds it somewhere but not over THIS resource. See
+    // permission.guard.spec.ts's "MILESTONE 3b GATE" pair for the pinned
+    // before/after, and each controller for its own narrowing call sites.
     this.engine.assertCanAnywhere(actor, required)
 
     request.actor = actor

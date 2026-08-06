@@ -6,6 +6,7 @@ import { AuditWriter } from './audit/audit.writer'
 import { PermissionEngine } from './authz/permission.engine'
 import { PermissionGuard } from './authz/permission.guard'
 import { PrivilegeGuards } from './authz/privilege.guards'
+import { RoleAssignmentsController } from './authz/role-assignments.controller'
 import { RoleAssignmentsRepository } from './authz/role-assignments.repository'
 import { DB_CLIENT } from './common/db.token'
 import { loadEnv } from './config/env'
@@ -25,6 +26,7 @@ import { UsersRepository } from './users/users.repository'
     UsersController,
     OrgUnitsController,
     GroupsController,
+    RoleAssignmentsController,
   ],
   providers: [
     {

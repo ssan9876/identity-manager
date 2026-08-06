@@ -1,10 +1,19 @@
-import { Controller, Get, type ExecutionContext, type INestApplication, UseGuards } from '@nestjs/common'
+import {
+  Controller,
+  Get,
+  Inject,
+  Param,
+  Req,
+  type ExecutionContext,
+  type INestApplication,
+  UseGuards,
+} from '@nestjs/common'
 import { Test } from '@nestjs/testing'
 import { Reflector } from '@nestjs/core'
 import request from 'supertest'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { PermissionEngine } from '../src/authz/permission.engine'
-import { PermissionGuard } from '../src/authz/permission.guard'
+import { PermissionGuard, type AuthorizedRequest } from '../src/authz/permission.guard'
 import { RequirePermission } from '../src/authz/require-permission.decorator'
 import { RoleAssignmentsRepository } from '../src/authz/role-assignments.repository'
 import { JwtGuard } from '../src/auth/jwt.guard'
@@ -18,6 +27,8 @@ import { withTestDatabase } from './support/pg'
 @Controller('probe')
 @UseGuards(JwtGuard, PermissionGuard)
 class ProbeController {
+  constructor(@Inject(PermissionEngine) private readonly engine: PermissionEngine) {}
+
   @Get('readable')
   @RequirePermission('user:read')
   readable(): { ok: true } {
@@ -32,6 +43,23 @@ class ProbeController {
 
   @Get('undeclared')
   undeclared(): { ok: true } {
+    return { ok: true }
+  }
+
+  // Milestone 3b: a minimal stand-in for what every real single-resource
+  // read handler now does downstream of the guard (see
+  // UsersController.findOne, OrgUnitsController.findOne, GroupsController's
+  // requireGroup) — identify the target, then assertCanIn against it. The
+  // guard above only gated ENTRY (assertCanAnywhere); this is the
+  // per-resource narrowing decision, made in the handler, same as in every
+  // real controller.
+  @Get('resource/:orgUnitId')
+  @RequirePermission('user:read')
+  async resource(
+    @Param('orgUnitId') orgUnitId: string,
+    @Req() request: AuthorizedRequest,
+  ): Promise<{ ok: true }> {
+    await this.engine.assertCanIn(request.actor, 'user:read', orgUnitId)
     return { ok: true }
   }
 }
@@ -155,39 +183,57 @@ describe('PermissionGuard', () => {
     await request(app.getHttpServer()).get('/probe/readable').expect(403)
   })
 
-  // MILESTONE 3b GATE (pair). The final M3a whole-branch review found that
-  // PermissionGuard checks route entry only, so a SCOPED actor's request is
-  // never narrowed against any particular resource — that is what
-  // assertCanAnywhere in permission.guard.ts actually does today, no matter
-  // how the comment there used to read. The two tests below pin that gap in
-  // executable form: together they say "the engine knows, the HTTP layer
-  // never asks." See each test's own comment for what it proves and what is
-  // supposed to happen to it once Milestone 3b wires per-resource narrowing
-  // in — do not "fix" either test by weakening it when that day comes.
-  it('MILESTONE 3b GATE: a scoped actor reaches a route their role permits, with no per-resource check at all', async () => {
+  // MILESTONE 3b GATE (pair, historical). The final M3a whole-branch review
+  // found that PermissionGuard checks route entry only, so a SCOPED actor's
+  // request was never narrowed against any particular resource — that was
+  // what assertCanAnywhere in permission.guard.ts actually did, no matter
+  // how the comment there used to read. The two tests below pinned that gap
+  // in executable form: together they said "the engine knows, the HTTP layer
+  // never asks." Milestone 3b closed the gap by wiring `scopePathsFor` and
+  // `assertCanIn` into every controller (users.controller.ts,
+  // org-units.controller.ts, groups.controller.ts) — it did NOT change this
+  // guard, which still only gates entry (see its updated comment). Both
+  // tests are kept, not deleted, as the before/after record. Only the first
+  // one's assertion changes: it was the only one of the pair exercising a
+  // route with an actual per-resource check, and that route now denies.
+  it('MILESTONE 3b GATE, CLOSED: bare route entry is still unnarrowed (unchanged) — but a per-resource check downstream now denies the out-of-scope target', async () => {
     const orgUnits = new OrgUnitsRepository(ctx.db)
     const users = new UsersRepository(ctx.db)
     const ada = await users.findByEmail('ada@example.com')
     const sales = await orgUnits.createChild(ada!.orgUnitId, 'Sales')
+    const engineering = await orgUnits.createChild(ada!.orgUnitId, 'Engineering')
 
     // A SCOPED assignment, not global — confirm the row this test actually
-    // exercises before trusting the request below.
+    // exercises before trusting the requests below.
     const assignment = await grant('help_desk', sales.id)
     expect(assignment.scopeOrgUnitId).toBe(sales.id)
     expect(assignment.scopeOrgUnitId).not.toBeNull()
 
-    // MILESTONE 3b GATE. This passes TODAY only because PermissionGuard's
-    // check is assertCanAnywhere — "does this actor hold user:read
-    // anywhere?" — with no resource here to narrow against at all, exactly
-    // like the real UsersController routes (see permission.guard.ts). It
-    // would pass identically no matter which org unit ada were scoped to,
-    // or whether an out-of-scope org unit (e.g. Engineering — see the next
-    // test) existed, because nothing on this path ever looks. Once
-    // Milestone 3b wires per-resource narrowing in, this unqualified pass
-    // is expected to stop happening — this assertion should start FAILING
-    // then, and that failure is the correct signal 3b landed, not a
-    // regression to "fix" by loosening the test.
+    // UNCHANGED by Milestone 3b, correctly so: PermissionGuard's own check
+    // is still exactly assertCanAnywhere — "does this actor hold user:read
+    // anywhere?" — and /probe/readable has no resource in its URL to narrow
+    // against at all. This route is analogous to a LIST route (e.g. GET
+    // /users): entry succeeds regardless of scope, and narrowing happens
+    // downstream, in the handler, only where there is something to narrow
+    // against. Per-resource narrowing living in controllers rather than the
+    // guard is a deliberate design choice, not a gap — see
+    // permission.guard.ts's updated comment.
     await request(app.getHttpServer()).get('/probe/readable').expect(200)
+
+    // THIS is what actually changed. /probe/resource/:orgUnitId mirrors what
+    // every real single-resource read handler now does downstream of the
+    // guard: identify the target, then assertCanIn against it (see
+    // ProbeController.resource above, and UsersController.findOne /
+    // OrgUnitsController.findOne / GroupsController's requireGroup for the
+    // real thing). Ada, scoped only to Sales, is now denied a target outside
+    // it (Engineering) and allowed a target inside it (Sales) — the exact
+    // per-resource decision the pre-3b HTTP layer never made.
+    await request(app.getHttpServer())
+      .get(`/probe/resource/${engineering.id}`)
+      .expect(403)
+    await request(app.getHttpServer())
+      .get(`/probe/resource/${sales.id}`)
+      .expect(200)
   })
 
   it('MILESTONE 3b GATE: the engine, asked directly about a resource outside that scope via canIn, already says no', async () => {

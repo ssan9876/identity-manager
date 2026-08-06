@@ -80,6 +80,7 @@ describe('guard coverage', () => {
         'HealthController',
         'MeController',
         'OrgUnitsController',
+        'RoleAssignmentsController',
         'UsersController',
       ].sort(),
     )

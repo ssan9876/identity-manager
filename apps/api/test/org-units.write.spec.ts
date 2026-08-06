@@ -1,0 +1,335 @@
+import { type CanActivate, type ExecutionContext, type INestApplication } from '@nestjs/common'
+import { Reflector } from '@nestjs/core'
+import { Test } from '@nestjs/testing'
+import request from 'supertest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { AuditWriter } from '../src/audit/audit.writer'
+import { JwtGuard } from '../src/auth/jwt.guard'
+import type { RoleKey } from '../src/authz/actions'
+import { PermissionEngine } from '../src/authz/permission.engine'
+import { PermissionGuard } from '../src/authz/permission.guard'
+import { RoleAssignmentsRepository } from '../src/authz/role-assignments.repository'
+import { DB_CLIENT } from '../src/common/db.token'
+import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
+import { OrgUnitsController } from '../src/org-units/org-units.controller'
+import { OrgUnitsRepository, type OrgUnit } from '../src/org-units/org-units.repository'
+import { UsersRepository } from '../src/users/users.repository'
+import { type TestDatabase, withTestDatabase } from './support/pg'
+
+/**
+ * Stamps `request.principal` from whatever `getUsername()` returns AT
+ * REQUEST TIME — same technique as users.write.spec.ts / scope-narrowing.spec.ts.
+ */
+function stubJwtGuard(getUsername: () => string): CanActivate {
+  return {
+    canActivate(context: ExecutionContext): boolean {
+      context.switchToHttp().getRequest<{ principal?: unknown }>().principal = {
+        subject: 'kc-orgunit-write-test',
+        username: getUsername(),
+        email: null,
+      }
+      return true
+    },
+  }
+}
+
+interface AuditLogRow {
+  id: number
+  actor_user_id: string | null
+  action: string
+  resource_type: string
+  resource_id: string | null
+  before: Record<string, unknown> | null
+  after: Record<string, unknown> | null
+  created_at: string
+}
+
+/**
+ * Scoped to a specific resource_id, never "the newest row" or a table
+ * count — same reasoning as users.write.spec.ts's file-level comment: audit
+ * rows can never be deleted, so this file cannot reset between tests.
+ */
+async function auditRowsFor(ctx: TestDatabase, resourceId: string): Promise<AuditLogRow[]> {
+  const { rows } = await ctx.pool.query<AuditLogRow>(
+    "SELECT * FROM audit_log WHERE resource_type = 'org_unit' AND resource_id = $1 ORDER BY id ASC",
+    [resourceId],
+  )
+  return rows
+}
+
+async function totalAuditCount(ctx: TestDatabase): Promise<number> {
+  const { rows } = await ctx.pool.query<{ count: number }>('SELECT count(*)::int AS count FROM audit_log')
+  return rows[0]?.count ?? 0
+}
+
+const BOGUS_ID = '00000000-0000-0000-0000-000000000000'
+
+/**
+ * MILESTONE 3b, TASK 3: org.unit write endpoints. Same audit-FK isolation
+ * constraint as users.write.spec.ts (see its file-level comment for the
+ * full explanation) — this file never does `DELETE FROM users` or
+ * `DELETE FROM org_units` between tests. Every fixture is uniquely named
+ * per call (`nextTag()`), rows accumulate for the life of the file's own
+ * Testcontainer, and every assertion is scoped to the specific
+ * resource/org-unit each test created.
+ *
+ * Only `super_admin` holds `org_unit:create` in the static role catalog
+ * (ROLE_PERMISSIONS in authz/actions.ts) — unlike users/groups, no
+ * lower-privileged role grants it. Every actor fixture below is therefore
+ * `super_admin`, either GLOBAL (`scopeOrgUnitId: null`) or SCOPED to a
+ * specific org unit, exactly as the individual test requires; a role
+ * assignment's scope is independent of the role's identity (see
+ * RoleAssignmentsRepository.assign — `scopeOrgUnitId` is a free parameter),
+ * so a "scoped super_admin" is an ordinary, already-exercised concept in
+ * this codebase, not a special case invented for this file.
+ */
+describe('org unit write endpoints (Milestone 3b, Task 3)', () => {
+  const ctx = withTestDatabase()
+  let app: INestApplication
+  let currentUsername = ''
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      controllers: [OrgUnitsController],
+      providers: [
+        { provide: DB_CLIENT, useFactory: () => ctx.db },
+        OrgUnitsRepository,
+        PermissionEngine,
+        PermissionGuard,
+        AuditWriter,
+        Reflector,
+      ],
+    })
+      .overrideGuard(JwtGuard)
+      .useValue(stubJwtGuard(() => currentUsername))
+      .compile()
+
+    app = moduleRef.createNestApplication()
+    app.useGlobalFilters(new DomainExceptionFilter())
+    await app.init()
+  })
+
+  afterAll(async () => {
+    await app?.close()
+  })
+
+  let fixtureSeq = 0
+  function nextTag(): string {
+    fixtureSeq += 1
+    return `ouwr${fixtureSeq}`
+  }
+
+  const orgUnitsRepo = () => new OrgUnitsRepository(ctx.db)
+  const usersRepo = () => new UsersRepository(ctx.db)
+  const rolesRepo = () => new RoleAssignmentsRepository(ctx.db)
+
+  async function makeOrgUnit(label: string): Promise<OrgUnit> {
+    return orgUnitsRepo().createRoot(`${label} ${nextTag()}`)
+  }
+
+  async function makeActiveUser(role: string, orgUnitId: string) {
+    const tag = nextTag()
+    const created = await usersRepo().create({
+      primaryEmail: `${role}-${tag}@example.com`,
+      username: `${role}-${tag}`,
+      firstName: 'Test',
+      lastName: 'User',
+      orgUnitId,
+    })
+    return usersRepo().changeStatus(created.id, 'active')
+  }
+
+  async function grant(userId: string, roleKey: RoleKey, scopeOrgUnitId?: string | null) {
+    return rolesRepo().assign({ userId, roleKey, scopeOrgUnitId })
+  }
+
+  // =======================================================================
+  // POST /org-units
+  // =======================================================================
+  describe('POST /org-units', () => {
+    it('creates a ROOT for a GLOBAL actor and writes exactly one audit row', async () => {
+      const bootstrap = await makeOrgUnit('Bootstrap')
+      const actor = await makeActiveUser('global-creator', bootstrap.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const tag = nextTag()
+      const res = await request(app.getHttpServer())
+        .post('/org-units')
+        .send({ name: `Root ${tag}` })
+        .expect(201)
+
+      expect(res.body.parentId).toBeNull()
+      expect(res.body.path).not.toContain('.')
+
+      const rows = await auditRowsFor(ctx, res.body.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].action).toBe('org_unit:create')
+      expect(rows[0].actor_user_id).toBe(actor.id)
+      expect(rows[0].before).toBeNull()
+      expect(rows[0].after?.parentId).toBeNull()
+    })
+
+    it('creates a CHILD for an actor scoped to the parent and writes exactly one audit row', async () => {
+      const root = await makeOrgUnit('Scoped Parent Root')
+      const actor = await makeActiveUser('scoped-creator', root.id)
+      await grant(actor.id, 'super_admin', root.id) // SCOPED, not global
+      currentUsername = actor.username
+
+      const tag = nextTag()
+      const res = await request(app.getHttpServer())
+        .post('/org-units')
+        .send({ name: `Child ${tag}`, parentId: root.id })
+        .expect(201)
+
+      expect(res.body.parentId).toBe(root.id)
+      expect(res.body.path).toBe(`${root.path}.${res.body.path.split('.').pop()}`)
+
+      const rows = await auditRowsFor(ctx, res.body.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].action).toBe('org_unit:create')
+      expect(rows[0].after?.parentId).toBe(root.id)
+    })
+
+    it('rejects creating a ROOT for a SCOPED actor with 403 and writes no audit row', async () => {
+      const root = await makeOrgUnit('No Root For Scoped')
+      const actor = await makeActiveUser('scoped-creator', root.id)
+      await grant(actor.id, 'super_admin', root.id) // SCOPED — no parent to scope against
+      currentUsername = actor.username
+
+      const before = await totalAuditCount(ctx)
+      const tag = nextTag()
+
+      const res = await request(app.getHttpServer())
+        .post('/org-units')
+        .send({ name: `Should Not Exist ${tag}` })
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await totalAuditCount(ctx)).toBe(before)
+    })
+
+    it('rejects creating a CHILD under an out-of-scope parent with 403 and writes no audit row', async () => {
+      const root = await makeOrgUnit('Scope Root')
+      const scopeOrg = await orgUnitsRepo().createChild(root.id, `In Scope ${nextTag()}`)
+      const otherOrg = await orgUnitsRepo().createChild(root.id, `Out Of Scope ${nextTag()}`)
+      const actor = await makeActiveUser('scoped-creator', scopeOrg.id)
+      await grant(actor.id, 'super_admin', scopeOrg.id)
+      currentUsername = actor.username
+
+      const before = await totalAuditCount(ctx)
+      const tag = nextTag()
+
+      const res = await request(app.getHttpServer())
+        .post('/org-units')
+        .send({ name: `Blocked ${tag}`, parentId: otherOrg.id })
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await totalAuditCount(ctx)).toBe(before)
+    })
+
+    // A GLOBAL actor deliberately: a SCOPED actor given a bogus parentId
+    // gets 403 from assertCanIn (the containment query finds no row,
+    // indistinguishable from "exists but out of scope"), never reaching
+    // createChild's own pre-check — same reasoning as
+    // users.write.spec.ts's bogus-orgUnitId test. Here the 404 actually
+    // comes from OrgUnitsRepository.createChild's own explicit
+    // `findById(parentId)` pre-check, not constraint translation — see its
+    // doc comment.
+    it('maps a nonexistent parentId to 404 NOT_FOUND rather than an unmapped 500', async () => {
+      const bootstrap = await makeOrgUnit('Bogus Parent Root')
+      const actor = await makeActiveUser('global-creator', bootstrap.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const before = await totalAuditCount(ctx)
+      const tag = nextTag()
+
+      const res = await request(app.getHttpServer())
+        .post('/org-units')
+        .send({ name: `Ghost ${tag}`, parentId: BOGUS_ID })
+        .expect(404)
+      expect(res.body.code).toBe('NOT_FOUND')
+      expect(res.body.message).toContain('parent org unit')
+
+      expect(await totalAuditCount(ctx)).toBe(before)
+    })
+
+    it('rejects a malformed body with 400 VALIDATION_FAILED and writes no audit row', async () => {
+      const bootstrap = await makeOrgUnit('Validation Root')
+      const actor = await makeActiveUser('creator', bootstrap.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const before = await totalAuditCount(ctx)
+
+      const res = await request(app.getHttpServer())
+        .post('/org-units')
+        .send({ parentId: bootstrap.id }) // missing required `name`
+        .expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+
+      expect(await totalAuditCount(ctx)).toBe(before)
+    })
+
+    it('rejects two siblings that resolve to the same label with 409 CONFLICT, and the failed attempt writes no audit row', async () => {
+      const parent = await makeOrgUnit('Duplicate Sibling Root')
+      const actor = await makeActiveUser('creator', parent.id)
+      await grant(actor.id, 'super_admin', parent.id)
+      currentUsername = actor.username
+
+      const tag = nextTag()
+      const name = `Duplicate Name ${tag}`
+
+      const first = await request(app.getHttpServer())
+        .post('/org-units')
+        .send({ name, parentId: parent.id })
+        .expect(201)
+      expect(await auditRowsFor(ctx, first.body.id)).toHaveLength(1)
+
+      const before = await totalAuditCount(ctx)
+      const res = await request(app.getHttpServer())
+        .post('/org-units')
+        .send({ name, parentId: parent.id })
+        .expect(409)
+      expect(res.body.code).toBe('CONFLICT')
+      expect(res.body.message).toContain(name)
+
+      expect(await totalAuditCount(ctx)).toBe(before)
+    })
+  })
+
+  // =======================================================================
+  // No delete, ever.
+  // =======================================================================
+  describe('DELETE /org-units/:id', () => {
+    it('does not exist — 404', async () => {
+      await request(app.getHttpServer()).delete(`/org-units/${BOGUS_ID}`).expect(404)
+    })
+  })
+
+  // =======================================================================
+  // Redaction: audit payloads are built from named fields, not `{ ...row }`.
+  // =======================================================================
+  describe('audit payload construction', () => {
+    it('never carries a credential-shaped key in before/after, even scanned as raw JSON', async () => {
+      const bootstrap = await makeOrgUnit('Redaction Root')
+      const actor = await makeActiveUser('creator', bootstrap.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const tag = nextTag()
+      const res = await request(app.getHttpServer())
+        .post('/org-units')
+        .send({ name: `Redact ${tag}` })
+        .expect(201)
+
+      const rows = await auditRowsFor(ctx, res.body.id)
+      const serialized = JSON.stringify(rows[0].after).toLowerCase()
+      for (const forbidden of ['password', 'passwd', 'secret', 'hash', 'salt', 'credential', 'token']) {
+        expect(serialized).not.toContain(forbidden)
+      }
+    })
+  })
+})

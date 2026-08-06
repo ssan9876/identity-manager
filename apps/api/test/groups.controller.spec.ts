@@ -1,9 +1,11 @@
-import { type INestApplication } from '@nestjs/common'
+import { type CanActivate, type ExecutionContext, type INestApplication } from '@nestjs/common'
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { AuditWriter } from '../src/audit/audit.writer'
 import { JwtGuard } from '../src/auth/jwt.guard'
-import { PermissionGuard } from '../src/authz/permission.guard'
+import { PermissionEngine } from '../src/authz/permission.engine'
+import { PermissionGuard, type AuthorizedRequest } from '../src/authz/permission.guard'
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { GroupsController } from '../src/groups/groups.controller'
@@ -11,6 +13,30 @@ import { GroupsRepository } from '../src/groups/groups.repository'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { UsersRepository } from '../src/users/users.repository'
 import { withTestDatabase } from './support/pg'
+
+// This suite tests GroupsController in isolation from the real auth stack —
+// PermissionGuard is stubbed out below, same as before Milestone 3b. The
+// difference is that the controller now depends on `request.actor` (set by
+// the real guard in production) to narrow its results, so the stub must set
+// one too. It attaches a GLOBAL assignment (scopeOrgUnitId: null) so
+// scopePathsFor/canIn resolve unrestricted, matching this suite's original
+// "sees everything" behaviour — scoped-actor narrowing itself (and the
+// global-group visibility rule) is covered by test/scope-narrowing.spec.ts,
+// not here.
+const UNRESTRICTED_ACTOR: AuthorizedRequest['actor'] = {
+  userId: '00000000-0000-0000-0000-0000000000a1',
+  username: 'unrestricted-test-actor',
+  orgUnitId: '00000000-0000-0000-0000-0000000000a1',
+  assignments: [{ roleKey: 'super_admin', scopeOrgUnitId: null, scopePath: null }],
+}
+
+const stubPermissionGuard: CanActivate = {
+  canActivate(context: ExecutionContext): boolean {
+    const request = context.switchToHttp().getRequest<AuthorizedRequest>()
+    request.actor = UNRESTRICTED_ACTOR
+    return true
+  },
+}
 
 describe('GET /groups', () => {
   const ctx = withTestDatabase()
@@ -23,12 +49,21 @@ describe('GET /groups', () => {
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [GroupsController],
-      providers: [{ provide: DB_CLIENT, useFactory: () => ctx.db }, GroupsRepository],
+      providers: [
+        { provide: DB_CLIENT, useFactory: () => ctx.db },
+        GroupsRepository,
+        PermissionEngine,
+        // Milestone 3b, Task 3: GroupsController's write handlers now also
+        // depend on AuditWriter (to audit each mutation inside its
+        // transaction) — required here purely for DI resolution, since this
+        // suite only exercises the (unchanged) read routes.
+        AuditWriter,
+      ],
     })
       .overrideGuard(JwtGuard)
       .useValue({ canActivate: () => true })
       .overrideGuard(PermissionGuard)
-      .useValue({ canActivate: () => true })
+      .useValue(stubPermissionGuard)
       .compile()
 
     app = moduleRef.createNestApplication()
@@ -119,8 +154,13 @@ describe('GET /groups', () => {
     expect(effective.body).toEqual([adaId])
   })
 
-  it('exposes no write routes', async () => {
-    await request(app.getHttpServer()).post('/groups').send({ name: 'x' }).expect(404)
+  // Milestone 3b, Task 3 added POST /groups, PATCH /groups/:id, and the
+  // member/child-group mutation routes — see test/groups.write.spec.ts for
+  // their full behavior (permission/scope/audit/cycle-guard checks). This
+  // pin narrows to what remains permanently true: there is no route to
+  // delete a whole GROUP (only individual members/child-groups can be
+  // detached from one).
+  it('exposes no route to delete a whole group', async () => {
     await request(app.getHttpServer()).delete(`/groups/${engId}`).expect(404)
   })
 
