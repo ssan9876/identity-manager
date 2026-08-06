@@ -1,8 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common'
 import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import type { AttributeDefinition, ValidationRules } from '../attributes/attribute-validator'
 import { DB_CLIENT } from '../common/db.token'
-import { InvalidTransitionError, NotFoundError } from '../common/errors'
+import { ConflictError, InvalidTransitionError, NotFoundError } from '../common/errors'
+import { attributeDefinitions } from '../db/schema/attribute-definitions'
 import * as schema from '../db/schema/index'
 import { users } from '../db/schema/users'
 
@@ -44,6 +46,30 @@ export interface CreateUserInput {
   attributes?: Record<string, unknown>
 }
 
+/**
+ * A partial update to an existing user. A field left `undefined` (omitted
+ * from the request body) leaves the corresponding column untouched; a field
+ * explicitly `null` clears it, for every column that is itself nullable.
+ * `attributes`, when present, REPLACES the stored object wholesale (the
+ * same whole-object contract `create` already has) rather than merging —
+ * see UsersController.update.
+ *
+ * Deliberately excludes primaryEmail, username, orgUnitId and status: see
+ * UsersRepository.update's doc comment for why each is left out of this
+ * milestone's PATCH surface.
+ */
+export interface UpdateUserInput {
+  firstName?: string
+  lastName?: string
+  jobTitle?: string | null
+  employeeId?: string | null
+  managerId?: string | null
+  location?: string | null
+  startDate?: string | null
+  endDate?: string | null
+  attributes?: Record<string, unknown>
+}
+
 const ALLOWED_TRANSITIONS: Record<UserStatus, readonly UserStatus[]> = {
   pending: ['active'],
   active: ['suspended', 'deactivated'],
@@ -63,35 +89,72 @@ function statusesThatMayTransitionTo(next: UserStatus): UserStatus[] {
   )
 }
 
+const FOREIGN_KEY_VIOLATION = '23503'
+const UNIQUE_VIOLATION = '23505'
+
+// Exact constraint/index names, taken from the generated migration SQL
+// (Drizzle's `${table}_${column(s)}_..._fk` / `..._unique` naming
+// convention) — never guessed. See db/migrations/0001_curly_quentin_quire.sql
+// for both FKs and db/schema/users.ts for both unique indexes.
+const ORG_UNIT_FK_CONSTRAINT = 'users_org_unit_id_org_units_id_fk'
+const MANAGER_FK_CONSTRAINT = 'users_manager_id_users_id_fk'
+const EMAIL_UNIQUE_CONSTRAINT = 'users_primary_email_unique'
+const USERNAME_UNIQUE_CONSTRAINT = 'users_username_unique'
+const EMPLOYEE_ID_UNIQUE_CONSTRAINT = 'users_employee_id_unique'
+
 @Injectable()
 export class UsersRepository {
   constructor(@Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>) {}
 
-  async create(input: CreateUserInput): Promise<User> {
-    const [row] = await this.db
-      .insert(users)
-      .values({
-        primaryEmail: input.primaryEmail,
-        username: input.username,
-        firstName: input.firstName,
-        lastName: input.lastName,
-        displayName: `${input.firstName} ${input.lastName}`.trim(),
-        orgUnitId: input.orgUnitId,
-        employeeId: input.employeeId ?? null,
-        jobTitle: input.jobTitle ?? null,
-        managerId: input.managerId ?? null,
-        location: input.location ?? null,
-        startDate: input.startDate ?? null,
-        endDate: input.endDate ?? null,
-        attributes: input.attributes ?? {},
-      })
-      .returning()
+  /**
+   * `create`, `findById`, `update` and `changeStatus` below all accept an
+   * OPTIONAL trailing `db` handle, defaulting to the injected pooled
+   * connection (`this.db`). A caller that already opened a transaction —
+   * every write in UsersController does, so its mutation and its
+   * AuditWriter.record(tx, …) audit row commit or roll back together —
+   * passes that `tx` through instead, and every query in the call runs on
+   * the SAME connection as the audit write.
+   *
+   * The parameter is typed as the WIDE `NodePgDatabase<typeof schema>`
+   * (what `this.db` already is), not the narrow `DbHandle` AuditWriter
+   * uses. Drizzle's `PgTransaction` class extends `PgDatabase` and only
+   * ADDS members (`rollback`, etc.) — a structural SUBTYPE — so a `tx`
+   * satisfies this wider parameter with no cast, while `this.db` still
+   * works as the default. This is the opposite direction from
+   * AuditWriter.record's `DbHandle`, which deliberately narrows so a
+   * *pooled* handle is rejected there; here, widening is what lets every
+   * EXISTING one-argument call site across the test suite keep compiling
+   * unchanged.
+   */
+  async create(input: CreateUserInput, db: NodePgDatabase<typeof schema> = this.db): Promise<User> {
+    try {
+      const [row] = await db
+        .insert(users)
+        .values({
+          primaryEmail: input.primaryEmail,
+          username: input.username,
+          firstName: input.firstName,
+          lastName: input.lastName,
+          displayName: `${input.firstName} ${input.lastName}`.trim(),
+          orgUnitId: input.orgUnitId,
+          employeeId: input.employeeId ?? null,
+          jobTitle: input.jobTitle ?? null,
+          managerId: input.managerId ?? null,
+          location: input.location ?? null,
+          startDate: input.startDate ?? null,
+          endDate: input.endDate ?? null,
+          attributes: input.attributes ?? {},
+        })
+        .returning()
 
-    return row as User
+      return row as User
+    } catch (cause) {
+      this.translateWriteError(cause, input)
+    }
   }
 
-  async findById(id: string): Promise<User | null> {
-    const [row] = await this.db
+  async findById(id: string, db: NodePgDatabase<typeof schema> = this.db): Promise<User | null> {
+    const [row] = await db
       .select()
       .from(users)
       .where(eq(users.id, id))
@@ -131,6 +194,69 @@ export class UsersRepository {
   }
 
   /**
+   * Partial update of an existing user's profile fields. `id` must already
+   * exist — 404s otherwise. This re-check is defensive: every current
+   * caller (UsersController.update) has already loaded the row moments
+   * earlier for its own assertCanIn/assertCanModifyPrincipal checks, but a
+   * public repository method should not rely on a caller having done that.
+   *
+   * Deliberately does NOT accept primaryEmail, username, orgUnitId or
+   * status — those are not part of this milestone's PATCH contract
+   * (task-2-brief.md specifies create/update/deactivate, not a "transfer
+   * between org units" or "rename" operation):
+   *   - status transitions are `changeStatus`'s job alone (atomic,
+   *     validated, and the only path to `deactivated` — see its own doc
+   *     comment below).
+   *   - `username` is what `PermissionEngine.resolveActor` matches a
+   *     principal against (`lower(username) = lower(principal.username)`).
+   *     Silently repointing it here, with no Keycloak-side sync (that is
+   *     Milestone 4's `external_identities` work), would strand the
+   *     affected user's next login.
+   *   - `orgUnitId` reassignment is a materially different authorization
+   *     question than editing a user in place — it would need its own
+   *     scope check against the DESTINATION unit, not just the current
+   *     one, which is outside what this task specifies.
+   */
+  async update(
+    id: string,
+    patch: UpdateUserInput,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<User> {
+    const current = await this.findById(id, db)
+    if (current === null) {
+      throw new NotFoundError('user', id)
+    }
+
+    const setValues: Record<string, unknown> = { updatedAt: new Date() }
+    if (patch.firstName !== undefined) setValues.firstName = patch.firstName
+    if (patch.lastName !== undefined) setValues.lastName = patch.lastName
+    if (patch.jobTitle !== undefined) setValues.jobTitle = patch.jobTitle
+    if (patch.employeeId !== undefined) setValues.employeeId = patch.employeeId
+    if (patch.managerId !== undefined) setValues.managerId = patch.managerId
+    if (patch.location !== undefined) setValues.location = patch.location
+    if (patch.startDate !== undefined) setValues.startDate = patch.startDate
+    if (patch.endDate !== undefined) setValues.endDate = patch.endDate
+    if (patch.attributes !== undefined) setValues.attributes = patch.attributes
+
+    // displayName is DERIVED, never accepted directly from the client —
+    // recompute it whenever either half of its input changes, falling back
+    // to the pre-patch value for whichever half didn't, so it never goes
+    // stale relative to firstName/lastName.
+    if (patch.firstName !== undefined || patch.lastName !== undefined) {
+      const firstName = patch.firstName ?? current.firstName
+      const lastName = patch.lastName ?? current.lastName
+      setValues.displayName = `${firstName} ${lastName}`.trim()
+    }
+
+    try {
+      const [row] = await db.update(users).set(setValues).where(eq(users.id, id)).returning()
+      return row as User
+    } catch (cause) {
+      this.translateWriteError(cause, { managerId: patch.managerId })
+    }
+  }
+
+  /**
    * There is no delete. Removal is a transition to `deactivated`, which is
    * terminal, so historical access questions stay answerable.
    *
@@ -146,7 +272,11 @@ export class UsersRepository {
    * committed data before applying it (EvalPlanQual), so the decision and
    * the write are one atomic step with no window for a lost update.
    */
-  async changeStatus(id: string, next: UserStatus): Promise<User> {
+  async changeStatus(
+    id: string,
+    next: UserStatus,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<User> {
     const permittedFrom = statusesThatMayTransitionTo(next)
 
     // A `next` with no valid predecessor (only `pending` today) can never
@@ -154,7 +284,7 @@ export class UsersRepository {
     // driver, and there is nothing to gain by trying — skip straight to
     // error determination below.
     if (permittedFrom.length > 0) {
-      const [row] = await this.db
+      const [row] = await db
         .update(users)
         .set({
           status: next,
@@ -174,8 +304,11 @@ export class UsersRepository {
 
     // Zero rows matched (or there was no valid predecessor to try at all).
     // This read is advisory only, purely to report an accurate reason — the
-    // atomic UPDATE above already made the real decision.
-    const current = await this.findById(id)
+    // atomic UPDATE above already made the real decision. Uses the SAME
+    // handle passed in (tx, if the caller opened one), not `this.db`, so a
+    // failed transition never depends on a second, out-of-transaction
+    // connection.
+    const current = await this.findById(id, db)
     if (current === null) {
       throw new NotFoundError('user', id)
     }
@@ -189,6 +322,87 @@ export class UsersRepository {
     throw new InvalidTransitionError(
       `cannot transition from ${current.status} to ${next}`,
     )
+  }
+
+  /**
+   * Maps a Postgres write-constraint violation to the right DomainError, by
+   * CONSTRAINT NAME — never by SQLSTATE alone. `users` carries two foreign
+   * keys (org_unit_id, manager_id) and three unique indexes (primary_email,
+   * username, employee_id); matching on `code === '23503'`/`'23505'` alone
+   * would report every violation on this table as whichever single
+   * resource happened to be tested first, mislabelling every other one —
+   * the exact bug task-2-brief.md calls out closing for the FK case, and
+   * the same table already has a second FK today, not just hypothetically
+   * "in future". `input`'s fields are the ones each branch below actually
+   * needs to explain that ONE violation; a caller that didn't touch a given
+   * field simply never matches that branch. Anything unrecognized
+   * (including a genuine bug's non-Postgres throw) is rethrown verbatim,
+   * never swallowed.
+   */
+  private translateWriteError(
+    cause: unknown,
+    input: {
+      orgUnitId?: string
+      managerId?: string | null
+      primaryEmail?: string
+      username?: string
+    },
+  ): never {
+    const pgError = cause as { code?: string; constraint?: string }
+
+    if (pgError.code === FOREIGN_KEY_VIOLATION) {
+      if (pgError.constraint === ORG_UNIT_FK_CONSTRAINT && input.orgUnitId !== undefined) {
+        throw new NotFoundError('org unit', input.orgUnitId)
+      }
+      if (pgError.constraint === MANAGER_FK_CONSTRAINT && input.managerId) {
+        throw new NotFoundError('manager', input.managerId)
+      }
+    }
+
+    if (pgError.code === UNIQUE_VIOLATION) {
+      if (pgError.constraint === EMAIL_UNIQUE_CONSTRAINT && input.primaryEmail !== undefined) {
+        throw new ConflictError(`a user with email "${input.primaryEmail}" already exists`)
+      }
+      if (pgError.constraint === USERNAME_UNIQUE_CONSTRAINT && input.username !== undefined) {
+        throw new ConflictError(`a user with username "${input.username}" already exists`)
+      }
+      if (pgError.constraint === EMPLOYEE_ID_UNIQUE_CONSTRAINT) {
+        throw new ConflictError('a user with this employee id already exists')
+      }
+    }
+
+    throw cause
+  }
+
+  /**
+   * Active, user-scoped custom attribute definitions, in the shape
+   * `validateAttributes` expects. UsersController's create/update handlers
+   * use this to build the schema a request's `attributes` is checked
+   * against. Attribute propagation is default-deny (Milestone 3b global
+   * constraint): with zero active definitions — true in every environment
+   * until `attribute_definitions` gets its own write path (decision 4, not
+   * this milestone) — any submitted attribute is rejected as unrecognized
+   * rather than silently stored.
+   */
+  async listActiveAttributeDefinitions(): Promise<AttributeDefinition[]> {
+    const rows = await this.db
+      .select()
+      .from(attributeDefinitions)
+      .where(
+        and(eq(attributeDefinitions.isActive, true), eq(attributeDefinitions.appliesTo, 'user')),
+      )
+
+    return rows.map((row) => ({
+      key: row.key,
+      label: row.label,
+      dataType: row.dataType,
+      required: row.required,
+      validationRules: (row.validationRules ?? {}) as ValidationRules,
+      appliesTo: row.appliesTo,
+      isActive: row.isActive,
+      syncToKeycloak: row.syncToKeycloak,
+      selfEditable: row.selfEditable,
+    }))
   }
 
   /**

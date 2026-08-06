@@ -3,9 +3,11 @@ import { Reflector } from '@nestjs/core'
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { AuditWriter } from '../src/audit/audit.writer'
 import { JwtGuard } from '../src/auth/jwt.guard'
 import { PermissionEngine } from '../src/authz/permission.engine'
 import { PermissionGuard, type AuthorizedRequest } from '../src/authz/permission.guard'
+import { PrivilegeGuards } from '../src/authz/privilege.guards'
 import { RoleAssignmentsRepository } from '../src/authz/role-assignments.repository'
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
@@ -73,6 +75,12 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
           UsersRepository,
           PermissionEngine,
           PermissionGuard,
+          // Milestone 3b, Task 2: UsersController's write handlers also
+          // depend on PrivilegeGuards and AuditWriter now — required here
+          // purely for DI resolution; this describe block only exercises
+          // the (unchanged) read routes.
+          PrivilegeGuards,
+          AuditWriter,
           Reflector,
         ],
       })
@@ -473,6 +481,12 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
           OrgUnitsRepository,
           GroupsRepository,
           PermissionEngine,
+          // Milestone 3b, Task 2: UsersController's write handlers also
+          // depend on PrivilegeGuards and AuditWriter now — required here
+          // purely for DI resolution; this describe block only exercises
+          // the (unchanged) read routes.
+          PrivilegeGuards,
+          AuditWriter,
         ],
       })
         .overrideGuard(JwtGuard)
