@@ -45,32 +45,59 @@ Compose stack.
 
 **This build must not be deployed to a real network.**
 
-The entire HTTP surface shipped so far is **read-only** (`GET` only — no
-`POST`/`PUT`/`PATCH`/`DELETE` route exists anywhere). Every route requires
-both a valid Keycloak-issued JWT **and** a role assignment that grants the
-specific action being performed (e.g. `user:read`) — an unauthenticated
-request, or one from a principal whose roles don't grant the action, is
-rejected.
+Every route — read and write alike — requires both a valid Keycloak-issued
+JWT **and** a role assignment that grants the specific action being
+performed (e.g. `user:read`, `user:update`, `role:assign`) — an
+unauthenticated request, or one from a principal whose roles don't grant the
+action, is rejected before a single query runs.
 
-As of Milestone 3b Task 1, per-resource org-unit **scope** is also enforced,
-not just the permission itself. Role assignments can be scoped (e.g.
-`help_desk` limited to Sales); every list endpoint now filters its results
-(and its `total`) to the actor's scope, and every single-resource read
-(`GET /users/:id`, `GET /org-units/:id`, `GET /org-units/:id/subtree`,
-`GET /groups/:id`, `.../members`, `.../effective-members`) asserts the target
-is actually within that scope before returning it — an out-of-scope but
+Every route is also narrowed to the actor's org-unit **scope**, not just
+gated by the permission itself. Role assignments can themselves be scoped
+(e.g. `help_desk` limited to Sales): every list endpoint filters its results
+(and its `total`) to the actor's scope, and every single-resource read *and
+write* asserts the target is actually within that scope
+(`PermissionEngine.assertCanIn`) before acting on it — an out-of-scope but
 existing resource returns **403**, not 404 (the directory's existence is not
 secret; its contents are). A global role assignment (`scopeOrgUnitId: null`)
-still sees everything, and a group with `orgUnitId: null` is global — visible
-to any actor holding `group:read` regardless of their own scope. An actor
-whose role grants an action at no reachable scope sees an empty page, never
-the unfiltered list.
+still reaches everything, a group with `orgUnitId: null` is global — visible
+to and writable by any actor holding the relevant action regardless of their
+own scope — and an actor whose role grants an action at no reachable scope
+sees an empty page, never the unfiltered list.
 
-What this does **not** yet do: any of this is only wired into **read**
-endpoints. No write endpoint exists yet — adding one without the same
-`assertCanIn` + privilege-guard pairing would be a privilege-escalation bug,
-not merely a disclosure one, which is why Milestone 3b treats this task as a
-hard gate before any write route lands. Do not point this build at a real
-organization's data, and do not expose it beyond a local development
-environment before Milestone 3b's write endpoints (with their own checks)
-land.
+**Writes.** `POST`/`PATCH`/`DELETE` routes now exist for users (create,
+update, deactivate — **never** delete; `deactivated` is terminal, there is no
+route to remove a user), org units (create), groups (create, update,
+membership, nesting), and role assignments (grant, revoke). Every mutation
+runs inside one database transaction together with its audit row
+(`audit_log`, append-only at the database level — `UPDATE`/`DELETE`/
+`TRUNCATE` are all rejected by trigger): a rejected or failed write commits
+nothing and leaves no audit trace, and a successful one always leaves exactly
+one.
+
+**Role assignment is the most security-sensitive write in the system** —
+getting it wrong is privilege escalation, not merely disclosure — so
+granting or revoking a role is gated by three independent checks, all
+required, none subsuming another:
+1. Does the actor hold `role:assign` **anywhere** at all (`PermissionGuard`
+   — only `super_admin` does, in today's static role catalog)?
+2. May the actor grant *this specific role* at *this specific scope*
+   (`PrivilegeGuards.assertCanAssignRole`)? An actor may only grant a role
+   they themselves hold, at a scope their own holding covers — a SCOPED
+   holding can never produce a GLOBAL grant, the exact path that would turn
+   a departmental account into a domain-wide one.
+3. Does the target principal **outrank** the actor
+   (`PrivilegeGuards.assertCanModifyPrincipal`)? Independent of scope
+   entirely — a `help_desk` scoped to Sales must not be able to touch a
+   GLOBAL `super_admin` who happens to sit in Sales.
+
+Milestone 3a's and 3b's reviews established that rank and scope are
+independent and neither check subsumes the other — shipping only some of
+these three is the bug. Revoking a role requires the same three checks as
+granting it, evaluated against the grant being removed, so revocation cannot
+be used as a side door around assignment's own narrowing.
+
+Do not point this build at a real organization's data, and do not expose it
+beyond a local development environment: there is still **no CI**, so every
+compile-time guarantee depends on someone remembering to run `build`, and the
+comprehensive adversarial security audit planned for the end of this
+sub-project has not run yet.
