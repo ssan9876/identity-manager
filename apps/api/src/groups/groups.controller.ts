@@ -450,6 +450,16 @@ export class GroupsController {
    * audit write) — one place decides "does this actor reach this group," so
    * the two paths can never silently diverge on what "global" or
    * "out of scope" means.
+   *
+   * `db` is forwarded into `assertCanIn` below, not just into
+   * `this.groups.findById` — this is finding C1
+   * (docs/superpowers/audit-integrity.md): loading the group ON `tx` but
+   * then checking scope against the POOL is exactly the bug the audit
+   * reproduced through this method ("`requireGroup(..., tx)` loads the row
+   * on `tx` but then calls `engine.assertCanIn` on the pool"), and it is
+   * what let a single stuck connection multiply into two per in-flight
+   * write across every one of this controller's five write handlers below.
+   * See test/pool-exhaustion.spec.ts.
    */
   private async requireGroup(
     id: string,
@@ -462,7 +472,7 @@ export class GroupsController {
       throw new NotFoundError('group', id)
     }
     if (group.orgUnitId !== null) {
-      await this.engine.assertCanIn(actor, action, group.orgUnitId)
+      await this.engine.assertCanIn(actor, action, group.orgUnitId, db)
     }
     return group
   }

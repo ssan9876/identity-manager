@@ -20,6 +20,7 @@ describe('loadEnv', () => {
       keycloakAdminClientSecret: 'idm_sync_dev_secret_change_me',
       port: 3000,
       syncWorkerEnabled: true,
+      dbPoolMax: 10,
     })
   })
 
@@ -50,6 +51,28 @@ describe('loadEnv', () => {
       expect(() => loadEnv({ ...valid, SYNC_WORKER_ENABLED: 'yes' })).toThrow(
         /SYNC_WORKER_ENABLED/,
       )
+    })
+  })
+
+  // Finding C1 (docs/superpowers/audit-integrity.md): the pool's `max` is
+  // now tunable per deployment rather than only ever pg's own hardcoded
+  // default — see db/client.ts's DbClientOptions doc comment.
+  describe('DB_POOL_MAX', () => {
+    it('defaults to 10 (pg-pool\'s own default) when absent', () => {
+      expect(loadEnv(valid).dbPoolMax).toBe(10)
+    })
+
+    it('honors an explicit override', () => {
+      expect(loadEnv({ ...valid, DB_POOL_MAX: '25' }).dbPoolMax).toBe(25)
+    })
+
+    it('rejects a non-positive value rather than silently disabling the pool', () => {
+      expect(() => loadEnv({ ...valid, DB_POOL_MAX: '0' })).toThrow(/DB_POOL_MAX/)
+      expect(() => loadEnv({ ...valid, DB_POOL_MAX: '-1' })).toThrow(/DB_POOL_MAX/)
+    })
+
+    it('rejects a non-numeric value', () => {
+      expect(() => loadEnv({ ...valid, DB_POOL_MAX: 'lots' })).toThrow(/DB_POOL_MAX/)
     })
   })
 

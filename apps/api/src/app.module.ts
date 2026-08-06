@@ -51,7 +51,10 @@ import { UsersRepository } from './users/users.repository'
     },
     {
       provide: DB_CLIENT,
-      useFactory: () => createDbClient(loadEnv(process.env).databaseUrl).db,
+      useFactory: () => {
+        const env = loadEnv(process.env)
+        return createDbClient(env.databaseUrl, { max: env.dbPoolMax }).db
+      },
     },
     {
       // Milestone 4, Task 4: shared by `SyncWorker`, `UsersController`

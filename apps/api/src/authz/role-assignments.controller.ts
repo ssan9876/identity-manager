@@ -175,6 +175,13 @@ export class RoleAssignmentsController {
    * `:assignmentId` must belong to `:id` — a well-formed assignment id that
    * exists but belongs to a DIFFERENT user 404s exactly like a nonexistent
    * one, never silently acting on it through the "wrong" URL.
+   *
+   * Both privilege checks below are passed `tx` explicitly, same finding-C1
+   * reason as UsersController.update/deactivate (see their doc comments):
+   * this handler already holds one pool connection for `tx`, and letting
+   * either check fall back to its pooled default would check out a second
+   * one for the lifetime of a query that runs while the first is still
+   * held.
    */
   @Delete(':id/roles/:assignmentId')
   @RequirePermission('role:assign')
@@ -196,8 +203,9 @@ export class RoleAssignmentsController {
         request.actor,
         current.roleKey,
         current.scopeOrgUnitId,
+        tx,
       )
-      await this.privileges.assertCanModifyPrincipal(request.actor, current.userId)
+      await this.privileges.assertCanModifyPrincipal(request.actor, current.userId, tx)
 
       await this.roleAssignments.revoke(assignmentId, tx)
 

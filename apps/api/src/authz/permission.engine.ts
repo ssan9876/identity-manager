@@ -127,8 +127,28 @@ export class PermissionEngine {
    * branch resolved to an accidental allow — see task-3-report.md, Finding
    * I-2. Making the parameter required makes that shape fail to compile
    * instead of fail at runtime.
+   *
+   * `db` is an OPTIONAL trailing handle, defaulting to the injected pooled
+   * connection (`this.db`) — same contract as every repository's write
+   * methods (see UsersRepository.create's doc comment). THIS ONE IS
+   * LOAD-BEARING FOR AVAILABILITY, not just consistency: a caller already
+   * inside `db.transaction(async (tx) => ...)` that omits `tx` here re-enters
+   * the POOL for a second connection while its first is still checked out
+   * for the open transaction — exactly
+   * docs/superpowers/audit-integrity.md finding C1 (11 concurrent
+   * `PATCH /users/:id` permanently deadlock the API: 2 connections held per
+   * in-flight write against a pool of 10). Every write handler that calls
+   * this from inside an open transaction MUST pass its `tx`; only a caller
+   * with no open transaction (a plain read, or a check that runs BEFORE
+   * `db.transaction` opens — see e.g. UsersController.create's doc comment)
+   * may rely on the default.
    */
-  async canIn(actor: Actor, action: Action, orgUnitId: string): Promise<boolean> {
+  async canIn(
+    actor: Actor,
+    action: Action,
+    orgUnitId: string,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<boolean> {
     const granting = this.grantingAssignments(actor, action)
 
     if (granting.length === 0) {
@@ -162,7 +182,7 @@ export class PermissionEngine {
     // wraps the array as an opaque bound value instead, so the driver sends
     // it as a genuine array parameter and `path <@ ANY ($1::ltree[])`
     // evaluates correctly, with no string interpolation anywhere.
-    const { rows } = await this.db.execute<{ contained: boolean }>(sql`
+    const { rows } = await db.execute<{ contained: boolean }>(sql`
       SELECT EXISTS (
         SELECT 1
           FROM org_units
@@ -174,8 +194,14 @@ export class PermissionEngine {
     return rows[0]?.contained ?? false
   }
 
-  async assertCanIn(actor: Actor, action: Action, orgUnitId: string): Promise<void> {
-    if (!(await this.canIn(actor, action, orgUnitId))) {
+  /** `db` forwards straight to `canIn` — see its doc comment for why this matters for a caller inside an open transaction. */
+  async assertCanIn(
+    actor: Actor,
+    action: Action,
+    orgUnitId: string,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<void> {
+    if (!(await this.canIn(actor, action, orgUnitId, db))) {
       throw new ForbiddenError(`not permitted: ${action}`)
     }
   }
@@ -185,6 +211,15 @@ export class PermissionEngine {
    * `null` means UNRESTRICTED (a global assignment) — apply no filter.
    * `[]` means NOWHERE (no applicable assignment at all) — apply a filter
    * that matches nothing.
+   *
+   * Deliberately takes NO `db`/`tx` parameter, unlike `canIn`/`assertCanIn`
+   * above: this method never queries anything — it is a pure, synchronous-
+   * in-substance reduction over `actor.assignments`, the snapshot
+   * `resolveActor` already fetched (only `async` for interface symmetry with
+   * the rest of this class). It therefore never contends for a pool
+   * connection and is not part of finding C1's fix (a caller inside an open
+   * transaction can call this exactly as before; there is no pooled query
+   * here to redirect onto `tx`).
    *
    * TRAP — do not conflate these by truthiness. `[]` is a truthy value (JS
    * arrays are always truthy, regardless of length), but `[].length` is

@@ -284,6 +284,16 @@ export class UsersController {
    * own doc comments). A rejection at either check throws before any write,
    * so the transaction has nothing to roll back and no audit row is ever
    * written.
+   *
+   * Both checks below are passed `tx` explicitly — never omitted to fall
+   * back on the pooled default. This handler already holds one pool
+   * connection for `tx`; letting either check default to the pool would
+   * check out a SECOND one for the lifetime of a query that runs while the
+   * first is still held, which is finding C1
+   * (docs/superpowers/audit-integrity.md): 11 concurrent `PATCH /users/:id`
+   * was enough to exhaust a 10-connection pool and deadlock the whole API
+   * process permanently. See test/pool-exhaustion.spec.ts for the
+   * regression coverage.
    */
   @Patch(':id')
   @RequirePermission('user:update')
@@ -310,8 +320,8 @@ export class UsersController {
         throw new NotFoundError('user', id)
       }
 
-      await this.engine.assertCanIn(request.actor, 'user:update', current.orgUnitId)
-      await this.privileges.assertCanModifyPrincipal(request.actor, current.id)
+      await this.engine.assertCanIn(request.actor, 'user:update', current.orgUnitId, tx)
+      await this.privileges.assertCanModifyPrincipal(request.actor, current.id, tx)
 
       const updated = await this.users.update(
         id,
@@ -356,8 +366,10 @@ export class UsersController {
    * The only path to `deactivated`, which is terminal — there is no DELETE
    * route for users, ever (see UsersRepository.changeStatus's doc comment).
    * Same load-inside-the-transaction, pair-both-checks shape as `update`
-   * above. 200, not the POST-default 201: this acts on an existing
-   * resource, it does not create one.
+   * above — including passing `tx` explicitly into both checks, for the
+   * same finding-C1 reason (see `update`'s doc comment). 200, not the
+   * POST-default 201: this acts on an existing resource, it does not create
+   * one.
    *
    * Milestone 4, Task 4 (decision 4 — "synchronous-first"): once the local
    * transaction below has committed, this ALSO attempts to revoke
@@ -382,8 +394,8 @@ export class UsersController {
         throw new NotFoundError('user', id)
       }
 
-      await this.engine.assertCanIn(request.actor, 'user:deactivate', current.orgUnitId)
-      await this.privileges.assertCanModifyPrincipal(request.actor, current.id)
+      await this.engine.assertCanIn(request.actor, 'user:deactivate', current.orgUnitId, tx)
+      await this.privileges.assertCanModifyPrincipal(request.actor, current.id, tx)
 
       const updated = await this.users.changeStatus(id, 'deactivated', tx)
 

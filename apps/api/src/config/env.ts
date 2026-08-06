@@ -24,6 +24,15 @@ const envSchema = z.object({
   // "false", as `true` (`Boolean("false") === true`), which would make the
   // off switch impossible to actually flip via an env file.
   SYNC_WORKER_ENABLED: z.enum(['true', 'false']).default('true'),
+  // Ceiling on physical Postgres connections `createDbClient`'s pool will
+  // ever open (db/client.ts's `DbClientOptions.max`). Defaults to pg's own
+  // default (10) so an unset env is a no-op — see db/client.ts's doc
+  // comment. Exists so a deployment can raise or lower it (e.g. a bigger
+  // managed Postgres instance, or several API instances sharing one small
+  // one) without a code change; see docs/superpowers/audit-integrity.md
+  // finding C1 for why the pool's size and timeout behaviour are both
+  // load-bearing for availability, not just performance tuning.
+  DB_POOL_MAX: z.coerce.number().int().positive().default(10),
 })
 
 export interface Env {
@@ -34,6 +43,7 @@ export interface Env {
   keycloakAdminClientSecret: string
   port: number
   syncWorkerEnabled: boolean
+  dbPoolMax: number
 }
 
 export function loadEnv(source: NodeJS.ProcessEnv): Env {
@@ -54,5 +64,6 @@ export function loadEnv(source: NodeJS.ProcessEnv): Env {
     keycloakAdminClientSecret: parsed.data.KEYCLOAK_ADMIN_CLIENT_SECRET,
     port: parsed.data.PORT,
     syncWorkerEnabled: parsed.data.SYNC_WORKER_ENABLED === 'true',
+    dbPoolMax: parsed.data.DB_POOL_MAX,
   }
 }

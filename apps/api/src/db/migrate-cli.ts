@@ -11,7 +11,7 @@ import { runMigrations } from './migrate'
  */
 async function main(): Promise<void> {
   const env = loadEnv(process.env)
-  const { pool } = createDbClient(env.databaseUrl)
+  const { pool } = createDbClient(env.databaseUrl, { max: env.dbPoolMax })
 
   try {
     await runMigrations(pool)

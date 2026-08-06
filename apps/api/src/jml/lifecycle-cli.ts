@@ -20,7 +20,7 @@ import { RuleApplier } from './rule-applier'
  */
 async function main(): Promise<void> {
   const env = loadEnv(process.env)
-  const { db, pool } = createDbClient(env.databaseUrl)
+  const { db, pool } = createDbClient(env.databaseUrl, { max: env.dbPoolMax })
 
   try {
     const usersRepository = new UsersRepository(db)

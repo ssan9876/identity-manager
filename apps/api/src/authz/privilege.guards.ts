@@ -82,11 +82,20 @@ export class PrivilegeGuards {
    * pair this with a `role:assign` permission check —
    * `PermissionEngine.assertCanAnywhere`/`assertCanIn`, scoped as
    * appropriate — before this method is ever reached.
+   *
+   * `db` is an OPTIONAL trailing handle, defaulting to the injected pooled
+   * connection (`this.db`) — same contract, and same availability stakes,
+   * as `PermissionEngine.canIn`/`assertCanIn` (see that doc comment): a
+   * caller already inside `db.transaction(async (tx) => ...)` MUST pass its
+   * `tx` here, or this re-enters the pool for a second connection while the
+   * caller's transaction still holds its first — docs/superpowers/audit-
+   * integrity.md finding C1.
    */
   async assertCanAssignRole(
     actor: Actor,
     roleKey: RoleKey,
     scopeOrgUnitId: string | null,
+    db: NodePgDatabase<typeof schema> = this.db,
   ): Promise<void> {
     const holdings = actor.assignments.filter(
       (assignment) =>
@@ -120,7 +129,7 @@ export class PrivilegeGuards {
     // literal" for any non-empty scopePaths (22P02). Same root cause and
     // fix as PermissionEngine.canIn; see its comment and task-3-report.md
     // for the full Drizzle-source-level explanation.
-    const { rows } = await this.db.execute<{ contained: boolean }>(sql`
+    const { rows } = await db.execute<{ contained: boolean }>(sql`
       SELECT EXISTS (
         SELECT 1
           FROM org_units
@@ -147,9 +156,19 @@ export class PrivilegeGuards {
    * additionally pair this with
    * `permissionEngine.assertCanIn(actor, 'user:update', target.orgUnitId)`
    * (or the read-path equivalent) before this method is ever reached.
+   *
+   * `db` is an OPTIONAL trailing handle, defaulting to the injected pooled
+   * connection (`this.db`) — identical contract, and identical availability
+   * stakes, to `assertCanAssignRole` above (see its doc comment) and
+   * `PermissionEngine.canIn`/`assertCanIn`. A caller already inside
+   * `db.transaction(async (tx) => ...)` MUST pass its `tx` here.
    */
-  async assertCanModifyPrincipal(actor: Actor, targetUserId: string): Promise<void> {
-    const targetAssignments = await this.db
+  async assertCanModifyPrincipal(
+    actor: Actor,
+    targetUserId: string,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<void> {
+    const targetAssignments = await db
       .select({ roleKey: roleAssignments.roleKey })
       .from(roleAssignments)
       .where(eq(roleAssignments.userId, targetUserId))

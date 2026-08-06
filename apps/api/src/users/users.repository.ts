@@ -401,9 +401,19 @@ export class UsersRepository {
    * until `attribute_definitions` gets its own write path (decision 4, not
    * this milestone) — any submitted attribute is rejected as unrecognized
    * rather than silently stored.
+   *
+   * `db` is an OPTIONAL trailing handle, defaulting to the injected pooled
+   * connection (`this.db`) - same contract as create/findById/update above.
+   * Added for SyncWorker.reconcileUser (finding C1,
+   * docs/superpowers/audit-integrity.md): that method runs inside the
+   * worker's own open claim transaction and now passes it through here
+   * rather than defaulting to the pool, so draining the outbox no longer
+   * permanently pins two of the pool's connections per in-flight claim.
    */
-  async listActiveAttributeDefinitions(): Promise<AttributeDefinition[]> {
-    const rows = await this.db
+  async listActiveAttributeDefinitions(
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<AttributeDefinition[]> {
+    const rows = await db
       .select()
       .from(attributeDefinitions)
       .where(

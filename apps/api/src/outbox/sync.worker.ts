@@ -240,7 +240,7 @@ export class SyncWorker implements OnApplicationShutdown {
       throw new Error(`sync worker: no user found for id ${userId}`)
     }
 
-    const definitions = await this.usersRepository.listActiveAttributeDefinitions()
+    const definitions = await this.usersRepository.listActiveAttributeDefinitions(tx)
 
     // Only an 'active' user is treated as a live principal anywhere else in
     // this system (PermissionEngine.resolveActor requires it). Mirroring
@@ -285,7 +285,7 @@ export class SyncWorker implements OnApplicationShutdown {
       keycloakUserId = existing.id
     }
 
-    await this.syncEffectiveGroups(user.id, user.username)
+    await this.syncEffectiveGroups(tx, user.id, user.username)
 
     await tx
       .insert(externalIdentities)
@@ -321,17 +321,29 @@ export class SyncWorker implements OnApplicationShutdown {
    * `setUserGroups` (Task 2) diffs against Keycloak's actual current
    * membership and issues only the adds/removes needed, so calling this
    * with an unchanged desired set is a zero-write no-op.
+   *
+   * Takes `tx` and threads it into both `GroupsRepository` reads below —
+   * finding C1 (docs/superpowers/audit-integrity.md): this method runs from
+   * inside `reconcileUser`, itself always inside the worker's own open
+   * transaction (the outer claim transaction, or the nested savepoint for a
+   * fanned-out call — see `runOnce`'s doc comment). Defaulting either read
+   * to the pool here would check out a second connection for the lifetime
+   * of a query that runs while the worker's own transaction connection is
+   * still held, permanently pinning 2 of the pool's connections per
+   * in-flight claim while `SyncWorker` drains — the same shape as the HTTP
+   * write handlers' fix, just for the worker's own transaction instead of a
+   * request's.
    */
-  private async syncEffectiveGroups(userId: string, username: string): Promise<void> {
-    const effectiveGroupIds = await this.groupsRepository.listEffectiveGroupsForUser(userId)
+  private async syncEffectiveGroups(tx: DbHandle, userId: string, username: string): Promise<void> {
+    const effectiveGroupIds = await this.groupsRepository.listEffectiveGroupsForUser(userId, tx)
     const localGroups =
       effectiveGroupIds.length === 0
         ? []
-        : await this.groupsRepository.listByIds(effectiveGroupIds, {
-            limit: effectiveGroupIds.length,
-            offset: 0,
-            scopePaths: null,
-          })
+        : await this.groupsRepository.listByIds(
+            effectiveGroupIds,
+            { limit: effectiveGroupIds.length, offset: 0, scopePaths: null },
+            tx,
+          )
 
     const keycloakGroupIds: string[] = []
     for (const group of localGroups) {
@@ -374,7 +386,7 @@ export class SyncWorker implements OnApplicationShutdown {
 
     await this.keycloak.ensureGroup(group.name)
 
-    const memberIds = await this.groupsRepository.listEffectiveUserMembers(groupId)
+    const memberIds = await this.groupsRepository.listEffectiveUserMembers(groupId, tx)
     for (const memberId of memberIds) {
       await this.reconcileUser(tx, memberId)
     }
@@ -408,7 +420,7 @@ export class SyncWorker implements OnApplicationShutdown {
       affected.add(payload.userId)
     }
     if (typeof payload.childGroupId === 'string') {
-      const members = await this.groupsRepository.listEffectiveUserMembers(payload.childGroupId)
+      const members = await this.groupsRepository.listEffectiveUserMembers(payload.childGroupId, tx)
       for (const memberId of members) {
         affected.add(memberId)
       }
