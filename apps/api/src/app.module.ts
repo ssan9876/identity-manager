@@ -14,6 +14,7 @@ import { createDbClient } from './db/client'
 import { GroupsController } from './groups/groups.controller'
 import { GroupsRepository } from './groups/groups.repository'
 import { HealthController } from './health/health.controller'
+import { ImportsController } from './imports/imports.controller'
 import {
   KEYCLOAK_ADMIN_CONFIG,
   KeycloakAdminClient,
@@ -36,6 +37,7 @@ import { UsersRepository } from './users/users.repository'
     OrgUnitsController,
     GroupsController,
     RoleAssignmentsController,
+    ImportsController,
   ],
   providers: [
     {

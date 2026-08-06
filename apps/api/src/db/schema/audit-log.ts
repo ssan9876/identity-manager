@@ -32,6 +32,13 @@ export const auditLog = pgTable(
     resourceId: uuid('resource_id'),
     before: jsonb('before'),
     after: jsonb('after'),
+    // Milestone 5, Task 2: NULL for every ordinary single-record mutation —
+    // only a bulk import commit sets this, once per HTTP request, the same
+    // value on every audit row that request's rows produce (see
+    // ImportsController). No FK: a batch is not a row anywhere, it is purely
+    // a correlation id for "every audit row one import commit produced,"
+    // reviewable as a unit via `WHERE batch_id = $1`.
+    batchId: uuid('batch_id'),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -40,5 +47,6 @@ export const auditLog = pgTable(
     createdIdx: index('audit_log_created_idx').on(table.createdAt),
     resourceIdx: index('audit_log_resource_idx').on(table.resourceType, table.resourceId),
     actorIdx: index('audit_log_actor_idx').on(table.actorUserId),
+    batchIdx: index('audit_log_batch_idx').on(table.batchId),
   }),
 )

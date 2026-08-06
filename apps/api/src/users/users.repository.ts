@@ -194,6 +194,24 @@ export class UsersRepository {
   }
 
   /**
+   * Exact (case-sensitive — `employee_id` has no case-insensitive uniqueness
+   * contract, unlike email/username) match on `employeeId`. Milestone 5's
+   * bulk import is idempotent on this field (`users_employee_id_unique`,
+   * this table's partial unique index): ImportsController calls this once
+   * per row to decide create-vs-update before ever attempting a write, which
+   * is what lets preview report the same decision while writing nothing.
+   */
+  async findByEmployeeId(employeeId: string): Promise<User | null> {
+    const [row] = await this.db
+      .select()
+      .from(users)
+      .where(eq(users.employeeId, employeeId))
+      .limit(1)
+
+    return (row as User | undefined) ?? null
+  }
+
+  /**
    * Partial update of an existing user's profile fields. `id` must already
    * exist — 404s otherwise. This re-check is defensive: every current
    * caller (UsersController.update) has already loaded the row moments
