@@ -396,6 +396,30 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
 
       expect(await totalOutboxCount(ctx)).toBe(before)
     })
+
+    // Finding M-2 (docs/superpowers/audit-authz.md) — representative case,
+    // same reasoning as this file's header comment: audit-row and
+    // outbox-event writes share the exact same transaction, so ONE
+    // rejection test per NEW denial mechanism is enough to prove both halves
+    // roll back together (groups.write.spec.ts's own M-2 tests already cover
+    // the audit-row side of this and its sibling mechanisms — update,
+    // manage_members — exhaustively).
+    it('rejects creating a GLOBAL group as a SCOPED actor with 403 and emits no outbox event', async () => {
+      const org = await makeOrgUnit('Global Group Scope Root')
+      const actor = await makeActiveUser('scoped-creator', org.id)
+      await grant(actor.id, 'user_admin', org.id) // SCOPED, not global
+      currentUsername = actor.username
+
+      const before = await totalOutboxCount(ctx)
+
+      const res = await request(app.getHttpServer())
+        .post('/groups')
+        .send({ name: `Blocked Global ${nextTag()}` }) // orgUnitId omitted -> global
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await totalOutboxCount(ctx)).toBe(before)
+    })
   })
 
   // =======================================================================
@@ -496,6 +520,31 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
       expect(await outboxEventsFor(ctx, 'membership', group.id)).toHaveLength(0)
     })
 
+    // Finding M-2 (docs/superpowers/audit-authz.md) — representative case
+    // for the MEMBER-side check specifically (the test above covers the
+    // pre-existing GROUP-side check); groups.write.spec.ts's own test
+    // already proves the audit-row side of this exact scenario.
+    it('rejects adding an out-of-scope MEMBER to an in-scope group with 403 and emits no outbox event', async () => {
+      const org = await makeOrgUnit('Member Group Root')
+      const otherOrg = await makeOrgUnit('Member User Root')
+      const actor = await makeActiveUser('manager', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      const group = await groupsRepo().create({ name: `Team ${nextTag()}`, orgUnitId: org.id })
+      const outsider = await makeActiveUser('outsider', otherOrg.id)
+      currentUsername = actor.username
+
+      const before = await totalOutboxCount(ctx)
+
+      const res = await request(app.getHttpServer())
+        .post(`/groups/${group.id}/members`)
+        .send({ userId: outsider.id })
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await outboxEventsFor(ctx, 'membership', group.id)).toHaveLength(0)
+      expect(await totalOutboxCount(ctx)).toBe(before)
+    })
+
     it('POST /groups/:id/child-groups emits exactly one membership/membership_changed outbox event', async () => {
       const org = await makeOrgUnit('Nest Root')
       const actor = await makeActiveUser('manager', org.id)
@@ -568,6 +617,36 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
       expect(res.body.code).toBe('CYCLE_DETECTED')
 
       expect(await outboxEventsFor(ctx, 'membership', b.id)).toHaveLength(0)
+      expect(await totalOutboxCount(ctx)).toBe(before)
+    })
+
+    // Finding M-1 (docs/superpowers/audit-authz.md) — representative case,
+    // same reasoning as the M-2 test in the POST /groups block above:
+    // groups.write.spec.ts's own M-1 test already proves the audit-row side
+    // (and the read-amplification never opening up); this proves the
+    // SAME rejected request also emits no outbox event.
+    it('rejects nesting a foreign, out-of-scope group as a CHILD with 403 and emits no outbox event', async () => {
+      const root = await makeOrgUnit('Child Scope Root')
+      const scopeOrg = await makeChildOrgUnit(root.id, 'In Scope')
+      const otherOrg = await makeChildOrgUnit(root.id, 'Out Of Scope')
+      const actor = await makeActiveUser('scoped-manager', scopeOrg.id)
+      await grant(actor.id, 'user_admin', scopeOrg.id)
+      const parent = await groupsRepo().create({ name: `Sales Team ${nextTag()}`, orgUnitId: scopeOrg.id })
+      const foreignChild = await groupsRepo().create({
+        name: `OtherCo Secret ${nextTag()}`,
+        orgUnitId: otherOrg.id,
+      })
+      currentUsername = actor.username
+
+      const before = await totalOutboxCount(ctx)
+
+      const res = await request(app.getHttpServer())
+        .post(`/groups/${parent.id}/child-groups`)
+        .send({ childId: foreignChild.id })
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await outboxEventsFor(ctx, 'membership', parent.id)).toHaveLength(0)
       expect(await totalOutboxCount(ctx)).toBe(before)
     })
   })

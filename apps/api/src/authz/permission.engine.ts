@@ -51,7 +51,19 @@ export class PermissionEngine {
         status: users.status,
       })
       .from(users)
-      .where(sql`lower(${users.username}) = lower(${principal.username})`)
+      // Finding M-3 (docs/superpowers/audit-authz.md): `principal.username`
+      // is bound via `sql.param`, not a bare `${...}` interpolation — this
+      // was the one authorization SQL site in the codebase NOT doing so (see
+      // `canIn`'s doc comment, permission.engine.ts:131, for the full
+      // Drizzle-source-level explanation every other site carries: a bare
+      // JS array is spliced as a parenthesized list of individually-bound
+      // scalars rather than sent as one bound value). `JwtGuard` now rejects
+      // a non-string `preferred_username` before it ever reaches here (see
+      // its own doc comment), so this is defence in depth, not the primary
+      // fix — but `sql.param` means the shape of this query can never again
+      // be altered by the VALUE of `principal.username`, regardless of what
+      // any future caller of `resolveActor` passes.
+      .where(sql`lower(${users.username}) = lower(${sql.param(principal.username)})`)
       .limit(1)
 
     if (row === undefined) {

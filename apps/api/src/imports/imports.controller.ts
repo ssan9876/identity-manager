@@ -454,7 +454,17 @@ export class ImportsController {
     }
 
     try {
-      await this.engine.assertCanIn(actor, 'user:create', existing.orgUnitId)
+      // Finding L-3 (docs/superpowers/audit-authz.md): an UPDATE row is
+      // narrowed with 'user:update', not 'user:create' — this is the update
+      // branch (resolveRow already matched an EXISTING user by employeeId;
+      // see resolveCreateRow just below for the create branch, which
+      // correctly uses 'user:create'). Not exploitable today (every role
+      // holding 'user:create' also holds 'user:update' — see ROLE_PERMISSIONS
+      // in authz/actions.ts — and this whole controller's routes are gated
+      // on 'user:create' at PermissionGuard besides), but it was a
+      // route/action mismatch that would misauthorize silently the moment
+      // that catalog fact ever changed.
+      await this.engine.assertCanIn(actor, 'user:update', existing.orgUnitId)
     } catch (error) {
       reasons.push(...domainErrorReasons(error))
     }

@@ -148,4 +148,169 @@ describe('JwtGuard rejects validly-signed tokens missing required identity claim
       .set('Authorization', `Bearer ${token}`)
       .expect(401)
   })
+
+  // Finding M-3 (docs/superpowers/audit-authz.md): `preferred_username` was
+  // cast (`as string | undefined`) rather than validated, and `!username`
+  // only rejects FALSY values — a non-string, truthy claim sailed straight
+  // through into PermissionEngine.resolveActor's query, where Drizzle's
+  // `sql` template splices a bare JS array specially. Reproduced live,
+  // pre-fix, against GET /users with a real Keycloak-signed token:
+  //   preferred_username = ["god"]         -> 200, authenticated AS "god"
+  //   preferred_username = ["nope","god"]  -> 500 (2-element array becomes
+  //                                            a SQL row constructor)
+  //   preferred_username = []              -> 500 (empty array becomes
+  //                                            `lower()` with no argument)
+  // Every case below must now be a clean, generic 401 — the exact shape
+  // every other invalid token already gets, with no new information
+  // disclosure and no unhandled 500 anywhere in the codebase.
+  describe('finding M-3: preferred_username is validated as a string', () => {
+    it('rejects a single-element array preferred_username (pre-fix: authenticated as that value)', async () => {
+      const token = await localJwks.signToken({
+        aud: 'idm-api',
+        sub: 'a-real-subject-id',
+        preferred_username: ['god'],
+      })
+
+      await request(app.getHttpServer())
+        .get('/me')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(401)
+    })
+
+    it('rejects a nested array preferred_username', async () => {
+      const token = await localJwks.signToken({
+        aud: 'idm-api',
+        sub: 'a-real-subject-id',
+        preferred_username: [['god']],
+      })
+
+      await request(app.getHttpServer())
+        .get('/me')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(401)
+    })
+
+    it('rejects a two-element array preferred_username (pre-fix: unhandled 500)', async () => {
+      const token = await localJwks.signToken({
+        aud: 'idm-api',
+        sub: 'a-real-subject-id',
+        preferred_username: ['nope', 'god'],
+      })
+
+      await request(app.getHttpServer())
+        .get('/me')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(401)
+    })
+
+    it('rejects an empty-array preferred_username (pre-fix: unhandled 500)', async () => {
+      const token = await localJwks.signToken({
+        aud: 'idm-api',
+        sub: 'a-real-subject-id',
+        preferred_username: [],
+      })
+
+      await request(app.getHttpServer())
+        .get('/me')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(401)
+    })
+
+    it('rejects a numeric preferred_username', async () => {
+      const token = await localJwks.signToken({
+        aud: 'idm-api',
+        sub: 'a-real-subject-id',
+        preferred_username: 42,
+      })
+
+      await request(app.getHttpServer())
+        .get('/me')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(401)
+    })
+
+    it('rejects a boolean preferred_username', async () => {
+      const token = await localJwks.signToken({
+        aud: 'idm-api',
+        sub: 'a-real-subject-id',
+        preferred_username: true,
+      })
+
+      await request(app.getHttpServer())
+        .get('/me')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(401)
+    })
+
+    it('rejects an object preferred_username', async () => {
+      const token = await localJwks.signToken({
+        aud: 'idm-api',
+        sub: 'a-real-subject-id',
+        preferred_username: { nested: 'object' },
+      })
+
+      await request(app.getHttpServer())
+        .get('/me')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(401)
+    })
+
+    it('rejects an empty-string preferred_username', async () => {
+      const token = await localJwks.signToken({
+        aud: 'idm-api',
+        sub: 'a-real-subject-id',
+        preferred_username: '',
+      })
+
+      await request(app.getHttpServer())
+        .get('/me')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(401)
+    })
+
+    // Defence in depth, applied to `sub` too (see JwtGuard's own doc
+    // comment): the original `!subject` caught an empty string; a bare
+    // `typeof` check alone would not have, so this is checked directly.
+    it('rejects an array "sub" claim', async () => {
+      const token = await localJwks.signToken({
+        aud: 'idm-api',
+        sub: ['attacker'] as unknown as string,
+        preferred_username: 'someone@example.com',
+      })
+
+      await request(app.getHttpServer())
+        .get('/me')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(401)
+    })
+
+    it('rejects an empty-string "sub" claim', async () => {
+      const token = await localJwks.signToken({
+        aud: 'idm-api',
+        sub: '',
+        preferred_username: 'someone@example.com',
+      })
+
+      await request(app.getHttpServer())
+        .get('/me')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(401)
+    })
+
+    // Positive control: a well-formed, ordinary string claim is unaffected
+    // by the stricter validation.
+    it('accepts an ordinary string preferred_username, unaffected by the stricter validation', async () => {
+      const token = await localJwks.signToken({
+        aud: 'idm-api',
+        sub: 'a-real-subject-id',
+        preferred_username: 'someone@example.com',
+      })
+
+      const res = await request(app.getHttpServer())
+        .get('/me')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200)
+      expect(res.body.username).toBe('someone@example.com')
+    })
+  })
 })

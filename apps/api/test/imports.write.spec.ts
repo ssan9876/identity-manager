@@ -2,7 +2,7 @@ import { type CanActivate, type ExecutionContext, type INestApplication } from '
 import { Reflector } from '@nestjs/core'
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { AuditWriter } from '../src/audit/audit.writer'
 import { JwtGuard } from '../src/auth/jwt.guard'
 import type { RoleKey } from '../src/authz/actions'
@@ -129,6 +129,10 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
   const ctx = withTestDatabase()
   let app: INestApplication
   let currentUsername = ''
+  // Captured for the finding L-3 regression test below, which spies on the
+  // REAL PermissionEngine instance the compiled module wires into
+  // ImportsController — see that test's own comment.
+  let engine: PermissionEngine
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -149,6 +153,7 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
       .useValue(stubJwtGuard(() => currentUsername))
       .compile()
 
+    engine = moduleRef.get(PermissionEngine)
     app = moduleRef.createNestApplication()
     app.useGlobalFilters(new DomainExceptionFilter())
     await app.init()
@@ -675,6 +680,71 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
       expect(rows[0].before?.jobTitle).toBe('Old Title')
       expect(rows[0].after?.jobTitle).toBe('New Title')
       expect(rows[0].after?.firstName).toBe('New')
+    })
+
+    // Finding L-3 (docs/superpowers/audit-authz.md): resolveUpdateRow used
+    // to narrow with 'user:create', not 'user:update' — a route/action
+    // mismatch, not exploitable today (every role holding 'user:create'
+    // also holds 'user:update' — see ROLE_PERMISSIONS in authz/actions.ts —
+    // and this whole controller is gated on 'user:create' at PermissionGuard
+    // besides, so there is no role that can reach an update row with
+    // 'user:create' but not 'user:update' to prove a live 403 either way).
+    // Pinned directly instead, by spying on the REAL PermissionEngine
+    // instance this module wires into ImportsController and recording the
+    // exact action string each row is narrowed with — a single request
+    // mixing a CREATE row and an UPDATE row must produce one call with
+    // EACH action, never 'user:create' for the update row.
+    it('narrows a CREATE row with user:create and an UPDATE row with user:update, never the other way around', async () => {
+      const org = await makeOrgUnit('L3 Action Root')
+      const actor = await makeActiveUser('l3-committer', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const tag = nextTag()
+      const updateEmployeeId = `L3U-${tag}`
+      await usersRepo().create({
+        primaryEmail: `l3u-${tag}@example.com`,
+        username: `l3u-${tag}`,
+        firstName: 'Old',
+        lastName: 'Name',
+        orgUnitId: org.id,
+        employeeId: updateEmployeeId,
+      })
+
+      const csv = buildCsv([
+        row({ orgUnitId: org.id }), // CREATE row — a fresh employeeId
+        {
+          // UPDATE row — matches the existing employeeId above
+          employeeId: updateEmployeeId,
+          primaryEmail: `l3u-${tag}@example.com`,
+          username: `l3u-${tag}`,
+          firstName: 'New',
+          lastName: 'Name',
+          orgUnitId: org.id,
+        },
+      ])
+
+      const spy = vi.spyOn(engine, 'assertCanIn')
+      try {
+        const res = await request(app.getHttpServer())
+          .post('/imports/commit')
+          .send({ csv })
+          .expect(200)
+        expect(res.body.created).toBe(1)
+        expect(res.body.updated).toBe(1)
+
+        // Exactly one assertCanIn call per row, in the SAME order
+        // resolveRow processes them (row 1 = CREATE, row 2 = UPDATE — see
+        // commit()'s own sequential `for` loop) — checked by call order, not
+        // merely "both actions appeared somewhere," which is what pins the
+        // fix to the RIGHT row rather than coincidentally passing if both
+        // branches used the same (wrong) action.
+        expect(spy.mock.calls).toHaveLength(2)
+        expect(spy.mock.calls[0][1]).toBe('user:create') // the CREATE row
+        expect(spy.mock.calls[1][1]).toBe('user:update') // the UPDATE row — was 'user:create' pre-fix
+      } finally {
+        spy.mockRestore()
+      }
     })
 
     it('blocks a help_desk-ranked actor from using import to touch a super_admin, even in scope (privilege guard, not scope)', async () => {

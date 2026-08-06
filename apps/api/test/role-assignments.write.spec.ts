@@ -69,6 +69,22 @@ async function totalAuditCount(ctx: TestDatabase): Promise<number> {
   return rows[0]?.count ?? 0
 }
 
+/**
+ * Table-wide, like `totalAuditCount` above — used by the finding H-1
+ * regression block (docs/superpowers/audit-authz.md) to prove a rejected
+ * assign/revoke leaves outbox_events untouched too, not just audit_log. No
+ * other describe block in this file checks the outbox (that is
+ * outbox-emission.spec.ts's job for the success paths); H-1's own "a
+ * rejected request must still write ZERO audit rows and ZERO outbox events"
+ * requirement is what earns it a dedicated check here.
+ */
+async function totalOutboxCount(ctx: TestDatabase): Promise<number> {
+  const { rows } = await ctx.pool.query<{ count: number }>(
+    'SELECT count(*)::int AS count FROM outbox_events',
+  )
+  return rows[0]?.count ?? 0
+}
+
 const BOGUS_ID = '00000000-0000-0000-0000-000000000000'
 
 /**
@@ -144,6 +160,11 @@ describe('role assignment write endpoints (Milestone 3b, Task 4)', () => {
       providers: [
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         RoleAssignmentsRepository,
+        // Finding H-1 (docs/superpowers/audit-authz.md): RoleAssignmentsController
+        // now loads the target user for the missing fourth check
+        // (assertCanIn against the target's own org unit) — required here
+        // for DI resolution.
+        UsersRepository,
         PermissionEngine,
         PermissionGuard,
         PrivilegeGuards,
@@ -602,6 +623,151 @@ describe('role assignment write endpoints (Milestone 3b, Task 4)', () => {
       for (const forbidden of ['password', 'passwd', 'secret', 'hash', 'salt', 'credential', 'token']) {
         expect(serialized).not.toContain(forbidden)
       }
+    })
+  })
+
+  // =======================================================================
+  // Finding H-1 (docs/superpowers/audit-authz.md) — THE FOURTH CHECK.
+  //
+  // Every test above targets a user WITHIN the acting super_admin's own
+  // scope (or the actor is global) — proving assertCanAssignRole's SCOPE
+  // narrowing and assertCanModifyPrincipal's RANK narrowing, but never
+  // exercising "can this actor reach the TARGET PRINCIPAL at all," because
+  // no fixture here ever put the target somewhere the actor could not see.
+  // That blind spot is exactly why H-1 survived the original 554-test suite
+  // (see scope-narrowing.spec.ts's own new role-assignment section for the
+  // same property pinned at the cross-endpoint level). This block reproduces
+  // the audit's live finding directly: a super_admin scoped to `acme.sales`
+  // reaches into a disjoint `otherco` tree.
+  // =======================================================================
+  describe('H-1 fix: the target principal must be reachable, not just the scope of the grant', () => {
+    async function makeDisjointOrgs(): Promise<{ salesId: string; othercoId: string }> {
+      const acme = await makeOrgUnit('Acme')
+      const sales = await makeChildOrgUnit(acme.id, 'Sales')
+      const otherco = await makeOrgUnit('OtherCo') // a SEPARATE root — disjoint from acme entirely
+      return { salesId: sales.id, othercoId: otherco.id }
+    }
+
+    it('rejects granting a role to a target outside the actor\'s scope, with 403 and writes no audit row or outbox event — even though the grant\'s OWN scope is one the actor legitimately holds', async () => {
+      const { salesId, othercoId } = await makeDisjointOrgs()
+      const admin = await makeActiveUser('sales-admin', salesId)
+      await grant(admin.id, 'super_admin', salesId) // SCOPED to acme.sales
+      const victim = await makeActiveUser('victim', othercoId) // lives in the disjoint tree
+      currentUsername = admin.username
+
+      const auditBefore = await totalAuditCount(ctx)
+      const outboxBefore = await totalOutboxCount(ctx)
+
+      // The grant's own scope (salesId) is well within what assertCanAssignRole
+      // would happily authorize for this actor — isolating this test to the
+      // MISSING check (H-1), not the scope-of-the-grant check that already
+      // existed and already worked.
+      const res = await request(app.getHttpServer())
+        .post(`/users/${victim.id}/roles`)
+        .send({ roleKey: 'super_admin', scopeOrgUnitId: salesId })
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await totalAuditCount(ctx)).toBe(auditBefore)
+      expect(await totalOutboxCount(ctx)).toBe(outboxBefore)
+
+      // Confirmed not merely rejected but genuinely never persisted: the
+      // victim holds no role_assignments row at all.
+      expect(await rolesRepo().listForUser(victim.id)).toEqual([])
+    })
+
+    it('rejects revoking a role from a target outside the actor\'s scope, with 403 and writes no NEW audit row or outbox event', async () => {
+      const { salesId, othercoId } = await makeDisjointOrgs()
+      const globalAdmin = await makeActiveUser('global-admin', salesId)
+      await grant(globalAdmin.id, 'super_admin', null) // GLOBAL — legitimately grants into otherco
+      const salesAdmin = await makeActiveUser('sales-admin', salesId)
+      await grant(salesAdmin.id, 'super_admin', salesId) // SCOPED to acme.sales
+      const victim = await makeActiveUser('victim', othercoId)
+      currentUsername = globalAdmin.username
+
+      // A legitimate grant, made by the GLOBAL admin: the VICTIM lives in
+      // otherco, but the grant's own SCOPE is salesId — deliberately, to
+      // isolate this test to the missing check. scopeOrgUnitId has no
+      // required relationship to the target's own org unit (see
+      // RoleAssignmentsRepository.assign — they are independent fields);
+      // this is the exact shape the live audit reproduced (a grant whose
+      // SCOPE the actor legitimately reaches, on a TARGET they do not).
+      // Using othercoId as the scope here instead would make
+      // assertCanAssignRole reject the revoke below for an unrelated
+      // reason (the SCOPE, not the target), which would prove nothing about
+      // H-1 specifically.
+      const created = await request(app.getHttpServer())
+        .post(`/users/${victim.id}/roles`)
+        .send({ roleKey: 'read_only', scopeOrgUnitId: salesId })
+        .expect(201)
+      const assignmentId = created.body.id as string
+      expect(await auditRowsFor(ctx, assignmentId)).toHaveLength(1)
+
+      const auditBefore = await totalAuditCount(ctx)
+      const outboxBefore = await totalOutboxCount(ctx)
+
+      // The Sales-scoped admin CAN reach this grant's scope (salesId, their
+      // own) and does not get outranked by a read_only target — so
+      // assertCanAssignRole and assertCanModifyPrincipal both pass. Only
+      // the NEW check (can this actor reach the TARGET user, who lives in
+      // the disjoint otherco tree) rejects this.
+      currentUsername = salesAdmin.username
+      const res = await request(app.getHttpServer())
+        .delete(`/users/${victim.id}/roles/${assignmentId}`)
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await totalAuditCount(ctx)).toBe(auditBefore)
+      expect(await totalOutboxCount(ctx)).toBe(outboxBefore)
+
+      // Still exactly the one row from the original grant — the revoke
+      // attempt left no trace.
+      expect(await auditRowsFor(ctx, assignmentId)).toHaveLength(1)
+    })
+
+    // Positive control: the fix narrows WHO can be targeted, not the
+    // legitimate operation itself. The same Sales-scoped admin can still
+    // grant/revoke roles on a colleague who actually lives in their scope.
+    it('an in-scope role assignment still succeeds end to end (grant, then revoke)', async () => {
+      const { salesId } = await makeDisjointOrgs()
+      const admin = await makeActiveUser('sales-admin', salesId)
+      await grant(admin.id, 'super_admin', salesId)
+      const colleague = await makeActiveUser('colleague', salesId) // SAME org as the actor's scope
+      currentUsername = admin.username
+
+      const res = await request(app.getHttpServer())
+        .post(`/users/${colleague.id}/roles`)
+        .send({ roleKey: 'help_desk', scopeOrgUnitId: salesId })
+        .expect(201)
+      expect(await auditRowsFor(ctx, res.body.id)).toHaveLength(1)
+
+      await request(app.getHttpServer())
+        .delete(`/users/${colleague.id}/roles/${res.body.id}`)
+        .expect(200)
+      expect(await auditRowsFor(ctx, res.body.id)).toHaveLength(2)
+    })
+
+    // The grantee follow-on from the live reproduction (audit-authz.md):
+    // pre-fix, the newly (and wrongly) granted out-of-scope principal could
+    // immediately use their new privilege. Since the grant itself is now
+    // rejected, there is nothing left for the grantee to exploit — pinned
+    // here directly, rather than asserted only implicitly.
+    it('the would-be grantee never gains the privilege the rejected grant would have conferred', async () => {
+      const { salesId, othercoId } = await makeDisjointOrgs()
+      const admin = await makeActiveUser('sales-admin', salesId)
+      await grant(admin.id, 'super_admin', salesId)
+      const victim = await makeActiveUser('victim', othercoId)
+      currentUsername = admin.username
+
+      await request(app.getHttpServer())
+        .post(`/users/${victim.id}/roles`)
+        .send({ roleKey: 'super_admin', scopeOrgUnitId: salesId })
+        .expect(403)
+
+      // The victim holds no assignment at all, so PermissionEngine would
+      // deny them everything — confirmed directly against the repository
+      // rather than by a second HTTP call this controller has no route for.
+      expect(await rolesRepo().listForUser(victim.id)).toEqual([])
     })
   })
 })
