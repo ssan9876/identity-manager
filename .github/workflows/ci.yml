@@ -95,8 +95,12 @@ jobs:
       - name: Verify (typecheck, build, API suite)
         run: pnpm verify
 
-      # Against the compose stack + a dev server Playwright starts itself
-      # (playwright.config.ts's webServer.command is `pnpm dev`) — ports
-      # 3000/5173 are free at this point, `pnpm verify` never binds them.
+      # Against the compose stack + BOTH the API and web dev servers, which
+      # Playwright starts itself (playwright.config.ts's `webServer` is an
+      # array of two entries since Milestone 11, Task 6 — previously only
+      # the web server, which silently depended on a human starting the API
+      # by hand first; see that config's own doc comment for the full
+      # history). Ports 3000/5173 are free at this point, `pnpm verify`
+      # never binds them.
       - name: Playwright E2E
         run: pnpm --filter @idm/web run test:e2e

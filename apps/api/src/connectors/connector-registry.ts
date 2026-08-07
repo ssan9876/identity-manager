@@ -4,7 +4,7 @@ import { connectorTargets } from '../db/schema/connector-targets'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
 import type { DbHandle } from '../outbox/outbox.writer'
 import { ActiveDirectoryConnector } from './active-directory.connector'
-import type { ConnectorTarget, DirectoryConnector } from './connector'
+import type { ConnectorTarget, DirectoryConnector, DirectoryGroupConnector } from './connector'
 import { EchoConnector } from './echo.connector'
 import { KeycloakConnector } from './keycloak.connector'
 
@@ -146,14 +146,54 @@ export class ConnectorRegistry {
       )
     }
 
+    const config = await this.loadConfig(target, tx)
+    const factory = this.factories[target as ImplementedConnectorTarget]
+    return factory(config)
+  }
+
+  /**
+   * Milestone 11, Task 6 — the GROUP-shaped mirror of `resolve` above, for
+   * targets implementing the optional `DirectoryGroupConnector` capability
+   * (`connector.ts`'s own doc comment: native group nesting, not every
+   * target has one). Returns `null`, never throws, for a target with no
+   * group-shaped capability — this is a normal, expected outcome (Keycloak
+   * and echo both resolve their OWN group membership entirely through
+   * `DesiredUser.groups` inside `apply()`, unchanged by this task), not a
+   * misconfiguration the way an UNIMPLEMENTED user-facing target is
+   * (`resolve`'s own thrown error, above) — `SyncWorker` uses this `null` to
+   * fall back to that pre-existing per-user path, exactly as it did before
+   * this task for every target.
+   *
+   * A single literal `!==` comparison, not an `Object.hasOwn`-guarded
+   * catalog lookup — deliberately: the prototype-chain-bypass hazard that
+   * pattern defends against is specific to INDEXING an object by an
+   * untrusted key (`this.factories[target]`, where `target` could
+   * coincidentally name an inherited `Object.prototype` member); a plain
+   * `===`/`!==` comparison against one fixed string literal has no such
+   * hazard, so the extra machinery would add nothing here. When a second
+   * target gains this capability (Entra ID/Google Workspace, Milestones
+   * 12-13), this becomes a real multi-entry catalog and should adopt the
+   * SAME `Object.create(null)` + `Object.hasOwn` + `satisfies` shape
+   * `factories` above already uses — not before, per this project's own
+   * "generalise when there is a second real case, not before" precedent
+   * (see e.g. `ImplementedConnectorTarget`'s own doc comment on why
+   * `active_directory` was the proof this shape genuinely generalises).
+   */
+  async resolveGroupConnector(target: ConnectorTarget, tx: DbHandle): Promise<DirectoryGroupConnector | null> {
+    if (target !== 'active_directory') {
+      return null
+    }
+    const config = await this.loadConfig(target, tx)
+    return this.activeDirectoryConnector.configure(config)
+  }
+
+  /** The one Postgres read every `resolve*` method needs — `connector_targets.config` for `target`, via the CALLER's own `tx` (see `resolve`'s own doc comment on connection discipline). `undefined`/no row resolves to an empty config, same as before this was extracted. */
+  private async loadConfig(target: ConnectorTarget, tx: DbHandle): Promise<Record<string, unknown>> {
     const [row] = await tx
       .select({ config: connectorTargets.config })
       .from(connectorTargets)
       .where(eq(connectorTargets.target, target))
       .limit(1)
-    const config = row?.config ?? {}
-
-    const factory = this.factories[target as ImplementedConnectorTarget]
-    return factory(config)
+    return row?.config ?? {}
   }
 }

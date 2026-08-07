@@ -327,8 +327,21 @@ export class GroupsRepository {
       )
   }
 
-  async listDirectUserMembers(groupId: string): Promise<string[]> {
-    const rows = await this.db
+  /**
+   * `db` is an OPTIONAL trailing handle, defaulting to the injected pooled
+   * connection (`this.db`) — same contract as `create`/`findById`/`update`
+   * above. Widened for Milestone 11, Task 6's `SyncWorker.
+   * buildDesiredGroupMemberExternalIds` (sync.worker.ts), which threads its
+   * open transaction through here instead of defaulting to the pool —
+   * finding C1 (docs/superpowers/audit-integrity.md), the same reason
+   * `listEffectiveUserMembers`/`listEffectiveGroupsForUser` were widened in
+   * Milestone 4.
+   */
+  async listDirectUserMembers(
+    groupId: string,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<string[]> {
+    const rows = await db
       .select({ userId: groupUserMembers.userId })
       .from(groupUserMembers)
       .where(eq(groupUserMembers.groupId, groupId))
@@ -459,8 +472,17 @@ export class GroupsRepository {
       )
   }
 
-  async listDirectChildGroups(groupId: string): Promise<string[]> {
-    const rows = await this.db
+  /**
+   * `db` is an OPTIONAL trailing handle, defaulting to the injected pooled
+   * connection (`this.db`) — same contract, widened for the SAME reason
+   * (Milestone 11, Task 6's `SyncWorker.buildDesiredGroupMemberExternalIds`)
+   * as `listDirectUserMembers` immediately above.
+   */
+  async listDirectChildGroups(
+    groupId: string,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<string[]> {
+    const rows = await db
       .select({ childGroupId: groupGroupMembers.childGroupId })
       .from(groupGroupMembers)
       .where(eq(groupGroupMembers.parentGroupId, groupId))

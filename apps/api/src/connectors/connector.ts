@@ -185,6 +185,93 @@ export interface ConnectorHealth {
  * Google user CREATION is that adapter's own narrow, explicitly-documented
  * exception, not something this interface or Task 2's connectors do.)
  */
+/**
+ * Milestone 11, Task 6 — one directory backend's DESIRED state for one
+ * GROUP's own identity and DIRECT membership edges. Separate from
+ * `DesiredUser.groups` (the flattened EFFECTIVE membership a user asserts
+ * about itself — see that field's own doc comment) on purpose: `.groups` has
+ * ALREADY discarded every bit of nesting structure by the time a connector
+ * ever sees it (`SyncWorker.effectiveGroupNames` walks the full ancestor
+ * closure), so a connector that only ever consumed it could never represent
+ * AD's own native group-in-group nesting — only ever a flat, Keycloak-style
+ * membership. `DesiredGroup` is what makes native nesting possible: it
+ * carries this ONE group's DIRECT edges only, so a connector can choose,
+ * PER EDGE, whether to write a native nested reference or a flattened
+ * stand-in — see `ActiveDirectoryConnector`'s own "nesting decision" doc
+ * comment for the exact rule this system settled on.
+ */
+export interface DesiredGroup {
+  name: string
+  /**
+   * Every principal (user OR group, indiscriminately — LDAP's `member`
+   * attribute does not care) that should be a DIRECT member of this group,
+   * expressed as THAT PRINCIPAL'S OWN already-correlated immutable id for
+   * this same target (never a DN, never a name — both move; same rule
+   * `DesiredUser.existingExternalId` follows). Computed by `SyncWorker.
+   * buildDesiredGroupMemberExternalIds` (sync.worker.ts) by mixing two kinds
+   * of source, per direct local edge:
+   *  - a direct CHILD-GROUP edge whose child already has a correlated id
+   *    for this target contributes THAT CHILD'S OWN id — this is what a
+   *    connector turns into a genuine nested group-in-group reference
+   *    (native nesting).
+   *  - a direct CHILD-GROUP edge whose child has NO correlated id yet (never
+   *    synced to this target) contributes that child's current EFFECTIVE
+   *    USER ids instead (however many of THOSE happen to already be
+   *    correlated) — a flattened stand-in that keeps this group's own
+   *    membership complete and correct in the meantime, self-healing into a
+   *    real nested edge the moment the child itself finishes syncing (the
+   *    very next reconcile pass, since desired state is always recomputed
+   *    fresh — never a one-time upgrade this system has to remember to do).
+   *  - a direct USER edge contributes that user's own correlated id, or
+   *    nothing at all if that user has not yet synced either (same
+   *    self-healing reasoning).
+   * A principal that never resolves (a stale id AD no longer recognises —
+   * should not happen, since neither side of this system ever deletes) is
+   * simply skipped by the connector rather than failing the whole group.
+   */
+  memberExternalIds: readonly string[]
+  /** Same purpose as `DesiredUser.existingExternalId` — this group's PREVIOUSLY-correlated immutable id for this target, if any, letting a connector re-identify it by immutable id instead of falling back to its (mutable) name. */
+  existingExternalId?: string
+}
+
+/**
+ * Milestone 11, Task 6 — group-shaped sync, ADDITIVE and ORTHOGONAL to
+ * `DirectoryConnector`'s four settled, user-shaped methods (unchanged, never
+ * widened — see that interface's own doc comment on why there is
+ * deliberately no `delete`; the same "do not casually widen a settled
+ * interface" discipline applies here, which is why this is a SEPARATE
+ * interface rather than two more methods bolted onto `DirectoryConnector`).
+ *
+ * OPTIONAL: a target implements this ONLY when it has a genuine native
+ * group-nesting concept worth preserving. `KeycloakConnector`/`EchoConnector`
+ * do not implement it — their own group membership is already fully
+ * expressed through `DesiredUser.groups` inside `apply()` (Keycloak:
+ * `ensureGroup` + `setUserGroups`, one flat Keycloak group per local group;
+ * echo: recorded verbatim) and stays exactly as it was before this task.
+ * `ActiveDirectoryConnector` is the first (and, this milestone, only)
+ * implementation — see its own doc comment for the concrete nesting rule.
+ * `ConnectorRegistry.resolveGroupConnector` is how a caller (`SyncWorker`)
+ * discovers, per target, whether this capability exists at all; a target
+ * with no group connector falls back to the pre-existing per-user
+ * `DesiredUser.groups` path, unchanged.
+ */
+export interface DirectoryGroupConnector {
+  /** The operations `applyGroup(desired)` WOULD run, writing nothing — same contract as `DirectoryConnector.plan`. */
+  planGroup(desired: DesiredGroup): Promise<ConnectorOperation[]>
+
+  /**
+   * Asserts the WHOLE desired group identity + direct membership — never a
+   * delta (same reconcile-to-desired-state rule `DirectoryConnector.apply`
+   * follows) — and returns the target's own immutable id for this group.
+   * Must not partially apply: a thrown error must leave this group's target
+   * state exactly as it was before the call (see `ActiveDirectoryConnector.
+   * applyGroup`'s own doc comment for how CREATE achieves this atomically
+   * and UPDATE achieves it via an ordered, self-healing sequence, mirroring
+   * `apply()`'s own UPDATE-path discipline for users).
+   */
+  applyGroup(desired: DesiredGroup): Promise<{ externalId: string }>
+}
+
 export interface DirectoryConnector {
   /** The operations `apply(desired)` WOULD run, writing nothing to the target. Every connector is dry-runnable (design doc decision 7). */
   plan(desired: DesiredUser): Promise<ConnectorOperation[]>

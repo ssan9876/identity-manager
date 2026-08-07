@@ -2,7 +2,14 @@ import { Injectable } from '@nestjs/common'
 import { Attribute, Change, Client, EqualityFilter } from 'ldapts'
 import type tls from 'node:tls'
 import { escapeDnValue, escapeFilterValue, guidBufferToString, guidStringToBuffer } from './ad-guid'
-import type { ConnectorHealth, ConnectorOperation, DesiredUser, DirectoryConnector } from './connector'
+import type {
+  ConnectorHealth,
+  ConnectorOperation,
+  DesiredGroup,
+  DesiredUser,
+  DirectoryConnector,
+  DirectoryGroupConnector,
+} from './connector'
 import { resolveSecret } from './secrets'
 
 // userAccountControl bits this connector reads/writes — MS-ADTS 2.2.16. Only
@@ -24,6 +31,26 @@ const UAC_NORMAL_ACCOUNT = 0x0200
 // connector has no code path that could set one even if it wanted to (no
 // `unicodePwd`/`userPassword` ever appears anywhere below).
 const UAC_PASSWD_NOTREQD = 0x0020
+
+// MS-ADTS 2.2.13 `groupType` bit flags. Milestone 11, Task 6 — every group
+// this connector ever creates is a GLOBAL SECURITY group, uniformly. See
+// this class's own "nesting decision" doc comment below for the full
+// reasoning; the short version: within a single AD domain (this connector's
+// own, documented scope — design doc, "Out of scope": "single domain per
+// configured target"), Global-in-Global nesting has no group-SCOPE
+// compatibility ceiling on real Windows AD, so a uniform choice here is what
+// removes group scope from ever being a reason THIS connector's own nesting
+// could fail — independent of whatever the target DC does or does not
+// enforce at the raw LDAP layer (verified empirically, against the real
+// Samba AD container this task tests against, that scope-mismatch nesting —
+// e.g. a Domain Local group nested inside a Global one — is NOT rejected at
+// all at that layer; real Windows AD is documented to reject it, so this
+// connector never relies on the DC to catch a mistake it can simply never
+// make by construction). The signed-32-bit encoding: `0x80000002` as a
+// signed int32 is `-2147483646` — LDAP transmits `groupType` as a decimal
+// string of the SIGNED value, the same convention `userAccountControl`
+// already uses elsewhere in this file.
+const GROUP_TYPE_GLOBAL_SECURITY = '-2147483646'
 
 /**
  * `connector_targets.config` for `target = 'active_directory'` — the
@@ -227,9 +254,109 @@ function objectGuidFilter(externalId: string): EqualityFilter {
  * `userPassword`. `UAC_PASSWD_NOTREQD`'s own doc comment records exactly why
  * an always-disabled-until-enabled account can still reach `enabled: true`
  * with no password ever having existed.
+ *
+ * ---------------------------------------------------------------------
+ * MILESTONE 11, TASK 6 — GROUPS AND MEMBERSHIP: THE NESTING DECISION
+ * ---------------------------------------------------------------------
+ *
+ * This system models groups as a DAG: direct edges (`group_group_members`,
+ * `group_user_members`) plus a recursive, effective closure over them
+ * (`GroupsRepository.listEffectiveUserMembers`/`listEffectiveGroupsForUser`).
+ * AD represents group containment with its own native mechanism — a
+ * group's `member` attribute can hold another group's DN, and AD evaluates
+ * that transitively (confirmed empirically against the real Samba container
+ * this task tests against, via the `LDAP_MATCHING_RULE_IN_CHAIN` OID,
+ * `1.2.840.113556.1.4.1941` — a transitive query for "every group that
+ * contains this leaf, at any depth" returned every ancestor correctly). The
+ * question this task poses is which local shapes map onto that native
+ * mechanism, and which do not.
+ *
+ * THE RULE THIS CONNECTOR IMPLEMENTS:
+ *
+ * 1. Every local group syncs to AD as its own GLOBAL SECURITY group
+ *    (`GROUP_TYPE_GLOBAL_SECURITY`), uniformly — never Domain Local, never
+ *    Universal. Domain Local groups are conventionally for resource ACLs
+ *    (file shares, printers), not portable role/team containers; Universal
+ *    groups exist to span multiple domains in a forest, which this
+ *    connector never does (design doc, "Out of scope": "single domain per
+ *    configured target") — choosing Universal here would buy nothing while
+ *    adding real Global-Catalog replication cost for every membership
+ *    change. Global is the idiomatic default for exactly this system's
+ *    shape: one domain, admin-recognisable role/team groups.
+ *
+ * 2. A local group-to-group edge (one row of `group_group_members`) maps
+ *    onto a NATIVE nested `member` edge — the child group's own AD DN added
+ *    to the parent's `member` attribute — WHENEVER the child has already
+ *    been correlated for this target (a row in `external_group_identities`
+ *    exists, i.e. it has synced before and this connector knows its
+ *    objectGUID). Within one domain, with every group here uniformly Global
+ *    scope, Global-in-Global nesting has no depth ceiling and no
+ *    scope-compatibility wall on real Windows AD (documented: nesting is
+ *    supported "indefinitely" for same-domain Global-in-Global from Windows
+ *    2000 native mode onward) — so this is the rule for the OVERWHELMING
+ *    majority of real traffic: nest natively, always, once both sides
+ *    exist.
+ *
+ * 3. THE ONE SHAPE THAT DOES NOT FIT NATIVE NESTING, CONCRETELY: a child
+ *    group that has NEVER YET SYNCED to this target. LDAP's `member`
+ *    attribute is DN-valued — it cannot reference an object that does not
+ *    exist yet, and each local group is its own independent sync unit (its
+ *    own outbox aggregate, its own `external_group_identities` row, able to
+ *    fail and retry independently of every other group — see this task's
+ *    own "a group whose membership sync fails does not corrupt another
+ *    group's membership" requirement). A parent can therefore legitimately
+ *    be reconciled before a brand-new child has ever reached AD. Rather
+ *    than leave the parent's membership silently incomplete (or fail the
+ *    parent's ENTIRE sync over one not-yet-provisioned child, which would
+ *    also block converging every OTHER, unrelated edge on that same
+ *    parent), this connector FLATTENS: it substitutes that child's current
+ *    LOCAL EFFECTIVE users (already-correlated ones only) as DIRECT members
+ *    of the parent instead of a nested group reference. This is real
+ *    "flattened effective membership," not a fallback for its own sake —
+ *    see `DesiredGroup.memberExternalIds`'s own doc comment
+ *    (connector.ts) for exactly how `SyncWorker.
+ *    buildDesiredGroupMemberExternalIds` computes it. It is also
+ *    SELF-HEALING with no special "upgrade" step: reconcile-to-desired-state
+ *    means the very next reconcile pass, once the child itself has synced
+ *    and gained a correlated objectGUID, recomputes desired state fresh and
+ *    naturally emits the real nested edge instead — the flattened stand-in
+ *    simply stops being computed, and this connector's own diff (in
+ *    `applyGroup`) removes the flattened member DNs and adds the one real
+ *    nested one, same as any other membership change.
+ *
+ * WHAT THIS CONNECTOR DELIBERATELY DOES NOT RELY ON: AD/Samba itself to
+ * reject an unsupported shape. Empirically (this task's own probes, against
+ * the real Samba container): a group-in-group CYCLE is not rejected, a
+ * group added as its OWN direct member is not rejected, and even a
+ * Domain-Local-inside-Global SCOPE MISMATCH is not rejected — Samba's LDAP
+ * layer enforces none of the higher-level business rules real Windows AD
+ * tooling is documented to enforce. This connector never depends on any of
+ * that: cycles and self-membership can never reach this connector at all
+ * (`GroupsRepository.addChildGroup`'s advisory-locked cycle check is the
+ * ACTUAL, sole guarantee — this connector adds no second layer of cycle
+ * defence, and does not need to), and the scope question is sidestepped
+ * entirely by rule 1 (uniform Global scope means there is never a
+ * DIFFERENT scope to mismatch against, for any group this connector itself
+ * manages).
+ *
+ * RENAME: a group rename is a PLAIN `modifyDN` on the CN component — the
+ * exact same primitive `apply()` already uses to rename a USER (see this
+ * class's own CONNECTION LIFECYCLE doc comment above), and nothing more.
+ * This is deliberate, not an oversight: verified empirically (this task's
+ * own probes) that AD/Samba maintains `member`/`memberOf` DN references
+ * AUTOMATICALLY across a `modifyDN` — renaming a nested group updates every
+ * PARENT that references it (the stale old DN disappears from their
+ * `member` list, the new DN appears, with no separate write from this
+ * connector), and renaming a USER updates every GROUP that has them as a
+ * direct member the same way. `applyGroup`'s own UPDATE path therefore does
+ * exactly one thing for a name change — `modifyDN` — and trusts AD's own
+ * referential-integrity behaviour for everything downstream of it, exactly
+ * as confirmed by `test/active-directory-groups.connector.spec.ts`'s own
+ * rename-preserves-membership proof (re-read over a fresh bind, per this
+ * task's own instruction to verify rather than assume).
  */
 @Injectable()
-export class ActiveDirectoryConnector implements DirectoryConnector {
+export class ActiveDirectoryConnector implements DirectoryConnector, DirectoryGroupConnector {
   private rawConfig: Record<string, unknown> = {}
   private client: Client | null = null
   private boundConfig: ActiveDirectoryConnectorConfig | null = null
@@ -464,6 +591,125 @@ export class ActiveDirectoryConnector implements DirectoryConnector {
   }
 
   // -------------------------------------------------------------------
+  // Group sync (Milestone 11, Task 6) — see this class's own "THE NESTING
+  // DECISION" doc comment above for the full rule these two methods
+  // implement.
+  // -------------------------------------------------------------------
+
+  async planGroup(desired: DesiredGroup): Promise<ConnectorOperation[]> {
+    return this.withClient(async (client, config) => {
+      const existing = await this.findExistingGroup(client, config, desired)
+      if (existing === null) {
+        return [{ kind: 'create', description: `create AD group "${desired.name}"` }]
+      }
+
+      const ops: ConnectorOperation[] = []
+      const targetDn = `CN=${escapeDnValue(desired.name)},${config.baseDN}`
+      if (!dnEquals(existing.dn, targetDn)) {
+        ops.push({
+          kind: 'update',
+          description: `rename AD group "${existing.dn}" to "${targetDn}"`,
+        })
+      }
+
+      const desiredMemberDns = await this.resolveMemberDns(client, config, desired.memberExternalIds)
+      const currentMemberDns = await this.readGroupMemberDns(client, existing.dn)
+      if (!sameDnSet(currentMemberDns, desiredMemberDns)) {
+        ops.push({
+          kind: 'update',
+          description: `reconcile AD group "${desired.name}" membership`,
+        })
+      }
+
+      return ops
+    })
+  }
+
+  /**
+   * Asserts one group's own identity (create, or rename-in-place via
+   * `modifyDN` — see this class's own "THE NESTING DECISION" doc comment for
+   * why a rename needs nothing beyond that) and its DIRECT `member` edges,
+   * reconciled to `desired.memberExternalIds` exactly — added edges are
+   * missing DNs, removed edges are DNs no longer desired, every OTHER
+   * existing member is left untouched. CREATE carries the group's initial
+   * member list in the SAME atomic `add()` as its own identity (mirroring
+   * `apply()`'s own CREATE-path atomicity for users — "either this entry is
+   * created complete, or it does not exist at all"); UPDATE places identity
+   * (rename) BEFORE membership, so a connection drop between the two still
+   * leaves the group correctly named and findable by `objectGUID`, with
+   * membership simply catching up on the next reconcile — the identical
+   * "safe, self-healing intermediate state" discipline `apply()` already
+   * uses for a user's own UPDATE path.
+   */
+  async applyGroup(desired: DesiredGroup): Promise<{ externalId: string }> {
+    return this.withClient(async (client, config) => {
+      const existing = await this.findExistingGroup(client, config, desired)
+      const targetDn = `CN=${escapeDnValue(desired.name)},${config.baseDN}`
+      const desiredMemberDns = await this.resolveMemberDns(client, config, desired.memberExternalIds)
+
+      if (existing === null) {
+        const attributes: Record<string, string | string[]> = {
+          objectClass: ['top', 'group'],
+          sAMAccountName: desired.name,
+          groupType: GROUP_TYPE_GLOBAL_SECURITY,
+        }
+        if (desiredMemberDns.length > 0) {
+          attributes.member = desiredMemberDns
+        }
+        await client.add(targetDn, attributes)
+        const guid = await this.readObjectGuid(client, targetDn)
+        return { externalId: guidBufferToString(guid) }
+      }
+
+      let currentDn = existing.dn
+      if (!dnEquals(existing.dn, targetDn)) {
+        // A REAL bug caught empirically while writing this task's own rename
+        // test (the very kind of discovery Task 5's report already warned a
+        // future reader to expect): `modifyDN` renames the RDN (the `cn`
+        // attribute) but does NOT touch `sAMAccountName` — a SEPARATE
+        // attribute AD never keeps in sync with the DN on its own. This
+        // connector derives BOTH `targetDn`'s CN component and
+        // `sAMAccountName` from the SAME `desired.name`, so the two must be
+        // kept in lockstep explicitly. Attribute change FIRST, placement
+        // SECOND — the identical ordering discipline `apply()` already uses
+        // for a user's own rename (profile attributes, including
+        // `sAMAccountName`, before `modifyDN` there too), for the identical
+        // reason: a connection drop between the two still leaves the group
+        // correctly findable by `objectGUID`, in a safe, self-healing
+        // intermediate state.
+        await client.modify(
+          existing.dn,
+          new Change({
+            operation: 'replace',
+            modification: new Attribute({ type: 'sAMAccountName', values: [desired.name] }),
+          }),
+        )
+        await client.modifyDN(existing.dn, targetDn)
+        currentDn = targetDn
+      }
+
+      const currentMemberDns = await this.readGroupMemberDns(client, currentDn)
+      const toAdd = desiredMemberDns.filter((dn) => !currentMemberDns.some((current) => dnEquals(current, dn)))
+      const toRemove = currentMemberDns.filter((dn) => !desiredMemberDns.some((wanted) => dnEquals(wanted, dn)))
+
+      const changes: Change[] = []
+      if (toAdd.length > 0) {
+        changes.push(new Change({ operation: 'add', modification: new Attribute({ type: 'member', values: toAdd }) }))
+      }
+      if (toRemove.length > 0) {
+        changes.push(
+          new Change({ operation: 'delete', modification: new Attribute({ type: 'member', values: toRemove }) }),
+        )
+      }
+      if (changes.length > 0) {
+        await client.modify(currentDn, changes)
+      }
+
+      return { externalId: existing.externalId }
+    })
+  }
+
+  // -------------------------------------------------------------------
   // Connection lifecycle
   // -------------------------------------------------------------------
 
@@ -678,6 +924,79 @@ export class ActiveDirectoryConnector implements DirectoryConnector {
     return entry === undefined ? null : String(entry.dn)
   }
 
+  /**
+   * `objectGUID` FIRST (via `desired.existingExternalId`), `sAMAccountName`
+   * fallback — the GROUP-shaped mirror of `findExisting` above (see its own
+   * doc comment for the full reasoning; identical here, just scoped to
+   * `(objectClass=group)` so a name collision with a differently-typed
+   * object, however unlikely, is never mistaken for the group being
+   * resolved).
+   */
+  private async findExistingGroup(
+    client: Client,
+    config: ActiveDirectoryConnectorConfig,
+    desired: DesiredGroup,
+  ): Promise<ExistingEntry | null> {
+    if (desired.existingExternalId !== undefined) {
+      const { searchEntries } = await client.search(config.baseDN, {
+        scope: 'sub',
+        filter: objectGuidFilter(desired.existingExternalId),
+        attributes: ['distinguishedName'],
+      })
+      const entry = searchEntries[0]
+      if (entry !== undefined) {
+        return { dn: String(entry.dn), externalId: desired.existingExternalId }
+      }
+      // Same deliberate fall-through as `findExisting` — see its own doc
+      // comment.
+    }
+
+    const { searchEntries } = await client.search(config.baseDN, {
+      scope: 'sub',
+      filter: `(&(objectClass=group)(sAMAccountName=${escapeFilterValue(desired.name)}))`,
+      attributes: ['distinguishedName', 'objectGUID'],
+      explicitBufferAttributes: ['objectGUID'],
+    })
+    const entry = searchEntries[0]
+    if (entry === undefined) {
+      return null
+    }
+    const guid = entry.objectGUID
+    if (!Buffer.isBuffer(guid)) {
+      throw new Error(`ActiveDirectoryConnector: expected objectGUID to be returned as a buffer for "${entry.dn}"`)
+    }
+    return { dn: String(entry.dn), externalId: guidBufferToString(guid) }
+  }
+
+  /**
+   * `DesiredGroup.memberExternalIds` (a set of objectGUID strings — see that
+   * field's own doc comment) resolved to each principal's CURRENT DN, via
+   * the SAME `findDnByGuid` `disable()` already uses. A correlated id that
+   * no longer resolves in AD (should not happen — neither this system nor
+   * AD ever deletes) is skipped rather than failing the whole group sync
+   * over one stale reference.
+   */
+  private async resolveMemberDns(
+    client: Client,
+    config: ActiveDirectoryConnectorConfig,
+    externalIds: readonly string[],
+  ): Promise<string[]> {
+    const dns: string[] = []
+    for (const externalId of externalIds) {
+      const dn = await this.findDnByGuid(client, config, externalId)
+      if (dn !== null) {
+        dns.push(dn)
+      }
+    }
+    return dns
+  }
+
+  /** This group's CURRENT direct `member` DNs, as plain strings — reuses `readEntry`/`toStringArray`, the same normalisation every other attribute read in this file already goes through. */
+  private async readGroupMemberDns(client: Client, dn: string): Promise<string[]> {
+    const entry = await this.readEntry(client, dn, ['member'])
+    return toStringArray(entry.member)
+  }
+
   private async readObjectGuid(client: Client, dn: string): Promise<Buffer> {
     const { searchEntries } = await client.search(dn, {
       scope: 'base',
@@ -735,6 +1054,13 @@ export class ActiveDirectoryConnector implements DirectoryConnector {
 /** Case-insensitive DN comparison — AD DNs are case-preserving but case-insensitive (matching AD's own `distinguishedName` semantics); comparing case-sensitively would report a spurious "move" for a DN AD itself considers unchanged. */
 function dnEquals(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase()
+}
+
+/** Order-independent, case-insensitive DN SET equality — `planGroup`'s own "would membership actually change" check, the group-membership analogue of `attributesEqual` elsewhere in this file. */
+function sameDnSet(a: readonly string[], b: readonly string[]): boolean {
+  const setA = new Set(a.map((dn) => dn.toLowerCase()))
+  const setB = new Set(b.map((dn) => dn.toLowerCase()))
+  return setA.size === setB.size && [...setA].every((dn) => setB.has(dn))
 }
 
 /** Whether reconnecting is necessary: the fields that actually determine WHERE/WHO/HOW we connect. `createMissingOrgUnits`/timeouts changing does not need a fresh socket. */
