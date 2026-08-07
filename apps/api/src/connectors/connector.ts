@@ -43,6 +43,27 @@ export type ConnectorTarget =
  * (Keycloak: ensureGroup + setUserGroups; echo: recorded verbatim).
  */
 export interface DesiredUser {
+  /**
+   * THIS system's own `users.id` — not a remote id, and not correlated with
+   * anything downstream. REQUIRED and always populated, unlike the optional,
+   * target-gated fields below: it costs nothing to compute (every caller
+   * already holds the loaded user) and an optional field that is in practice
+   * always set is a lie about the shape of the data.
+   *
+   * Exists because a target may address a principal by OUR id rather than by
+   * one of its own. `mail_server` is the first: its provisioning API is
+   * `PUT /provisioning/identities/{external_id}` where that key IS this
+   * uuid, so without this field that connector cannot construct a URL at
+   * all. Keying on `username` instead is explicitly rejected by the
+   * counterpart's own spec — "keying on external_id rather than the address
+   * is what makes renames correct: a changed email becomes a rename of an
+   * existing mailbox, not an orphan plus a new empty one" — and `username`
+   * is mutable here too, so it carries the identical defect. Targets that
+   * correlate by an immutable id of their OWN (AD/Entra/Google, via
+   * `existingExternalId` below) simply ignore this.
+   */
+  userId: string
+
   username: string
   email: string
   firstName: string

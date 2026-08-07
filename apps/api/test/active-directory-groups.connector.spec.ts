@@ -165,6 +165,7 @@ describe('ActiveDirectoryConnector groups and membership (Milestone 11, Task 6)'
   function baseDesiredUser(overrides: Partial<DesiredUser> = {}): DesiredUser {
     const username = nextUsername()
     return {
+      userId: '00000000-0000-4000-8000-000000000001',
       username,
       email: `${username}@example.com`,
       firstName: 'Test',

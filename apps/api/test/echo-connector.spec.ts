@@ -11,6 +11,7 @@ afterAll(() => {
 
 function desiredUser(overrides: Partial<DesiredUser> = {}): DesiredUser {
   return {
+    userId: '00000000-0000-4000-8000-000000000001',
     username: 'echo-user@example.com',
     email: 'echo-user@example.com',
     firstName: 'Echo',

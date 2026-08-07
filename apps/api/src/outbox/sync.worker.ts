@@ -539,6 +539,7 @@ export class SyncWorker implements OnApplicationShutdown {
     const desiredEnabled = user.status === 'active'
 
     return {
+      userId: user.id,
       username: user.username,
       email: user.primaryEmail,
       firstName: user.firstName,

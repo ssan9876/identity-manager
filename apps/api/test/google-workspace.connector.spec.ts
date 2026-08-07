@@ -116,6 +116,7 @@ describe('GoogleWorkspaceConnector (Milestone 13, Task 8)', () => {
   function baseDesired(overrides: Partial<DesiredUser> = {}): DesiredUser {
     const username = nextUsername()
     return {
+      userId: '00000000-0000-4000-8000-000000000001',
       username,
       email: username,
       firstName: 'Test',
