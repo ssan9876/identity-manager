@@ -273,7 +273,22 @@ export class SyncWorker implements OnApplicationShutdown {
     const message = error instanceof Error ? error.message : String(error)
     const attempts = claimed.attempts + 1
 
-    if (attempts >= this.config.maxAttempts) {
+    // A PERMANENT failure is one no amount of retrying can fix — an address
+    // collision, an unhosted domain, a malformed payload. The mail server's
+    // own spec asks callers to distinguish these: "409 and 422 are permanent
+    // failures the connector should dead-letter rather than retry forever;
+    // 5xx is retriable." Retrying them burns the full backoff schedule AND,
+    // because ordering is per (aggregate, target), head-of-line blocks every
+    // later event for that same principal on that same target for the
+    // duration — so one malformed alias would stall a user's mail sync for
+    // the ~40 minutes the schedule takes to exhaust.
+    //
+    // Structural check rather than `instanceof`: the flag is the contract, so
+    // any connector can opt in without this generic layer importing a
+    // target-specific error type.
+    const permanent = (error as { permanent?: unknown } | null)?.permanent === true
+
+    if (permanent || attempts >= this.config.maxAttempts) {
       await this.outboxRepository.markFailed(tx, claimed.id, { attempts, lastError: message })
       if (claimed.aggregateType === 'user') {
         await this.markUserSyncFailed(tx, claimed.aggregateId, claimed.target)

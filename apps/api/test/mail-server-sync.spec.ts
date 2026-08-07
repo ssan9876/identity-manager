@@ -3,11 +3,11 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { NotApplicableError } from '../src/connectors/connector'
 import { ConnectorRegistry } from '../src/connectors/connector-registry'
 import { EchoConnector } from '../src/connectors/echo.connector'
-import { MailServerConnector } from '../src/connectors/mail-server.connector'
+import { MailServerConnector, MailServerRequestError } from '../src/connectors/mail-server.connector'
 import { attributeDefinitions } from '../src/db/schema/attribute-definitions'
 import { connectorTargets } from '../src/db/schema/connector-targets'
 import { externalIdentities, externalIdentitySystem } from '../src/db/schema/external-identities'
-import { outboxTarget } from '../src/db/schema/outbox-events'
+import { outboxEvents, outboxTarget } from '../src/db/schema/outbox-events'
 import { GroupsRepository } from '../src/groups/groups.repository'
 import { KeycloakAdminClient } from '../src/keycloak/keycloak-admin.client'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
@@ -208,6 +208,45 @@ describe('mail server connector (DB-backed)', () => {
       await expect(
         ctx.db.transaction((tx) => worker.reconcileUser(tx, user.id, 'echo')),
       ).rejects.toThrow('503')
+    })
+  })
+
+  describe('permanent failures', () => {
+    it('dead-letter on the first attempt instead of burning the backoff', async () => {
+      await ctx.db
+        .insert(connectorTargets)
+        .values({ target: 'echo', enabled: true, config: { credentialSecretName: 'ECHO_SECRET' } })
+        .onConflictDoUpdate({ target: connectorTargets.target, set: { enabled: true } })
+      process.env.ECHO_SECRET = 'test-secret'
+
+      const user = await makeUserWithStatus('active')
+      const echo = new EchoConnector()
+      echo.apply = async () => {
+        throw new MailServerRequestError(409, { detail: 'address already taken' })
+      }
+      const worker = makeWorker(new ConnectorRegistry(unusedKeycloak(), echo))
+
+      // Repositories do not emit outbox rows — the writer is driven from the
+      // service layer — so the event is inserted directly, the same way
+      // sync.worker.spec.ts's own `insertOutboxEvent` helper does.
+      const { rows } = await ctx.pool.query<{ id: string }>(
+        `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, next_attempt_at, target)
+         VALUES ('user', $1, 'created', '{}'::jsonb, now(), 'echo') RETURNING id`,
+        [user.id],
+      )
+      const eventId = Number(rows[0].id)
+
+      expect(await worker.runOnce()).toBe('processed')
+
+      const [event] = await ctx.db
+        .select()
+        .from(outboxEvents)
+        .where(eq(outboxEvents.id, eventId))
+        .limit(1)
+
+      // Dead-lettered on attempt 1, not after the full 8-attempt schedule.
+      expect(event.status).toBe('failed')
+      expect(event.attempts).toBe(1)
     })
   })
 
