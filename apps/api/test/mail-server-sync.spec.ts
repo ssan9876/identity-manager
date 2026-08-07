@@ -1,5 +1,9 @@
+import { and, eq } from 'drizzle-orm'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { NotApplicableError } from '../src/connectors/connector'
 import { ConnectorRegistry } from '../src/connectors/connector-registry'
+import { EchoConnector } from '../src/connectors/echo.connector'
+import { connectorTargets } from '../src/db/schema/connector-targets'
 import { externalIdentities, externalIdentitySystem } from '../src/db/schema/external-identities'
 import { outboxTarget } from '../src/db/schema/outbox-events'
 import { GroupsRepository } from '../src/groups/groups.repository'
@@ -148,6 +152,60 @@ describe('mail server connector (DB-backed)', () => {
         expect(desired.managedAttributeRemoteNames).toBeDefined()
         expect(desired.existingExternalId).toBeUndefined()
       }
+    })
+  })
+
+  // Exercised against `echo` rather than `mail_server`: the handling is
+  // entirely generic, and testing it here keeps it independent of the mail
+  // connector's own existence and registration.
+  describe('NotApplicableError', () => {
+    // Inserted directly rather than by a migration — Postgres forbids using
+    // an enum value inside the transaction that added it, which is why every
+    // non-keycloak target's tests already seed their own row this way.
+    async function enableEcho(): Promise<void> {
+      await ctx.db
+        .insert(connectorTargets)
+        .values({ target: 'echo', enabled: true, config: { credentialSecretName: 'ECHO_SECRET' } })
+        .onConflictDoUpdate({ target: connectorTargets.target, set: { enabled: true } })
+      process.env.ECHO_SECRET = 'test-secret'
+    }
+
+    const identityRows = (userId: string) =>
+      ctx.db
+        .select()
+        .from(externalIdentities)
+        .where(and(eq(externalIdentities.userId, userId), eq(externalIdentities.system, 'echo')))
+
+    function workerWithEcho(applyImpl: () => Promise<never>): SyncWorker {
+      const echo = new EchoConnector()
+      echo.apply = applyImpl
+      return makeWorker(new ConnectorRegistry(unusedKeycloak(), echo))
+    }
+
+    it('completes without writing a correlation row', async () => {
+      await enableEcho()
+      const user = await makeUserWithStatus('active')
+      const worker = workerWithEcho(async () => {
+        throw new NotApplicableError('echo', 'nothing to represent for this principal')
+      })
+
+      await expect(
+        ctx.db.transaction((tx) => worker.reconcileUser(tx, user.id, 'echo')),
+      ).resolves.toBeUndefined()
+
+      expect(await identityRows(user.id)).toHaveLength(0)
+    })
+
+    it('still propagates every other error, so real failures retry', async () => {
+      await enableEcho()
+      const user = await makeUserWithStatus('active')
+      const worker = workerWithEcho(async () => {
+        throw new Error('target returned 503')
+      })
+
+      await expect(
+        ctx.db.transaction((tx) => worker.reconcileUser(tx, user.id, 'echo')),
+      ).rejects.toThrow('503')
     })
   })
 })

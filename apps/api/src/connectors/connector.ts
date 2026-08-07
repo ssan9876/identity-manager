@@ -189,6 +189,35 @@ export interface DesiredUser {
   managedAttributeRemoteNames?: readonly string[]
 }
 
+/**
+ * Thrown by `DirectoryConnector.apply` when this connector has NOTHING to
+ * represent for this principal — not a failure, and not something to retry.
+ *
+ * `apply()` returns `{ externalId: string }` with no null case, and
+ * `external_identities.external_id` is `NOT NULL`, so there is otherwise
+ * nowhere to express "did nothing, correlate nothing". `SyncWorker.
+ * reconcileUser` catches this, skips the correlation upsert, and lets the
+ * event complete normally.
+ *
+ * Deliberately NOT modelled as widening `apply()`'s return to `| null`: that
+ * would force every connector to acknowledge a case exactly one of them has,
+ * against the "do not casually widen a settled interface" discipline
+ * `DirectoryConnector`'s own doc comment records. And deliberately NOT
+ * modelled as a check hoisted up into `SyncWorker`: eligibility is a
+ * property of a TARGET, decided at apply time. Deciding it at EMISSION time
+ * instead is a correctness bug — a user who becomes ineligible would then
+ * emit no event at all, and their downstream account would live forever.
+ */
+export class NotApplicableError extends Error {
+  constructor(
+    readonly target: ConnectorTarget,
+    readonly reason: string,
+  ) {
+    super(`${target}: nothing to apply for this principal — ${reason}`)
+    this.name = 'NotApplicableError'
+  }
+}
+
 export type ConnectorOperationKind = 'create' | 'update' | 'disable'
 
 /** One line of a `plan()` result — human-legible, never itself applied (see `DirectoryConnector.plan`). */

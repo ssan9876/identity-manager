@@ -561,6 +561,7 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
         // coincidental absence.
         const applyCall = echoConnector.calls.find((call) => call.method === 'apply')
         expect(applyCall?.desired).toEqual({
+          userId: user.id,
           username: user.username,
           email: user.primaryEmail,
           firstName: user.firstName,

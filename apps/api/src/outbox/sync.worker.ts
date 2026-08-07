@@ -6,6 +6,7 @@ import { DB_CLIENT } from '../common/db.token'
 import { buildTargetAttributes, computeCoreFieldValues } from '../connectors/attribute-mapping'
 import { ConnectorRegistry } from '../connectors/connector-registry'
 import type { DesiredGroup, DesiredUser, DirectoryGroupConnector } from '../connectors/connector'
+import { NotApplicableError } from '../connectors/connector'
 import * as schema from '../db/schema/index'
 import { externalGroupIdentities } from '../db/schema/external-group-identities'
 import { externalIdentities } from '../db/schema/external-identities'
@@ -443,7 +444,21 @@ export class SyncWorker implements OnApplicationShutdown {
     const desired = await this.buildDesiredUser(tx, user, target)
 
     const connector = await this.connectorRegistry.resolve(target, tx)
-    const { externalId } = await connector.apply(desired)
+
+    let externalId: string
+    try {
+      ;({ externalId } = await connector.apply(desired))
+    } catch (error) {
+      if (error instanceof NotApplicableError) {
+        // NOT a failure: this connector has nothing to represent for this
+        // user, so there is no id to correlate and nothing to retry. The
+        // event completes normally — see NotApplicableError's own doc
+        // comment. Every OTHER error falls through to `runOnce`'s existing
+        // retry/dead-letter bookkeeping, unchanged.
+        return
+      }
+      throw error
+    }
 
     await tx
       .insert(externalIdentities)
