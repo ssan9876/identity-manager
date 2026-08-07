@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "preview": "vite preview",
-    "test": "echo \"no unit tests yet\" && exit 0",
+    "test": "node scripts/check-css-tokens.mjs",
     "test:e2e": "playwright test"
   },
   "dependencies": {
@@ -19,6 +20,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0",
+    "@types/node": "^26.1.2",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.2",

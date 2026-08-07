@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "start:dev": "node --watch --require @swc-node/register --env-file-if-exists=../../.env src/main.ts",
     "test": "vitest run",
     "smoke:dev": "tsx --env-file-if-exists=../../.env scripts/smoke-dev.ts",

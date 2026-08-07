@@ -11,12 +11,9 @@
   box-sizing: border-box;
 }
 
-:root {
-  /* DESIGN.md: light, single theme — deliberately not reactive to the OS/
-     browser's own dark-mode preference. color-scheme keeps native form
-     controls, scrollbars, etc. rendered light regardless of that setting. */
-  color-scheme: light;
-}
+/* `color-scheme` (native form controls, scrollbars, etc.) now tracks the
+   resolved theme — set per-palette in tokens.css, not hardcoded here. See
+   that file's header comment for the light/dark resolution order. */
 
 html,
 body {
@@ -32,6 +29,25 @@ body {
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* Deliberately NO transition here, even though a page-wide crossfade on
+     theme switch sounds appealing. Tried it (Milestone 9, Task 2) and the
+     e2e suite itself caught why it is wrong: `<body>` exists in the DOM,
+     with a browser-default `transparent` background, before its real
+     stylesheet has necessarily applied — in Vite dev mode specifically,
+     CSS is injected by the JS module graph (main.tsx's `import
+     './styles/*.css'`), which runs after the HTML parser has already
+     created <body>. A `transition` on `background-color` at that point
+     means the FIRST real style calculation is a CHANGE (transparent ->
+     --bg), not an initial value, so the browser animates it — on a dark
+     theme this is a page that visibly fades in from transparent (showing
+     the browser's white canvas through it) on every load, which is
+     exactly the "flash of the wrong theme" this task exists to prevent,
+     self-inflicted. Interactive components (buttons, inputs, tabs, nav
+     links, `.theme-toggle`'s own icon swap, …) don't have this problem —
+     React only mounts them after the CSS has already loaded, so their
+     first computed style IS already correct, no transition fires on
+     mount, only on later state changes. `<body>` is uniquely exposed
+     because it is static HTML, not React-rendered. */
 }
 
 h1,

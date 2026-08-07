@@ -212,6 +212,7 @@ export default function EditUserPage() {
 
       <PersonForm
         mode="edit"
+        personId={person.id}
         initialCore={initialCore}
         initialAttributeValues={initialAttributeStringValues(attributeDefs, person.attributes)}
         attributeDefinitions={attributeDefs}

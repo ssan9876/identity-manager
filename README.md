@@ -153,6 +153,8 @@ string fails to boot instead of silently running with owner privileges.
 ## Running tests
 
 ```bash
+pnpm verify                        # the full gate: typecheck, build both packages, the API suite
+pnpm verify:quick                  # typecheck + build only — no containers, fast enough for every commit
 pnpm test                          # unit + integration tests across all packages
 pnpm --filter @idm/api smoke:dev   # boots the real dev server and hits it over HTTP
 pnpm --filter @idm/web test:e2e    # Playwright end-to-end tests
@@ -162,6 +164,27 @@ pnpm --filter @idm/web test:e2e    # Playwright end-to-end tests
 Testcontainers, independent of the Compose stack. `smoke:dev` and the
 Playwright suite exercise the app the way a human would, against the running
 Compose stack.
+
+## Continuous integration
+
+This repository has no git remote, so a workflow file alone would protect
+nothing — `pnpm verify` is the gate that actually runs today, with no runner
+and no network dependency beyond Docker. It typechecks both packages
+(including `apps/api/scripts/`, previously outside the `tsc` program and
+never checked by anything), lints if a linter is configured, builds both
+packages, and runs the full ~756-test API suite against disposable
+Testcontainers — one command, one exit code, and it fails loudly on the first
+broken stage rather than continuing past it. Run `pnpm verify:quick`
+(typecheck + build, no containers) before every commit, and the full
+`pnpm verify` before anything that matters more.
+
+`.github/workflows/ci.yml` runs the identical `pnpm verify` gate on every
+push and pull request, plus the Playwright E2E suite against the Compose
+stack — ready for the day this repository has a remote to trigger it on.
+GitHub-hosted runners provide Docker out of the box, so both Testcontainers
+and `docker compose` work there unmodified. No step in that workflow uses
+`continue-on-error`: a job that cannot start its services is a failure, never
+a silent pass.
 
 ## SECURITY STATUS
 
@@ -234,7 +257,9 @@ grant path the API exposes requires the grantor to already hold
 `role:assign`, which nobody does yet on an empty database.
 
 Do not point this build at a real organization's data, and do not expose it
-beyond a local development environment: there is still **no CI**, so every
-compile-time guarantee depends on someone remembering to run `build`, and the
-comprehensive adversarial security audit planned for the end of this
-sub-project has not run yet.
+beyond a local development environment: the comprehensive adversarial
+security audit planned for the end of this sub-project has not run yet.
+`pnpm verify` (see "Continuous integration" above) is the compile-time gate
+that protects this repository today; `.github/workflows/ci.yml` runs the same
+gate automatically, plus Playwright E2E, once this repository has a remote to
+push to.

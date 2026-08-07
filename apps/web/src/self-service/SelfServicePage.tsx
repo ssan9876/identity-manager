@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useAuth } from 'react-oidc-context'
-import { coerceAttributeValue, AttributeInput } from '../attributes/AttributeField'
+import { coerceAttributeValue, AttributeFieldRow } from '../attributes/AttributeField'
 import { accountConsoleUrl } from '../auth/account-console'
+import { Field } from '../forms/Field'
 import {
   ApiError,
   fetchSelfGroups,
@@ -12,6 +13,7 @@ import {
   type SelfProfile,
   type SelfUpdatePatch,
 } from './api'
+import './SelfServicePage.css'
 
 type FieldValues = Record<string, string>
 
@@ -49,23 +51,34 @@ function labelFor(fieldName: string): string {
  * `directIds` and the wider `groups` list (always `effective`, a superset —
  * see SelfGroupsResponse's doc comment on the API side) together give the
  * two states task-4-brief.md requires be "visually distinct": a distinct
- * badge class/text per state, not just a shared undifferentiated list.
+ * `data-membership`/label per state. Reuses `.group-member-list` (styles/
+ * components.css) — the exact "a named thing plus a status indicator" row
+ * shape GroupMembersTab's own membership rows already use — rather than the
+ * page's own bespoke, unstyled list Milestone 9 Task 2's dark-mode audit
+ * found here (task-2-report.md: no `.detail-grid`, `.field`/`.input`,
+ * `.btn`, or `badge--*` anywhere in this page's JSX at all — its
+ * `badge-direct`/`badge-inherited` classes did not even match any selector
+ * in components.css, which only defines double-dash `badge--*`). Direct and
+ * inherited both render `badge--neutral` (this task's own choice): neither
+ * is an "exception" in DESIGN.md's colour-marks-the-exception sense the way
+ * pending/suspended/danger are — the WORD is what distinguishes them, which
+ * DESIGN.md's own badge contract requires regardless of colour.
  */
 function GroupList({ groups, directIds }: { groups: SelfGroup[]; directIds: Set<string> }) {
   if (groups.length === 0) {
     return <p>You are not a member of any group.</p>
   }
   return (
-    <ul data-testid="self-groups-list">
+    <ul className="group-member-list" data-testid="self-groups-list">
       {groups.map((group) => {
         const isDirect = directIds.has(group.id)
         return (
-          <li key={group.id} data-testid={`self-group-${group.id}`}>
-            {group.name}{' '}
+          <li key={group.id} className="group-member-list__row" data-testid={`self-group-${group.id}`}>
+            <span>{group.name}</span>
             <span
               data-testid={`self-group-badge-${group.id}`}
               data-membership={isDirect ? 'direct' : 'inherited'}
-              className={isDirect ? 'badge badge-direct' : 'badge badge-inherited'}
+              className="badge badge--neutral"
             >
               {isDirect ? 'Direct' : 'Inherited'}
             </span>
@@ -86,6 +99,19 @@ function GroupList({ groups, directIds }: { groups: SelfGroup[]; directIds: Set<
  * list. The API is the sole source of truth for what may be edited: this
  * component builds its form from whatever `editable` says, and relies on
  * the server to reject (400, naming the field) anything outside it.
+ *
+ * Milestone 9, Task 3: brought onto the shared component vocabulary
+ * (styles/components.css) — `.text-subject`/`.text-title` headings,
+ * `.detail-grid` for the profile `<dl>`, the shared `Field`/`AttributeFieldRow`
+ * components (identical to what PersonForm already uses) for the edit form,
+ * `.btn`/`.btn--primary` for its submit button, and `.group-member-list` for
+ * the groups list — this is the one screen every employee sees, and it was
+ * the one screen still rendering as plain unstyled HTML in both themes (see
+ * task-2-report.md's own "found and not changed" note; task-3-report.md
+ * carries the full before/after). Every `id`/`data-testid`/visible text/
+ * accessible name below is UNCHANGED from before this pass — only markup
+ * structure and `className`s moved — so e2e/self-service.spec.ts required no
+ * changes of its own.
  */
 export default function SelfServicePage() {
   const auth = useAuth()
@@ -161,16 +187,19 @@ export default function SelfServicePage() {
 
   if (loadError !== null) {
     return (
-      <main>
-        <p role="alert">Could not load your profile: {loadError}</p>
+      <main className="self-service">
+        <div className="error-panel" role="alert">
+          <p className="error-panel__message">Could not load your profile: {loadError}</p>
+        </div>
       </main>
     )
   }
 
   if (profile === null || groups === null) {
     return (
-      <main>
-        <p>Loading your profile…</p>
+      <main className="self-service" aria-busy="true">
+        <span className="skeleton" style={{ width: '10rem', height: '1.5rem', display: 'block' }} />
+        <span className="skeleton" style={{ width: '100%', height: '10rem', display: 'block', marginTop: 'var(--space-6)' }} />
       </main>
     )
   }
@@ -178,83 +207,121 @@ export default function SelfServicePage() {
   const hasEditableFields = profile.editable.coreFields.length > 0 || profile.editable.attributes.length > 0
 
   return (
-    <main>
-      <h1>My Profile</h1>
+    <main className="self-service">
+      <h1 className="text-subject">My Profile</h1>
 
-      <section aria-labelledby="self-profile-heading">
-        <h2 id="self-profile-heading">Profile</h2>
-        <dl>
-          <dt>Username</dt>
-          <dd data-testid="self-username">{profile.username}</dd>
-          <dt>Name</dt>
-          <dd data-testid="self-display-name">{profile.displayName}</dd>
-          <dt>Email</dt>
-          <dd>{profile.primaryEmail}</dd>
-          <dt>Status</dt>
-          <dd data-testid="self-status">{profile.status}</dd>
-          <dt>Job title</dt>
-          <dd>{profile.jobTitle ?? '—'}</dd>
-          <dt>Location</dt>
-          <dd data-testid="self-location-current">{profile.location ?? '—'}</dd>
+      <section className="self-service__section" aria-labelledby="self-profile-heading">
+        <h2 id="self-profile-heading" className="text-title">
+          Profile
+        </h2>
+        <dl className="detail-grid">
+          <div>
+            <dt>Username</dt>
+            <dd data-testid="self-username">{profile.username}</dd>
+          </div>
+          <div>
+            <dt>Name</dt>
+            <dd data-testid="self-display-name">{profile.displayName}</dd>
+          </div>
+          <div>
+            <dt>Email</dt>
+            <dd>{profile.primaryEmail}</dd>
+          </div>
+          <div>
+            <dt>Status</dt>
+            <dd data-testid="self-status">{profile.status}</dd>
+          </div>
+          <div>
+            <dt>Job title</dt>
+            <dd>{profile.jobTitle ?? '—'}</dd>
+          </div>
+          <div>
+            <dt>Location</dt>
+            <dd data-testid="self-location-current">{profile.location ?? '—'}</dd>
+          </div>
         </dl>
       </section>
 
-      <section aria-labelledby="self-credentials-heading">
-        <h2 id="self-credentials-heading">Credentials</h2>
+      <section className="self-service__section" aria-labelledby="self-credentials-heading">
+        <h2 id="self-credentials-heading" className="text-title">
+          Credentials
+        </h2>
         <p>
           Password and multi-factor authentication are managed by Keycloak, never here — this
           only links out to Keycloak&rsquo;s own Account Console.
         </p>
-        <a href={accountConsoleUrl()} target="_blank" rel="noreferrer" data-testid="self-account-console-link">
+        <a
+          href={accountConsoleUrl()}
+          target="_blank"
+          rel="noreferrer"
+          className="btn btn--secondary"
+          data-testid="self-account-console-link"
+        >
           Manage password &amp; MFA
         </a>
       </section>
 
-      <section aria-labelledby="self-groups-heading">
-        <h2 id="self-groups-heading">Groups</h2>
+      <section className="self-service__section" aria-labelledby="self-groups-heading">
+        <h2 id="self-groups-heading" className="text-title">
+          Groups
+        </h2>
         <GroupList groups={groups.effective} directIds={directIds} />
       </section>
 
-      <section aria-labelledby="self-edit-heading">
-        <h2 id="self-edit-heading">Edit profile</h2>
+      <section className="self-service__section" aria-labelledby="self-edit-heading">
+        <h2 id="self-edit-heading" className="text-title">
+          Edit profile
+        </h2>
         {!hasEditableFields && <p>No editable fields are configured.</p>}
 
-        <form onSubmit={(e) => void handleSubmit(e)}>
+        <form className="self-service__edit-form" onSubmit={(e) => void handleSubmit(e)}>
           {profile.editable.coreFields.map((field) => (
-            <div key={field}>
-              <label htmlFor={`self-edit-${field}`}>{labelFor(field)}</label>
+            <Field key={field} id={`self-edit-${field}`} label={labelFor(field)}>
               <input
                 id={`self-edit-${field}`}
+                className="input"
                 data-testid={`self-edit-${field}`}
                 type="text"
                 value={coreValues[field] ?? ''}
                 onChange={(e) => setCoreValues((prev) => ({ ...prev, [field]: e.target.value }))}
               />
-            </div>
+            </Field>
           ))}
 
           {profile.editable.attributes.map((definition) => (
-            <div key={definition.key}>
-              <label htmlFor={`self-edit-attr-${definition.key}`}>{definition.label}</label>
-              <AttributeInput
-                id={`self-edit-attr-${definition.key}`}
-                definition={definition}
-                value={attributeValues[definition.key] ?? ''}
-                onChange={(value) =>
-                  setAttributeValues((prev) => ({ ...prev, [definition.key]: value }))
-                }
-              />
-            </div>
+            <AttributeFieldRow
+              key={definition.key}
+              idPrefix="self-edit-attr"
+              definition={definition}
+              value={attributeValues[definition.key] ?? ''}
+              onChange={(value) => setAttributeValues((prev) => ({ ...prev, [definition.key]: value }))}
+            />
           ))}
 
           {hasEditableFields && (
-            <button type="submit" disabled={saveState === 'saving'}>
-              Save changes
-            </button>
+            <div className="self-service__actions">
+              <button
+                type="submit"
+                className="btn btn--primary"
+                disabled={saveState === 'saving'}
+                data-loading={saveState === 'saving' ? 'true' : undefined}
+              >
+                <span className="btn__label">Save changes</span>
+                <span className="btn__spinner" aria-hidden="true" />
+              </button>
+            </div>
           )}
 
-          {saveState === 'saved' && <p data-testid="self-save-success">Saved.</p>}
-          {saveError !== null && <p role="alert">{saveError}</p>}
+          {saveState === 'saved' && (
+            <p className="field__hint" role="status" data-testid="self-save-success">
+              Saved.
+            </p>
+          )}
+          {saveError !== null && (
+            <p className="error-panel__message" role="alert">
+              {saveError}
+            </p>
+          )}
         </form>
       </section>
     </main>

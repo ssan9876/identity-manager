@@ -70,7 +70,7 @@
   border-color: var(--primary-hover);
 }
 .btn--primary:active:not(:disabled) {
-  box-shadow: inset 0 1px 3px oklch(0 0 0 / 0.25);
+  box-shadow: inset 0 1px 3px var(--shadow-inset);
 }
 .btn--primary:disabled {
   background: var(--border);
@@ -280,6 +280,111 @@
 }
 
 /* ---------------------------------------------------------------------
+ * Combobox — the reusable search-as-you-type picker (Milestone 9, Task 3;
+ * forms/Combobox.tsx, first used by people/PersonPicker.tsx for the
+ * manager field). The trigger reuses .input (applied alongside
+ * .combobox__input below) so it inherits hover/focus/disabled/
+ * field--error for free — only what a combobox adds on top (the clear
+ * button, the results popup) is styled here.
+ *
+ * The popup renders through a portal at `position: fixed`, computed from
+ * the trigger's own bounding rect — DESIGN.md bans `position: absolute`
+ * inside an `overflow` container (it clips); a portal additionally means
+ * this never depends on an ancestor NOT establishing its own containing
+ * block. --z-dropdown is the exact token DESIGN.md's z-index scale
+ * reserves for this.
+ * ------------------------------------------------------------------- */
+
+.combobox {
+  position: relative;
+}
+.combobox__control {
+  position: relative;
+  display: flex;
+}
+.combobox__input {
+  width: 100%;
+  padding-right: var(--space-7);
+}
+.combobox__clear {
+  position: absolute;
+  top: 50%;
+  right: var(--space-1);
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  font-size: var(--text-md);
+  line-height: 1;
+  color: var(--ink-muted);
+  border-radius: var(--radius-sm);
+  transition:
+    color var(--motion-duration) var(--motion-ease),
+    background-color var(--motion-duration) var(--motion-ease);
+}
+.combobox__clear:hover {
+  color: var(--ink);
+  background: var(--surface-sunken);
+}
+
+.combobox__listbox {
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-1);
+  overflow-y: auto;
+  z-index: var(--z-dropdown);
+}
+.combobox__status {
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  text-align: center;
+}
+.combobox__status--error {
+  color: var(--danger);
+}
+.combobox__option {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+/* Keyboard-highlighted and mouse-hovered are kept visually identical on
+   purpose — moving the mouse over an option also moves the keyboard-active
+   index onto it (forms/Combobox.tsx's onMouseEnter), so the two states are
+   already kept in sync by the component; one rule covers both without
+   drifting apart, the same reasoning .table tbody tr:hover uses for a
+   keyboard-navigated row. */
+.combobox__option:hover,
+.combobox__option--active {
+  background: var(--surface-sunken);
+}
+.combobox__option-name {
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--ink);
+}
+.combobox__option-meta {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+
+/* people/PersonPicker.tsx's own fallback for a manager outside the
+   caller's scope — same wording/shape as .group-member-list's identical
+   "outside what your role can see" row (GroupMembersTab), reused here
+   rather than reinvented. */
+.person-picker__unresolvable {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  min-height: 2.25rem;
+}
+
+/* ---------------------------------------------------------------------
  * Skeletons — for content loading into a known shape. Spinners are
  * reserved for in-button work (see .btn__spinner above).
  * ------------------------------------------------------------------- */
@@ -296,7 +401,7 @@
   position: absolute;
   inset: 0;
   transform: translateX(-100%);
-  background: linear-gradient(90deg, transparent, oklch(1 0 0 / 0.7), transparent);
+  background: linear-gradient(90deg, transparent, var(--skeleton-shine), transparent);
   animation: skeleton-shimmer 1.6s ease-in-out infinite;
 }
 @keyframes skeleton-shimmer {
@@ -577,14 +682,22 @@
 
 .confirm-dialog {
   width: min(28rem, calc(100vw - var(--space-8)));
-  border: none;
+  /* A visible border, not just the shadow below, defines the edge — in
+     light mode a black shadow reads clearly against the dimmed white page
+     behind it, but in dark mode BOTH the shadow and --backdrop are
+     black-based over an already-dark page, so shadow alone (confirmed via
+     the visual pass) leaves the dialog's boundary much softer than in
+     light mode. --border-strong is subtle enough not to change the light-
+     mode look meaningfully while fixing dark mode. Same reasoning
+     .nav-dialog (AppShell.css) already applies via its own border-right. */
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   padding: var(--space-6);
   background: var(--bg);
   box-shadow: var(--shadow-md);
 }
 .confirm-dialog::backdrop {
-  background: oklch(0.205 0.01 110 / 0.4);
+  background: var(--backdrop);
 }
 .confirm-dialog__body {
   margin-top: var(--space-3);

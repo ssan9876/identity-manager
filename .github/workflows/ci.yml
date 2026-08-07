@@ -1,0 +1,102 @@
+# Continuous integration.
+#
+# This repository has no git remote yet (see `scripts/verify.mjs`'s own header
+# comment) — a workflow file alone protects nothing until something pushes to
+# a remote that actually runs it. `pnpm verify` (this workflow's centerpiece,
+# via the "Verify" step below) is the gate that already runs locally today;
+# this file is the same gate wired up for the day a remote exists, plus the
+# one thing local `verify` deliberately skips: the Playwright E2E suite,
+# which needs the full compose stack and a running dev server, not just
+# Testcontainers.
+#
+# GitHub-hosted `ubuntu-latest` runners provide a working Docker daemon out of
+# the box, so both Testcontainers (inside `pnpm verify`'s API suite) and this
+# repo's own `docker compose` stack work here unmodified — no dind service,
+# no extra setup.
+#
+# Every step below runs to completion or fails the job — nothing here uses
+# `continue-on-error`. A job that cannot start its services is a failure, not
+# a skip.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify + E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Must run before actions/setup-node's `cache: pnpm` below, which shells
+      # out to `pnpm store path` to find what to cache.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      # The contract-required, explicit frozen install: fails loudly if
+      # pnpm-lock.yaml and any package.json have drifted apart, rather than
+      # silently rewriting the lockfile mid-CI-run.
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      # Playwright's own recommended CI caching split: OS-level shared
+      # libraries (apt packages) are never persisted by actions/cache (this
+      # runner's filesystem is thrown away after the job regardless), so
+      # `install-deps` always runs; only the browser binary download itself
+      # — the slow part — is skipped on a cache hit.
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install Playwright OS dependencies
+        run: pnpm --filter @idm/web exec playwright install-deps chromium
+
+      - name: Install Playwright browser (chromium)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter @idm/web exec playwright install chromium
+
+      # Starts Postgres + Keycloak, waits for both to actually be ready
+      # (Keycloak takes 20-40s cold), seeds .env from .env.example at both
+      # the repo root and apps/web, and runs db:migrate — the same script a
+      # human runs on a fresh clone (README.md's Quickstart, step 1). Its own
+      # internal `pnpm install` re-confirms the frozen install above changed
+      # nothing; it does not run with --frozen-lockfile itself, but nothing
+      # upstream of it touched package.json or the lockfile, so it is a fast
+      # no-op here.
+      - name: Start the compose stack and migrate (pnpm setup:all)
+        run: pnpm setup:all
+
+      # Without this, every E2E request 403s: a fresh database has no local
+      # `users` row and no role grant for the seeded Keycloak dev user, and
+      # nothing in the UI can grant the first role (see README's "SECURITY
+      # STATUS"). Playwright's login/people specs sign in as this account.
+      - name: Bootstrap the local admin account
+        run: pnpm bootstrap:admin
+
+      # Typecheck (now including apps/api/scripts/) + build both packages +
+      # the full 756-test API suite against disposable Testcontainers.
+      - name: Verify (typecheck, build, API suite)
+        run: pnpm verify
+
+      # Against the compose stack + a dev server Playwright starts itself
+      # (playwright.config.ts's webServer.command is `pnpm dev`) — ports
+      # 3000/5173 are free at this point, `pnpm verify` never binds them.
+      - name: Playwright E2E
+        run: pnpm --filter @idm/web run test:e2e

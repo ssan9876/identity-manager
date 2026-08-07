@@ -39,7 +39,16 @@ export interface ListPeopleParams {
   orgUnitId?: string
 }
 
-export function fetchPeople(accessToken: string, params: ListPeopleParams): Promise<Page<Person>> {
+/**
+ * `signal` is optional and additive — every existing call site (PeopleListPage,
+ * GroupMembersTab's AddMemberForm) keeps compiling unchanged. PersonPicker
+ * (Milestone 9, Task 3) is the first caller that passes one, so a superseded
+ * in-flight search can actually be cancelled at the network layer, not just
+ * ignored once it resolves — see forms/Combobox.tsx's own doc comment for why
+ * correctness does not depend on this (a sequence-number check does), but
+ * cancelling real, discarded requests is still worth doing.
+ */
+export function fetchPeople(accessToken: string, params: ListPeopleParams, signal?: AbortSignal): Promise<Page<Person>> {
   return authorizedRequest<Page<Person>>(
     `/users${buildQuery({
       limit: params.limit,
@@ -49,6 +58,7 @@ export function fetchPeople(accessToken: string, params: ListPeopleParams): Prom
       orgUnitId: params.orgUnitId,
     })}`,
     accessToken,
+    signal ? { signal } : undefined,
   )
 }
 

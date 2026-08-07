@@ -104,6 +104,62 @@
   text-decoration: underline;
 }
 
+/* ---------------------------------------------------------------------
+ * Theme toggle (ThemeToggle.tsx) — Milestone 9, Task 2. Both icons are
+ * always mounted, stacked on top of each other, and crossfaded by the
+ * [aria-pressed] attribute rather than swapped by React unmount/remount —
+ * that makes the transition a real CSS crossfade instead of a hard cut.
+ * Reads --motion-duration/--motion-ease exclusively, so tokens.css's
+ * prefers-reduced-motion collapse (both -> 1ms/linear) already covers this
+ * without a separate branch here.
+ *
+ * Stacking is `position: absolute; inset: 0; margin: auto` on each icon
+ * (relative to `.theme-toggle`, the button itself) — the SAME technique
+ * `.btn__spinner` (styles/components.css) already uses to centre one
+ * element over another, reused rather than a second pattern invented for
+ * this component. A first version used CSS Grid (both icons on the same
+ * `grid-area`) and it looked right in isolation, but the browser pass
+ * caught the real defect: with TWO grid items sharing one auto-sized track,
+ * base.css's global `svg { max-width: 100% }` resolved against that
+ * indefinite track size and collapsed the computed WIDTH to 0 (confirmed
+ * via getComputedStyle — height came out correct, 18px, width did not) —
+ * every icon was present in the DOM and fully opaque, just zero-width, so
+ * nothing painted. Absolute positioning against the button's own definite
+ * size has no such percentage-against-an-auto-track ambiguity.
+ * ------------------------------------------------------------------- */
+.theme-toggle {
+  position: relative;
+  flex: none;
+  width: 2.25rem;
+  padding: 0;
+}
+.theme-toggle__icon {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 1.125rem;
+  height: 1.125rem;
+  transition:
+    opacity var(--motion-duration) var(--motion-ease),
+    transform var(--motion-duration) var(--motion-ease);
+}
+.theme-toggle__icon--sun {
+  opacity: 1;
+  transform: rotate(0deg) scale(1);
+}
+.theme-toggle__icon--moon {
+  opacity: 0;
+  transform: rotate(-40deg) scale(0.7);
+}
+.theme-toggle[aria-pressed='true'] .theme-toggle__icon--sun {
+  opacity: 0;
+  transform: rotate(40deg) scale(0.7);
+}
+.theme-toggle[aria-pressed='true'] .theme-toggle__icon--moon {
+  opacity: 1;
+  transform: rotate(0deg) scale(1);
+}
+
 /* Below ~860px there isn't room for brand + search + the whole identity
    cluster on one 48px row — the "My Profile" text link is the least
    critical (it's also reachable via /self directly, and duplicated by the
@@ -209,7 +265,7 @@
   box-shadow: var(--shadow-md);
 }
 .nav-dialog::backdrop {
-  background: oklch(0.205 0.01 110 / 0.4);
+  background: var(--backdrop);
 }
 .nav-dialog__header {
   display: flex;

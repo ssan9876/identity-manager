@@ -4,6 +4,41 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Identity Manager</title>
+    <!--
+      Pre-paint theme resolution — Milestone 9, Task 2. Synchronous (no
+      type="module", no defer/async) and placed before any stylesheet, so it
+      runs and finishes during HEAD parsing, before the browser's first
+      paint. Sets data-theme on <html> ONLY when the user made an explicit
+      choice (persisted by shell/theme.ts's persistTheme, via
+      ThemeToggle.tsx); if they never did, this deliberately does nothing
+      and styles/tokens.css's `prefers-color-scheme` media query resolves
+      the theme instead — the browser applies that natively before paint
+      too, so there is no flash either way. What a flash WOULD look like
+      without this: an explicit "dark" choice persisted from a previous
+      visit, opened on a light-OS machine — without this script, the page
+      would paint light (no data-theme attribute yet -> the OS-driven
+      media query wins) and only flip to dark after React mounts and a
+      useEffect catches up. This closes that gap by setting the attribute
+      before that first paint ever happens.
+
+      Keep this in sync with shell/theme.ts's getStoredTheme/STORAGE_KEY —
+      this script cannot import that module (it runs before any bundled JS
+      exists), so the two independently implement the same algorithm.
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = window.localStorage.getItem('idm-theme')
+          if (stored === 'light' || stored === 'dark') {
+            document.documentElement.setAttribute('data-theme', stored)
+          }
+        } catch (e) {
+          // Storage inaccessible (private browsing, disabled, …) — fall
+          // back to prefers-color-scheme via CSS alone; that path never
+          // needed JS, so there is no flash risk here either.
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

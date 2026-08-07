@@ -4,6 +4,7 @@ import type { AttributeDefinition } from '../attributes/api'
 import { Field, fieldDescribedBy } from '../forms/Field'
 import type { FieldErrorResult } from '../forms/api-field-errors'
 import type { OrgUnit } from '../org-units/api'
+import { PersonPicker } from './PersonPicker'
 
 export interface PersonCoreFormValues {
   primaryEmail: string
@@ -52,7 +53,6 @@ export const CORE_FIELD_KEYS_BY_MODE: Record<'create' | 'edit', readonly (keyof 
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** One field's client-side check, run on both blur (immediate feedback) and submit (a safety net for a value that was never blurred, e.g. browser autofill). Deliberately much looser than the server's own Zod schemas — this exists to catch the common, cheap-to-catch mistakes before a round trip, not to duplicate every server rule; the server's field-named 400 is still the authority for everything else (task-3-brief.md). */
 function validateCoreField(
@@ -75,10 +75,6 @@ function validateCoreField(
       return raw.trim() === '' ? 'First name is required.' : null
     case 'lastName':
       return raw.trim() === '' ? 'Last name is required.' : null
-    case 'managerId':
-      return raw.trim() !== '' && !UUID_RE.test(raw.trim())
-        ? 'Enter a valid system ID (UUID), or leave blank.'
-        : null
     default:
       return null
   }
@@ -94,10 +90,16 @@ function validateAttributeField(definition: AttributeDefinition, raw: string): s
 interface CoreFieldConfig {
   key: Exclude<keyof PersonCoreFormValues, 'orgUnitId'>
   label: string
-  type: 'text' | 'email' | 'date'
+  type: 'text' | 'email' | 'date' | 'person-picker'
   hint?: string
 }
 
+// managerId keeps its place in this list — same array, same order — so it
+// renders exactly where it always has (between Employee ID and Location):
+// only ITS OWN entry's `type` differs, branched on below, rather than
+// managerId being pulled out into a separately-positioned block the way
+// orgUnitId is (orgUnitId has no natural position in this list at all — it
+// is create-only and always first).
 const CORE_FIELD_CONFIG: CoreFieldConfig[] = [
   { key: 'primaryEmail', label: 'Email', type: 'email' },
   { key: 'username', label: 'Username', type: 'text' },
@@ -105,12 +107,7 @@ const CORE_FIELD_CONFIG: CoreFieldConfig[] = [
   { key: 'lastName', label: 'Last name', type: 'text' },
   { key: 'jobTitle', label: 'Job title', type: 'text' },
   { key: 'employeeId', label: 'Employee ID', type: 'text' },
-  {
-    key: 'managerId',
-    label: 'Manager',
-    type: 'text',
-    hint: "The manager's system ID — copy it from the mono ID on their own profile page.",
-  },
+  { key: 'managerId', label: 'Manager', type: 'person-picker' },
   { key: 'location', label: 'Location', type: 'text' },
   { key: 'startDate', label: 'Start date', type: 'date' },
   { key: 'endDate', label: 'End date', type: 'date' },
@@ -123,6 +120,8 @@ export interface PersonFormSubmitPayload {
 
 export interface PersonFormProps {
   mode: 'create' | 'edit'
+  /** Edit mode only — the id of the person being edited, so the manager picker can exclude them from their own search results (nobody can be their own manager). Absent in create mode: the person does not have an id yet. */
+  personId?: string
   initialCore: PersonCoreFormValues
   initialAttributeValues: Record<string, string>
   attributeDefinitions: AttributeDefinition[]
@@ -150,6 +149,7 @@ export interface PersonFormProps {
  */
 export function PersonForm({
   mode,
+  personId,
   initialCore,
   initialAttributeValues,
   attributeDefinitions,
@@ -270,6 +270,24 @@ export function PersonForm({
         const id = `person-form-${field.key}`
         const error = fieldErrors[field.key]
         const required = field.key === 'primaryEmail' || field.key === 'username' || field.key === 'firstName' || field.key === 'lastName'
+
+        if (field.type === 'person-picker') {
+          return (
+            <Field id={id} key={field.key} label={field.label} required={required} error={error}>
+              <PersonPicker
+                id={id}
+                value={core[field.key]}
+                excludeId={personId}
+                disabled={submitting}
+                aria-invalid={Boolean(error) || undefined}
+                aria-describedby={fieldDescribedBy(id, error)}
+                onChange={(personIdValue) => updateCore(field.key, personIdValue)}
+                onBlur={() => handleCoreBlur(field.key)}
+              />
+            </Field>
+          )
+        }
+
         return (
           <Field id={id} key={field.key} label={field.label} required={required} error={error} hint={field.hint}>
             <input
