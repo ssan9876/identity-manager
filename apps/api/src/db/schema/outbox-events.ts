@@ -78,6 +78,11 @@ export const outboxTarget = pgEnum('outbox_target', [
   'entra_id',
   'google_workspace',
   'echo',
+  // Sub-project 4 — the mail server (D:\mail-server), whose own receiving
+  // half is already built and merged. Unlike every target above it, this one
+  // addresses a principal by OUR user id rather than by an id of its own —
+  // see `DesiredUser.userId`'s doc comment (connectors/connector.ts).
+  'mail_server',
 ])
 
 export const outboxStatus = pgEnum('outbox_status', [

@@ -120,6 +120,13 @@
       "when": 1786104796705,
       "tag": "0016_noisy_jack_power",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1786145845770,
+      "tag": "0017_youthful_cyclops",
+      "breakpoints": true
     }
   ]
 }

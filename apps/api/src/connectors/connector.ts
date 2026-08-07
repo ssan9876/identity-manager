@@ -11,7 +11,13 @@
 // instead of two independently hand-rolled unions is what makes
 // `external_identities.system` assignable directly from `event.target` with
 // no mapping table (see ConnectorRegistry/sync.worker.ts).
-export type ConnectorTarget = 'keycloak' | 'active_directory' | 'entra_id' | 'google_workspace' | 'echo'
+export type ConnectorTarget =
+  | 'keycloak'
+  | 'active_directory'
+  | 'entra_id'
+  | 'google_workspace'
+  | 'echo'
+  | 'mail_server'
 
 /**
  * A directory backend's DESIRED state for one user, already resolved to
