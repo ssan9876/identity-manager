@@ -5,10 +5,22 @@ import { users } from './users'
 // a consumer this milestone (Task 3's sync worker); 'active_directory' and
 // 'google_workspace' are named now so the unique-per-(user, system) shape
 // does not need a migration when a second backend arrives.
+//
+// Milestone 10, Task 2: widened to add `'entra_id'` (this enum's original
+// comment above anticipated `active_directory`/`google_workspace` but not
+// it — see outbox-events.ts's `outboxTarget` doc comment, which explicitly
+// left widening THIS enum for entra_id to this task) and `'echo'` (the
+// in-repo target — see the SAME doc comment for why it is a genuine,
+// migrated-in enum member rather than a test-only value). Every value here
+// now matches `outboxTarget` one-for-one, so `SyncWorker` can write a
+// correlation row using `event.target` directly as `system`, with no mapping
+// table between the two enums.
 export const externalIdentitySystem = pgEnum('external_identity_system', [
   'keycloak',
   'active_directory',
+  'entra_id',
   'google_workspace',
+  'echo',
 ])
 
 // Reflects whether THIS row's `external_id` is currently believed to match

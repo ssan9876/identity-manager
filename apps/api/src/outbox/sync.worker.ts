@@ -2,13 +2,15 @@ import { Inject, Injectable, type OnApplicationShutdown, Optional } from '@nestj
 import { and, eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { DB_CLIENT } from '../common/db.token'
+import { ConnectorRegistry } from '../connectors/connector-registry'
+import type { DesiredUser } from '../connectors/connector'
 import * as schema from '../db/schema/index'
 import { externalIdentities } from '../db/schema/external-identities'
 import { GroupsRepository } from '../groups/groups.repository'
-import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
+import { buildSyncedAttributes, KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
 import { UsersRepository } from '../users/users.repository'
 import { type ClaimedOutboxEvent, OutboxRepository } from './outbox.repository'
-import type { DbHandle } from './outbox.writer'
+import type { DbHandle, OutboxTarget } from './outbox.writer'
 
 export const SYNC_WORKER_CONFIG = Symbol('SYNC_WORKER_CONFIG')
 
@@ -96,6 +98,7 @@ export function computeBackoffDelayMs(
 @Injectable()
 export class SyncWorker implements OnApplicationShutdown {
   private readonly config: SyncWorkerConfig
+  private readonly connectorRegistry: ConnectorRegistry
   private timer: ReturnType<typeof setTimeout> | null = null
   private stopped = true
   private currentRun: Promise<void> = Promise.resolve()
@@ -107,8 +110,22 @@ export class SyncWorker implements OnApplicationShutdown {
     @Inject(GroupsRepository) private readonly groupsRepository: GroupsRepository,
     @Inject(KeycloakAdminClient) private readonly keycloak: KeycloakAdminClient,
     @Optional() @Inject(SYNC_WORKER_CONFIG) config?: Partial<SyncWorkerConfig>,
+    // Milestone 10, Task 2 — appended AFTER `config`, and OPTIONAL, so every
+    // pre-existing call site (raw `new SyncWorker(db, ..., keycloak)`, with
+    // or without a 6th `config` argument — reconcile-cli.ts, reconciliation.
+    // spec.ts, revocation.spec.ts, and this file's own `makeWorker`) keeps
+    // compiling unchanged. When omitted, this worker builds its OWN registry
+    // wrapping the SAME `keycloak` instance it was already given — including
+    // a test's `unreachableClient()`/`GatedKeycloakAdminClient` substitute —
+    // so every existing Keycloak-focused test keeps exercising the exact
+    // client it configured, now reached one layer further in (through
+    // `KeycloakConnector`) rather than called directly. Nest DI supplies a
+    // real, properly-wired one in production (see app.module.ts) — this
+    // default only matters for the raw-constructor call sites above.
+    @Optional() @Inject(ConnectorRegistry) connectorRegistry?: ConnectorRegistry,
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config }
+    this.connectorRegistry = connectorRegistry ?? new ConnectorRegistry(keycloak)
   }
 
   // -------------------------------------------------------------------
@@ -169,7 +186,7 @@ export class SyncWorker implements OnApplicationShutdown {
     if (attempts >= this.config.maxAttempts) {
       await this.outboxRepository.markFailed(tx, claimed.id, { attempts, lastError: message })
       if (claimed.aggregateType === 'user') {
-        await this.markUserSyncFailed(tx, claimed.aggregateId)
+        await this.markUserSyncFailed(tx, claimed.aggregateId, claimed.target)
       }
       return
     }
@@ -195,12 +212,18 @@ export class SyncWorker implements OnApplicationShutdown {
    * failed partway through, does not cleanly identify which of them are
    * actually out of sync. That gap is closed by Task 4's on-demand
    * reconciliation job, not by this worker.
+   *
+   * `target` (Milestone 10, Task 2) scopes the regression to the SAME
+   * `external_identities` row `reconcileUser` would have written on success
+   * — `system` and `outbox_events.target` share one literal set (see
+   * `ConnectorTarget`'s own doc comment), so `claimed.target` is used
+   * directly, with no mapping step.
    */
-  private async markUserSyncFailed(tx: DbHandle, userId: string): Promise<void> {
+  private async markUserSyncFailed(tx: DbHandle, userId: string, target: OutboxTarget): Promise<void> {
     await tx
       .update(externalIdentities)
       .set({ syncState: 'failed', updatedAt: new Date() })
-      .where(and(eq(externalIdentities.userId, userId), eq(externalIdentities.system, 'keycloak')))
+      .where(and(eq(externalIdentities.userId, userId), eq(externalIdentities.system, target)))
   }
 
   // -------------------------------------------------------------------
@@ -208,51 +231,57 @@ export class SyncWorker implements OnApplicationShutdown {
   // -------------------------------------------------------------------
 
   /**
-   * Dispatches on `event.aggregateType` only — NOT `event.target`, even
-   * though `ClaimedOutboxEvent` has carried `target` since Milestone 10,
-   * Task 1. That is deliberate, not an oversight: `connector_targets`
-   * (Task 1) seeds only `'keycloak'` as `enabled`, so `OutboxWriter.record`
-   * cannot yet emit — and this method can therefore never actually claim —
-   * a row for any other target; every branch below reaching Keycloak
-   * directly is still the ENTIRE correct behaviour today. Task 2 (connector
-   * interface, registry, echo target) is where a real target→connector
-   * dispatch belongs, once there is a second implementation to dispatch TO.
-   * Wiring that in ahead of Task 2 would mean guessing at an interface this
-   * task deliberately leaves unspecified — see the milestone plan's Task 2
-   * contract (`plan`/`apply`/`disable`/`health`).
+   * Dispatches on `event.aggregateType` AND, since Milestone 10 Task 2,
+   * `event.target` — every branch below threads `event.target` down into
+   * `reconcileUser`/`reconcileGroup`/`reconcileMembership`, which resolve a
+   * connector for THAT target via `ConnectorRegistry.resolve` instead of
+   * calling `KeycloakAdminClient` directly. This closes the gap Task 1's own
+   * report flagged: "claimed non-Keycloak events would be silently
+   * misprocessed as Keycloak ones" — a claimed `echo`-targeted event now
+   * genuinely reaches `EchoConnector`, never Keycloak, and a target with no
+   * registered connector fails loudly (`ConnectorRegistry.resolve` throws,
+   * caught by `runOnce`'s existing retry/dead-letter bookkeeping) rather
+   * than silently doing the wrong thing.
    */
   private async applyEvent(tx: DbHandle, event: ClaimedOutboxEvent): Promise<void> {
     switch (event.aggregateType) {
       case 'user':
-        await this.reconcileUser(tx, event.aggregateId)
+        await this.reconcileUser(tx, event.aggregateId, event.target)
         return
       case 'group':
-        await this.reconcileGroup(tx, event.aggregateId)
+        await this.reconcileGroup(tx, event.aggregateId, event.target)
         return
       case 'membership':
         await this.reconcileMembership(tx, event)
         return
       case 'org_unit':
-        // Org units have no Keycloak-side representation in this milestone
-        // — KeycloakAdminClient has no concept of one, and no user
-        // attribute is derived from org-unit fields — so there is nothing
-        // to reconcile. The event still exists and is drained (marked
-        // `done`) so it does not sit `pending` forever.
+        // Org units have no representation in ANY target in this milestone
+        // — no connector's DesiredUser carries anything derived from
+        // org-unit fields — so there is nothing to reconcile, regardless of
+        // target. The event still exists and is drained (marked `done`) so
+        // it does not sit `pending` forever.
         return
     }
   }
 
   /**
-   * Reconciles ONE user's full desired Keycloak state: profile fields,
+   * Reconciles ONE user's full desired state INTO `target`: profile fields,
    * `enabled`, default-deny-filtered attributes, and flattened effective
-   * group membership — then records the result in `external_identities`.
-   * Called directly for a `user`-aggregate event, and indirectly (fanned
-   * out) from `reconcileGroup`/`reconcileMembership` — every caller ends up
-   * here because this is the ONE place a user's sync actually completes.
+   * group membership — asserted via `ConnectorRegistry.resolve(target,
+   * tx).apply(desired)` (Milestone 10, Task 2), then recorded in
+   * `external_identities`. Called directly for a `user`-aggregate event, and
+   * indirectly (fanned out) from `reconcileGroup`/`reconcileMembership` —
+   * every caller ends up here because this is the ONE place a user's sync
+   * actually completes, for whichever target its own event named.
    *
    * Reads `users` fresh via `tx` and reasserts the WHOLE desired state on
    * every call, never a delta — calling this twice in a row for the same
-   * user is a no-op the second time (proven by the idempotence test).
+   * user is a no-op the second time (proven by the idempotence test). Every
+   * connector's `apply` shares this same reconcile-to-desired-state
+   * contract (`DirectoryConnector`'s own doc comment) — building `desired`
+   * ONCE, here, and handing it to whichever connector `target` resolves to,
+   * is what keeps that property target-agnostic rather than something each
+   * connector has to separately re-earn.
    *
    * FIRST ACTION, before any read: takes a per-user advisory lock scoped to
    * the CALLER's transaction — finding H2 (docs/superpowers/audit-
@@ -277,7 +306,7 @@ export class SyncWorker implements OnApplicationShutdown {
    * `applyEvent` (see that method's doc comment), so taking the lock via
    * `tx` still scopes it to `runOnce`'s own OUTER `db.transaction(...)` —
    * i.e. for as long as THIS worker holds its claim on the triggering event,
-   * covering every Keycloak round trip this call makes, not just the
+   * covering every round trip to the target this call makes, not just the
    * Postgres reads. A second worker calling `reconcileUser` for the SAME
    * `userId` — whether fanned out from a `group`/`membership` event or
    * claimed directly as a `user` event — blocks here until the first
@@ -292,7 +321,7 @@ export class SyncWorker implements OnApplicationShutdown {
    * `userId` is otherwise bound as an untyped parameter Postgres cannot
    * resolve to `hashtext`'s single overload without it.
    */
-  private async reconcileUser(tx: DbHandle, userId: string): Promise<void> {
+  private async reconcileUser(tx: DbHandle, userId: string, target: OutboxTarget): Promise<void> {
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(${SYNC_USER_LOCK_NAMESPACE}, hashtext(${userId}::text))`,
     )
@@ -312,62 +341,47 @@ export class SyncWorker implements OnApplicationShutdown {
 
     // Only an 'active' user is treated as a live principal anywhere else in
     // this system (PermissionEngine.resolveActor requires it). Mirroring
-    // that here keeps a pending/suspended/deactivated user's Keycloak
-    // account disabled — blocking login — until they are genuinely active.
-    // Suspend/deactivate additionally get a SYNCHRONOUS setEnabled(false)
-    // call on the request path (Task 4); this eventual-consistency pass is
-    // what converges everything else, including re-enabling on
-    // reactivation, and is the only path that ever flips it back to true.
+    // that here keeps a pending/suspended/deactivated user's account
+    // disabled in the target — blocking login — until they are genuinely
+    // active. Suspend/deactivate additionally get a SYNCHRONOUS
+    // setEnabled(false) call against Keycloak on the request path (Task 4);
+    // this eventual-consistency pass is what converges everything else,
+    // including re-enabling on reactivation, and is the only path that ever
+    // flips it back to true.
     const desiredEnabled = user.status === 'active'
 
-    const existing = await this.keycloak.findUserByUsername(user.username)
-    let keycloakUserId: string
-    if (existing === null) {
-      const created = await this.keycloak.createUser(
-        {
-          username: user.username,
-          email: user.primaryEmail,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          enabled: desiredEnabled,
-          attributes: user.attributes,
-        },
-        definitions,
-      )
-      keycloakUserId = created.id
-    } else {
-      await this.keycloak.updateUser(
-        user.username,
-        {
-          email: user.primaryEmail,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          attributes: user.attributes,
-        },
-        definitions,
-      )
-      // updateUser deliberately excludes `enabled` (see its own doc
-      // comment) — asserted separately so it converges independently of
-      // the rest of the profile.
-      await this.keycloak.setEnabled(user.username, desiredEnabled)
-      keycloakUserId = existing.id
+    const desired: DesiredUser = {
+      username: user.username,
+      email: user.primaryEmail,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      enabled: desiredEnabled,
+      // Default-deny filter, computed ONCE here and handed to whichever
+      // connector `target` resolves to — see `DesiredUser`'s own doc
+      // comment on why this stays the pre-existing `sync_to_keycloak` set
+      // for every target until Task 3 generalises it per-target, and
+      // KeycloakConnector's doc comment for why that connector's own
+      // `createUser`/`updateUser` calls do not need to filter a second time.
+      attributes: buildSyncedAttributes(user.attributes, definitions),
+      groups: await this.effectiveGroupNames(tx, user.id),
     }
 
-    await this.syncEffectiveGroups(tx, user.id, user.username)
+    const connector = await this.connectorRegistry.resolve(target, tx)
+    const { externalId } = await connector.apply(desired)
 
     await tx
       .insert(externalIdentities)
       .values({
         userId: user.id,
-        system: 'keycloak',
-        externalId: keycloakUserId,
+        system: target,
+        externalId,
         lastSyncedAt: new Date(),
         syncState: 'synced',
       })
       .onConflictDoUpdate({
         target: [externalIdentities.userId, externalIdentities.system],
         set: {
-          externalId: keycloakUserId,
+          externalId,
           lastSyncedAt: new Date(),
           syncState: 'synced',
           updatedAt: new Date(),
@@ -376,19 +390,20 @@ export class SyncWorker implements OnApplicationShutdown {
   }
 
   /**
-   * Pushes EFFECTIVE membership, flattened — settled decision (see the
-   * milestone plan / progress ledger): our groups are a nested DAG,
-   * Keycloak's are a flat-by-name tree (`ensureGroup` maps one Keycloak
-   * group per local group, at the realm's top level; see its own doc
-   * comment), so a user in a nested child group is pushed into EVERY
-   * ancestor group in Keycloak too, via `listEffectiveGroupsForUser`. This
-   * is recomputed fresh on every call — never cached, never taken from an
-   * event payload — so it is correct regardless of how many membership
-   * edges have changed since this user's Keycloak state was last synced.
-   *
-   * `setUserGroups` (Task 2) diffs against Keycloak's actual current
-   * membership and issues only the adds/removes needed, so calling this
-   * with an unchanged desired set is a zero-write no-op.
+   * The user's EFFECTIVE membership, flattened, as group NAMES — settled
+   * decision (see the milestone plan / progress ledger): our groups are a
+   * nested DAG; a user in a nested child group is effectively a member of
+   * EVERY ancestor group too, via `listEffectiveGroupsForUser`. Recomputed
+   * fresh on every call — never cached, never taken from an event payload —
+   * so it is correct regardless of how many membership edges have changed
+   * since this user's target-side state was last synced. Read-only: turning
+   * this into each target's OWN representation of membership (Keycloak:
+   * `ensureGroup` + `setUserGroups`, one Keycloak group per local group,
+   * flat at the realm's top level; echo: recorded verbatim) is each
+   * connector's own job inside `apply` (see `KeycloakConnector`/
+   * `EchoConnector`), not this method's — this method's only contract is
+   * "the locally-true flattened set of group NAMES," identical across every
+   * target.
    *
    * Takes `tx` and threads it into both `GroupsRepository` reads below —
    * finding C1 (docs/superpowers/audit-integrity.md): this method runs from
@@ -402,7 +417,7 @@ export class SyncWorker implements OnApplicationShutdown {
    * write handlers' fix, just for the worker's own transaction instead of a
    * request's.
    */
-  private async syncEffectiveGroups(tx: DbHandle, userId: string, username: string): Promise<void> {
+  private async effectiveGroupNames(tx: DbHandle, userId: string): Promise<string[]> {
     const effectiveGroupIds = await this.groupsRepository.listEffectiveGroupsForUser(userId, tx)
     const localGroups =
       effectiveGroupIds.length === 0
@@ -412,14 +427,7 @@ export class SyncWorker implements OnApplicationShutdown {
             { limit: effectiveGroupIds.length, offset: 0, scopePaths: null },
             tx,
           )
-
-    const keycloakGroupIds: string[] = []
-    for (const group of localGroups) {
-      const keycloakGroup = await this.keycloak.ensureGroup(group.name)
-      keycloakGroupIds.push(keycloakGroup.id)
-    }
-
-    await this.keycloak.setUserGroups(username, keycloakGroupIds)
+    return localGroups.map((group) => group.name)
   }
 
   /**
@@ -431,6 +439,20 @@ export class SyncWorker implements OnApplicationShutdown {
    * `reconcileUser` (idempotent — a no-op for anyone already correct) for
    * every CURRENTLY effective member closes that gap immediately instead
    * of waiting for the on-demand reconciliation job.
+   *
+   * The direct `this.keycloak.ensureGroup(group.name)` call below is
+   * deliberately gated to `target === 'keycloak'`, NOT run for every target
+   * unconditionally — it exists ONLY to keep a Keycloak group's own name
+   * current for a group that currently has ZERO effective members (any
+   * group WITH members already gets this for free, per-member, inside
+   * `KeycloakConnector.apply`'s own `ensureGroup` calls — see
+   * `effectiveGroupNames`). `DirectoryConnector` has no "ensure this empty
+   * group exists" primitive (deliberately exactly four, user-centric,
+   * methods — see its own doc comment), so a target with no member to fan
+   * out to has nothing here for THIS milestone to assert into it; this is a
+   * known, narrow gap for a target with its own first-class empty-group
+   * concept (documented rather than silently generalised into a guess at an
+   * interface Milestones 11-13 have not designed yet).
    *
    * KNOWN LIMIT, documented rather than closed (task-4-brief.md, Task 3
    * concern (b) — cheap-or-document, not expand): this still only reaches
@@ -446,17 +468,19 @@ export class SyncWorker implements OnApplicationShutdown {
    * CURRENT actual ones directly, independent of which fan-out did or
    * did not reach them.
    */
-  private async reconcileGroup(tx: DbHandle, groupId: string): Promise<void> {
+  private async reconcileGroup(tx: DbHandle, groupId: string, target: OutboxTarget): Promise<void> {
     const group = await this.groupsRepository.findById(groupId, tx)
     if (group === null) {
       throw new Error(`sync worker: no group found for id ${groupId}`)
     }
 
-    await this.keycloak.ensureGroup(group.name)
+    if (target === 'keycloak') {
+      await this.keycloak.ensureGroup(group.name)
+    }
 
     const memberIds = await this.groupsRepository.listEffectiveUserMembers(groupId, tx)
     for (const memberId of memberIds) {
-      await this.reconcileUser(tx, memberId)
+      await this.reconcileUser(tx, memberId, target)
     }
   }
 
@@ -495,7 +519,7 @@ export class SyncWorker implements OnApplicationShutdown {
     }
 
     for (const userId of affected) {
-      await this.reconcileUser(tx, userId)
+      await this.reconcileUser(tx, userId, event.target)
     }
   }
 

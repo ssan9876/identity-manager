@@ -53,11 +53,31 @@ export const outboxEventType = pgEnum('outbox_event_type', [
 // SAME change, or a stalled `active_directory`/`entra_id`/`google_workspace`
 // delivery for a user would head-of-line block every later `keycloak` event
 // for that SAME user — see this file's own `aggregateIdx` doc comment below.
+//
+// Milestone 10, Task 2: `'echo'` added — the in-repo target that proves the
+// connector spine end-to-end (registry, per-target dispatch, secret
+// resolution, `external_identities` correlation) before a single line of
+// vendor protocol exists. It is a genuine `outbox_target`/`connector_targets`
+// citizen, not a test-only bypass of this enum, because Milestone 14's
+// console E2E configures and drives it through the SAME real spine (enable
+// it in `connector_targets`, dry-run, apply, watch health go green) that AD/
+// Entra/Google will use — see docs/superpowers/plans/2026-08-06-idp-
+// milestones-10-14-directory-connectors.md, Milestone 14 Task 9. Like
+// `entra_id` above, `external_identities.system` (external-identities.ts)
+// is widened in the SAME migration to keep correlation writes possible for
+// it. No `connector_targets` row is seeded for `'echo'` by any migration —
+// same reasoning `connector-targets.ts`'s doc comment already gives for the
+// other three non-keycloak targets (Postgres forbids using a value added by
+// `ALTER TYPE ... ADD VALUE` within the same transaction that added it, and
+// every pending migration runs in ONE transaction on a fresh database) —
+// tests that need it enabled insert/delete their own row directly, exactly
+// like outbox-emission.spec.ts's `active_directory` fan-out tests already do.
 export const outboxTarget = pgEnum('outbox_target', [
   'keycloak',
   'active_directory',
   'entra_id',
   'google_workspace',
+  'echo',
 ])
 
 export const outboxStatus = pgEnum('outbox_status', [

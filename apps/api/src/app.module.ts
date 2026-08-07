@@ -12,6 +12,8 @@ import { PrivilegeGuards } from './authz/privilege.guards'
 import { RoleAssignmentsController } from './authz/role-assignments.controller'
 import { RoleAssignmentsRepository } from './authz/role-assignments.repository'
 import { DB_CLIENT } from './common/db.token'
+import { ConnectorRegistry } from './connectors/connector-registry'
+import { EchoConnector } from './connectors/echo.connector'
 import { loadEnv } from './config/env'
 import { createDbClient } from './db/client'
 import { GroupsController } from './groups/groups.controller'
@@ -116,6 +118,23 @@ import { UsersRepository } from './users/users.repository'
     // file-level doc comment.
     KeycloakAdminClient,
     OutboxRepository,
+    // Milestone 10, Task 2: the connector spine. `EchoConnector` (never
+    // network I/O at construction — same property as KeycloakAdminClient/
+    // OutboxRepository above) must be registered BEFORE `ConnectorRegistry`
+    // can resolve it as a constructor parameter — see EchoConnector's own
+    // doc comment for why the `@Injectable()` decorator alone is not
+    // optional here, even though that constructor parameter also carries a
+    // JS-level default. `ConnectorRegistry` (target -> connector registry,
+    // connectors/connector-registry.ts) depends on it plus the
+    // already-provided KeycloakAdminClient above; SyncWorker's own
+    // constructor declares its OWN ConnectorRegistry parameter `@Optional()`
+    // so this real, DI-wired instance is what production and every
+    // AppModule-compiling test (app.module.spec.ts) actually gets — the
+    // internally-built fallback in SyncWorker's constructor exists only for
+    // the raw, non-DI `new SyncWorker(...)` call sites in scripts/tests (see
+    // that constructor's own doc comment).
+    EchoConnector,
+    ConnectorRegistry,
     SyncWorker,
     SyncStateRepository,
   ],

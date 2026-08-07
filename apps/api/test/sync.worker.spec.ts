@@ -1,4 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { ConnectorRegistry } from '../src/connectors/connector-registry'
+import { EchoConnector } from '../src/connectors/echo.connector'
 import { GroupsRepository } from '../src/groups/groups.repository'
 import {
   KeycloakAdminClient,
@@ -175,8 +177,17 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
   const usersRepo = () => new UsersRepository(ctx.db)
   const groupsRepo = () => new GroupsRepository(ctx.db)
   const outboxRepo = () => new OutboxRepository()
-  const makeWorker = (kc: KeycloakAdminClient = client, config?: Partial<SyncWorkerConfig>) =>
-    new SyncWorker(ctx.db, outboxRepo(), usersRepo(), groupsRepo(), kc, config)
+  // `registry` (Milestone 10, Task 2) is a new, OPTIONAL, trailing parameter
+  // — every pre-existing call below (`makeWorker()`, `makeWorker(kc)`,
+  // `makeWorker(kc, config)`) is unaffected and keeps getting SyncWorker's
+  // own default (a registry wrapping `kc`); only the new "connector registry
+  // dispatch" block passes one explicitly, so it can hold onto a specific
+  // EchoConnector and inspect what it recorded afterward.
+  const makeWorker = (
+    kc: KeycloakAdminClient = client,
+    config?: Partial<SyncWorkerConfig>,
+    registry?: ConnectorRegistry,
+  ) => new SyncWorker(ctx.db, outboxRepo(), usersRepo(), groupsRepo(), kc, config, registry)
 
   beforeAll(async () => {
     keycloak = await startKeycloak()
@@ -415,6 +426,147 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
       // Nothing else is claimable right now — the AD event genuinely isn't
       // due yet, confirming the worker did not somehow also process it.
       expect(await worker.runOnce()).toBe('idle')
+    })
+  })
+
+  // =====================================================================
+  // Connector registry dispatch (Milestone 10, Task 2) — `event.target` now
+  // genuinely SELECTS a connector via `ConnectorRegistry`, closing the gap
+  // Task 1's own report flagged ("claimed non-Keycloak events would be
+  // silently misprocessed as Keycloak ones"). Proven end to end through the
+  // real claim-apply-finalize cycle, against the SAME real Keycloak
+  // container this whole file already runs against: an echo-targeted event
+  // reaches `EchoConnector` and — the actual isolation proof — never
+  // touches Keycloak at all; enabling BOTH targets for one user fans out to
+  // two INDEPENDENT, correctly-routed applications.
+  // =====================================================================
+  describe('connector registry dispatch (Milestone 10, Task 2)', () => {
+    const ECHO_SECRET_NAME = 'SYNC_WORKER_ECHO_TEST_SECRET'
+
+    async function enableEchoTarget(): Promise<void> {
+      process.env[ECHO_SECRET_NAME] = 'echo-dispatch-test-secret'
+      await ctx.pool.query(
+        `INSERT INTO connector_targets (target, enabled, config) VALUES ('echo', true, $1)
+         ON CONFLICT (target) DO UPDATE SET enabled = true, config = $1`,
+        [JSON.stringify({ credentialSecretName: ECHO_SECRET_NAME })],
+      )
+    }
+
+    async function disableEchoTarget(): Promise<void> {
+      await ctx.pool.query(`DELETE FROM connector_targets WHERE target = 'echo'`)
+      delete process.env[ECHO_SECRET_NAME]
+    }
+
+    it('an echo-targeted event reaches EchoConnector with the correct desired state and NEVER reaches the real Keycloak', async () => {
+      await enableEchoTarget()
+      try {
+        const user = await makeUser({ department: 'Engineering', internalNotes: 'do not sync me' })
+        await usersRepo().changeStatus(user.id, 'active')
+        const eventId = await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'echo')
+
+        const echoConnector = new EchoConnector()
+        const registry = new ConnectorRegistry(client, echoConnector)
+        const worker = makeWorker(client, undefined, registry)
+
+        expect(await worker.runOnce()).toBe('processed')
+        expect((await outboxRow(eventId)).status).toBe('done')
+
+        // Reached the ECHO connector, with exactly the desired state —
+        // default-deny already applied (internalNotes absent).
+        const applyCall = echoConnector.calls.find((call) => call.method === 'apply')
+        expect(applyCall?.desired).toEqual({
+          username: user.username,
+          email: user.primaryEmail,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          enabled: true,
+          attributes: { department: ['Engineering'] },
+          groups: [],
+        })
+
+        // Correlated under system='echo', with ECHO's own synthetic id —
+        // never Keycloak's.
+        const { rows } = await ctx.pool.query<{
+          external_id: string
+          system: string
+          sync_state: string
+        }>(
+          "SELECT external_id, system, sync_state FROM external_identities WHERE user_id = $1 AND system = 'echo'",
+          [user.id],
+        )
+        expect(rows).toHaveLength(1)
+        expect(rows[0]?.external_id).toBe(applyCall?.externalId)
+        expect(rows[0]?.external_id).toMatch(/^echo-/)
+        expect(rows[0]?.sync_state).toBe('synced')
+
+        // THE isolation proof: this user never reached the real Keycloak.
+        expect(await client.findUserByUsername(user.username)).toBeNull()
+      } finally {
+        await disableEchoTarget()
+      }
+    })
+
+    it('enabling BOTH keycloak and echo fans out one event per target, and each converges independently and correctly', async () => {
+      await enableEchoTarget()
+      try {
+        const user = await makeUser()
+        await usersRepo().changeStatus(user.id, 'active')
+
+        const kcEventId = await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'keycloak')
+        const echoEventId = await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'echo')
+
+        const echoConnector = new EchoConnector()
+        const registry = new ConnectorRegistry(client, echoConnector)
+        const worker = makeWorker(client, undefined, registry)
+
+        expect(await worker.drain()).toBe(2)
+        expect((await outboxRow(kcEventId)).status).toBe('done')
+        expect((await outboxRow(echoEventId)).status).toBe('done')
+
+        // Keycloak side genuinely converged.
+        expect(await client.findUserByUsername(user.username)).not.toBeNull()
+        // Echo side genuinely converged, independently.
+        expect(
+          echoConnector.calls.some(
+            (call) => call.method === 'apply' && call.desired?.username === user.username,
+          ),
+        ).toBe(true)
+
+        const { rows } = await ctx.pool.query<{ system: string }>(
+          'SELECT system FROM external_identities WHERE user_id = $1',
+          [user.id],
+        )
+        // Sorted in JS, not SQL: `ORDER BY system` sorts by the Postgres
+        // ENUM's declaration ordinal (keycloak, then ... then echo — see
+        // outbox-events.ts's `outboxTarget`), not lexicographically — same
+        // reasoning outbox-emission.spec.ts's own multi-target fan-out test
+        // already documents for `target.sort()`.
+        expect(rows.map((row) => row.system).sort()).toEqual(['echo', 'keycloak'])
+      } finally {
+        await disableEchoTarget()
+      }
+    })
+
+    it('a target with no registered connector (active_directory) dead-letters cleanly instead of silently reaching Keycloak', async () => {
+      // No `connector_targets` row needed to CLAIM this event — inserted
+      // directly, bypassing OutboxWriter's enabled-only fan-out, exactly
+      // like outbox-multi-target.spec.ts already does for active_directory.
+      // The point here is purely SyncWorker's OWN dispatch: does a claimed
+      // event for a target with NO implementation ever silently reach
+      // Keycloak instead? It must not — it must fail loudly and visibly.
+      const user = await makeUser()
+      const eventId = await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'active_directory')
+
+      const worker = makeWorker(client, { maxAttempts: 1, baseDelayMs: 10, maxDelayMs: 20 })
+      expect(await worker.runOnce()).toBe('processed')
+
+      const row = await outboxRow(eventId)
+      expect(row.status).toBe('failed')
+      expect(row.last_error).toMatch(/no connector registered for target "active_directory"/)
+
+      // Never reached Keycloak — the exact failure mode Task 1's report
+      // flagged as the risk of leaving dispatch unwired.
+      expect(await client.findUserByUsername(user.username)).toBeNull()
     })
   })
 

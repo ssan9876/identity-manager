@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common'
 import { eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import type { ConnectorTarget } from '../connectors/connector'
 import { connectorTargets } from '../db/schema/connector-targets'
 import { outboxEvents } from '../db/schema/outbox-events'
 import * as schema from '../db/schema/index'
@@ -28,14 +29,18 @@ export type OutboxAggregateType = 'user' | 'group' | 'membership' | 'org_unit'
 // `deactivated` in the payload.
 export type OutboxEventType = 'created' | 'updated' | 'status_changed' | 'membership_changed'
 
-// Milestone 10, Task 1 — mirrors `outboxTarget` (db/schema/outbox-events.ts)
-// as a hand-written literal union, same convention as `OutboxAggregateType`/
-// `OutboxEventType` above rather than a `(typeof outboxTarget.enumValues)
-// [number]` derivation. Deliberately NOT part of `OutboxEvent` below: which
+// Milestone 10, Task 1 — mirrors `outboxTarget` (db/schema/outbox-events.ts).
+// Milestone 10, Task 2 — re-exported from `connectors/connector.ts`'s
+// `ConnectorTarget` rather than re-hand-rolled here a second time: the
+// outbox is a CALLER of the connector spine (SyncWorker dispatches
+// per-target through `ConnectorRegistry`), so it depends on that module's
+// canonical type instead of maintaining an independent, driftable copy —
+// see `ConnectorTarget`'s own doc comment for why THAT module is the
+// canonical home. Deliberately NOT part of `OutboxEvent` below: which
 // target(s) a mutation reaches is decided by `OutboxWriter.record` itself
 // (one row per row in `connector_targets` with `enabled = true`), never by
 // the caller — see `record`'s own doc comment.
-export type OutboxTarget = 'keycloak' | 'active_directory' | 'entra_id' | 'google_workspace'
+export type OutboxTarget = ConnectorTarget
 
 /**
  * `payload` is diagnostic and ordering context ONLY. The sync worker
