@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { DesiredUser } from '../src/connectors/connector'
 import { NotApplicableError } from '../src/connectors/connector'
+import type { FetchLike } from '../src/connectors/mail-server.connector'
 import { MailServerConnector } from '../src/connectors/mail-server.connector'
 
 const CONFIG = {
@@ -29,25 +30,36 @@ function buildDesired(overrides: Partial<DesiredUser> = {}): DesiredUser {
 const okResponse = () =>
   new Response(JSON.stringify({ external_id: USER_ID, status: 'active', aliases: [] }), { status: 200 })
 
+/**
+ * A fetch stub for a path that must NEVER reach the network — it throws if
+ * called, so "this made no request" is enforced by the stub itself and not
+ * only by a trailing `not.toHaveBeenCalled()`. Typed as `FetchLike` so
+ * `mock.calls` keeps its real tuple shape rather than inferring `[]`.
+ */
+const neverCalled = () =>
+  vi.fn<FetchLike>(async () => {
+    throw new Error('fetch must not be called on this path')
+  })
+
 /** The JSON body of the Nth fetch call this stub recorded. */
-const sentBody = (stub: ReturnType<typeof vi.fn>, index = 0): Record<string, unknown> =>
-  JSON.parse((stub.mock.calls[index][1] as RequestInit).body as string)
+const sentBody = (stub: { mock: { calls: [string, RequestInit][] } }, index = 0): Record<string, unknown> =>
+  JSON.parse(stub.mock.calls[index][1].body as string)
 
 describe('MailServerConnector.health', () => {
   it('reports ok when the provisioning health endpoint answers', async () => {
-    const fetchStub = vi.fn(async () => new Response('{"status":"ok"}', { status: 200 }))
+    const fetchStub = vi.fn<FetchLike>(async () => new Response('{"status":"ok"}', { status: 200 }))
     const connector = new MailServerConnector(fetchStub).configure(CONFIG)
 
     const health = await connector.health({ MAIL_SERVER_SERVICE_TOKEN: 'tok_abc' })
 
     expect(health.ok).toBe(true)
-    const [url, init] = fetchStub.mock.calls[0] as [string, RequestInit]
+    const [url, init] = fetchStub.mock.calls[0]
     expect(url).toBe('http://mail.internal/api/v1/provisioning/health')
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tok_abc')
   })
 
   it('reports not-ok, never throws, when the secret is unset', async () => {
-    const connector = new MailServerConnector(vi.fn()).configure(CONFIG)
+    const connector = new MailServerConnector(neverCalled()).configure(CONFIG)
 
     const health = await connector.health({})
 
@@ -56,7 +68,7 @@ describe('MailServerConnector.health', () => {
   })
 
   it('never puts the secret VALUE in its health detail', async () => {
-    const fetchStub = vi.fn(async () => new Response('nope', { status: 403 }))
+    const fetchStub = vi.fn<FetchLike>(async () => new Response('nope', { status: 403 }))
     const connector = new MailServerConnector(fetchStub).configure(CONFIG)
 
     const health = await connector.health({ MAIL_SERVER_SERVICE_TOKEN: 'tok_sentinel_value' })
@@ -66,7 +78,7 @@ describe('MailServerConnector.health', () => {
   })
 
   it('rejects a config that never named a base url', async () => {
-    const connector = new MailServerConnector(vi.fn()).configure({ tokenSecretName: 'X' })
+    const connector = new MailServerConnector(neverCalled()).configure({ tokenSecretName: 'X' })
 
     const health = await connector.health({ X: 'tok' })
 
@@ -75,7 +87,7 @@ describe('MailServerConnector.health', () => {
   })
 
   it('tolerates a trailing slash on the configured base url', async () => {
-    const fetchStub = vi.fn(async () => new Response('{"status":"ok"}', { status: 200 }))
+    const fetchStub = vi.fn<FetchLike>(async () => new Response('{"status":"ok"}', { status: 200 }))
     const connector = new MailServerConnector(fetchStub).configure({
       ...CONFIG,
       baseUrl: 'http://mail.internal/api/v1/',
@@ -89,12 +101,12 @@ describe('MailServerConnector.health', () => {
 
 describe('MailServerConnector.apply', () => {
   it('PUTs to the identity keyed by our own user id, and returns it', async () => {
-    const fetchStub = vi.fn(async () => okResponse())
+    const fetchStub = vi.fn<FetchLike>(async () => okResponse())
     const connector = new MailServerConnector(fetchStub).configure(CONFIG)
 
     const result = await connector.apply(buildDesired(), ENV)
 
-    const [url, init] = fetchStub.mock.calls[0] as [string, RequestInit]
+    const [url, init] = fetchStub.mock.calls[0]
     expect(url).toBe(`http://mail.internal/api/v1/provisioning/identities/${USER_ID}`)
     expect(init.method).toBe('PUT')
     expect(result.externalId).toBe(USER_ID)
@@ -102,7 +114,7 @@ describe('MailServerConnector.apply', () => {
 
   it('passes the full four-value status straight through', async () => {
     for (const status of ['pending', 'active', 'suspended', 'deactivated'] as const) {
-      const fetchStub = vi.fn(async () => okResponse())
+      const fetchStub = vi.fn<FetchLike>(async () => okResponse())
       const connector = new MailServerConnector(fetchStub).configure(CONFIG)
 
       await connector.apply(buildDesired({ status }), ENV)
@@ -112,7 +124,7 @@ describe('MailServerConnector.apply', () => {
   })
 
   it('throws NotApplicable for a user with no mail and no existing identity', async () => {
-    const fetchStub = vi.fn()
+    const fetchStub = neverCalled()
     const connector = new MailServerConnector(fetchStub).configure(CONFIG)
 
     await expect(
@@ -125,7 +137,7 @@ describe('MailServerConnector.apply', () => {
   })
 
   it('deactivates a user who had mail and no longer does — entitlement removal', async () => {
-    const fetchStub = vi.fn(async () => okResponse())
+    const fetchStub = vi.fn<FetchLike>(async () => okResponse())
     const connector = new MailServerConnector(fetchStub).configure(CONFIG)
 
     await connector.apply(
@@ -142,7 +154,7 @@ describe('MailServerConnector.apply', () => {
   })
 
   it('omits absent optional fields rather than sending null', async () => {
-    const fetchStub = vi.fn(async () => okResponse())
+    const fetchStub = vi.fn<FetchLike>(async () => okResponse())
     const connector = new MailServerConnector(fetchStub).configure(CONFIG)
 
     await connector.apply(buildDesired(), ENV)
@@ -156,7 +168,7 @@ describe('MailServerConnector.apply', () => {
   })
 
   it('maps quota, aliases and admin role from attributes', async () => {
-    const fetchStub = vi.fn(async () => okResponse())
+    const fetchStub = vi.fn<FetchLike>(async () => okResponse())
     const connector = new MailServerConnector(fetchStub).configure(CONFIG)
 
     await connector.apply(
@@ -179,7 +191,7 @@ describe('MailServerConnector.apply', () => {
   })
 
   it('sends an empty aliases array as the explicit "remove them all" signal', async () => {
-    const fetchStub = vi.fn(async () => okResponse())
+    const fetchStub = vi.fn<FetchLike>(async () => okResponse())
     const connector = new MailServerConnector(fetchStub).configure(CONFIG)
 
     await connector.apply(
@@ -191,7 +203,7 @@ describe('MailServerConnector.apply', () => {
   })
 
   it('never builds a payload containing a credential field', async () => {
-    const fetchStub = vi.fn(async () => okResponse())
+    const fetchStub = vi.fn<FetchLike>(async () => okResponse())
     const connector = new MailServerConnector(fetchStub).configure(CONFIG)
 
     await connector.apply(
@@ -215,7 +227,7 @@ describe('MailServerConnector.apply', () => {
     [500, false],
     [503, false],
   ])('maps %i to permanent=%s', async (status, permanent) => {
-    const fetchStub = vi.fn(async () => new Response('{"detail":"nope"}', { status: status as number }))
+    const fetchStub = vi.fn<FetchLike>(async () => new Response('{"detail":"nope"}', { status: status as number }))
     const connector = new MailServerConnector(fetchStub).configure(CONFIG)
 
     const error = await connector.apply(buildDesired(), ENV).catch((e: unknown) => e)
@@ -228,7 +240,7 @@ describe('MailServerConnector.apply', () => {
 
 describe('MailServerConnector.plan', () => {
   it('describes the upsert without writing anything', async () => {
-    const fetchStub = vi.fn()
+    const fetchStub = neverCalled()
     const connector = new MailServerConnector(fetchStub).configure(CONFIG)
 
     const ops = await connector.plan(buildDesired(), ENV)
@@ -240,7 +252,7 @@ describe('MailServerConnector.plan', () => {
   })
 
   it('reports nothing for a user with no mail and no identity', async () => {
-    const connector = new MailServerConnector(vi.fn()).configure(CONFIG)
+    const connector = new MailServerConnector(neverCalled()).configure(CONFIG)
 
     const ops = await connector.plan(buildDesired({ attributes: { mail_enabled: ['false'] } }), ENV)
 
@@ -248,7 +260,7 @@ describe('MailServerConnector.plan', () => {
   })
 
   it('reports a disable when an existing identity loses its entitlement', async () => {
-    const connector = new MailServerConnector(vi.fn()).configure(CONFIG)
+    const connector = new MailServerConnector(neverCalled()).configure(CONFIG)
 
     const ops = await connector.plan(
       buildDesired({ attributes: { mail_enabled: ['false'] }, existingExternalId: USER_ID }),
@@ -262,7 +274,7 @@ describe('MailServerConnector.plan', () => {
 describe('MailServerConnector.disable', () => {
   it('reads the current address, then deactivates', async () => {
     const fetchStub = vi
-      .fn()
+      .fn<FetchLike>()
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({ external_id: USER_ID, email: 'jane@acme.com', status: 'active', aliases: [] }),
@@ -273,15 +285,15 @@ describe('MailServerConnector.disable', () => {
 
     await new MailServerConnector(fetchStub).configure(CONFIG).disable(USER_ID, ENV)
 
-    expect((fetchStub.mock.calls[0][1] as RequestInit).method).toBe('GET')
-    const [url, init] = fetchStub.mock.calls[1] as [string, RequestInit]
+    expect(fetchStub.mock.calls[0][1].method).toBe('GET')
+    const [url, init] = fetchStub.mock.calls[1]
     expect(init.method).toBe('PUT')
     expect(url).toBe(`http://mail.internal/api/v1/provisioning/identities/${USER_ID}`)
     expect(sentBody(fetchStub, 1)).toEqual({ email: 'jane@acme.com', status: 'deactivated' })
   })
 
   it('is a no-op for an unknown identity', async () => {
-    const fetchStub = vi.fn(async () => new Response('{"detail":"not found"}', { status: 404 }))
+    const fetchStub = vi.fn<FetchLike>(async () => new Response('{"detail":"not found"}', { status: 404 }))
 
     await new MailServerConnector(fetchStub).configure(CONFIG).disable(USER_ID, ENV)
 
@@ -289,7 +301,7 @@ describe('MailServerConnector.disable', () => {
   })
 
   it('is a no-op for an identity with no mailbox to deactivate', async () => {
-    const fetchStub = vi.fn(
+    const fetchStub = vi.fn<FetchLike>(
       async () =>
         new Response(JSON.stringify({ external_id: USER_ID, email: null, status: 'active', aliases: [] }), {
           status: 200,
