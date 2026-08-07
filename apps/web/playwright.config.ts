@@ -3,6 +3,12 @@ import { defineConfig } from '@playwright/test'
 export default defineConfig({
   testDir: './e2e',
   timeout: 60_000,
+  // Test hygiene (H2 race-flake investigation, "Shared dev-database
+  // growth") — runs once, after every worker/test file in the whole run has
+  // finished, and deletes exactly what this run's own fixtures created from
+  // the shared dev Postgres. See e2e/support/global-teardown.ts's own doc
+  // comment for the full mechanism and why it is safe.
+  globalTeardown: './e2e/support/global-teardown.ts',
   use: {
     baseURL: 'http://localhost:5173',
     trace: 'on-first-retry',

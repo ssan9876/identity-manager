@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { trackUser } from './support/cleanup-tracker'
 
 const USERNAME = 'admin@example.com'
 const PASSWORD = 'dev_password_change_me'
@@ -46,6 +47,23 @@ async function fetchFirstOrgUnit(page: Page, token: string): Promise<{ id: strin
   expect(res.ok()).toBeTruthy()
   const body = (await res.json()) as { items: { id: string }[] }
   return body.items[0]
+}
+
+/**
+ * `POST /imports/commit` (driven here through the UI, not called directly)
+ * reports only created/failed COUNTS plus a batch id — imports.controller.ts
+ * never echoes back the created rows' own ids — so a just-imported person
+ * has to be looked up by the exact username this test itself generated, to
+ * hand its id to the cleanup tracker.
+ */
+async function trackUserByUsername(page: Page, token: string, username: string): Promise<void> {
+  const res = await page.request.get(`${API_BASE_URL}/users?search=${encodeURIComponent(username)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  expect(res.ok()).toBeTruthy()
+  const body = (await res.json()) as { items: { id: string }[] }
+  expect(body.items).toHaveLength(1)
+  trackUser(body.items[0]!.id)
 }
 
 /**
@@ -119,6 +137,8 @@ test('imports a two-row CSV: the preview writes nothing, and a separate delibera
   await expect(page.getByTestId('import-result-created')).toHaveText('2')
   await expect(page.getByTestId('import-result-failed')).toHaveText('0')
   await expect(page.getByTestId('import-batch-link')).toBeVisible()
+  await trackUserByUsername(page, token, usernameA)
+  await trackUserByUsername(page, token, usernameB)
 
   // See both users in the list.
   await page.goto(`http://localhost:5173/people?q=${encodeURIComponent(usernameA)}`)
@@ -173,6 +193,7 @@ test('a mixed valid/invalid CSV previews three distinct groups, and a partial co
   await expect(page.getByTestId('import-result-failed')).toHaveText('1')
   // A partial commit still shows what landed — the failure table is not hidden just because SOME rows succeeded.
   await expect(page.getByTestId('import-commit-failures')).toContainText('email')
+  await trackUserByUsername(page, token, validUsername)
 
   await page.goto(`http://localhost:5173/people?q=${encodeURIComponent(validUsername)}`)
   await expect(page.getByTestId('people-table')).toContainText(validUsername)

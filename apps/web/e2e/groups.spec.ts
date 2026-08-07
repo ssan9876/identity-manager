@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { trackGroup, trackUser } from './support/cleanup-tracker'
 
 const USERNAME = 'admin@example.com'
 const PASSWORD = 'dev_password_change_me'
@@ -55,7 +56,8 @@ async function createGroupViaUi(page: Page, name: string, scopeOptionIndex?: num
   await page.waitForURL(/\/groups\/[0-9a-f-]{36}$/)
   const match = /\/groups\/([0-9a-f-]{36})$/.exec(page.url())
   if (!match) throw new Error(`unexpected URL after creating group: ${page.url()}`)
-  return match[1]
+  trackGroup(match[1]!)
+  return match[1]!
 }
 
 function groupUrl(id: string): string {
@@ -224,6 +226,7 @@ test('grants a global role and a scoped role, sees both listed distinctly, then 
   })
   expect(createRes.ok()).toBeTruthy()
   const target = (await createRes.json()) as { id: string; displayName: string }
+  trackUser(target.id)
 
   await page.goto(`http://localhost:5173/people/${target.id}`)
   await page.getByRole('tab', { name: 'Roles' }).click()
