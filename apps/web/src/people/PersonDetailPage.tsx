@@ -3,9 +3,13 @@ import { useAuth } from 'react-oidc-context'
 import { Link, useParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { useOrgUnits } from '../org-units/OrgUnitsContext'
+import { ConfirmDialog } from '../shell/ConfirmDialog'
 import { NotYetBuilt } from '../shell/NotYetBuilt'
-import { fetchGroupsForUser, fetchPerson, type Group, type Person } from './api'
-import { StatusBadge, SyncBadge } from './badges'
+import { useSelfPermissions } from '../shell/permissions'
+import { useToast } from '../shell/ToastProvider'
+import { formatDateOnly, formatDateTime } from '../format'
+import { deactivatePerson, fetchGroupsForUser, fetchPerson, type Group, type Person } from './api'
+import { StatusBadge, SYNC_WORD, SyncBadge } from './badges'
 import './PersonDetailPage.css'
 
 type TabKey = 'profile' | 'groups' | 'roles' | 'activity'
@@ -15,26 +19,6 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'roles', label: 'Roles' },
   { key: 'activity', label: 'Activity' },
 ]
-
-function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  })
-}
-
-function formatDateOnly(iso: string): string {
-  // startDate/endDate are plain YYYY-MM-DD (no time component, no
-  // timezone) — parsing with an explicit UTC anchor avoids the classic
-  // "renders as the previous day" bug from letting `new Date('2026-01-01')`
-  // get interpreted in the browser's local timezone and then reformatted
-  // in that same local timezone (which is a no-op) VS. environments where
-  // the two disagree.
-  return new Date(`${iso}T00:00:00Z`).toLocaleDateString(undefined, {
-    dateStyle: 'medium',
-    timeZone: 'UTC',
-  })
-}
 
 function ProfileTab({ person, orgUnitPath }: { person: Person; orgUnitPath: string | null }) {
   const attributeEntries = Object.entries(person.attributes)
@@ -169,6 +153,8 @@ export default function PersonDetailPage() {
   const auth = useAuth()
   const accessToken = auth.user?.access_token
   const orgUnits = useOrgUnits()
+  const permissions = useSelfPermissions()
+  const { showToast } = useToast()
 
   const [person, setPerson] = useState<Person | null>(null)
   const [loadError, setLoadError] = useState<{ status?: number; message: string } | null>(null)
@@ -176,12 +162,45 @@ export default function PersonDetailPage() {
   const [groupsError, setGroupsError] = useState<string | null>(null)
   const [groupsLoading, setGroupsLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<TabKey>('profile')
+  const [deactivateOpen, setDeactivateOpen] = useState(false)
   const tabRefs = useRef<Record<TabKey, HTMLButtonElement | null>>({
     profile: null,
     groups: null,
     roles: null,
     activity: null,
   })
+
+  const canUpdate = permissions.status === 'ready' && permissions.actions.has('user:update')
+  const canDeactivate = permissions.status === 'ready' && permissions.actions.has('user:deactivate')
+
+  /**
+   * Deactivation's confirmation dialog owns its OWN request lifecycle
+   * (ConfirmDialog) — this only needs to perform the call and, on success,
+   * update local state, close the dialog, and report a toast naming what
+   * ACTUALLY happened (PRODUCT.md: "be certain the action took effect...
+   * including that live sessions are dead, not merely that a row changed").
+   *
+   * `POST /users/:id/deactivate` attempts Keycloak-side session revocation
+   * SYNCHRONOUSLY, inline, before it ever responds (see UsersController.
+   * deactivate/revokeKeycloakAccess on the API side) — by the time this
+   * promise resolves, that attempt has already happened, which is what
+   * makes it honest to state as fact in the toast rather than as a hope.
+   * `syncState` is resolved fresh, AFTER that attempt, and is what actually
+   * varies (almost always 'pending' the instant after a deactivate — the
+   * outbox event was just enqueued, no worker has drained it yet — but
+   * reported using the SAME word (SYNC_WORD) the badge itself will show a
+   * moment later, never a second, hand-written phrase that could drift).
+   */
+  async function handleConfirmDeactivate() {
+    if (accessToken === undefined || person === null) return
+    const updated = await deactivatePerson(accessToken, person.id)
+    setPerson(updated)
+    setDeactivateOpen(false)
+    showToast(
+      `Deactivated ${updated.displayName}. Sign-in is blocked and active sessions were revoked. ${SYNC_WORD[updated.syncState]}.`,
+      updated.syncState === 'failed' ? 'danger' : updated.syncState === 'pending' ? 'warn' : 'neutral',
+    )
+  }
 
   useEffect(() => {
     if (accessToken === undefined || id === undefined) return
@@ -282,15 +301,55 @@ export default function PersonDetailPage() {
       </Link>
 
       <header className="person-detail__header">
-        <h1 className="text-subject" data-testid="person-detail-name">
-          {person.displayName}
-        </h1>
+        <div className="person-detail__title-row">
+          <h1 className="text-subject" data-testid="person-detail-name">
+            {person.displayName}
+          </h1>
+          <div className="person-detail__title-actions">
+            {canUpdate && (
+              <Link to={`/people/${person.id}/edit`} className="btn btn--secondary" data-testid="edit-person-link">
+                Edit
+              </Link>
+            )}
+            {canDeactivate && person.status !== 'deactivated' && (
+              <button
+                type="button"
+                className="btn btn--danger"
+                data-testid="deactivate-button"
+                onClick={() => setDeactivateOpen(true)}
+              >
+                Deactivate
+              </button>
+            )}
+          </div>
+        </div>
         <div className="person-detail__meta">
           <StatusBadge status={person.status} />
           <SyncBadge state={person.syncState} />
           <span className="mono cell-muted">{orgUnitPath ?? person.orgUnitId}</span>
+          {person.status === 'deactivated' && person.deactivatedAt !== null && (
+            <span className="cell-muted" data-testid="deactivated-at">
+              Deactivated {formatDateTime(person.deactivatedAt)}
+            </span>
+          )}
         </div>
       </header>
+
+      <ConfirmDialog
+        open={deactivateOpen}
+        title={`Deactivate ${person.displayName}?`}
+        confirmLabel="Deactivate"
+        tone="danger"
+        onConfirm={handleConfirmDeactivate}
+        onDismiss={() => setDeactivateOpen(false)}
+        testId="deactivate-dialog"
+      >
+        <p data-testid="deactivate-consequence">
+          This immediately blocks <strong>{person.displayName}</strong>&rsquo;s sign-in and revokes their
+          active sessions — they are signed out everywhere within moments.
+        </p>
+        <p>Deactivation is permanent. {person.displayName} cannot be reactivated from this console.</p>
+      </ConfirmDialog>
 
       <div className="tabs" role="tablist" aria-label="Person detail sections" onKeyDown={handleTabsKeyDown}>
         {TABS.map((tab) => (

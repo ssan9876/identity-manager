@@ -58,3 +58,27 @@ export async function fetchAllOrgUnits(accessToken: string): Promise<OrgUnit[]> 
 
   return all
 }
+
+export function fetchOrgUnit(accessToken: string, id: string): Promise<OrgUnit> {
+  return authorizedRequest<OrgUnit>(`/org-units/${id}`, accessToken)
+}
+
+/**
+ * Mirrors `createOrgUnitBodySchema` on the API side exactly:
+ * `parentId` omitted creates a ROOT (requires a GLOBAL `org_unit:create`
+ * grant — `OrgUnitsController.create` 403s otherwise, a case
+ * OrgUnitsPage surfaces per Task 3's scope-legibility requirement, not a
+ * distinction this client type needs to encode itself).
+ */
+export interface CreateOrgUnitInput {
+  name: string
+  parentId?: string
+}
+
+export function createOrgUnit(accessToken: string, input: CreateOrgUnitInput): Promise<OrgUnit> {
+  return authorizedRequest<OrgUnit>('/org-units', accessToken, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}

@@ -512,3 +512,116 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ---------------------------------------------------------------------
+ * Confirm dialog — native <dialog> + showModal(), the one place DESIGN.md
+ * says a modal earns its keep (a destructive confirmation). Centred, small,
+ * unlike the full-height nav-dialog side panel.
+ * ------------------------------------------------------------------- */
+
+.confirm-dialog {
+  width: min(28rem, calc(100vw - var(--space-8)));
+  border: none;
+  border-radius: var(--radius-md);
+  padding: var(--space-6);
+  background: var(--bg);
+  box-shadow: var(--shadow-md);
+}
+.confirm-dialog::backdrop {
+  background: oklch(0.205 0.01 110 / 0.4);
+}
+.confirm-dialog__body {
+  margin-top: var(--space-3);
+  color: var(--ink);
+}
+.confirm-dialog__body p {
+  margin-bottom: var(--space-3);
+}
+.confirm-dialog__body p:last-child {
+  margin-bottom: 0;
+}
+.confirm-dialog__error {
+  margin-top: var(--space-4);
+}
+.confirm-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+}
+
+/* Deliberately no open/close animation — same reasoning as AppShell.css's
+   nav-dialog: DESIGN.md's own suggested reduced-motion fallback is
+   "typically ... an instant transition", and native showModal()/close() is
+   already instant, correct and fully focus-managed without one. */
+
+/* ---------------------------------------------------------------------
+ * Toasts — the result of an action, especially one with consequence
+ * (DESIGN.md). Fixed bottom-right, stacked, auto-dismissing with an
+ * explicit close control (ToastProvider).
+ * ------------------------------------------------------------------- */
+
+.toast-region {
+  position: fixed;
+  bottom: var(--space-6);
+  right: var(--space-6);
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column-reverse;
+  gap: var(--space-3);
+  width: min(24rem, calc(100vw - var(--space-8)));
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  animation: toast-in var(--motion-duration) var(--motion-ease);
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.toast--warn {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+}
+.toast--danger {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+
+.toast__message {
+  flex: 1;
+  font-size: var(--text-base);
+  color: var(--ink);
+}
+.toast__dismiss {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  font-size: var(--text-lg);
+  line-height: 1;
+  color: var(--ink-muted);
+  border-radius: var(--radius-sm);
+  transition: color var(--motion-duration) var(--motion-ease), background-color var(--motion-duration) var(--motion-ease);
+}
+.toast__dismiss:hover {
+  color: var(--ink);
+  background: var(--surface-sunken);
+}

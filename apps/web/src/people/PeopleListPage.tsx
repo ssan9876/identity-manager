@@ -4,6 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { useOrgUnits } from '../org-units/OrgUnitsContext'
 import type { Page } from '../org-units/api'
+import { useSelfPermissions } from '../shell/permissions'
 import { fetchPeople, type Person, type UserStatus } from './api'
 import { StatusBadge, SyncBadge } from './badges'
 import './PeopleListPage.css'
@@ -78,6 +79,12 @@ export default function PeopleListPage() {
   const auth = useAuth()
   const accessToken = auth.user?.access_token
   const orgUnits = useOrgUnits()
+  const permissions = useSelfPermissions()
+  // Hidden, not merely disabled, for a caller `GET /self/permissions`
+  // doesn't grant `user:create` to — PRODUCT.md: "The UI hides what you
+  // cannot do; it never decides it." `POST /users` still enforces this
+  // itself regardless of what this button's visibility implies.
+  const canCreate = permissions.status === 'ready' && permissions.actions.has('user:create')
 
   const [searchParams, setSearchParams] = useSearchParams()
   const search = searchParams.get('q') ?? ''
@@ -185,6 +192,11 @@ export default function PeopleListPage() {
     <div className="people-list">
       <div className="people-list__header">
         <h1 className="text-title">People</h1>
+        {canCreate && (
+          <Link to="/people/new" className="btn btn--primary" data-testid="create-user-link">
+            Create user
+          </Link>
+        )}
       </div>
 
       <div className="people-list__filters">
@@ -270,9 +282,15 @@ export default function PeopleListPage() {
               <>
                 <h3>No one&rsquo;s in the directory yet</h3>
                 <p>
-                  This is where the people at your organisation show up once they&rsquo;re created
-                  or imported. Creating and importing people arrive in a later task.
+                  This is where the people at your organisation show up once they&rsquo;re created or
+                  imported. Bulk import arrives in a later task
+                  {canCreate ? ' — for now, create the first person directly.' : '.'}
                 </p>
+                {canCreate && (
+                  <Link to="/people/new" className="btn btn--primary">
+                    Create user
+                  </Link>
+                )}
               </>
             )}
           </div>

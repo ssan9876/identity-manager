@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common'
 import { JWT_GUARD_OPTIONS, JwtGuard, type JwtGuardOptions } from './auth/jwt.guard'
 import { MeController } from './auth/me.controller'
+import { AttributeDefinitionsController } from './attributes/attribute-definitions.controller'
+import { AttributeDefinitionsRepository } from './attributes/attribute-definitions.repository'
 import { AuditRepository } from './audit/audit.repository'
 import { AuditWriter } from './audit/audit.writer'
 import { PermissionEngine } from './authz/permission.engine'
@@ -42,6 +44,7 @@ import { UsersRepository } from './users/users.repository'
     ImportsController,
     SelfServiceController,
     OutboxController,
+    AttributeDefinitionsController,
   ],
   providers: [
     {
@@ -92,6 +95,7 @@ import { UsersRepository } from './users/users.repository'
     },
     JwtGuard,
     UsersRepository,
+    AttributeDefinitionsRepository,
     OrgUnitsRepository,
     GroupsRepository,
     PermissionEngine,

@@ -127,7 +127,16 @@ a {
 }
 
 /* Strings meant to be compared character-by-character — UUIDs, ltree org
-   paths, ids — per DESIGN.md's "mono is functional, not decorative". */
+   paths, ids — per DESIGN.md's "mono is functional, not decorative".
+   `overflow-wrap: anywhere` — found via Task 3's own visual pass: an ltree
+   path has no spaces at all (dot-separated labels), so a deep path (Org
+   units, "make it usable at depth") does not wrap at the browser's default
+   breakpoints and instead overflows its container's box outright — inside
+   a `.detail-grid` two-column layout, that overflow visually runs straight
+   into the ADJACENT column's content, not just off the edge of the page.
+   `anywhere` breaks at any character only when the content would otherwise
+   overflow, so short mono content (a badge, a table cell) is unaffected. */
 .mono {
   font-family: var(--font-mono);
+  overflow-wrap: anywhere;
 }

@@ -62,6 +62,71 @@ export function fetchPerson(accessToken: string, id: string): Promise<Person> {
   return authorizedRequest<Person>(`/users/${id}`, accessToken)
 }
 
+/** Mirrors `createUserBodySchema` (apps/api/src/users/users.controller.ts) exactly — every field this form may send, and no others (that schema is `.strict()`). */
+export interface CreatePersonInput {
+  primaryEmail: string
+  username: string
+  firstName: string
+  lastName: string
+  orgUnitId: string
+  employeeId?: string
+  jobTitle?: string
+  managerId?: string
+  location?: string
+  startDate?: string
+  endDate?: string
+  attributes?: Record<string, unknown>
+}
+
+export function createPerson(accessToken: string, input: CreatePersonInput): Promise<Person> {
+  return authorizedRequest<Person>('/users', accessToken, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+/**
+ * Mirrors `updateUserBodySchema` exactly — deliberately narrower than
+ * `CreatePersonInput`: `primaryEmail`, `username`, `orgUnitId` and `status`
+ * are not part of `PATCH /users/:id`'s accepted surface at all (see
+ * `UsersRepository.update`'s own doc comment on the API side for why each is
+ * excluded), so the edit form must not offer inputs for them — task-3-
+ * brief.md: "do not offer inputs the server will reject." Every nullable
+ * field accepts `null` explicitly, to clear it, matching the API's own
+ * partial-update contract.
+ */
+export interface UpdatePersonInput {
+  firstName?: string
+  lastName?: string
+  jobTitle?: string | null
+  employeeId?: string | null
+  managerId?: string | null
+  location?: string | null
+  startDate?: string | null
+  endDate?: string | null
+  attributes?: Record<string, unknown>
+}
+
+export function updatePerson(accessToken: string, id: string, patch: UpdatePersonInput): Promise<Person> {
+  return authorizedRequest<Person>(`/users/${id}`, accessToken, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+}
+
+/**
+ * The only path to `deactivated`, which is terminal (mirrors
+ * `UsersController.deactivate`'s own doc comment). Returns the updated
+ * record WITH its freshly-resolved `syncState` — this is what lets the
+ * caller's post-action toast report the real, current sync state rather
+ * than assuming one.
+ */
+export function deactivatePerson(accessToken: string, id: string): Promise<Person> {
+  return authorizedRequest<Person>(`/users/${id}/deactivate`, accessToken, { method: 'POST' })
+}
+
 const GROUPS_FOR_USER_LIMIT = 100
 
 /**

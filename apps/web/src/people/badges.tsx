@@ -37,7 +37,13 @@ export function StatusBadge({ status }: { status: UserStatus }) {
   )
 }
 
-const SYNC_WORD: Record<SyncState, string> = {
+// Exported (not module-private, unlike STATUS_WORD/STATUS_VARIANT above) so
+// the deactivate confirmation's post-action toast (PersonDetailPage,
+// Milestone 8 Task 3) reports the sync outcome in the EXACT same words the
+// badge next to this same person's row will show a moment later — one
+// vocabulary for "what is the sync state", never a second, hand-written copy
+// that could drift from this one.
+export const SYNC_WORD: Record<SyncState, string> = {
   pending: 'Sync pending',
   synced: 'Synced',
   failed: 'Sync failed',
@@ -49,7 +55,7 @@ const SYNC_WORD: Record<SyncState, string> = {
 // ("a user who looks healthy while their group sync dead-lettered is the
 // worst outcome this product can produce") is exactly why this is its own
 // badge, separate from account status, rather than folded into it.
-const SYNC_VARIANT: Record<SyncState, 'neutral' | 'warn' | 'danger'> = {
+export const SYNC_VARIANT: Record<SyncState, 'neutral' | 'warn' | 'danger'> = {
   pending: 'warn',
   synced: 'neutral',
   failed: 'danger',

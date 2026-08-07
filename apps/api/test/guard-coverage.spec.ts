@@ -86,6 +86,7 @@ describe('guard coverage', () => {
     // If a controller is added or renamed, update this list deliberately.
     expect(found).toEqual(
       [
+        'AttributeDefinitionsController',
         'GroupsController',
         'HealthController',
         'ImportsController',

@@ -1,4 +1,5 @@
 import { ApiError, authorizedRequest } from '../api/client'
+import type { AttributeDataType, AttributeDefinition, AttributeValidationRules } from '../attributes/api'
 
 // Re-exported so every existing import site (`import { ApiError } from
 // './api'`, e.g. SelfServicePage.tsx) keeps working unchanged — this is a
@@ -7,36 +8,13 @@ import { ApiError, authorizedRequest } from '../api/client'
 // matter which module a caller imports it from.
 export { ApiError }
 
-export type AttributeDataType = 'string' | 'number' | 'boolean' | 'date' | 'enum'
-
-export interface AttributeValidationRules {
-  minLength?: number
-  maxLength?: number
-  pattern?: string
-  min?: number
-  max?: number
-  options?: string[]
-}
-
-/**
- * Mirrors `AttributeDefinition` from apps/api/src/attributes/attribute-validator.ts.
- * Only the definitions that are BOTH active and `self_editable` ever appear
- * here — `GET /self` has already filtered the full catalog down to exactly
- * what this caller may edit (see SelfServiceController.selfEditableAttributeDefinitions
- * on the API side), so the form below is driven entirely by this list
- * rather than any hard-coded field name.
- */
-export interface AttributeDefinition {
-  key: string
-  label: string
-  dataType: AttributeDataType
-  required: boolean
-  validationRules: AttributeValidationRules
-  appliesTo: 'user' | 'group'
-  isActive: boolean
-  syncToKeycloak: boolean
-  selfEditable: boolean
-}
+// Re-exported, not redeclared: Milestone 8, Task 3 lifted these three types
+// out to attributes/api.ts so the admin create/edit user form can build its
+// own attribute fields from the SAME shape `GET /self` already returns
+// here — see that module's own doc comment. `type` re-export (not a value)
+// so this stays a zero-runtime-cost alias; every existing import site in
+// this file and SelfServicePage.tsx keeps compiling unchanged.
+export type { AttributeDataType, AttributeDefinition, AttributeValidationRules }
 
 export type UserStatus = 'pending' | 'active' | 'suspended' | 'deactivated'
 

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useAuth } from 'react-oidc-context'
+import { coerceAttributeValue, AttributeInput } from '../attributes/AttributeField'
 import { accountConsoleUrl } from '../auth/account-console'
 import {
   ApiError,
   fetchSelfGroups,
   fetchSelfProfile,
   updateSelfProfile,
-  type AttributeDefinition,
   type SelfGroup,
   type SelfGroupsResponse,
   type SelfProfile,
@@ -14,18 +14,6 @@ import {
 } from './api'
 
 type FieldValues = Record<string, string>
-
-/** Every editable value is edited as a string in this form; coerced to the right JS type only at submit time — see `coerceAttributeValue`. */
-function coerceAttributeValue(definition: AttributeDefinition, raw: string): unknown {
-  switch (definition.dataType) {
-    case 'number':
-      return raw === '' ? undefined : Number(raw)
-    case 'boolean':
-      return raw === 'true'
-    default:
-      return raw
-  }
-}
 
 function initialAttributeValues(profile: SelfProfile): FieldValues {
   const values: FieldValues = {}
@@ -54,49 +42,6 @@ function initialCoreValues(profile: SelfProfile): FieldValues {
 
 function labelFor(fieldName: string): string {
   return fieldName.charAt(0).toUpperCase() + fieldName.slice(1)
-}
-
-function AttributeInput({
-  id,
-  definition,
-  value,
-  onChange,
-}: {
-  id: string
-  definition: AttributeDefinition
-  value: string
-  onChange: (value: string) => void
-}) {
-  if (definition.dataType === 'boolean') {
-    return (
-      <input
-        id={id}
-        type="checkbox"
-        checked={value === 'true'}
-        onChange={(e) => onChange(e.target.checked ? 'true' : 'false')}
-      />
-    )
-  }
-  if (definition.dataType === 'date') {
-    return <input id={id} type="date" value={value} onChange={(e) => onChange(e.target.value)} />
-  }
-  if (definition.dataType === 'number') {
-    return <input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} />
-  }
-  if (definition.dataType === 'enum') {
-    const options = definition.validationRules.options ?? []
-    return (
-      <select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">—</option>
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-    )
-  }
-  return <input id={id} type="text" value={value} onChange={(e) => onChange(e.target.value)} />
 }
 
 /**
