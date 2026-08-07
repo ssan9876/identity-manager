@@ -41,10 +41,18 @@ function sameNameSet(a: Iterable<string>, b: Iterable<string>): boolean {
  * `reconcileUser` — so the observable REST traffic against a real Keycloak is
  * unchanged; only where the sequence lives has moved.
  *
- * ATTRIBUTE FILTERING: `desired.attributes` arrives ALREADY filtered to the
- * default-deny `sync_to_keycloak` set (`SyncWorker` computes it once, via the
- * pre-existing `buildSyncedAttributes`, before calling ANY connector — see
- * `DesiredUser`'s own doc comment). `KeycloakAdminClient.createUser`/
+ * ATTRIBUTE FILTERING: `desired.attributes` arrives ALREADY filtered to
+ * exactly this target's (`'keycloak'`) enabled `attribute_target_mappings`
+ * rows (`SyncWorker` computes it once, via `connectors/attribute-mapping.ts`'s
+ * `buildTargetAttributes`, before calling ANY connector — see `DesiredUser`'s
+ * own doc comment). Migration 0014 seeded Keycloak's rows to reproduce
+ * exactly the pre-Task-3 `sync_to_keycloak = true` set, under the SAME key
+ * as `remote_name` — so this connector still receives exactly what it always
+ * did; no `given_name`/`surname`/`title`/`department` core-field row is
+ * seeded for `'keycloak'` (see that migration's own comment), so none of
+ * those four ever appear in this bag either — `given_name`/`surname` reach
+ * Keycloak only via `desired.firstName`/`lastName` below, unconditionally,
+ * exactly as before this task. `KeycloakAdminClient.createUser`/
  * `updateUser` still take a `definitions: SyncableAttributeDefinition[]`
  * parameter and re-run that SAME filter internally (their own, unrelated,
  * pre-existing contract — unchanged, so their own extensive existing test

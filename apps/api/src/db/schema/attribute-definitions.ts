@@ -37,9 +37,14 @@ export const attributeDefinitions = pgTable(
     sortOrder: integer('sort_order').notNull().default(0),
     isActive: boolean('is_active').notNull().default(true),
 
-    // Default-deny: an attribute leaves this system only when explicitly
-    // opted in, and is user-editable only when explicitly opted in.
-    syncToKeycloak: boolean('sync_to_keycloak').notNull().default(false),
+    // Default-deny: an attribute is user-editable only when explicitly
+    // opted in. Propagation out of this system (formerly this table's own
+    // `sync_to_keycloak` boolean) is now `attribute_target_mappings`
+    // (Milestone 10, Task 3, db/schema/attribute-target-mappings.ts) — a
+    // per-TARGET table where absence of a row, not a column default, is what
+    // makes default-deny structural. See that table's own doc comment for
+    // the migration that moved every `sync_to_keycloak = true` row there
+    // before this column was dropped.
     selfEditable: boolean('self_editable').notNull().default(false),
 
     createdAt: timestamp('created_at', { withTimezone: true })

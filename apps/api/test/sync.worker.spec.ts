@@ -199,14 +199,24 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
 
     orgUnitId = (await new OrgUnitsRepository(ctx.db).createRoot(`Sync Worker Root ${Date.now()}`)).id
 
-    // 'department' is sync_to_keycloak; 'internalNotes' is not. Shared by
+    // 'department' has an ENABLED attribute_target_mappings row for
+    // 'keycloak' (remote_name = its own key, mirroring exactly what
+    // migration 0014 does for a pre-existing `sync_to_keycloak = true`
+    // row); 'internalNotes' has NO mapping row at all — default-deny by
+    // absence, Milestone 10 Task 3's own structural guarantee. Shared by
     // every test that needs a real row here — there is no write path for
-    // `attribute_definitions` yet (see UsersRepository.listActiveAttributeDefinitions'
-    // own doc comment), so a direct insert is the only way to seed one.
+    // `attribute_definitions`/`attribute_target_mappings` yet (see
+    // AttributeTargetMappingsRepository's own doc comment), so a direct
+    // insert is the only way to seed one.
     await ctx.pool.query(`
-      INSERT INTO attribute_definitions (key, label, data_type, applies_to, sync_to_keycloak, is_active)
-      VALUES ('department', 'Department', 'string', 'user', true, true),
-             ('internalNotes', 'Internal Notes', 'string', 'user', false, true)
+      WITH inserted AS (
+        INSERT INTO attribute_definitions (key, label, data_type, applies_to, is_active)
+        VALUES ('department', 'Department', 'string', 'user', true),
+               ('internalNotes', 'Internal Notes', 'string', 'user', true)
+        RETURNING id, key
+      )
+      INSERT INTO attribute_target_mappings (attribute_definition_id, target, remote_name, enabled)
+      SELECT id, 'keycloak', key, true FROM inserted WHERE key = 'department'
     `)
 
     cleanupWorker = makeWorker()
@@ -472,7 +482,14 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
         expect((await outboxRow(eventId)).status).toBe('done')
 
         // Reached the ECHO connector, with exactly the desired state —
-        // default-deny already applied (internalNotes absent).
+        // default-deny already applied, and applied PER TARGET (Milestone
+        // 10, Task 3): `department` has an enabled mapping row for
+        // 'keycloak' only (this file's own `beforeAll` seed) — attributes
+        // is EMPTY here, not `{ department: [...] }`, because echo has no
+        // mapping row for it at all. See
+        // "default-deny per target (Milestone 10, Task 3)" below for the
+        // dedicated proof that this is a REAL per-target gate, not
+        // coincidental absence.
         const applyCall = echoConnector.calls.find((call) => call.method === 'apply')
         expect(applyCall?.desired).toEqual({
           username: user.username,
@@ -480,7 +497,7 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
           firstName: user.firstName,
           lastName: user.lastName,
           enabled: true,
-          attributes: { department: ['Engineering'] },
+          attributes: {},
           groups: [],
         })
 
@@ -567,6 +584,262 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
       // Never reached Keycloak — the exact failure mode Task 1's report
       // flagged as the risk of leaving dispatch unwired.
       expect(await client.findUserByUsername(user.username)).toBeNull()
+    })
+  })
+
+  // =====================================================================
+  // Default-deny per target (Milestone 10, Task 3) —
+  // `attribute_target_mappings` replaces the single, target-uniform
+  // `sync_to_keycloak` boolean. THE non-negotiable this whole block re-
+  // proves: "for every target, an attribute (custom OR core) with no
+  // mapping row must not leave the system" — asserted against what EACH
+  // target actually received via the REAL send path (`SyncWorker.runOnce`
+  // -> `ConnectorRegistry` -> `EchoConnector`/a real Keycloak container),
+  // never against `buildTargetAttributes` called in isolation (see
+  // attribute-mapping.spec.ts for that separate, purely-algorithmic proof,
+  // which by itself CANNOT show the filter is actually wired into the send
+  // path — precisely the "vacuous test" failure class this project has
+  // already shipped three times).
+  //
+  // 'department' (this file's own `beforeAll` seed) has an enabled mapping
+  // to 'keycloak' only; 'internalNotes' has no mapping row at all. Both are
+  // reused below alongside fixtures created per-test.
+  // =====================================================================
+  describe('default-deny per target (Milestone 10, Task 3)', () => {
+    const ECHO_SECRET_NAME = 'SYNC_WORKER_DEFAULT_DENY_ECHO_SECRET'
+
+    async function enableEchoTarget(): Promise<void> {
+      process.env[ECHO_SECRET_NAME] = 'default-deny-test-secret'
+      await ctx.pool.query(
+        `INSERT INTO connector_targets (target, enabled, config) VALUES ('echo', true, $1)
+         ON CONFLICT (target) DO UPDATE SET enabled = true, config = $1`,
+        [JSON.stringify({ credentialSecretName: ECHO_SECRET_NAME })],
+      )
+    }
+
+    async function disableEchoTarget(): Promise<void> {
+      await ctx.pool.query(`DELETE FROM connector_targets WHERE target = 'echo'`)
+      delete process.env[ECHO_SECRET_NAME]
+    }
+
+    /** A fresh, uniquely-keyed custom attribute definition — never collides with 'department'/'internalNotes' or another test's own fixture. */
+    async function makeCustomAttributeDefinition(): Promise<{ id: string; key: string }> {
+      const key = `dd_custom_${nextTag()}`
+      const { rows } = await ctx.pool.query<{ id: string }>(
+        `INSERT INTO attribute_definitions (key, label, data_type, applies_to, is_active)
+         VALUES ($1, $1, 'string', 'user', true) RETURNING id`,
+        [key],
+      )
+      return { id: rows[0]!.id, key }
+    }
+
+    /** Upserts one custom-attribute mapping row — the ONLY way to configure one in this milestone (no write endpoint yet; mirrors how connector_targets rows are seeded directly in outbox-multi-target.spec.ts). */
+    async function mapAttribute(
+      attributeDefinitionId: string,
+      target: string,
+      remoteName: string,
+      enabled = true,
+    ): Promise<void> {
+      await ctx.pool.query(
+        `INSERT INTO attribute_target_mappings (attribute_definition_id, target, remote_name, enabled)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (attribute_definition_id, target) WHERE attribute_definition_id IS NOT NULL
+         DO UPDATE SET remote_name = $3, enabled = $4`,
+        [attributeDefinitionId, target, remoteName, enabled],
+      )
+    }
+
+    /** Same as `mapAttribute`, for a CORE field row instead of a custom-attribute one. */
+    async function mapCoreField(
+      coreField: string,
+      target: string,
+      remoteName: string,
+      enabled = true,
+    ): Promise<void> {
+      await ctx.pool.query(
+        `INSERT INTO attribute_target_mappings (core_field, target, remote_name, enabled)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (core_field, target) WHERE core_field IS NOT NULL
+         DO UPDATE SET remote_name = $3, enabled = $4`,
+        [coreField, target, remoteName, enabled],
+      )
+    }
+
+    async function deleteAttributeMappings(attributeDefinitionId: string): Promise<void> {
+      await ctx.pool.query(`DELETE FROM attribute_target_mappings WHERE attribute_definition_id = $1`, [
+        attributeDefinitionId,
+      ])
+    }
+
+    async function deleteCoreFieldMappings(coreField: string): Promise<void> {
+      await ctx.pool.query(`DELETE FROM attribute_target_mappings WHERE core_field = $1`, [coreField])
+    }
+
+    it('a custom attribute mapped to echo ONLY reaches echo under its remote name, and never reaches keycloak', async () => {
+      await enableEchoTarget()
+      const def = await makeCustomAttributeDefinition()
+      await mapAttribute(def.id, 'echo', 'echoRemoteName')
+      try {
+        const user = await makeUser({ [def.key]: 'echo-only-value' })
+        await usersRepo().changeStatus(user.id, 'active')
+
+        const echoConnector = new EchoConnector()
+        const registry = new ConnectorRegistry(client, echoConnector)
+        const worker = makeWorker(client, undefined, registry)
+
+        await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'echo')
+        await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'keycloak')
+        expect(await worker.drain()).toBe(2)
+
+        const applyCall = echoConnector.calls.find((call) => call.method === 'apply')
+        expect(applyCall?.desired?.attributes).toEqual({ echoRemoteName: ['echo-only-value'] })
+
+        // The SAME attribute has NO mapping row for 'keycloak' — it must
+        // not reach Keycloak under either its local key or its echo remote
+        // name.
+        const kcUser = await client.findUserByUsername(user.username)
+        expect(kcUser?.attributes[def.key]).toBeUndefined()
+        expect(kcUser?.attributes.echoRemoteName).toBeUndefined()
+      } finally {
+        await deleteAttributeMappings(def.id)
+        await disableEchoTarget()
+      }
+    })
+
+    it('an attribute mapped to keycloak does not automatically reach echo — each target is gated independently', async () => {
+      // 'department' (this file's own beforeAll seed) is mapped to
+      // 'keycloak' only, never 'echo'.
+      await enableEchoTarget()
+      try {
+        const user = await makeUser({ department: 'Engineering' })
+        await usersRepo().changeStatus(user.id, 'active')
+
+        const echoConnector = new EchoConnector()
+        const registry = new ConnectorRegistry(client, echoConnector)
+        const worker = makeWorker(client, undefined, registry)
+
+        await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'echo')
+        expect(await worker.drain()).toBe(1)
+
+        const applyCall = echoConnector.calls.find((call) => call.method === 'apply')
+        expect(applyCall?.desired?.attributes).toEqual({})
+        expect(applyCall?.desired?.attributes.department).toBeUndefined()
+      } finally {
+        await disableEchoTarget()
+      }
+    })
+
+    it('an attribute with NO mapping row for ANY target reaches neither echo nor keycloak', async () => {
+      // 'internalNotes' (this file's own beforeAll seed) has no mapping row
+      // at all, for any target.
+      await enableEchoTarget()
+      try {
+        const user = await makeUser({ internalNotes: 'must never propagate anywhere' })
+        await usersRepo().changeStatus(user.id, 'active')
+
+        const echoConnector = new EchoConnector()
+        const registry = new ConnectorRegistry(client, echoConnector)
+        const worker = makeWorker(client, undefined, registry)
+
+        await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'echo')
+        await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'keycloak')
+        expect(await worker.drain()).toBe(2)
+
+        const applyCall = echoConnector.calls.find((call) => call.method === 'apply')
+        expect(applyCall?.desired?.attributes.internalNotes).toBeUndefined()
+        expect(applyCall?.desired?.attributes).toEqual({})
+
+        const kcUser = await client.findUserByUsername(user.username)
+        expect(kcUser?.attributes.internalNotes).toBeUndefined()
+      } finally {
+        await disableEchoTarget()
+      }
+    })
+
+    it('a mapping DISABLED after being enabled stops propagating, without deleting the row', async () => {
+      await enableEchoTarget()
+      const def = await makeCustomAttributeDefinition()
+      await mapAttribute(def.id, 'echo', 'toggle')
+      try {
+        const user = await makeUser({ [def.key]: 'toggle-value' })
+        await usersRepo().changeStatus(user.id, 'active')
+
+        const echoConnector = new EchoConnector()
+        const registry = new ConnectorRegistry(client, echoConnector)
+        const worker = makeWorker(client, undefined, registry)
+
+        await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'echo')
+        expect(await worker.runOnce()).toBe('processed')
+        expect(echoConnector.calls.find((call) => call.method === 'apply')?.desired?.attributes).toEqual(
+          { toggle: ['toggle-value'] },
+        )
+
+        // Disable — the row is UPDATED, not deleted.
+        await mapAttribute(def.id, 'echo', 'toggle', false)
+
+        await insertOutboxEvent('user', user.id, 'updated', {}, undefined, 'echo')
+        expect(await worker.runOnce()).toBe('processed')
+        const secondApply = echoConnector.calls.filter((call) => call.method === 'apply').at(-1)
+        expect(secondApply?.desired?.attributes).toEqual({})
+
+        const { rows } = await ctx.pool.query<{ enabled: boolean }>(
+          `SELECT enabled FROM attribute_target_mappings WHERE attribute_definition_id = $1 AND target = 'echo'`,
+          [def.id],
+        )
+        expect(rows).toHaveLength(1) // still exists — disabled, not removed
+        expect(rows[0]?.enabled).toBe(false)
+      } finally {
+        await deleteAttributeMappings(def.id)
+        await disableEchoTarget()
+      }
+    })
+
+    it('core fields (title, department-from-org-path) map per target: a mapped one reaches echo under its remote name; an unmapped one reaches neither target', async () => {
+      await enableEchoTarget()
+      await mapCoreField('title', 'echo', 'jobTitleForEcho')
+      // Deliberately do NOT map the 'department' CORE field anywhere — the
+      // custom attribute of the same name (seeded in beforeAll) is a
+      // DIFFERENT row and must not be confused with it (see attribute-
+      // mapping.spec.ts's own "share the same LOCAL key without colliding"
+      // test for the pure-function half of this proof).
+      try {
+        const orgUnit = await new OrgUnitsRepository(ctx.db).createRoot(`Core Field Dept ${nextTag()}`)
+        const tag = nextTag()
+        const username = `core-field-${tag}@example.com`.toLowerCase()
+        const user = await usersRepo().create({
+          primaryEmail: username,
+          username,
+          firstName: 'Core',
+          lastName: 'Field',
+          orgUnitId: orgUnit.id,
+          jobTitle: 'Staff Engineer',
+        })
+        await usersRepo().changeStatus(user.id, 'active')
+
+        const echoConnector = new EchoConnector()
+        const registry = new ConnectorRegistry(client, echoConnector)
+        const worker = makeWorker(client, undefined, registry)
+
+        await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'echo')
+        await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'keycloak')
+        expect(await worker.drain()).toBe(2)
+
+        const applyCall = echoConnector.calls.find((call) => call.method === 'apply')
+        expect(applyCall?.desired?.attributes).toEqual({ jobTitleForEcho: ['Staff Engineer'] })
+        expect(applyCall?.desired?.attributes.department).toBeUndefined()
+
+        // No core-field mapping exists for 'keycloak' AT ALL (by design —
+        // see db/schema/attribute-target-mappings.ts's own doc comment):
+        // title and department never appear in Keycloak's attributes bag
+        // either, under ANY name.
+        const kcUser = await client.findUserByUsername(user.username)
+        expect(kcUser?.attributes.jobTitleForEcho).toBeUndefined()
+        expect(kcUser?.attributes.title).toBeUndefined()
+        expect(kcUser?.attributes.department).toBeUndefined()
+      } finally {
+        await deleteCoreFieldMappings('title')
+        await disableEchoTarget()
+      }
     })
   })
 

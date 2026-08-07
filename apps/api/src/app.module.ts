@@ -3,6 +3,7 @@ import { JWT_GUARD_OPTIONS, JwtGuard, type JwtGuardOptions } from './auth/jwt.gu
 import { MeController } from './auth/me.controller'
 import { AttributeDefinitionsController } from './attributes/attribute-definitions.controller'
 import { AttributeDefinitionsRepository } from './attributes/attribute-definitions.repository'
+import { AttributeTargetMappingsRepository } from './attributes/attribute-target-mappings.repository'
 import { AuditController } from './audit/audit.controller'
 import { AuditRepository } from './audit/audit.repository'
 import { AuditWriter } from './audit/audit.writer'
@@ -100,6 +101,13 @@ import { UsersRepository } from './users/users.repository'
     JwtGuard,
     UsersRepository,
     AttributeDefinitionsRepository,
+    // Milestone 10, Task 3: read-only mapping lookups `SyncWorker` (and,
+    // when raw-constructed outside DI, `ReconciliationJob`) resolve
+    // `attribute_target_mappings` rows through — see that repository's own
+    // doc comment. Registered here so real Nest DI hands both the SAME
+    // managed instance `ConnectorRegistry`/`EchoConnector` already get,
+    // rather than either falling back to its own raw-constructed default.
+    AttributeTargetMappingsRepository,
     OrgUnitsRepository,
     GroupsRepository,
     PermissionEngine,

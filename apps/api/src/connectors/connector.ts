@@ -18,14 +18,19 @@ export type ConnectorTarget = 'keycloak' | 'active_directory' | 'entra_id' | 'go
  * plain data — no connector implementation ever reads Postgres itself (see
  * `DirectoryConnector`'s own doc comment on why). Deliberately target-
  * agnostic: `username`/`email`/`firstName`/`lastName`/`enabled` are the core
- * profile fields every real target (AD, Entra, Google) and the in-repo echo
- * target all understand; `attributes` is ALREADY filtered to only the keys
- * that should propagate — `SyncWorker.reconcileUser` computes this once, via
- * the existing `buildSyncedAttributes` (keycloak-admin.client.ts), applying
- * the SAME default-deny filter to every target uniformly for now. Milestone
- * 10, Task 3 generalises that filter to a genuine per-target mapping table
- * (`attribute_target_mappings`) — this field's SHAPE does not need to change
- * when that lands, only what populates it. `groups` is the flattened
+ * IDENTITY fields every real target (AD, Entra, Google) and the in-repo echo
+ * target all understand, and are never subject to default-deny — you cannot
+ * create a directory account with no name at all, the same reason `email`/
+ * `username` have never been gated either. `attributes` is ALREADY filtered
+ * to only the keys that should propagate, PER THIS EVENT'S OWN TARGET —
+ * `SyncWorker.reconcileUser` computes this once, via
+ * `connectors/attribute-mapping.ts`'s `buildTargetAttributes`, against
+ * `attribute_target_mappings` (Milestone 10, Task 3) — covering both custom,
+ * admin-configured attributes AND the four core PROFILE fields (given name,
+ * surname, title, department) that a target may additionally want under its
+ * own remote name; a local field absent from THIS target's mapping rows
+ * never appears here, structurally, regardless of what any other target
+ * receives. `groups` is the flattened
  * EFFECTIVE membership (already resolved from the nested local DAG — see
  * SyncWorker.syncEffectiveGroups' doc comment), as group NAMES: each
  * connector maps that onto its own target's representation of membership

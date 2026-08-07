@@ -30,7 +30,6 @@ export interface AttributeDefinition {
   validationRules: AttributeValidationRules
   appliesTo: 'user' | 'group'
   isActive: boolean
-  syncToKeycloak: boolean
   selfEditable: boolean
 }
 

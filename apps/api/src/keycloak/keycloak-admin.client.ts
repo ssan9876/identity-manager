@@ -1,5 +1,4 @@
 import { Inject, Injectable } from '@nestjs/common'
-import type { AttributeDefinition } from '../attributes/attribute-validator'
 import { ConflictError, NotFoundError } from '../common/errors'
 
 /**
@@ -61,15 +60,26 @@ export interface KeycloakCredentialSummary {
 }
 
 /**
- * Only the fields `buildSyncedAttributes` needs — deliberately narrower than
- * the full `AttributeDefinition` (which also carries `dataType`,
- * `validationRules`, etc., none of which this client cares about). Every
- * real call site has a full `AttributeDefinition[]` on hand already (e.g.
- * `UsersRepository.listActiveAttributeDefinitions`) and can pass it straight
- * through — `Pick<...>` accepts that without requiring a caller to
- * re-shape anything.
+ * Only the fields `buildSyncedAttributes` needs. Milestone 10, Task 3:
+ * previously `Pick<AttributeDefinition, 'key' | 'syncToKeycloak'>` —
+ * deliberately decoupled from that type now that `syncToKeycloak` no longer
+ * exists on it (`attribute_definitions.sync_to_keycloak` is dropped;
+ * default-deny propagation moved to the per-target
+ * `attribute_target_mappings` table, see db/schema/attribute-target-
+ * mappings.ts). This class and `buildSyncedAttributes` below are otherwise
+ * COMPLETELY UNCHANGED by that migration: `KeycloakConnector.apply`
+ * (connectors/keycloak.connector.ts) still builds a synthetic, all-`true`
+ * `SyncableAttributeDefinition[]` from whichever keys survived the NEW
+ * per-target filter (`connectors/attribute-mapping.ts`'s
+ * `buildTargetAttributes`, run once in `SyncWorker.reconcileUser` before any
+ * connector is called) — this type's own field name stays `syncToKeycloak`
+ * so that passthrough construction, and this whole file's pre-existing,
+ * extensive test coverage, needed no changes at all.
  */
-export type SyncableAttributeDefinition = Pick<AttributeDefinition, 'key' | 'syncToKeycloak'>
+export interface SyncableAttributeDefinition {
+  key: string
+  syncToKeycloak: boolean
+}
 
 const REQUIRED_ACTION_UPDATE_PASSWORD = 'UPDATE_PASSWORD'
 

@@ -1,13 +1,16 @@
 import { Inject, Injectable, type OnApplicationShutdown, Optional } from '@nestjs/common'
 import { and, eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import { AttributeTargetMappingsRepository } from '../attributes/attribute-target-mappings.repository'
 import { DB_CLIENT } from '../common/db.token'
+import { buildTargetAttributes, computeCoreFieldValues } from '../connectors/attribute-mapping'
 import { ConnectorRegistry } from '../connectors/connector-registry'
 import type { DesiredUser } from '../connectors/connector'
 import * as schema from '../db/schema/index'
 import { externalIdentities } from '../db/schema/external-identities'
 import { GroupsRepository } from '../groups/groups.repository'
-import { buildSyncedAttributes, KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
+import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
+import { OrgUnitsRepository } from '../org-units/org-units.repository'
 import { UsersRepository } from '../users/users.repository'
 import { type ClaimedOutboxEvent, OutboxRepository } from './outbox.repository'
 import type { DbHandle, OutboxTarget } from './outbox.writer'
@@ -99,6 +102,8 @@ export function computeBackoffDelayMs(
 export class SyncWorker implements OnApplicationShutdown {
   private readonly config: SyncWorkerConfig
   private readonly connectorRegistry: ConnectorRegistry
+  private readonly attributeTargetMappingsRepository: AttributeTargetMappingsRepository
+  private readonly orgUnitsRepository: OrgUnitsRepository
   private timer: ReturnType<typeof setTimeout> | null = null
   private stopped = true
   private currentRun: Promise<void> = Promise.resolve()
@@ -123,9 +128,28 @@ export class SyncWorker implements OnApplicationShutdown {
     // real, properly-wired one in production (see app.module.ts) — this
     // default only matters for the raw-constructor call sites above.
     @Optional() @Inject(ConnectorRegistry) connectorRegistry?: ConnectorRegistry,
+    // Milestone 10, Task 3 — same trailing-optional-with-fallback-default
+    // shape as `connectorRegistry` immediately above, for the identical
+    // reason: every pre-existing raw `new SyncWorker(...)` call site
+    // (reconcile-cli.ts, reconciliation.spec.ts, revocation.spec.ts,
+    // connector-secrets.spec.ts, this file's own `makeWorker`) keeps
+    // compiling and behaving unchanged. Both default to a fresh instance
+    // bound to the SAME `db` this worker itself was given (the `db`
+    // PARAMETER above, not `this.db` — referencing an earlier constructor
+    // parameter in a later one's default/body is fine; `this` is not yet
+    // initialised at this point, but these are plain `??` fallbacks
+    // evaluated in the body, not parameter defaults). Nest DI supplies both
+    // real, already-registered providers in production (app.module.ts) —
+    // this default only matters for the raw-constructor call sites above.
+    @Optional() @Inject(AttributeTargetMappingsRepository)
+    attributeTargetMappingsRepository?: AttributeTargetMappingsRepository,
+    @Optional() @Inject(OrgUnitsRepository) orgUnitsRepository?: OrgUnitsRepository,
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config }
     this.connectorRegistry = connectorRegistry ?? new ConnectorRegistry(keycloak)
+    this.attributeTargetMappingsRepository =
+      attributeTargetMappingsRepository ?? new AttributeTargetMappingsRepository(db)
+    this.orgUnitsRepository = orgUnitsRepository ?? new OrgUnitsRepository(db)
   }
 
   // -------------------------------------------------------------------
@@ -337,7 +361,29 @@ export class SyncWorker implements OnApplicationShutdown {
       throw new Error(`sync worker: no user found for id ${userId}`)
     }
 
-    const definitions = await this.usersRepository.listActiveAttributeDefinitions(tx)
+    // Milestone 10, Task 3 — the per-target, default-deny attribute filter.
+    // `mappings` is EVERY enabled `attribute_target_mappings` row for THIS
+    // event's own `target`, custom attributes and core fields alike,
+    // already remote-name-resolved (ONE round trip — see
+    // AttributeTargetMappingsRepository.listForTarget's own doc comment on
+    // why that matters specifically here). `orgUnit` backs the
+    // `department` core field ("derived from the org path" — see
+    // connectors/attribute-mapping.ts's `computeCoreFieldValues` doc
+    // comment) and is fetched LAZILY — only when `mappings` actually
+    // contains a core-field row for this target — rather than
+    // unconditionally on every call: no target seeds a core-field mapping
+    // by default (this task's own migration deliberately seeds none for
+    // 'keycloak' — see attribute-target-mappings.ts), so this keeps the
+    // COMMON case at exactly one extra round trip versus the
+    // `listActiveAttributeDefinitions` call this replaces, not two. Both
+    // reads go through `tx` — never a second pool connection while this
+    // worker's own transaction is open (finding C1, docs/superpowers/
+    // audit-integrity.md).
+    const mappings = await this.attributeTargetMappingsRepository.listForTarget(target, tx)
+    const orgUnit = mappings.some((mapping) => mapping.source === 'core')
+      ? await this.orgUnitsRepository.findById(user.orgUnitId, tx)
+      : null
+    const coreFieldValues = computeCoreFieldValues(user, orgUnit)
 
     // Only an 'active' user is treated as a live principal anywhere else in
     // this system (PermissionEngine.resolveActor requires it). Mirroring
@@ -356,13 +402,14 @@ export class SyncWorker implements OnApplicationShutdown {
       firstName: user.firstName,
       lastName: user.lastName,
       enabled: desiredEnabled,
-      // Default-deny filter, computed ONCE here and handed to whichever
-      // connector `target` resolves to — see `DesiredUser`'s own doc
-      // comment on why this stays the pre-existing `sync_to_keycloak` set
-      // for every target until Task 3 generalises it per-target, and
-      // KeycloakConnector's doc comment for why that connector's own
+      // Default-deny filter, computed ONCE here (per-TARGET, since Milestone
+      // 10 Task 3 — `mappings` above is already scoped to this event's own
+      // `target`) and handed to whichever connector `target` resolves to.
+      // See `DesiredUser`'s own doc comment for why this field's SHAPE is
+      // unchanged (still `Record<string, string[]>`, keyed by REMOTE name),
+      // and KeycloakConnector's doc comment for why that connector's own
       // `createUser`/`updateUser` calls do not need to filter a second time.
-      attributes: buildSyncedAttributes(user.attributes, definitions),
+      attributes: buildTargetAttributes(mappings, user.attributes, coreFieldValues),
       groups: await this.effectiveGroupNames(tx, user.id),
     }
 
