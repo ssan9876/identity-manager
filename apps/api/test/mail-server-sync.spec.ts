@@ -1,8 +1,10 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { NotApplicableError } from '../src/connectors/connector'
 import { ConnectorRegistry } from '../src/connectors/connector-registry'
 import { EchoConnector } from '../src/connectors/echo.connector'
+import { MailServerConnector } from '../src/connectors/mail-server.connector'
+import { attributeDefinitions } from '../src/db/schema/attribute-definitions'
 import { connectorTargets } from '../src/db/schema/connector-targets'
 import { externalIdentities, externalIdentitySystem } from '../src/db/schema/external-identities'
 import { outboxTarget } from '../src/db/schema/outbox-events'
@@ -206,6 +208,49 @@ describe('mail server connector (DB-backed)', () => {
       await expect(
         ctx.db.transaction((tx) => worker.reconcileUser(tx, user.id, 'echo')),
       ).rejects.toThrow('503')
+    })
+  })
+
+  describe('ConnectorRegistry', () => {
+    it('resolves mail_server to a configured MailServerConnector', async () => {
+      await ctx.db
+        .insert(connectorTargets)
+        .values({
+          target: 'mail_server',
+          enabled: true,
+          config: {
+            baseUrl: 'http://mail.internal/api/v1',
+            tokenSecretName: 'MAIL_SERVER_SERVICE_TOKEN',
+          },
+        })
+        .onConflictDoUpdate({ target: connectorTargets.target, set: { enabled: true } })
+
+      const registry = new ConnectorRegistry(unusedKeycloak())
+      const connector = await ctx.db.transaction((tx) => registry.resolve('mail_server', tx))
+
+      expect(connector).toBeInstanceOf(MailServerConnector)
+    })
+  })
+
+  describe('mail attribute definitions', () => {
+    it('seeds the four keys the connector reads', async () => {
+      const rows = await ctx.db
+        .select()
+        .from(attributeDefinitions)
+        .where(
+          inArray(attributeDefinitions.key, [
+            'mail_enabled',
+            'mail_quota_mb',
+            'mail_aliases',
+            'mail_admin_role',
+          ]),
+        )
+
+      expect(rows).toHaveLength(4)
+      expect(rows.find((row) => row.key === 'mail_enabled')?.dataType).toBe('boolean')
+      expect(rows.find((row) => row.key === 'mail_quota_mb')?.dataType).toBe('number')
+      // Default-deny for self-editing, like every other definition here.
+      expect(rows.every((row) => row.selfEditable === false)).toBe(true)
     })
   })
 })

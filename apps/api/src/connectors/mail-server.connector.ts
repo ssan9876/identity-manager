@@ -77,7 +77,28 @@ function readNumber(attributes: Record<string, string[]>, key: string): number |
 export class MailServerConnector implements DirectoryConnector {
   private config: Record<string, unknown> = {}
 
-  constructor(private readonly fetchImpl: FetchLike = globalThis.fetch) {}
+  // Delegating arrow rather than a bare `globalThis.fetch` reference: the
+  // global is not bound to its own receiver, and calling it detached throws
+  // in some runtimes.
+  private fetchImpl: FetchLike = (url, init) => globalThis.fetch(url, init)
+
+  /**
+   * Test seam — substitutes the HTTP client. Production code never calls
+   * this; the default above delegates to the global `fetch`.
+   *
+   * This exists as a METHOD rather than a constructor parameter because Nest
+   * reflects EVERY constructor parameter's type regardless of whether it also
+   * has a JS-level default, and `FetchLike` (a bare function type) erases to
+   * `Object` — which DI cannot resolve, so `AppModule` fails to compile with
+   * "can't resolve dependencies of the MailServerConnector (?)". `EchoConnector`
+   * documents the same hazard from the other direction, and takes nothing in
+   * its constructor for the same reason. Caught by app.module.spec.ts's
+   * DI-graph smoke test.
+   */
+  withFetch(fetchImpl: FetchLike): this {
+    this.fetchImpl = fetchImpl
+    return this
+  }
 
   /** Binds this connector to a fresh read of `connector_targets.config` — called by `ConnectorRegistry.resolve`, never by a caller directly. Returns `this` so the registry can `factory(config)` in one expression. */
   configure(config: Record<string, unknown>): this {
