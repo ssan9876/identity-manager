@@ -3,6 +3,7 @@ import { JWT_GUARD_OPTIONS, JwtGuard, type JwtGuardOptions } from './auth/jwt.gu
 import { MeController } from './auth/me.controller'
 import { AttributeDefinitionsController } from './attributes/attribute-definitions.controller'
 import { AttributeDefinitionsRepository } from './attributes/attribute-definitions.repository'
+import { AttributeTargetMappingsController } from './attributes/attribute-target-mappings.controller'
 import { AttributeTargetMappingsRepository } from './attributes/attribute-target-mappings.repository'
 import { AuditController } from './audit/audit.controller'
 import { AuditRepository } from './audit/audit.repository'
@@ -15,6 +16,8 @@ import { RoleAssignmentsRepository } from './authz/role-assignments.repository'
 import { DB_CLIENT } from './common/db.token'
 import { ActiveDirectoryConnector } from './connectors/active-directory.connector'
 import { ConnectorRegistry } from './connectors/connector-registry'
+import { ConnectorTargetsController } from './connectors/connector-targets.controller'
+import { ConnectorTargetsRepository } from './connectors/connector-targets.repository'
 import { EchoConnector } from './connectors/echo.connector'
 import { EntraIdConnector } from './connectors/entra-id.connector'
 import { GoogleWorkspaceConnector } from './connectors/google-workspace.connector'
@@ -36,6 +39,7 @@ import { OutboxRepository } from './outbox/outbox.repository'
 import { OutboxWriter } from './outbox/outbox.writer'
 import { SyncStateRepository } from './outbox/sync-state.repository'
 import { SyncWorker } from './outbox/sync.worker'
+import { TargetReconciliationJob } from './outbox/target-reconciliation.job'
 import { SelfServiceController } from './self-service/self-service.controller'
 import { UsersController } from './users/users.controller'
 import { UsersRepository } from './users/users.repository'
@@ -53,6 +57,11 @@ import { UsersRepository } from './users/users.repository'
     OutboxController,
     AttributeDefinitionsController,
     AuditController,
+    // Milestone 14, Task 9: the connector admin console's API surface —
+    // target configuration/health/dry-run (ConnectorTargetsController) and
+    // the attribute mapping editor (AttributeTargetMappingsController).
+    ConnectorTargetsController,
+    AttributeTargetMappingsController,
   ],
   providers: [
     {
@@ -176,6 +185,18 @@ import { UsersRepository } from './users/users.repository'
     ConnectorRegistry,
     SyncWorker,
     SyncStateRepository,
+    // Milestone 14, Task 9 — the connector console's own read/write
+    // repository for `connector_targets` (ConnectorTargetsController).
+    ConnectorTargetsRepository,
+    // Milestone 10 Task 4 built this job CLI-only, deliberately not
+    // registered here yet — its own report named this task ("Milestone 14
+    // Task 9 ... will need to either register it there or build a thin
+    // controller around it") as the moment it would need real Nest DI, to
+    // back ConnectorTargetsController's dry-run/apply route. Never network
+    // I/O at construction (its constructor only stores already-provided
+    // dependencies), so — like SyncWorker/EchoConnector/every connector
+    // above — it is safe to register unconditionally for every app boot.
+    TargetReconciliationJob,
   ],
 })
 export class AppModule {}

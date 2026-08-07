@@ -39,6 +39,7 @@ export class AttributeDefinitionsRepository {
       .orderBy(asc(attributeDefinitions.sortOrder), asc(attributeDefinitions.key))
 
     return rows.map((row) => ({
+      id: row.id,
       key: row.key,
       label: row.label,
       dataType: row.dataType,

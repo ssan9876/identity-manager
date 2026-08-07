@@ -14,6 +14,19 @@ export interface ValidationRules {
 }
 
 export interface AttributeDefinition {
+  /**
+   * Milestone 14, Task 9 — added so the connector console's attribute
+   * mapping editor (attribute-target-mappings.controller.ts) can reference a
+   * CUSTOM attribute by its stable id, the same identifier
+   * `attribute_target_mappings.attribute_definition_id` actually stores
+   * (never the mutable `key`, and never a display `label`). Every existing
+   * consumer of this shape already reads this row from `attribute_definitions`
+   * (a real Postgres primary key on every row), so this is a pure read-only
+   * addition — no new write path, and specifically none anywhere near
+   * `validation_rules` (the ReDoS-relevant column this project's own
+   * carried-forward gate keeps write-free).
+   */
+  id: string
   key: string
   label: string
   dataType: AttributeDataType

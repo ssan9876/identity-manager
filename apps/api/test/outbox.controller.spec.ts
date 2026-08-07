@@ -93,7 +93,7 @@ describe('OutboxController (finding H3, docs/superpowers/audit-integrity.md)', (
     aggregateType: 'user' | 'group' | 'membership',
     status: 'pending' | 'processing' | 'done' | 'failed',
     lastError: string | null = null,
-    target: 'keycloak' | 'active_directory' | 'entra_id' | 'google_workspace' | null = null,
+    target: 'keycloak' | 'active_directory' | 'entra_id' | 'google_workspace' | 'echo' | null = null,
   ): Promise<number> {
     const { rows } = await ctx.pool.query<{ id: string }>(
       `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, status, last_error, attempts, target)
@@ -188,5 +188,54 @@ describe('OutboxController (finding H3, docs/superpowers/audit-integrity.md)', (
     currentUsername = bare.username
 
     await request(app.getHttpServer()).get('/outbox/dead-letters').expect(403)
+  })
+
+  // Milestone 14, Task 9: "per-target dead letters, extending Milestone 8's
+  // view." `?target=` narrows both `items` and `total` TOGETHER — proven
+  // here by seeding the SAME failure count for two different targets and
+  // confirming a filtered request never leaks the other target's rows into
+  // either the list or the count.
+  describe('?target= filter (Milestone 14, Task 9)', () => {
+    it('narrows items AND total to the requested target only, never leaking another target\'s dead letters into either', async () => {
+      const auditor = await makeActiveUser('auditor3')
+      await rolesRepo().assign({ userId: auditor.id, roleKey: 'auditor', scopeOrgUnitId: null })
+      currentUsername = auditor.username
+
+      const echoFailure = await insertOutboxEvent('user', 'failed', 'echo boom', 'echo')
+      const gwsFailure = await insertOutboxEvent('user', 'failed', 'google boom', 'google_workspace')
+
+      const res = await request(app.getHttpServer()).get('/outbox/dead-letters?target=echo&limit=100').expect(200)
+      const ids: number[] = res.body.items.map((item: { id: number; target: string }) => item.id)
+      const targets: string[] = res.body.items.map((item: { target: string }) => item.target)
+
+      expect(ids).toContain(echoFailure)
+      expect(ids).not.toContain(gwsFailure)
+      expect(new Set(targets)).toEqual(new Set(['echo']))
+      // total reflects the SAME narrowing as items, not the whole outbox table.
+      expect(res.body.total).toBe(res.body.items.length)
+    })
+
+    it('omitting ?target= behaves exactly as before this task — every target together', async () => {
+      const auditor = await makeActiveUser('auditor4')
+      await rolesRepo().assign({ userId: auditor.id, roleKey: 'auditor', scopeOrgUnitId: null })
+      currentUsername = auditor.username
+
+      const kcFailure = await insertOutboxEvent('user', 'failed', 'kc boom', 'keycloak')
+      const adFailure = await insertOutboxEvent('user', 'failed', 'ad boom', 'active_directory')
+
+      const res = await request(app.getHttpServer()).get('/outbox/dead-letters?limit=100').expect(200)
+      const ids: number[] = res.body.items.map((item: { id: number }) => item.id)
+      expect(ids).toContain(kcFailure)
+      expect(ids).toContain(adFailure)
+    })
+
+    it('rejects an unknown ?target= value with 400 VALIDATION_FAILED, never a silently-empty result', async () => {
+      const auditor = await makeActiveUser('auditor5')
+      await rolesRepo().assign({ userId: auditor.id, roleKey: 'auditor', scopeOrgUnitId: null })
+      currentUsername = auditor.username
+
+      const res = await request(app.getHttpServer()).get('/outbox/dead-letters?target=not-a-real-target').expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+    })
   })
 })

@@ -500,6 +500,7 @@ export class UsersRepository {
       )
 
     return rows.map((row) => ({
+      id: row.id,
       key: row.key,
       label: row.label,
       dataType: row.dataType,

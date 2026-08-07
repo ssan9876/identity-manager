@@ -18,6 +18,8 @@ export type Action =
   | 'org_unit:create'
   | 'role:assign'
   | 'audit:read'
+  | 'connector:read'
+  | 'connector:manage'
 
 export const ALL_ROLE_KEYS: readonly RoleKey[] = [
   'super_admin',
@@ -40,6 +42,8 @@ export const ALL_ACTIONS: readonly Action[] = [
   'org_unit:create',
   'role:assign',
   'audit:read',
+  'connector:read',
+  'connector:manage',
 ]
 
 const READ_ONLY_ACTIONS: readonly Action[] = ['user:read', 'group:read', 'org_unit:read']
@@ -106,7 +110,19 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly Action[]> = Object.assig
       'org_unit:read',
     ],
     help_desk: ['user:read', 'user:update', 'group:read', 'org_unit:read'],
-    auditor: [...READ_ONLY_ACTIONS, 'audit:read'],
+    // Milestone 14, Task 9 — connector admin console. `connector:read` joins
+    // `audit:read` here for the identical reason it was already granted:
+    // per-target health and dead letters are the same category of
+    // operational/security visibility this role exists to see ("what
+    // happened, what is broken" — OutboxController's own doc comment).
+    // `connector:manage` (editing target config, attribute mappings, and
+    // triggering a reconcile — including a dry run, which still makes a
+    // real outbound call to whatever the target is) is DELIBERATELY not
+    // granted here, mirroring `role:assign`'s own "only super_admin"
+    // posture: both are structural, directory-wide capabilities with
+    // outsized blast radius if misused, not ordinary read/write directory
+    // work.
+    auditor: [...READ_ONLY_ACTIONS, 'audit:read', 'connector:read'],
     read_only: READ_ONLY_ACTIONS,
   } satisfies Record<RoleKey, readonly Action[]>,
 )

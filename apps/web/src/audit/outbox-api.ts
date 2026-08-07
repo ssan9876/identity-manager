@@ -32,12 +32,14 @@ export const DEFAULT_MAX_ATTEMPTS = 8
 export interface DeadLetterListParams {
   limit: number
   offset: number
+  /** Milestone 14, Task 9 — narrows to one target's own dead letters, extending Milestone 8's unfiltered view. Omitted means every target, unchanged from before this task. */
+  target?: DeadLetterEvent['target']
 }
 
 /** `GET /outbox/dead-letters` — gated on `audit:read`, same permission as the audit log itself (OutboxController's own doc comment: "the same category of information audit_log already exists to expose"). Read-only: there is no retry/resolve route here — see that file's doc comment for why (ReconciliationJob's job, run out-of-band). */
 export function fetchDeadLetters(accessToken: string, params: DeadLetterListParams): Promise<Page<DeadLetterEvent>> {
   return authorizedRequest<Page<DeadLetterEvent>>(
-    `/outbox/dead-letters${buildQuery({ limit: params.limit, offset: params.offset })}`,
+    `/outbox/dead-letters${buildQuery({ limit: params.limit, offset: params.offset, target: params.target })}`,
     accessToken,
   )
 }

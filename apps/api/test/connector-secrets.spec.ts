@@ -8,6 +8,7 @@ import { UsersRepository } from '../src/users/users.repository'
 import { GroupsRepository } from '../src/groups/groups.repository'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { OutboxRepository } from '../src/outbox/outbox.repository'
+import { assertNoLeak } from './support/secret-leak'
 import { withTestDatabase } from './support/pg'
 
 function unreachableKeycloak(): KeycloakAdminClient {
@@ -16,19 +17,6 @@ function unreachableKeycloak(): KeycloakAdminClient {
     clientId: 'irrelevant',
     clientSecret: 'irrelevant',
   })
-}
-
-/**
- * Throws if `haystack` contains `sentinel` anywhere. The ONE assertion every
- * check in this file funnels through, so "did we grep everything" reduces to
- * "did we call this enough times" — and so the meta-test below
- * ("assertNoLeak itself is not vacuous") only has to prove ONE function
- * actually detects a leak, not each individual call site.
- */
-function assertNoLeak(haystack: string, sentinel: string, where: string): void {
-  if (haystack.includes(sentinel)) {
-    throw new Error(`SECRET LEAK in ${where}: sentinel value found — "${haystack}"`)
-  }
 }
 
 /**

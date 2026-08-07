@@ -8,6 +8,10 @@ import {
 const def = (
   overrides: Partial<AttributeDefinition> & Pick<AttributeDefinition, 'key' | 'dataType'>,
 ): AttributeDefinition => ({
+  // Milestone 14, Task 9 widened AttributeDefinition with `id` — irrelevant
+  // to what this pure-function suite exercises (validateAttributes never
+  // reads it), so a synthetic id derived from `key` is sufficient here.
+  id: `def-${overrides.key}`,
   label: overrides.key,
   required: false,
   validationRules: {},

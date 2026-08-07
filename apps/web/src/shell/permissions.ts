@@ -16,6 +16,8 @@ export type Action =
   | 'org_unit:create'
   | 'role:assign'
   | 'audit:read'
+  | 'connector:read'
+  | 'connector:manage'
 
 /** Mirrors SelfPermissionsResponse from apps/api/src/self-service/self-service.controller.ts. */
 export interface SelfPermissionsResponse {

@@ -762,8 +762,11 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       const res = await request(app.getHttpServer()).get('/self/permissions').expect(200)
       const actions: string[] = res.body.actions
       expect(new Set(actions).size).toBe(actions.length) // no duplicate 'user:read'/'group:read'/'org_unit:read'
+      // Milestone 14, Task 9: auditor also holds connector:read (per-target
+      // health/dead-letter visibility, the same category of information
+      // audit:read already grants — see authz/actions.ts's own doc comment).
       expect([...actions].sort()).toEqual(
-        ['user:read', 'user:update', 'group:read', 'org_unit:read', 'audit:read'].sort(),
+        ['user:read', 'user:update', 'group:read', 'org_unit:read', 'audit:read', 'connector:read'].sort(),
       )
     })
 
