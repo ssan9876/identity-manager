@@ -8,7 +8,7 @@ import { ConfirmDialog } from '../shell/ConfirmDialog'
 import { useSelfPermissions } from '../shell/permissions'
 import { useToast } from '../shell/ToastProvider'
 import { formatDateOnly, formatDateTime } from '../format'
-import { deactivatePerson, fetchGroupsForUser, fetchPerson, type Group, type Person } from './api'
+import { deactivatePerson, fetchGroupsForUser, fetchPeopleByIds, fetchPerson, type Group, type Person } from './api'
 import { StatusBadge, SYNC_WORD, SyncBadge } from './badges'
 import { PersonRolesTab } from './PersonRolesTab'
 import './PersonDetailPage.css'
@@ -21,7 +21,33 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'activity', label: 'Activity' },
 ]
 
-function ProfileTab({ person, orgUnitPath }: { person: Person; orgUnitPath: string | null }) {
+/**
+ * The manager field resolved to a real, displayable `Person` — never left
+ * as the bare `managerId` UUID (this task's whole reason for existing: "on
+ * edit, an already-set manager renders as that person's NAME, not their
+ * UUID" applies just as much to this READ-ONLY detail view as it does to
+ * PersonForm's own picker). `'unresolvable'` is not an error: users are
+ * never deleted, only deactivated (id-resolution does not exclude
+ * deactivated rows), so a manager that fails to resolve is a real person
+ * outside THIS viewer's own `user:read` scope — the identical situation,
+ * and identical wording, GroupMembersTab's "Member outside what your role
+ * can see" row already establishes for group membership.
+ */
+type ManagerState =
+  | { status: 'none' }
+  | { status: 'loading' }
+  | { status: 'ready'; person: Person }
+  | { status: 'unresolvable'; id: string }
+
+function ProfileTab({
+  person,
+  orgUnitPath,
+  managerState,
+}: {
+  person: Person
+  orgUnitPath: string | null
+  managerState: ManagerState
+}) {
   const attributeEntries = Object.entries(person.attributes)
 
   return (
@@ -49,7 +75,21 @@ function ProfileTab({ person, orgUnitPath }: { person: Person; orgUnitPath: stri
         </div>
         <div>
           <dt>Manager</dt>
-          <dd className="mono">{person.managerId ?? '—'}</dd>
+          <dd data-testid="person-detail-manager">
+            {managerState.status === 'none' ? (
+              '—'
+            ) : managerState.status === 'loading' ? (
+              <span className="skeleton" style={{ width: '8rem', height: '1rem', display: 'inline-block' }} />
+            ) : managerState.status === 'ready' ? (
+              <Link to={`/people/${managerState.person.id}`} data-testid="person-detail-manager-link">
+                {managerState.person.displayName}
+              </Link>
+            ) : (
+              <span className="cell-muted">
+                Outside what your role can see <span className="mono">({managerState.id})</span>
+              </span>
+            )}
+          </dd>
         </div>
         <div>
           <dt>Location</dt>
@@ -163,6 +203,7 @@ export default function PersonDetailPage() {
   const [groups, setGroups] = useState<Group[] | null>(null)
   const [groupsError, setGroupsError] = useState<string | null>(null)
   const [groupsLoading, setGroupsLoading] = useState(true)
+  const [managerState, setManagerState] = useState<ManagerState>({ status: 'none' })
   const [activeTab, setActiveTab] = useState<TabKey>('profile')
   const [deactivateOpen, setDeactivateOpen] = useState(false)
   const tabRefs = useRef<Record<TabKey, HTMLButtonElement | null>>({
@@ -242,6 +283,39 @@ export default function PersonDetailPage() {
       cancelled = true
     }
   }, [accessToken, id])
+
+  // Resolves the manager id to a real Person, separately from the main
+  // person/groups fetch above — keyed on `person?.managerId` (a primitive),
+  // not on `person` itself, so this does not needlessly re-run every time
+  // `person` gets a new object identity for an unrelated reason (e.g.
+  // `handleConfirmDeactivate`'s own `setPerson(updated)`).
+  useEffect(() => {
+    if (accessToken === undefined || person === null) return
+    const managerId = person.managerId
+    if (managerId === null) {
+      setManagerState({ status: 'none' })
+      return
+    }
+
+    let cancelled = false
+    setManagerState({ status: 'loading' })
+
+    fetchPeopleByIds(accessToken, [managerId])
+      .then((page) => {
+        if (cancelled) return
+        const match = page.items.find((p) => p.id === managerId)
+        setManagerState(match !== undefined ? { status: 'ready', person: match } : { status: 'unresolvable', id: managerId })
+      })
+      .catch(() => {
+        if (cancelled) return
+        setManagerState({ status: 'unresolvable', id: managerId })
+      })
+
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accessToken, person?.managerId])
 
   function activateTab(key: TabKey) {
     setActiveTab(key)
@@ -382,7 +456,7 @@ export default function PersonDetailPage() {
         tabIndex={0}
         className="tabpanel"
       >
-        <ProfileTab person={person} orgUnitPath={orgUnitPath} />
+        <ProfileTab person={person} orgUnitPath={orgUnitPath} managerState={managerState} />
       </div>
       <div
         id="panel-groups"

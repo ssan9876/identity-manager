@@ -1,0 +1,40 @@
+/**
+ * `/self` — Milestone 9, Task 3. Layout only; every colour/spacing value
+ * below is a token from styles/tokens.css, matching every other component
+ * CSS file's own rule (see styles/components.css's file header). This page
+ * previously had no stylesheet of its own at all — see SelfServicePage.tsx's
+ * own doc comment for why.
+ */
+
+.self-service {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+  max-width: 40rem;
+}
+
+.self-service__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+/* The Credentials deep link renders as a .btn (inline-flex internally, but
+   still a flex ITEM of this column container, which stretches items to the
+   full cross-axis width by default) — without this it would stretch to the
+   section's full width instead of sizing to its own content, unlike every
+   other .btn usage in this console, which always sits in a row-flex
+   container where stretch only ever affects height. */
+.self-service__section > a.btn {
+  align-self: flex-start;
+}
+
+.self-service__edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 28rem;
+}
+
+.self-service__actions {
+  margin-top: var(--space-2);
+}
