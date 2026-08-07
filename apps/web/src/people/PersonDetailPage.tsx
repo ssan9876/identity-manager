@@ -2,9 +2,9 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useAuth } from 'react-oidc-context'
 import { Link, useParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
+import { AuditLogTable } from '../audit/AuditLogTable'
 import { useOrgUnits } from '../org-units/OrgUnitsContext'
 import { ConfirmDialog } from '../shell/ConfirmDialog'
-import { NotYetBuilt } from '../shell/NotYetBuilt'
 import { useSelfPermissions } from '../shell/permissions'
 import { useToast } from '../shell/ToastProvider'
 import { formatDateOnly, formatDateTime } from '../format'
@@ -144,10 +144,11 @@ function GroupsTab({
 /**
  * People detail — Milestone 8, Task 2. Tabs: Profile, Groups, Roles,
  * Activity — WAI-ARIA tabs pattern, arrow-key navigable, automatic
- * activation. Read-only in this task (writes are Task 3). Roles and
- * Activity render NotYetBuilt: neither has a read endpoint yet (role
- * assignment and the audit log both arrive in later tasks of this
- * milestone), and an honest placeholder beats fabricating data.
+ * activation. Read-only in this task (writes are Task 3). Roles (Task 4) and
+ * Activity (Task 5) both gate their fetch on their own permission BEFORE
+ * rendering (`role:assign`, `audit:read`) — see the Roles tab's own comment
+ * for why an explanatory message beats a request that would only 403
+ * anyway; Activity applies the identical pattern.
  */
 export default function PersonDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -428,10 +429,20 @@ export default function PersonDetailPage() {
         tabIndex={0}
         className="tabpanel"
       >
-        <NotYetBuilt
-          title="Activity"
-          note="This person's audit history isn't surfaced here yet — the audit log view is coming in a later task."
-        />
+        {permissions.status === 'loading' ? (
+          <span className="skeleton" style={{ width: '10rem', height: '1rem', display: 'block' }} />
+        ) : permissions.status === 'ready' && permissions.actions.has('audit:read') ? (
+          <AuditLogTable
+            fixedResourceType="user"
+            fixedResourceId={person.id}
+            emptyMessage={`No recorded activity for ${person.displayName} yet`}
+          />
+        ) : (
+          <p className="cell-muted" data-testid="activity-permission-note">
+            You don&rsquo;t hold the audit:read permission, so you can&rsquo;t view this person&rsquo;s activity
+            history here. Ask an auditor or super admin if you need this.
+          </p>
+        )}
       </div>
     </div>
   )

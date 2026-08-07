@@ -1,9 +1,11 @@
 import { useAuth } from 'react-oidc-context'
 import { Route, Routes } from 'react-router-dom'
+import AuditPage from './audit/AuditPage'
 import CreateGroupPage from './groups/CreateGroupPage'
 import EditGroupPage from './groups/EditGroupPage'
 import GroupDetailPage from './groups/GroupDetailPage'
 import GroupsListPage from './groups/GroupsListPage'
+import ImportPage from './imports/ImportPage'
 import CreateUserPage from './people/CreateUserPage'
 import EditUserPage from './people/EditUserPage'
 import PeopleListPage from './people/PeopleListPage'
@@ -12,22 +14,8 @@ import OrgUnitsPage from './org-units/OrgUnitsPage'
 import RolesCatalogPage from './roles/RolesCatalogPage'
 import SelfServicePage from './self-service/SelfServicePage'
 import AppShell from './shell/AppShell'
-import { NotYetBuilt } from './shell/NotYetBuilt'
 import { ToastProvider } from './shell/ToastProvider'
 import './SignInGate.css'
-
-const NOT_YET_BUILT_ROUTES: { path: string; title: string; note: string }[] = [
-  {
-    path: '/import',
-    title: 'Import',
-    note: 'Bulk CSV import with a preview-before-commit safety rail arrives in a later task of this milestone.',
-  },
-  {
-    path: '/audit',
-    title: 'Audit',
-    note: 'The searchable audit log arrives in a later task of this milestone.',
-  },
-]
 
 /**
  * Top-level shell: the authentication gate (unchanged since Milestone 1 —
@@ -58,13 +46,16 @@ const NOT_YET_BUILT_ROUTES: { path: string; title: string; note: string }[] = [
  * for the identical documentation-only reason `/people/new` precedes
  * `/people/:id` above.
  *
- * Every nav destination still not built (Import, Audit) keeps a real route
- * — an honest "coming in a later task" panel, never a dead link (task-2-
- * brief.md) — gated by the SAME permission the nav item itself is gated by
- * (shell/nav-items.tsx); a caller who reaches one of these routes directly
- * (typed URL, bookmark) without the underlying permission sees the
- * identical panel regardless, since there is no data behind either yet to
- * protect either way.
+ * Milestone 8, Task 5 adds Import (CSV preview/commit) and Audit (the
+ * searchable log, plus a Dead letters tab) — the last two NOT_YET_BUILT
+ * placeholders (task-2-brief.md's "an honest 'coming in a later task' panel,
+ * never a dead link") become real routes here, closing out the milestone.
+ * Each page still gates its OWN content behind the matching permission
+ * (`user:create` for Import, `audit:read` for Audit) with an explanatory
+ * message when absent — the same pattern OrgUnitsPage/PersonRolesTab already
+ * established — so a caller who reaches either route directly (typed URL,
+ * bookmark) without the grant sees why, never a bare 403 or a silent empty
+ * screen.
  *
  * `ToastProvider` wraps `<Routes>`, not any single page — DESIGN.md's
  * "Toasts for the result of an action" must survive the navigation an
@@ -113,14 +104,9 @@ export default function App() {
           <Route path="/groups/:id" element={<GroupDetailPage />} />
           <Route path="/groups/:id/edit" element={<EditGroupPage />} />
           <Route path="/roles" element={<RolesCatalogPage />} />
+          <Route path="/import" element={<ImportPage />} />
+          <Route path="/audit" element={<AuditPage />} />
           <Route path="/self" element={<SelfServicePage />} />
-          {NOT_YET_BUILT_ROUTES.map((route) => (
-            <Route
-              key={route.path}
-              path={route.path}
-              element={<NotYetBuilt title={route.title} note={route.note} />}
-            />
-          ))}
         </Route>
       </Routes>
     </ToastProvider>

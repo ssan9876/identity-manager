@@ -87,6 +87,7 @@ describe('guard coverage', () => {
     expect(found).toEqual(
       [
         'AttributeDefinitionsController',
+        'AuditController',
         'GroupsController',
         'HealthController',
         'ImportsController',

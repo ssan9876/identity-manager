@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { Field } from '../forms/Field'
 import { fetchPeople, fetchPeopleByIds, type Person } from '../people/api'
-import { StatusBadge } from '../people/badges'
+import { StatusBadge, SyncBadge } from '../people/badges'
 import { useToast } from '../shell/ToastProvider'
 import { addGroupMember, fetchEffectiveMembers, fetchGroupMembers, removeGroupMember } from './api'
 
@@ -206,6 +206,7 @@ function MemberList({
                   </Link>
                   <span className="cell-muted">{row.person.username}</span>
                   <StatusBadge status={row.person.status} />
+                  <SyncBadge state={row.person.syncState} />
                 </>
               ) : (
                 <span className="cell-muted">
@@ -249,6 +250,15 @@ type MembersState =
  * don't overlap), each row resolved to a real Person via ONE combined `GET
  * /users?ids=` call (see people/api.ts's fetchPeopleByIds) rather than one
  * request per id.
+ *
+ * Milestone 8, Task 5: each row also carries the SAME `SyncBadge` the
+ * People list/detail already show — `fetchPeopleByIds` already returns
+ * `syncState` per person, so this costs no extra request. This is precisely
+ * the screen the security remediation's own motivating finding was about
+ * (docs/superpowers/audit-integrity.md, finding H3): a user removed from a
+ * group whose removal event dead-lettered would otherwise look like an
+ * ordinary, healthy member right here, on the one screen an admin would
+ * check to confirm who is actually still in a group.
  */
 export function GroupMembersTab({
   groupId,

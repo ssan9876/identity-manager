@@ -3,6 +3,7 @@ import { JWT_GUARD_OPTIONS, JwtGuard, type JwtGuardOptions } from './auth/jwt.gu
 import { MeController } from './auth/me.controller'
 import { AttributeDefinitionsController } from './attributes/attribute-definitions.controller'
 import { AttributeDefinitionsRepository } from './attributes/attribute-definitions.repository'
+import { AuditController } from './audit/audit.controller'
 import { AuditRepository } from './audit/audit.repository'
 import { AuditWriter } from './audit/audit.writer'
 import { PermissionEngine } from './authz/permission.engine'
@@ -45,6 +46,7 @@ import { UsersRepository } from './users/users.repository'
     SelfServiceController,
     OutboxController,
     AttributeDefinitionsController,
+    AuditController,
   ],
   providers: [
     {
