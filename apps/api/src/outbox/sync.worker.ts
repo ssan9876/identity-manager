@@ -11,7 +11,7 @@ import { externalIdentities } from '../db/schema/external-identities'
 import { GroupsRepository } from '../groups/groups.repository'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
 import { OrgUnitsRepository } from '../org-units/org-units.repository'
-import { UsersRepository } from '../users/users.repository'
+import { type User, UsersRepository } from '../users/users.repository'
 import { type ClaimedOutboxEvent, OutboxRepository } from './outbox.repository'
 import type { DbHandle, OutboxTarget } from './outbox.writer'
 
@@ -344,8 +344,22 @@ export class SyncWorker implements OnApplicationShutdown {
    * `hashtext` takes `text`; the explicit `::text` cast is required because
    * `userId` is otherwise bound as an untyped parameter Postgres cannot
    * resolve to `hashtext`'s single overload without it.
+   *
+   * Milestone 10, Task 4 — widened from `private` to `public` (no other
+   * change) so `TargetReconciliationJob` (connectors/target-reconciliation.
+   * job.ts) can call this SAME, already-proven method directly for its own
+   * "apply" phase, instead of re-implementing "read fresh, build desired,
+   * assert into the connector, record `external_identities`" a second time.
+   * That job computes ITS OWN "would this change anything" via `plan()`
+   * (see `buildDesiredUser` below for the read half it reuses), then, once
+   * its blast-radius guard clears, calls this method once per flagged user
+   * — the exact same lock/read/apply/correlate sequence an outbox-driven
+   * sync already uses, just invoked synchronously and on demand rather than
+   * from a claimed `outbox_events` row. Every precondition documented above
+   * (must run inside an open transaction; always re-reads fresh; safe to
+   * call twice) holds identically for that caller.
    */
-  private async reconcileUser(tx: DbHandle, userId: string, target: OutboxTarget): Promise<void> {
+  async reconcileUser(tx: DbHandle, userId: string, target: OutboxTarget): Promise<void> {
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(${SYNC_USER_LOCK_NAMESPACE}, hashtext(${userId}::text))`,
     )
@@ -361,6 +375,66 @@ export class SyncWorker implements OnApplicationShutdown {
       throw new Error(`sync worker: no user found for id ${userId}`)
     }
 
+    const desired = await this.buildDesiredUser(tx, user, target)
+
+    const connector = await this.connectorRegistry.resolve(target, tx)
+    const { externalId } = await connector.apply(desired)
+
+    await tx
+      .insert(externalIdentities)
+      .values({
+        userId: user.id,
+        system: target,
+        externalId,
+        lastSyncedAt: new Date(),
+        syncState: 'synced',
+      })
+      .onConflictDoUpdate({
+        target: [externalIdentities.userId, externalIdentities.system],
+        set: {
+          externalId,
+          lastSyncedAt: new Date(),
+          syncState: 'synced',
+          updatedAt: new Date(),
+        },
+      })
+  }
+
+  /**
+   * Computes ONE user's full desired state for `target` — profile fields,
+   * `enabled`, and default-deny-filtered attributes/groups — WITHOUT
+   * asserting it anywhere. Extracted out of `reconcileUser` in Milestone 10,
+   * Task 4 (pure extraction: identical reads, identical order, identical
+   * result — `reconcileUser` above is this method's only behavioural
+   * change, and it has none) so the SAME "what does desired state look
+   * like" computation has exactly one implementation, reused by two very
+   * different callers: `reconcileUser` (which goes on to APPLY it) and
+   * `TargetReconciliationJob` (connectors/target-reconciliation.job.ts),
+   * which calls this directly, hands the result to a connector's `plan()`
+   * ONLY, and never applies anything itself during that read-only pass.
+   * Keeping this ONE method, rather than two independently-maintained
+   * copies, is what stops "what a target's dry-run plan shows" and "what an
+   * outbox-driven sync actually asserts" from ever silently drifting apart
+   * — precisely the class of bug Milestone 10, Task 3's default-deny work
+   * already had to guard against once (see that task's own report).
+   *
+   * Deliberately does NOT take the advisory lock itself (unlike
+   * `reconcileUser`) — a caller wanting a race-free READ, immediately
+   * followed by a WRITE, must take it via `reconcileUser`, exactly as
+   * before. A caller that only wants to know what desired state currently
+   * looks like (a plan/dry-run pass) does not need to serialize against
+   * concurrent writers to answer that question, any more than
+   * `ReconciliationJob.detectDrift` (Milestone 4, Task 4) needed to lock
+   * before comparing against Keycloak — see that method's own doc comment
+   * for the identical precedent.
+   *
+   * Takes an already-loaded `user: User` (not a `userId` to re-fetch) —
+   * `reconcileUser` already has one in hand by the time it calls this, and
+   * `TargetReconciliationJob`'s own population walk already has one per
+   * page from `UsersRepository.list`; neither caller benefits from a
+   * redundant re-read here.
+   */
+  async buildDesiredUser(tx: DbHandle, user: User, target: OutboxTarget): Promise<DesiredUser> {
     // Milestone 10, Task 3 — the per-target, default-deny attribute filter.
     // `mappings` is EVERY enabled `attribute_target_mappings` row for THIS
     // event's own `target`, custom attributes and core fields alike,
@@ -396,7 +470,7 @@ export class SyncWorker implements OnApplicationShutdown {
     // flips it back to true.
     const desiredEnabled = user.status === 'active'
 
-    const desired: DesiredUser = {
+    return {
       username: user.username,
       email: user.primaryEmail,
       firstName: user.firstName,
@@ -412,28 +486,6 @@ export class SyncWorker implements OnApplicationShutdown {
       attributes: buildTargetAttributes(mappings, user.attributes, coreFieldValues),
       groups: await this.effectiveGroupNames(tx, user.id),
     }
-
-    const connector = await this.connectorRegistry.resolve(target, tx)
-    const { externalId } = await connector.apply(desired)
-
-    await tx
-      .insert(externalIdentities)
-      .values({
-        userId: user.id,
-        system: target,
-        externalId,
-        lastSyncedAt: new Date(),
-        syncState: 'synced',
-      })
-      .onConflictDoUpdate({
-        target: [externalIdentities.userId, externalIdentities.system],
-        set: {
-          externalId,
-          lastSyncedAt: new Date(),
-          syncState: 'synced',
-          updatedAt: new Date(),
-        },
-      })
   }
 
   /**

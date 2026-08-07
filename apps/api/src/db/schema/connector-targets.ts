@@ -1,4 +1,5 @@
-import { boolean, integer, jsonb, pgTable, timestamp } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
+import { boolean, check, integer, jsonb, pgTable, timestamp } from 'drizzle-orm/pg-core'
 import { outboxTarget } from './outbox-events'
 
 /**
@@ -45,30 +46,64 @@ import { outboxTarget } from './outbox-events'
  * with no secret field present — not redacted, ABSENT — because none is ever
  * stored here to redact.
  */
-export const connectorTargets = pgTable('connector_targets', {
-  target: outboxTarget('target').primaryKey(),
+export const connectorTargets = pgTable(
+  'connector_targets',
+  {
+    target: outboxTarget('target').primaryKey(),
 
-  enabled: boolean('enabled').notNull().default(false),
+    enabled: boolean('enabled').notNull().default(false),
 
-  // Non-secret only — see this table's own doc comment above. `$type` pins
-  // the shape callers see through Drizzle without constraining what Task 2's
-  // per-target config actually contains (host/baseDn for AD, tenantId for
-  // Entra, domain for Google, etc. — a union nobody benefits from spelling
-  // out at the schema layer).
-  config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
+    // Non-secret only — see this table's own doc comment above. `$type` pins
+    // the shape callers see through Drizzle without constraining what Task 2's
+    // per-target config actually contains (host/baseDn for AD, tenantId for
+    // Entra, domain for Google, etc. — a union nobody benefits from spelling
+    // out at the schema layer).
+    config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
 
-  // A run that would mutate more than this percentage (1-100) of the
-  // target's in-scope principals halts and reports instead of proceeding —
-  // decision/safety rail from the design doc ("Blast-radius guard"). Task 1
-  // only stores the value; Task 4's reconciliation job is what actually
-  // enforces it. NOT NULL with a conservative default rather than nullable-
-  // meaning-unlimited: this project's default posture is default-deny/
-  // fail-safe (mirrors `attribute_definitions.sync_to_keycloak`'s own
-  // default-false-until-opted-in shape), and a safety rail that is silently
-  // "off" until someone remembers to set it is exactly the gap decision 4's
-  // sibling rail (blast-radius) exists to not have.
-  blastRadiusThreshold: integer('blast_radius_threshold').notNull().default(20),
+    // A run that would mutate more than this PERCENTAGE (1-100) of the
+    // target's in-scope population halts and reports instead of proceeding —
+    // decision/safety rail from the design doc ("Blast-radius guard"). Task 1
+    // stored the value but left its unit an open assumption ("Task 4 owns
+    // enforcement semantics"); Milestone 10 Task 4 SETTLES it: a percentage of
+    // the population `TargetReconciliationJob` walks (every user, every
+    // status — see that job's own doc comment), never a raw count on its own
+    // — see `blastRadiusFloor` immediately below for why a raw count alone is
+    // not enough either. NOT NULL with a conservative default rather than
+    // nullable-meaning-unlimited: this project's default posture is
+    // default-deny/fail-safe (mirrors `attribute_definitions.sync_to_keycloak`'s
+    // own default-false-until-opted-in shape), and a safety rail that is
+    // silently "off" until someone remembers to set it is exactly the gap
+    // decision 4's sibling rail (blast-radius) exists to not have.
+    blastRadiusThreshold: integer('blast_radius_threshold').notNull().default(20),
 
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-})
+    // Milestone 10, Task 4 — the guard's OTHER half, settling Task 1's own
+    // open concern ("the threshold unit is an assumption"). A percentage
+    // alone misfires at small scale: 20% of a ten-person directory is two
+    // people, so three ordinary, unrelated changes in the same run (a hire, a
+    // transfer, a title change) would already halt a legitimate sync. This
+    // FLOOR is the absolute number of would-be-mutated principals BELOW which
+    // the guard never trips, REGARDLESS of what percentage that represents —
+    // `TargetReconciliationJob.reconcile` trips only when BOTH the percentage
+    // AND this floor are exceeded (see `evaluateBlastRadius`), so a small,
+    // real batch of changes proceeds even at a scary-looking percentage, while
+    // a large one still halts even at a modest-looking one. Default 5 is a
+    // conservative "a handful of routine changes is normal" baseline —
+    // admin-tunable per target, same as the threshold.
+    blastRadiusFloor: integer('blast_radius_floor').notNull().default(5),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    // Belt-and-braces, same posture `attribute_target_mappings_exactly_one_source`
+    // documents (db/schema/attribute-target-mappings.ts): no admin write
+    // endpoint exists for this table yet (Milestone 14 adds one), but the
+    // moment one does, an out-of-range value here would silently defeat —
+    // or silently permanently trip — the blast-radius guard.
+    thresholdRange: check(
+      'connector_targets_threshold_range',
+      sql`${table.blastRadiusThreshold} BETWEEN 1 AND 100`,
+    ),
+    floorNonNegative: check('connector_targets_floor_non_negative', sql`${table.blastRadiusFloor} >= 0`),
+  }),
+)

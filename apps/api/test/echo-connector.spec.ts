@@ -81,7 +81,7 @@ describe('EchoConnector (Milestone 10, Task 2)', () => {
       expect(disableCall).not.toHaveProperty('desired')
     })
 
-    it('plan() reports create before any apply, and update afterward, writing nothing', async () => {
+    it('plan() reports create before any apply, and update after a subsequent genuine change, writing nothing either time', async () => {
       const connector = configuredConnector()
       const desired = desiredUser()
 
@@ -94,8 +94,78 @@ describe('EchoConnector (Milestone 10, Task 2)', () => {
       expect(stillFresh).toEqual(beforePlan)
 
       await connector.apply(desired)
-      const afterApply = await connector.plan(desired)
+      // Milestone 10, Task 4: plan() now diffs against the last APPLIED
+      // state (see plan()'s own doc comment), so re-planning the IDENTICAL
+      // desired state just applied reports no operations at all — see the
+      // dedicated "diffs against the last applied state" block below for
+      // that exact case. Here, a GENUINE change since the apply above is
+      // what still reports 'update'.
+      const afterApply = await connector.plan(desiredUser({ firstName: 'Changed' }))
       expect(afterApply).toEqual([expect.objectContaining({ kind: 'update' })])
+    })
+
+    // =========================================================================
+    // Milestone 10, Task 4 — plan() must do a GENUINE diff, not unconditionally
+    // report "update": `TargetReconciliationJob` counts a non-empty plan() as
+    // a mutation toward its blast-radius threshold, and relies on an empty
+    // plan() to prove a converged re-run is a no-op. See plan()'s own doc
+    // comment (echo.connector.ts) for why Task 2's original "always update"
+    // behaviour was not enough for that.
+    // =========================================================================
+    describe('plan() diffs against the last APPLIED state (Milestone 10, Task 4)', () => {
+      it('reports NOTHING once the exact same desired state has already been applied — genuinely idempotent', async () => {
+        const connector = configuredConnector()
+        const desired = desiredUser()
+
+        await connector.apply(desired)
+        const plan = await connector.plan(desired)
+
+        expect(plan).toEqual([])
+      })
+
+      it('reports an update when a profile field changed since the last apply', async () => {
+        const connector = configuredConnector()
+        await connector.apply(desiredUser({ firstName: 'Before' }))
+
+        const plan = await connector.plan(desiredUser({ firstName: 'After' }))
+
+        expect(plan).toEqual([expect.objectContaining({ kind: 'update' })])
+      })
+
+      it('reports an update (not disable) when enabled flips true -> ... true (no-op) vs a genuine disable when it flips to false', async () => {
+        const connector = configuredConnector()
+        await connector.apply(desiredUser({ enabled: true }))
+
+        const unchanged = await connector.plan(desiredUser({ enabled: true }))
+        expect(unchanged).toEqual([])
+
+        const disablePlan = await connector.plan(desiredUser({ enabled: false }))
+        expect(disablePlan).toEqual([expect.objectContaining({ kind: 'disable' })])
+      })
+
+      it('reports an update when group membership changed since the last apply', async () => {
+        const connector = configuredConnector()
+        await connector.apply(desiredUser({ groups: ['Engineering'] }))
+
+        const unchanged = await connector.plan(desiredUser({ groups: ['Engineering'] }))
+        expect(unchanged).toEqual([])
+
+        const changed = await connector.plan(desiredUser({ groups: ['Engineering', 'Leads'] }))
+        expect(changed).toEqual([expect.objectContaining({ kind: 'update' })])
+      })
+
+      it('a plan() call never itself updates what a LATER plan() diffs against — only apply() does', async () => {
+        const connector = configuredConnector()
+        await connector.apply(desiredUser({ firstName: 'Original' }))
+
+        // Planning a change does not apply it.
+        await connector.plan(desiredUser({ firstName: 'Hypothetical' }))
+
+        // A plan for the ORIGINAL state still shows nothing changed —
+        // proving the hypothetical plan() call above left no trace.
+        const stillUnchanged = await connector.plan(desiredUser({ firstName: 'Original' }))
+        expect(stillUnchanged).toEqual([])
+      })
     })
   })
 

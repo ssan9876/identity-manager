@@ -65,11 +65,26 @@ describe('attribute_target_mappings migration exactness (Milestone 10, Task 3)',
       const journalPath = path.join(MIGRATIONS_FOLDER, 'meta/_journal.json')
       const journal = JSON.parse(fs.readFileSync(journalPath, 'utf8')) as Journal
       expect(journal.entries.length).toBeGreaterThan(0)
-      // This task's own migration is whichever one is LAST in the journal
-      // right now — read dynamically rather than hardcoding a filename, so
-      // this test does not silently stop testing the right migration if a
-      // later task appends another one after it.
-      const priorEntries = journal.entries.slice(0, -1)
+      // This task's own migration is 0014_known_photon.sql SPECIFICALLY —
+      // matched by tag, not "whichever entry is LAST in the journal right
+      // now". That "last" heuristic was this test's original approach, and
+      // its own doc comment above even named the risk it was trying to
+      // dodge ("does not silently stop testing the right migration if a
+      // later task appends another one after it") — but slicing off only
+      // the LAST entry does not actually dodge it: the moment Milestone 10,
+      // Task 4 appended 0015_cold_doomsday.sql (an unrelated
+      // `connector_targets.blast_radius_floor` column), "last" silently
+      // started pointing at 0015 instead of 0014, `priorEntries` silently
+      // started INCLUDING 0014, and the "before" sanity check below (this
+      // test's own guard against passing vacuously) failed correctly,
+      // loudly, exactly as designed — `sync_to_keycloak` was already gone
+      // one migration too early. Matching by the specific tag is what
+      // actually stays correct no matter how many further migrations land
+      // after 0014, including this task's own.
+      const TASK_3_MIGRATION_TAG = '0014_known_photon'
+      const taskMigrationIndex = journal.entries.findIndex((entry) => entry.tag === TASK_3_MIGRATION_TAG)
+      expect(taskMigrationIndex).toBeGreaterThanOrEqual(0)
+      const priorEntries = journal.entries.slice(0, taskMigrationIndex)
 
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'idm-migration-exactness-'))
       try {

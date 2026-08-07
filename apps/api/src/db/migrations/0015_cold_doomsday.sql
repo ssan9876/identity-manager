@@ -1,0 +1,3 @@
+ALTER TABLE "connector_targets" ADD COLUMN "blast_radius_floor" integer DEFAULT 5 NOT NULL;--> statement-breakpoint
+ALTER TABLE "connector_targets" ADD CONSTRAINT "connector_targets_threshold_range" CHECK ("connector_targets"."blast_radius_threshold" BETWEEN 1 AND 100);--> statement-breakpoint
+ALTER TABLE "connector_targets" ADD CONSTRAINT "connector_targets_floor_non_negative" CHECK ("connector_targets"."blast_radius_floor" >= 0);

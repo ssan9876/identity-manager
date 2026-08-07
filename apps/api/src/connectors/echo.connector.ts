@@ -17,6 +17,26 @@ export interface EchoRecordedCall {
 
 const CREDENTIAL_SECRET_NAME_KEY = 'credentialSecretName'
 
+/** Order-independent equality on two `Record<string, string[]>` attribute maps — same shape `KeycloakConnector`'s own (private) `attributesEqual` already checks, re-derived locally rather than imported: each connector narrows the same way independently (see keycloak.connector.ts's own doc comment for why this is a deliberate, repeated convention in `connectors/`, not an oversight). */
+function attributesEqual(a: Record<string, string[]>, b: Record<string, string[]>): boolean {
+  const aKeys = Object.keys(a).sort()
+  const bKeys = Object.keys(b).sort()
+  if (aKeys.length !== bKeys.length || aKeys.some((key, i) => key !== bKeys[i])) {
+    return false
+  }
+  return aKeys.every((key) => {
+    const av = [...(a[key] ?? [])].sort()
+    const bv = [...(b[key] ?? [])].sort()
+    return av.length === bv.length && av.every((value, i) => value === bv[i])
+  })
+}
+
+function sameNameSet(a: Iterable<string>, b: Iterable<string>): boolean {
+  const setA = new Set(a)
+  const setB = new Set(b)
+  return setA.size === setB.size && [...setA].every((name) => setB.has(name))
+}
+
 /**
  * The in-repo target Milestone 10 ships with — "a full in-repo
  * implementation recording what it was asked to do. This proves the spine
@@ -58,6 +78,12 @@ const CREDENTIAL_SECRET_NAME_KEY = 'credentialSecretName'
 export class EchoConnector implements DirectoryConnector {
   readonly calls: EchoRecordedCall[] = []
   private readonly externalIdsByUsername = new Map<string, string>()
+  // Milestone 10, Task 4 — the LAST desired state a successful `apply()`
+  // actually recorded for a username, kept so `plan()` (below) can report
+  // a genuine diff instead of unconditionally saying "update". Updated ONLY
+  // by `apply()`, never by `plan()` itself — planning must stay side-effect
+  // free (see `plan()`'s own doc comment: "a plan writes nothing").
+  private readonly lastAppliedByUsername = new Map<string, DesiredUser>()
   private nextSequence = 1
   private config: Record<string, unknown> = {}
 
@@ -76,16 +102,61 @@ export class EchoConnector implements DirectoryConnector {
     return this
   }
 
+  /**
+   * Milestone 10, Task 4 — GENUINE diffing against the last state `apply()`
+   * actually recorded for this username, mirroring `KeycloakConnector.plan`'s
+   * own shape exactly (compare, emit only what actually differs, return `[]`
+   * when nothing would change). Task 2's original implementation always
+   * reported an operation (`exists ? 'update' : 'create'`, unconditionally)
+   * — harmless for Task 2's own "does plan run before apply and after"
+   * smoke test, but not enough for a REAL consumer that needs to know
+   * "would this genuinely change anything": `TargetReconciliationJob`
+   * (connectors/target-reconciliation.job.ts) counts a NON-empty `plan()`
+   * result as one mutation toward its blast-radius threshold, and reports a
+   * second, fully-converged run as a no-op — neither is meaningful against
+   * an implementation that always says "update". A username never applied
+   * before has no last-applied state to diff against, so it is always a
+   * `create`, exactly as before.
+   */
   async plan(desired: DesiredUser): Promise<ConnectorOperation[]> {
     this.requireSecret()
     this.calls.push({ method: 'plan', desired, at: new Date() })
-    const exists = this.externalIdsByUsername.has(desired.username)
-    return [
-      {
-        kind: exists ? 'update' : 'create',
-        description: `${exists ? 'update' : 'create'} echo user "${desired.username}" (enabled=${desired.enabled}, groups=[${desired.groups.join(', ')}])`,
-      },
-    ]
+
+    const existing = this.lastAppliedByUsername.get(desired.username)
+    if (existing === undefined) {
+      return [
+        {
+          kind: 'create',
+          description: `create echo user "${desired.username}" (enabled=${desired.enabled}, groups=[${desired.groups.join(', ')}])`,
+        },
+      ]
+    }
+
+    const ops: ConnectorOperation[] = []
+    const profileChanged =
+      existing.email !== desired.email ||
+      existing.firstName !== desired.firstName ||
+      existing.lastName !== desired.lastName ||
+      !attributesEqual(existing.attributes, desired.attributes)
+    if (profileChanged) {
+      ops.push({
+        kind: 'update',
+        description: `update echo user "${desired.username}" profile/attributes`,
+      })
+    }
+    if (existing.enabled !== desired.enabled) {
+      ops.push({
+        kind: desired.enabled ? 'update' : 'disable',
+        description: `set echo user "${desired.username}" enabled=${desired.enabled}`,
+      })
+    }
+    if (!sameNameSet(existing.groups, desired.groups)) {
+      ops.push({
+        kind: 'update',
+        description: `reconcile echo group membership for "${desired.username}"`,
+      })
+    }
+    return ops
   }
 
   /**
@@ -107,6 +178,10 @@ export class EchoConnector implements DirectoryConnector {
     }
 
     this.calls.push({ method: 'apply', desired, externalId, at: new Date() })
+    // Recorded AFTER pushing to `calls` (which never fails) so a genuinely
+    // successful apply is always what future `plan()` calls diff against —
+    // see `lastAppliedByUsername`'s own doc comment.
+    this.lastAppliedByUsername.set(desired.username, desired)
     return { externalId }
   }
 
