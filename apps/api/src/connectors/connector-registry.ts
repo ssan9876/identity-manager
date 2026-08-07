@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm'
 import { connectorTargets } from '../db/schema/connector-targets'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
 import type { DbHandle } from '../outbox/outbox.writer'
+import { ActiveDirectoryConnector } from './active-directory.connector'
 import type { ConnectorTarget, DirectoryConnector } from './connector'
 import { EchoConnector } from './echo.connector'
 import { KeycloakConnector } from './keycloak.connector'
@@ -16,8 +17,11 @@ type ConnectorFactory = (config: Record<string, unknown>) => DirectoryConnector
 // plug in `active_directory`/`entra_id`/`google_workspace` — see `resolve`'s
 // own doc comment for why a target present in the wider `ConnectorTarget`
 // union but ABSENT from this narrower one still fails safely rather than
-// silently.
-type ImplementedConnectorTarget = 'keycloak' | 'echo'
+// silently. Milestone 11, Task 5 widens this to `active_directory`, the
+// FIRST real (non-echo) target added since Task 2 — proof this "cast a
+// runtime-known-safe value, `satisfies`-check the literal" shape genuinely
+// generalises rather than being echo-specific.
+type ImplementedConnectorTarget = 'keycloak' | 'echo' | 'active_directory'
 
 /**
  * Target -> connector. This project has been bitten FOUR times by
@@ -69,6 +73,14 @@ export class ConnectorRegistry {
     // (see EchoConnector's own doc comment for the exact failure this
     // fixed).
     @Optional() @Inject(EchoConnector) private readonly echoConnector: EchoConnector = new EchoConnector(),
+    // Milestone 11, Task 5 — the SAME `@Optional()`-with-JS-default shape as
+    // `echoConnector` immediately above, for the identical reason: a raw
+    // `new ConnectorRegistry(keycloak)` (every pre-Task-5 test in this file)
+    // keeps compiling and working via the TS default, while real Nest DI
+    // (app.module.ts) hands every caller the ONE registered instance instead.
+    @Optional()
+    @Inject(ActiveDirectoryConnector)
+    private readonly activeDirectoryConnector: ActiveDirectoryConnector = new ActiveDirectoryConnector(),
   ) {
     // Keycloak's OWN config source is unchanged by this task (still the
     // env-sourced KEYCLOAK_ADMIN_CONFIG token — see keycloak.connector.ts's
@@ -89,6 +101,14 @@ export class ConnectorRegistry {
         // a caller (a test, or a future console) hold a reference and
         // observe what the echo target was asked to do.
         echo: (config: Record<string, unknown>) => this.echoConnector.configure(config),
+        // Same `configure(config)`-rebinds-the-long-lived-instance shape as
+        // `echo` above — see ActiveDirectoryConnector's own doc comment for
+        // why reusing ONE instance (and, inside it, one lazily-established
+        // LDAPS connection) across resolve() calls is deliberate, not an
+        // oversight: a fresh TLS handshake + bind per call would be
+        // needlessly slow for a batch reconcile, and the connector already
+        // detects a stale/changed config and reconnects on its own.
+        active_directory: (config: Record<string, unknown>) => this.activeDirectoryConnector.configure(config),
       } satisfies Record<ImplementedConnectorTarget, ConnectorFactory>,
     )
   }

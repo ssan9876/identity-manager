@@ -79,4 +79,29 @@ export class AttributeTargetMappingsRepository {
       remoteName: row.remote_name,
     }))
   }
+
+  /**
+   * Milestone 11, Task 5 — EVERY remote name ever configured for `target`,
+   * custom and core alike, regardless of `enabled` (deliberately NOT
+   * filtered like `listForTarget` above). Exists for a narrower purpose than
+   * that method: `ActiveDirectoryConnector`'s `DesiredUser.
+   * managedAttributeRemoteNames` needs to know which AD attribute NAMES
+   * this target is configured to manage AT ALL, so a mapping that just
+   * transitioned from enabled to disabled can still be found and its
+   * now-stale value ACTIVELY CLEARED — `listForTarget`'s `WHERE enabled =
+   * true` would exclude exactly the row this needs (the one that WAS
+   * written, and now must be un-written). Only over LDAP does this matter:
+   * Keycloak's whole-object update already self-clears an omitted key (see
+   * `DesiredUser.managedAttributeRemoteNames`'s own doc comment), so no
+   * other target reads this.
+   */
+  async listAllRemoteNamesForTarget(
+    target: ConnectorTarget,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<string[]> {
+    const { rows } = await db.execute<{ remote_name: string }>(
+      sql`SELECT remote_name FROM attribute_target_mappings WHERE target = ${target}`,
+    )
+    return rows.map((row) => row.remote_name)
+  }
 }

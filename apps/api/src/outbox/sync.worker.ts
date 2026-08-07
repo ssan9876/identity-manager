@@ -444,20 +444,50 @@ export class SyncWorker implements OnApplicationShutdown {
     // `department` core field ("derived from the org path" — see
     // connectors/attribute-mapping.ts's `computeCoreFieldValues` doc
     // comment) and is fetched LAZILY — only when `mappings` actually
-    // contains a core-field row for this target — rather than
-    // unconditionally on every call: no target seeds a core-field mapping
-    // by default (this task's own migration deliberately seeds none for
-    // 'keycloak' — see attribute-target-mappings.ts), so this keeps the
-    // COMMON case at exactly one extra round trip versus the
-    // `listActiveAttributeDefinitions` call this replaces, not two. Both
-    // reads go through `tx` — never a second pool connection while this
-    // worker's own transaction is open (finding C1, docs/superpowers/
-    // audit-integrity.md).
+    // contains a core-field row for this target, OR `target` is
+    // `'active_directory'` (Milestone 11, Task 5 — AD structurally needs the
+    // FULL org-unit path to place a principal in the right nested OU, not
+    // just the leaf NAME `department` carries; see `DesiredUser.orgUnitPath`'s
+    // own doc comment) — rather than unconditionally on every call: no OTHER
+    // target seeds a core-field mapping by default (this task's own
+    // migration deliberately seeds none for 'keycloak' — see
+    // attribute-target-mappings.ts), so this keeps every non-AD target at
+    // exactly the SAME round-trip count Milestone 10, Task 3 already
+    // calibrated against the timing-sensitive finding-H2 races (see that
+    // task's own report — the identical reason this stayed lazy rather than
+    // unconditional in the first place). Both reads go through `tx` — never
+    // a second pool connection while this worker's own transaction is open
+    // (finding C1, docs/superpowers/audit-integrity.md).
     const mappings = await this.attributeTargetMappingsRepository.listForTarget(target, tx)
-    const orgUnit = mappings.some((mapping) => mapping.source === 'core')
-      ? await this.orgUnitsRepository.findById(user.orgUnitId, tx)
-      : null
+    const needsOrgUnit = target === 'active_directory' || mappings.some((mapping) => mapping.source === 'core')
+    const orgUnit = needsOrgUnit ? await this.orgUnitsRepository.findById(user.orgUnitId, tx) : null
     const coreFieldValues = computeCoreFieldValues(user, orgUnit)
+
+    // Milestone 11, Task 5 — the SAME `target === 'active_directory'` gate as
+    // `orgUnit` immediately above, for the identical reason (one extra
+    // indexed lookup — `external_identities_user_system_unique` — paid only
+    // by the one target that structurally needs it). See
+    // `DesiredUser.existingExternalId`'s own doc comment for why AD needs
+    // this and Keycloak/echo do not: `apply(desired)` has no `externalId`
+    // parameter of its own (Milestone 10, Task 2 — settled interface), so a
+    // connector wanting to re-identify a principal by its IMMUTABLE id
+    // (never DN, sAMAccountName or mail — all three move) has nowhere else
+    // to receive its own past correlation from.
+    const existingExternalId =
+      target === 'active_directory' ? await this.findExistingExternalId(tx, user.id, target) : undefined
+
+    // Milestone 11, Task 5 — same gate again, for `DesiredUser.
+    // managedAttributeRemoteNames`'s own purpose: EVERY remote name ever
+    // configured for this target, enabled or not (see
+    // `AttributeTargetMappingsRepository.listAllRemoteNamesForTarget`'s own
+    // doc comment for why `mappings` above — enabled-only — is the WRONG
+    // source here: a mapping that just transitioned to disabled must still
+    // be found so its stale AD value can be cleared, and `mappings` no
+    // longer contains it the moment it is disabled).
+    const managedAttributeRemoteNames =
+      target === 'active_directory'
+        ? await this.attributeTargetMappingsRepository.listAllRemoteNamesForTarget(target, tx)
+        : undefined
 
     // Only an 'active' user is treated as a live principal anywhere else in
     // this system (PermissionEngine.resolveActor requires it). Mirroring
@@ -485,7 +515,34 @@ export class SyncWorker implements OnApplicationShutdown {
       // `createUser`/`updateUser` calls do not need to filter a second time.
       attributes: buildTargetAttributes(mappings, user.attributes, coreFieldValues),
       groups: await this.effectiveGroupNames(tx, user.id),
+      orgUnitPath: target === 'active_directory' && orgUnit !== null ? orgUnit.path.split('.') : undefined,
+      existingExternalId,
+      managedAttributeRemoteNames,
     }
+  }
+
+  /**
+   * The immutable id a PAST successful `apply()` correlated for
+   * (userId, target), if any — a direct read of `external_identities`
+   * (Milestone 11, Task 5). `undefined` on a genuine first-ever sync (no row
+   * yet) — never distinguished from "row exists but is stale/failed": even a
+   * `syncState: 'failed'` row's `external_id` is still the target's real,
+   * still-valid immutable id for whatever was last successfully applied (see
+   * `external_identities.sync_state`'s own doc comment — a regression to
+   * `'failed'` never clears `external_id`), so it remains the right value to
+   * re-identify by.
+   */
+  private async findExistingExternalId(
+    tx: DbHandle,
+    userId: string,
+    target: OutboxTarget,
+  ): Promise<string | undefined> {
+    const [row] = await tx
+      .select({ externalId: externalIdentities.externalId })
+      .from(externalIdentities)
+      .where(and(eq(externalIdentities.userId, userId), eq(externalIdentities.system, target)))
+      .limit(1)
+    return row?.externalId
   }
 
   /**

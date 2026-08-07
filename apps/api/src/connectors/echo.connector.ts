@@ -88,6 +88,23 @@ export class EchoConnector implements DirectoryConnector {
   private config: Record<string, unknown> = {}
 
   /**
+   * Milestone 11, Task 5 test support — usernames whose NEXT `apply()` call
+   * should throw instead of succeeding, so a test can prove per-principal
+   * failure isolation (Milestone 10 Task 4 concern 3, closed by
+   * `TargetReconciliationJob`'s own per-principal try/catch) WITHOUT needing
+   * the real, slow AD container: a fast, deterministic stand-in for "AD hits
+   * a transient per-entry error." Checked FIRST in `apply()`, before
+   * `requireSecret`/recording, so a forced failure records NOTHING — the
+   * same "never partially applies" contract a real failure must honour (see
+   * `apply()`'s own doc comment). Never touched by production code
+   * (`SyncWorker`/`TargetReconciliationJob`) — a test-only escape hatch,
+   * exactly like `calls`/`lastAppliedByUsername` above are test-only reads;
+   * this is the one test-only WRITE this class exposes, and it is additive
+   * (empty means unchanged, real-connector behaviour).
+   */
+  readonly forcedFailureUsernames = new Set<string>()
+
+  /**
    * Binds this connector to a FRESH read of `connector_targets.config` —
    * called by `ConnectorRegistry.resolve` immediately before handing this
    * instance back to a caller, never by a caller directly. Not part of
@@ -169,6 +186,9 @@ export class EchoConnector implements DirectoryConnector {
    * "never partially applies" (Task 2 contract).
    */
   async apply(desired: DesiredUser): Promise<{ externalId: string }> {
+    if (this.forcedFailureUsernames.has(desired.username)) {
+      throw new Error(`echo connector: forced failure for username "${desired.username}" (test support)`)
+    }
     this.requireSecret()
 
     let externalId = this.externalIdsByUsername.get(desired.username)

@@ -13,6 +13,7 @@ import { PrivilegeGuards } from './authz/privilege.guards'
 import { RoleAssignmentsController } from './authz/role-assignments.controller'
 import { RoleAssignmentsRepository } from './authz/role-assignments.repository'
 import { DB_CLIENT } from './common/db.token'
+import { ActiveDirectoryConnector } from './connectors/active-directory.connector'
 import { ConnectorRegistry } from './connectors/connector-registry'
 import { EchoConnector } from './connectors/echo.connector'
 import { loadEnv } from './config/env'
@@ -142,6 +143,15 @@ import { UsersRepository } from './users/users.repository'
     // the raw, non-DI `new SyncWorker(...)` call sites in scripts/tests (see
     // that constructor's own doc comment).
     EchoConnector,
+    // Milestone 11, Task 5: real, no-network-at-construction (same property
+    // as EchoConnector/KeycloakAdminClient above — LDAPS connects lazily on
+    // first actual use, never inside a constructor) — registered for the
+    // identical reason EchoConnector is: `ConnectorRegistry`'s own
+    // `ActiveDirectoryConnector` constructor parameter needs a REAL
+    // registered provider to resolve through DI at all, JS-level default or
+    // not (see EchoConnector's own doc comment above for the exact failure
+    // this avoids).
+    ActiveDirectoryConnector,
     ConnectorRegistry,
     SyncWorker,
     SyncStateRepository,

@@ -93,6 +93,13 @@ export interface TargetReconciliationOptions {
   force?: boolean
 }
 
+/** One principal whose OWN `reconcileUser` call threw during the APPLY phase — see `TargetReconciliationReport.failed`'s own doc comment. */
+export interface FailedPrincipal {
+  userId: string
+  username: string
+  error: string
+}
+
 export interface TargetReconciliationReport {
   target: ConnectorTarget
   /** Every in-scope principal walked — every user, every status (see `ALL_USER_STATUSES`). */
@@ -105,8 +112,22 @@ export interface TargetReconciliationReport {
   halted: boolean
   /** `true` iff the blast-radius guard tripped AND `force` was set — every entry in `toMutate` WAS applied, and the override was audited. */
   overridden: boolean
-  /** How many principals were actually reconciled against the target this run — 0 for a dry run or a halted run. */
+  /** How many principals were ACTUALLY reconciled against the target this run — 0 for a dry run or a halted run, otherwise `toMutate.length - failed.length` (see `failed`'s own doc comment: a per-principal failure does not stop the rest of the batch, so this can be less than `toMutate.length` on a real, non-halted run). */
   appliedCount: number
+  /**
+   * Milestone 10 Task 4 concern 3, closed by Milestone 11 Task 5 —
+   * per-principal failure isolation. Every principal in `toMutate` whose OWN
+   * `SyncWorker.reconcileUser` call threw during APPLY, with the error
+   * message it threw. ONE principal failing (AD will hit transient
+   * per-entry errors in normal operation — a stale password-policy
+   * violation, a momentarily unreachable DC, a constraint violation on one
+   * malformed row) must not abort the whole run and must not leave a LATER
+   * principal in `toMutate` unattempted just because an EARLIER one failed —
+   * see `reconcile`'s own doc comment on the APPLY loop for how this is
+   * enforced. Empty on a dry run, a halted run, or a real run where every
+   * principal in `toMutate` succeeded.
+   */
+  failed: FailedPrincipal[]
 }
 
 /**
@@ -236,6 +257,7 @@ export class TargetReconciliationJob {
         halted: false,
         overridden: false,
         appliedCount: 0,
+        failed: [],
       }
     }
 
@@ -252,6 +274,7 @@ export class TargetReconciliationJob {
         halted: true,
         overridden: false,
         appliedCount: 0,
+        failed: [],
       }
     }
 
@@ -263,10 +286,33 @@ export class TargetReconciliationJob {
       await this.auditOverride(target, blastRadius)
     }
 
+    // PER-PRINCIPAL FAILURE ISOLATION (Milestone 10 Task 4 concern 3,
+    // closed here): each principal gets its OWN try/catch, so one throwing
+    // — AD hits transient per-entry errors in normal operation, this is not
+    // a hypothetical — neither aborts the rest of the loop (every LATER
+    // principal in `toMutate` is still attempted) nor un-applies anything
+    // EARLIER that already succeeded (each iteration is its own committed
+    // transaction — see `syncWorker.reconcileUser`'s own doc comment: it
+    // either fully asserts one principal's desired state or throws having
+    // asserted none of it; there is no partial-write state for THIS
+    // iteration's `tx` to roll back beyond what that method already
+    // guarantees). Failures are collected, never swallowed silently — see
+    // `TargetReconciliationReport.failed`'s own doc comment.
+    const failed: FailedPrincipal[] = []
+    let appliedCount = 0
     for (const principal of toMutate) {
-      await this.db.transaction(async (tx) => {
-        await this.syncWorker.reconcileUser(tx, principal.userId, target)
-      })
+      try {
+        await this.db.transaction(async (tx) => {
+          await this.syncWorker.reconcileUser(tx, principal.userId, target)
+        })
+        appliedCount += 1
+      } catch (error) {
+        failed.push({
+          userId: principal.userId,
+          username: principal.username,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
     }
 
     return {
@@ -277,7 +323,8 @@ export class TargetReconciliationJob {
       dryRun: false,
       halted: false,
       overridden,
-      appliedCount: toMutate.length,
+      appliedCount,
+      failed,
     }
   }
 

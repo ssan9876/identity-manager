@@ -44,6 +44,76 @@ export interface DesiredUser {
   enabled: boolean
   attributes: Record<string, string[]>
   groups: readonly string[]
+
+  /**
+   * Milestone 11, Task 5 — the user's current org unit, as ltree LABEL
+   * segments root-to-leaf (e.g. `['engineering', 'backend_team']` — see
+   * `OrgUnitsRepository`'s own doc comment for the label alphabet:
+   * `[a-z0-9_]+`, ASCII-safe by construction, never needing DN-escaping).
+   * OPTIONAL and `undefined` for any target that has no structural concept
+   * of nested containment — populated by `SyncWorker.buildDesiredUser` ONLY
+   * for `target === 'active_directory'` today (see that method's own doc
+   * comment for why this is a narrow, target-gated fetch rather than
+   * unconditional — the identical "extra round trip only when a target
+   * actually needs it" reasoning `orgUnit`'s own lazy core-field fetch
+   * already established in Milestone 10, Task 3). AD's own OU tree is the
+   * first, and so far only, consumer: `ActiveDirectoryConnector` maps this
+   * onto a nested `OU=...,OU=...,<baseDN>` placement — see that connector's
+   * own doc comment. A target that ignores this field (Keycloak, echo) is
+   * unaffected: TypeScript structural typing means an implementation never
+   * has to acknowledge a field it does not read.
+   */
+  orgUnitPath?: readonly string[]
+
+  /**
+   * Milestone 11, Task 5 — this user's PREVIOUSLY-correlated immutable id
+   * for THIS SAME target, if `external_identities` already has a row for
+   * (user, target) — i.e. what a past successful `apply()` returned as
+   * `externalId`. `apply(desired)` deliberately takes no `externalId`
+   * parameter of its own (Milestone 10, Task 2 — settled interface), so a
+   * connector that wants to re-identify "is this a known principal" by an
+   * IMMUTABLE key rather than a mutable one (decision: "Correlate on
+   * objectGUID... never the DN, never sAMAccountName, never mail — all
+   * three move") has nowhere else to receive it from. OPTIONAL and
+   * `undefined` when no prior correlation exists (first-ever sync) or for a
+   * target that has not opted in to the extra read (see `orgUnitPath`'s own
+   * doc comment — populated under the identical `target === 'active_directory'`
+   * gate, for the identical latency reason). `ActiveDirectoryConnector` uses
+   * this to find an existing entry by `objectGUID` FIRST, falling back to
+   * `sAMAccountName` only when this is absent — so a local username change
+   * still resolves to the SAME AD object instead of minting a duplicate.
+   * Keycloak/echo ignore it; both already correlate by username, which
+   * Milestone 10 accepted as sufficient for those targets (their own ids are
+   * not subject to the "DN/sAMAccountName/mail all move" hazard AD has).
+   */
+  existingExternalId?: string
+
+  /**
+   * Milestone 11, Task 5 — every REMOTE name (custom and core alike) that
+   * has an ENABLED `attribute_target_mappings` row for THIS target right
+   * now — i.e. `mappings.map(m => remoteName)`, the same `mappings` array
+   * `attributes` above was already built from (`buildTargetAttributes`).
+   * OPTIONAL, populated under the identical `target === 'active_directory'`
+   * gate as `orgUnitPath`/`existingExternalId` (see either's own doc
+   * comment for the latency reasoning).
+   *
+   * WHY THIS EXISTS, when `attributes` already carries every value that
+   * SHOULD propagate: LDAP's `modify` operation only touches attribute
+   * NAMES explicitly named in the request — unlike Keycloak's Admin REST
+   * API, where sending the whole `attributes` map REPLACES the stored map
+   * wholesale, so simply omitting a key already clears it there. Over LDAP,
+   * omitting a key from a `modify` leaves whatever AD already has for that
+   * name COMPLETELY UNTOUCHED — so the moment an admin disables a mapping
+   * (or a value goes from set to empty), `attributes` correctly stops
+   * carrying it, but nothing tells the connector a REMOTE name that used to
+   * be managed now needs to be ACTIVELY CLEARED rather than merely not
+   * re-sent. `ActiveDirectoryConnector.apply` diffs THIS set against
+   * `attributes`' own keys to find exactly that gap and clears it — see
+   * that method's own doc comment. Keycloak/echo need no such thing (their
+   * own "send the whole map" semantics already self-clear) and ignore this
+   * field entirely.
+   */
+  managedAttributeRemoteNames?: readonly string[]
 }
 
 export type ConnectorOperationKind = 'create' | 'update' | 'disable'
