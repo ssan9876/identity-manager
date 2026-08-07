@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common'
-import { desc, eq, sql } from 'drizzle-orm'
+import { and, desc, eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import * as schema from '../db/schema/index'
 import { outboxEvents } from '../db/schema/outbox-events'
@@ -230,12 +230,16 @@ export class OutboxRepository {
    */
   async listFailed(
     db: NodePgDatabase<typeof schema>,
-    options: { limit: number; offset: number },
+    options: { limit: number; offset: number; target?: OutboxTarget },
   ): Promise<DeadLetterEvent[]> {
     const rows = await db
       .select()
       .from(outboxEvents)
-      .where(eq(outboxEvents.status, 'failed'))
+      .where(
+        options.target === undefined
+          ? eq(outboxEvents.status, 'failed')
+          : and(eq(outboxEvents.status, 'failed'), eq(outboxEvents.target, options.target)),
+      )
       .orderBy(desc(outboxEvents.id))
       .limit(options.limit)
       .offset(options.offset)
@@ -254,12 +258,22 @@ export class OutboxRepository {
     }))
   }
 
-  /** Matching count for `listFailed` — always agrees with it, same filter. */
-  async countFailed(db: NodePgDatabase<typeof schema>): Promise<number> {
+  /**
+   * Matching count for `listFailed` — always agrees with it, same filter.
+   * `target` (Milestone 14, Task 9) narrows both together, the same
+   * optional-and-together-narrowing shape every other paginated list in this
+   * codebase already uses (e.g. UsersRepository.list/count's own
+   * scopePaths).
+   */
+  async countFailed(db: NodePgDatabase<typeof schema>, options: { target?: OutboxTarget } = {}): Promise<number> {
     const [row] = await db
       .select({ value: sql<number>`count(*)::int` })
       .from(outboxEvents)
-      .where(eq(outboxEvents.status, 'failed'))
+      .where(
+        options.target === undefined
+          ? eq(outboxEvents.status, 'failed')
+          : and(eq(outboxEvents.status, 'failed'), eq(outboxEvents.target, options.target)),
+      )
 
     return row?.value ?? 0
   }

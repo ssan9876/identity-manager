@@ -24,6 +24,14 @@
   width: 100%;
 }
 
+/* Milestone 14, Task 9 — the dead-letters target filter (DeadLettersTab, the
+   unfiltered /audit usage only; the connector console's own per-target view
+   fixes the target and never renders this control at all). */
+.dead-letters__filter {
+  max-width: 16rem;
+  margin-bottom: var(--space-4);
+}
+
 .audit-log__chip {
   margin-bottom: var(--space-4);
   padding: var(--space-2) var(--space-3);

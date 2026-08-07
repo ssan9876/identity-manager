@@ -1,0 +1,251 @@
+/**
+ * Milestone 14, Task 9 — the connector admin console. Every value here is a
+ * token from styles/tokens.css, consumed the same way every other feature's
+ * own CSS file already does (DESIGN.md: "no ad-hoc colour or size").
+ */
+
+.connectors-page__intro {
+  max-width: 68ch;
+  color: var(--ink-muted);
+  margin-bottom: var(--space-5);
+}
+
+/* ---------------------------------------------------------------------
+ * Target detail — mirrors .person-detail's own header/back-link shapes
+ * (PersonDetailPage.css) so this screen reads as the same family of detail
+ * page, not a bespoke one-off.
+ * ------------------------------------------------------------------- */
+
+.target-detail__health-detail {
+  margin-top: var(--space-2);
+}
+
+/* ---------------------------------------------------------------------
+ * Attribute mapping editor — a grid, not a list: rows are local fields,
+ * columns are targets. See AttributeMappingsEditor.tsx's own doc comment
+ * for why an EMPTY cell renders no checkbox at all — the absence itself is
+ * the default-deny signal, never a toggle switched off.
+ * ------------------------------------------------------------------- */
+
+.mapping-editor__intro {
+  max-width: 72ch;
+  color: var(--ink-muted);
+  margin-bottom: var(--space-5);
+}
+
+.mapping-editor__table th:not(:first-child),
+.mapping-editor__table td:not(:first-child) {
+  min-width: 11rem;
+}
+
+.mapping-editor__field-name {
+  font-weight: 500;
+  color: var(--ink);
+}
+.mapping-editor__field-key {
+  margin-top: var(--space-1);
+}
+
+.mapping-editor__unmapped {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 2.25rem;
+}
+
+.mapping-editor__mapped {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.mapping-editor__remote-name {
+  color: var(--ink);
+  word-break: break-word;
+}
+.mapping-editor__enabled-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+.mapping-editor__remove {
+  height: auto;
+  padding: 0;
+  font-size: var(--text-sm);
+  text-decoration: underline;
+}
+
+.mapping-editor__add-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 12rem;
+}
+.mapping-editor__add-input {
+  width: 100%;
+}
+.mapping-editor__add-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.mapping-editor__cell-error {
+  margin-top: var(--space-2);
+  max-width: 14rem;
+}
+
+/* ---------------------------------------------------------------------
+ * Target configuration form
+ * ------------------------------------------------------------------- */
+
+.connector-config-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  max-width: 40rem;
+}
+
+/* Same visual language as .import-page__safety-note (ImportPage.css) —
+   informational, never a warning: surface-sunken + border + muted ink,
+   never --warn/--danger, which DESIGN.md reserves for actual exceptions.
+   This banner states an architectural FACT (no secret is ever stored
+   here), not a caution. */
+.connector-config-form__secret-note {
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--ink-muted);
+}
+.connector-config-form__secret-note strong {
+  color: var(--ink);
+}
+
+.connector-config-form__checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.connector-config-form__keycloak-note {
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.connector-config-form__blast-radius {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+.connector-config-form__blast-radius h3 {
+  margin-bottom: var(--space-2);
+}
+.connector-config-form__blast-radius > p {
+  margin-bottom: var(--space-4);
+}
+.connector-config-form__blast-radius-fields {
+  display: flex;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+.connector-config-form__blast-radius-fields .field {
+  width: 12rem;
+}
+
+/* ---------------------------------------------------------------------
+ * Dry run — "same safety-rail idiom as the import preview."
+ * ------------------------------------------------------------------- */
+
+.dry-run__intro {
+  max-width: 68ch;
+  color: var(--ink-muted);
+  margin-bottom: var(--space-5);
+}
+
+.dry-run__plan {
+  margin-top: var(--space-2);
+}
+
+/* Byte-for-byte the same treatment as .import-page__safety-note. */
+.dry-run__safety-note {
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-5);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--ink-muted);
+}
+.dry-run__safety-note strong {
+  color: var(--ink);
+}
+
+.dry-run__summary {
+  margin-bottom: var(--space-5);
+}
+
+/* Visual-pass finding: a real plan can list hundreds of principals (this
+   task's own dev population, 581-strong, made this concrete) — the bare
+   `.table-wrap` (styles/components.css) has no max-height, so an unbounded
+   table pushed the Apply button most of a page-length away and made the
+   whole screen scroll instead of just the table. A bounded, internally
+   -scrolling region keeps the summary, the table, and the actions
+   co-visible without needing pagination for a value this task never asked
+   for one of (`toMutate`/`toMutateGroups` are already row-capped client
+   -side — DryRunTab.tsx's own MAX_ROWS_SHOWN). */
+.dry-run__plan-table-wrap {
+  max-height: 28rem;
+  overflow-y: auto;
+}
+
+.dry-run__more-note {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+}
+
+.dry-run__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+}
+
+/* A REAL exception — the guard tripped — so this earns --warn, unlike the
+   neutral safety note above. */
+.dry-run__halted {
+  margin-top: var(--space-5);
+  padding: var(--space-4);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-md);
+}
+.dry-run__halted p {
+  color: var(--ink);
+  margin-bottom: var(--space-3);
+}
+.dry-run__halted p:last-of-type {
+  margin-bottom: 0;
+}
+.dry-run__halted strong {
+  color: var(--ink);
+}
+
+.dry-run__result {
+  margin-top: var(--space-5);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--ink);
+}
+.dry-run__result p {
+  margin-bottom: var(--space-2);
+}
+.dry-run__result p:last-child {
+  margin-bottom: 0;
+}

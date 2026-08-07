@@ -90,6 +90,18 @@ function AuditIcon({ className }: { className?: string }) {
   )
 }
 
+/** Two nodes and a directional edge — this app pushing mastered identity outward to a directory backend (PRODUCT.md's own sub-project framing), the same idea Milestone 14's console makes configurable and inspectable. */
+function ConnectorsIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)}>
+      <circle cx="5" cy="6" r="2.5" />
+      <circle cx="15" cy="14" r="2.5" />
+      <path d="M7 7.3 12.6 12.2" />
+      <path d="M10.2 12.2h2.7v-2.7" />
+    </svg>
+  )
+}
+
 export const NAV_ITEMS: NavItem[] = [
   { key: 'people', label: 'People', path: '/people', action: 'user:read', icon: PeopleIcon },
   { key: 'groups', label: 'Groups', path: '/groups', action: 'group:read', icon: GroupsIcon },
@@ -97,4 +109,8 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'roles', label: 'Roles', path: '/roles', action: 'role:assign', icon: RolesIcon },
   { key: 'import', label: 'Import', path: '/import', action: 'user:create', icon: ImportIcon },
   { key: 'audit', label: 'Audit', path: '/audit', action: 'audit:read', icon: AuditIcon },
+  // Milestone 14, Task 9 — the connector admin console. `connector:read`
+  // gates visibility exactly like every other item here: super_admin and
+  // auditor see it, nobody else does (authz/actions.ts).
+  { key: 'connectors', label: 'Connectors', path: '/connectors', action: 'connector:read', icon: ConnectorsIcon },
 ]

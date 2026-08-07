@@ -1,6 +1,8 @@
 import { useAuth } from 'react-oidc-context'
 import { Route, Routes } from 'react-router-dom'
 import AuditPage from './audit/AuditPage'
+import ConnectorsListPage from './connectors/ConnectorsListPage'
+import TargetDetailPage from './connectors/TargetDetailPage'
 import CreateGroupPage from './groups/CreateGroupPage'
 import EditGroupPage from './groups/EditGroupPage'
 import GroupDetailPage from './groups/GroupDetailPage'
@@ -62,6 +64,13 @@ import './SignInGate.css'
  * action often triggers (e.g. deactivating from the detail page keeps that
  * page; creating a user redirects to the new record's own detail page),
  * which it cannot do mounted any lower.
+ *
+ * Milestone 14, Task 9 adds the connector admin console: `/connectors`
+ * (target list + the attribute mapping editor, tabbed like Audit's own Log/
+ * Dead letters pair) and `/connectors/:target` (per-target configuration,
+ * dead letters, and dry-run/apply). Gated on `connector:read`/
+ * `connector:manage`, the same "hide what the caller cannot do; the API
+ * still decides" posture every other route here already follows.
  */
 export default function App() {
   const auth = useAuth()
@@ -106,6 +115,8 @@ export default function App() {
           <Route path="/roles" element={<RolesCatalogPage />} />
           <Route path="/import" element={<ImportPage />} />
           <Route path="/audit" element={<AuditPage />} />
+          <Route path="/connectors" element={<ConnectorsListPage />} />
+          <Route path="/connectors/:target" element={<TargetDetailPage />} />
           <Route path="/self" element={<SelfServicePage />} />
         </Route>
       </Routes>

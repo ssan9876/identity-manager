@@ -1,20 +1,27 @@
 import { Inject, Injectable } from '@nestjs/common'
-import { sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
-import type { ResolvedTargetMapping } from '../connectors/attribute-mapping'
+import type { CoreProfileField, ResolvedTargetMapping } from '../connectors/attribute-mapping'
 import type { ConnectorTarget } from '../connectors/connector'
 import { DB_CLIENT } from '../common/db.token'
+import { ConflictError, NotFoundError } from '../common/errors'
+import { attributeTargetMappings } from '../db/schema/attribute-target-mappings'
 import * as schema from '../db/schema/index'
+import type { DbHandle } from '../outbox/outbox.writer'
 
 /**
- * Reads for `attribute_target_mappings` (Milestone 10, Task 3). No write
- * methods: like `connector_targets` before it (Task 2 — see that table's own
- * doc comment), this milestone has no admin-facing endpoint for editing
- * mappings; Milestone 14's console adds one ("Attribute mapping editor").
- * Rows are admin-seeded directly against Postgres for now — mirrored exactly
- * by how this suite's own tests seed them (raw SQL / Drizzle inserts, same
- * pattern `connector_targets` rows already use in outbox-multi-target.spec.ts
- * etc.).
+ * Reads AND writes for `attribute_target_mappings`. Read methods
+ * (`listForTarget`/`listAllRemoteNamesForTarget`) are Milestone 10, Task 3 —
+ * the sync-time, default-deny-enforcing half. Write methods
+ * (`listAllRows`/`findById`/`create`/`update`/`remove`) are Milestone 14,
+ * Task 9 — "Attribute mapping editor over `attribute_target_mappings`" —
+ * added here, on the SAME repository, rather than a second one: one class
+ * owning the whole table keeps the default-deny read path
+ * (`listForTarget`'s `WHERE enabled = true`) and the admin write path that
+ * creates/toggles the rows it reads unmistakably in view of each other,
+ * exactly the property Task 3's own report flagged as this milestone's
+ * carried gap ("Concerns" #1: "Rows are admin-seeded directly against
+ * Postgres until then").
  */
 @Injectable()
 export class AttributeTargetMappingsRepository {
@@ -104,4 +111,177 @@ export class AttributeTargetMappingsRepository {
     )
     return rows.map((row) => row.remote_name)
   }
+
+  /**
+   * EVERY row, every target, ENABLED or not — the admin-console read this
+   * milestone adds, deliberately unfiltered (unlike `listForTarget`, whose
+   * `WHERE enabled = true` is exactly right for a SYNC decision but exactly
+   * wrong for an EDITOR, which must show a disabled row too, distinctly from
+   * no row at all — see `AttributeTargetMappingsController`'s own doc
+   * comment on why that distinction is the whole point of this screen).
+   * Same custom/core UNION ALL shape as `listForTarget`, plus the custom
+   * branch's own `label` (an admin-facing name `listForTarget` never needed,
+   * since sync time only cares about the definition's `key`) — and, unlike
+   * `listForTarget`, NOT joined against `ad.is_active`: an editor should
+   * still show (and let an admin delete) a mapping row whose definition has
+   * since gone inactive, rather than making it invisible AND unremovable.
+   */
+  async listAllRows(db: NodePgDatabase<typeof schema> = this.db): Promise<AttributeTargetMappingRow[]> {
+    const { rows } = await db.execute<{
+      id: string
+      source: 'custom' | 'core'
+      attribute_definition_id: string | null
+      core_field: CoreProfileField | null
+      local_key: string
+      label: string | null
+      target: ConnectorTarget
+      remote_name: string
+      enabled: boolean
+    }>(sql`
+      SELECT atm.id, 'custom' AS source, atm.attribute_definition_id, NULL::attribute_core_field AS core_field,
+             ad.key AS local_key, ad.label AS label, atm.target, atm.remote_name, atm.enabled
+        FROM attribute_target_mappings atm
+        JOIN attribute_definitions ad ON ad.id = atm.attribute_definition_id
+       WHERE atm.attribute_definition_id IS NOT NULL
+      UNION ALL
+      SELECT atm.id, 'core' AS source, NULL::uuid AS attribute_definition_id, atm.core_field,
+             atm.core_field::text AS local_key, NULL::text AS label, atm.target, atm.remote_name, atm.enabled
+        FROM attribute_target_mappings atm
+       WHERE atm.core_field IS NOT NULL
+      ORDER BY local_key, target
+    `)
+
+    return rows.map((row) => ({
+      id: row.id,
+      source: row.source,
+      attributeDefinitionId: row.attribute_definition_id,
+      coreField: row.core_field,
+      localKey: row.local_key,
+      label: row.label,
+      target: row.target,
+      remoteName: row.remote_name,
+      enabled: row.enabled,
+    }))
+  }
+
+  async findById(id: string, db: NodePgDatabase<typeof schema> = this.db): Promise<MappingRecord | null> {
+    const [row] = await db.select().from(attributeTargetMappings).where(eq(attributeTargetMappings.id, id)).limit(1)
+    return row ?? null
+  }
+
+  /**
+   * Creates ONE mapping row — the structural act of opt-in that
+   * `attribute_target_mappings`'s own default-deny model exists to require
+   * (db/schema/attribute-target-mappings.ts's own doc comment: "absence of a
+   * row means no propagation"). Exactly one of `attributeDefinitionId`/
+   * `coreField` must be set — enforced twice: the controller's own Zod
+   * schema (`exactlyOneOfSchema`) rejects a malformed request before this is
+   * ever called, and the table's own `exactlyOneSource` CHECK constraint is
+   * the structural backstop if it somehow were not. A second row for the
+   * SAME (field, target) — enabled or not — is rejected as a clean 409 via
+   * `translateWriteError`, never a raw constraint-violation 500.
+   */
+  async create(
+    tx: DbHandle,
+    input: {
+      attributeDefinitionId: string | null
+      coreField: CoreProfileField | null
+      target: ConnectorTarget
+      remoteName: string
+      enabled: boolean
+    },
+  ): Promise<MappingRecord> {
+    try {
+      const [row] = await tx
+        .insert(attributeTargetMappings)
+        .values({
+          attributeDefinitionId: input.attributeDefinitionId,
+          coreField: input.coreField,
+          target: input.target,
+          remoteName: input.remoteName,
+          enabled: input.enabled,
+        })
+        .returning()
+      return row!
+    } catch (cause) {
+      this.translateWriteError(cause)
+    }
+  }
+
+  /** Toggles `enabled` and/or renames `remoteName` — never the (field, target) identity itself, which is immutable by design: changing WHICH field or WHICH target a row governs is a different mapping, not an edit of this one (create a new row and remove the old instead). */
+  async update(
+    tx: DbHandle,
+    id: string,
+    patch: { remoteName?: string; enabled?: boolean },
+  ): Promise<MappingRecord> {
+    try {
+      const [row] = await tx
+        .update(attributeTargetMappings)
+        .set({ ...patch, updatedAt: new Date() })
+        .where(eq(attributeTargetMappings.id, id))
+        .returning()
+      if (row === undefined) {
+        throw new NotFoundError('attribute target mapping', id)
+      }
+      return row
+    } catch (cause) {
+      if (cause instanceof NotFoundError) throw cause
+      this.translateWriteError(cause)
+    }
+  }
+
+  /**
+   * Deletes the row outright. Behaviourally this is IDENTICAL to disabling
+   * it — every read path (`listForTarget`) already treats "no row" and "row,
+   * enabled = false" the same way — so this exists purely for an admin who
+   * wants the editor to stay tidy rather than accumulate disabled rows
+   * forever; it is never the ONLY way to stop a field propagating (disabling
+   * it is equally effective and reversible with one click, per the
+   * console's own UI).
+   */
+  async remove(tx: DbHandle, id: string): Promise<MappingRecord | null> {
+    const [row] = await tx.delete(attributeTargetMappings).where(eq(attributeTargetMappings.id, id)).returning()
+    return row ?? null
+  }
+
+  private static readonly ATTRIBUTE_TARGET_UNIQUE_CONSTRAINT = 'attribute_target_mappings_attribute_target_unique'
+  private static readonly CORE_FIELD_TARGET_UNIQUE_CONSTRAINT = 'attribute_target_mappings_core_field_target_unique'
+
+  /**
+   * Maps a Postgres write-constraint violation to a clean `ConflictError` —
+   * matched by exact constraint NAME, never bare error code alone (the same
+   * "a bare code would misattribute any FUTURE constraint on this table"
+   * reasoning `UsersRepository.translateWriteError`/`GroupsRepository`'s own
+   * identical helpers already document). Anything else re-throws the
+   * original cause unchanged, so a genuine bug still surfaces as the 500 it
+   * actually is.
+   */
+  private translateWriteError(cause: unknown): never {
+    const pgError = cause as { code?: string; constraint?: string }
+    if (pgError.code === '23505' && pgError.constraint === AttributeTargetMappingsRepository.ATTRIBUTE_TARGET_UNIQUE_CONSTRAINT) {
+      throw new ConflictError('this attribute already has a mapping for this target — edit or remove the existing one instead of creating a second')
+    }
+    if (pgError.code === '23505' && pgError.constraint === AttributeTargetMappingsRepository.CORE_FIELD_TARGET_UNIQUE_CONSTRAINT) {
+      throw new ConflictError('this core field already has a mapping for this target — edit or remove the existing one instead of creating a second')
+    }
+    throw cause
+  }
 }
+
+/** The console's own read shape for `listAllRows` — every row, admin-facing. */
+export interface AttributeTargetMappingRow {
+  id: string
+  source: 'custom' | 'core'
+  attributeDefinitionId: string | null
+  coreField: CoreProfileField | null
+  /** `attribute_definitions.key` (source: 'custom') or the core field's own enum value (source: 'core') — same meaning `ResolvedTargetMapping.localKey` already has. */
+  localKey: string
+  /** The custom attribute's admin-facing label (source: 'custom' only) — `null` for a core field, whose four labels the console hardcodes (`given_name`/`surname`/`title`/`department` have no separate `attribute_definitions` row to hold one). */
+  label: string | null
+  target: ConnectorTarget
+  remoteName: string
+  enabled: boolean
+}
+
+/** Drizzle's own inferred row shape for `attributeTargetMappings` — what `create`/`update`/`findById` return directly, one level lower than the joined, display-ready `AttributeTargetMappingRow` above. */
+export type MappingRecord = typeof attributeTargetMappings.$inferSelect
