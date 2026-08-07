@@ -343,6 +343,30 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
     await ctx.pool.query('UPDATE outbox_events SET next_attempt_at = $1 WHERE id = $2', [when, id])
   }
 
+  /**
+   * "Is this event backed off, i.e. not yet due for a retry?" — evaluated
+   * ENTIRELY in Postgres, against Postgres's own clock.
+   *
+   * Do not reimplement this as `new Date(row.next_attempt_at) > Date.now()`.
+   * `next_attempt_at` is written as the DB's `now()` plus the backoff, so
+   * comparing it to the HOST's clock measures container-vs-host clock skew as
+   * much as it measures backoff. Docker Desktop on Windows drifts by around a
+   * second over a long suite run, which is larger than the backoff these
+   * tests deliberately configure — that comparison failed in CI with
+   * `expected <t> to be greater than <t+881ms>`, a pure skew artifact and not
+   * a real scheduling bug. Asking Postgres to compare its own timestamp to
+   * its own `now()` removes the skew term completely.
+   */
+  async function isBackedOff(id: number): Promise<boolean> {
+    const { rows } = await ctx.pool.query<{ backed_off: boolean }>(
+      'SELECT next_attempt_at > now() AS backed_off FROM outbox_events WHERE id = $1',
+      [id],
+    )
+    const row = rows[0]
+    if (!row) throw new Error(`no outbox row ${id}`)
+    return row.backed_off
+  }
+
   async function resetToPending(id: number): Promise<void> {
     await ctx.pool.query("UPDATE outbox_events SET status = 'pending' WHERE id = $1", [id])
   }
@@ -949,7 +973,7 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
       expect(afterFirst.status).toBe('pending')
       expect(afterFirst.attempts).toBe(1)
       expect(afterFirst.last_error).toBeTruthy()
-      expect(new Date(afterFirst.next_attempt_at).getTime()).toBeGreaterThan(Date.now())
+      expect(await isBackedOff(eventId)).toBe(true)
 
       // The backoff window has not elapsed — retrying immediately is a no-op.
       expect(await badWorker.runOnce()).toBe('idle')
@@ -1007,7 +1031,13 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
           clientId: 'irrelevant',
           clientSecret: 'irrelevant',
         })
-        const badWorker = makeWorker(hangingClient, { maxAttempts: 10, baseDelayMs: 300, maxDelayMs: 600 })
+        // Deliberately larger than the sibling "unreachable" test's 300ms.
+        // That test sleeps out its own backoff, so a small value keeps it
+        // fast; this one forces convergence via setNextAttemptAt below and
+        // never waits, so a generous window is free — and it keeps the
+        // `isBackedOff` assertion comfortably clear of a slow query round
+        // trip under full-suite load.
+        const badWorker = makeWorker(hangingClient, { maxAttempts: 10, baseDelayMs: 5_000, maxDelayMs: 10_000 })
 
         const startedAt = Date.now()
         expect(await badWorker.runOnce()).toBe('processed') // claimed + attempted — critically, NOT hung forever
@@ -1025,7 +1055,7 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
         expect(afterTimeout.status).toBe('pending')
         expect(afterTimeout.attempts).toBe(1)
         expect(afterTimeout.last_error).toBeTruthy()
-        expect(new Date(afterTimeout.next_attempt_at).getTime()).toBeGreaterThan(Date.now())
+        expect(await isBackedOff(eventId)).toBe(true)
 
         // Converge before this test ends — see this file's own doc comment
         // on why a row left pending-and-due must never be left for an
