@@ -2,7 +2,7 @@
 // Starts the API (`apps/api`'s `start:dev`) and the web console
 // (`apps/web`'s Vite dev server) together, with clearly labelled,
 // interleaved output — the third of the three commands in README.md's
-// Quickstart. Assumes `pnpm run setup` has already run (dependencies
+// Quickstart. Assumes `pnpm setup:all` has already run (dependencies
 // installed, `.env` files present, database migrated).
 //
 // Deliberately plain Node (no `concurrently`-style dependency, matching

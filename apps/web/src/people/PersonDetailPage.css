@@ -1,0 +1,50 @@
+.person-detail__back {
+  display: inline-block;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  text-decoration: none;
+  margin-bottom: var(--space-4);
+}
+.person-detail__back:hover {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
+.person-detail__header {
+  margin-bottom: var(--space-5);
+}
+
+.person-detail__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.person-detail__attributes {
+  margin-top: var(--space-7);
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--border);
+}
+
+.person-groups-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.person-groups-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.person-groups-list__name {
+  font-weight: 500;
+  color: var(--ink);
+}
+.person-groups-list__description {
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}

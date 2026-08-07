@@ -14,7 +14,7 @@ the full design.
 - pnpm 9+
 - Docker (for Postgres and Keycloak via Docker Compose)
 
-`pnpm run setup` (below) checks all three itself and tells you exactly which
+`pnpm setup:all` (below) checks all three itself and tells you exactly which
 one is missing rather than failing partway through.
 
 ## Quickstart
@@ -23,20 +23,23 @@ Three commands, run in order from a clean clone, reach a browser session you
 can sign in to and use:
 
 ```bash
-pnpm run setup            # start Postgres + Keycloak, install deps, migrate the database
-pnpm run bootstrap:admin  # create your local admin account — the anti-lockout, safe to re-run
-pnpm dev                  # start the API and the web console together
+pnpm setup:all         # start Postgres + Keycloak, install deps, migrate the database
+pnpm bootstrap:admin   # create your local admin account — the anti-lockout, safe to re-run
+pnpm dev               # start the API and the web console together
 ```
 
-**Always type `run`.** `setup` collides with a real, unrelated pnpm built-in
-(`pnpm setup` — "Sets up pnpm" itself). A bare `pnpm setup` silently runs
-pnpm's own command instead of this project's script, every time, on every
-pnpm version this was checked against. `pnpm run setup` is the only form
-that reaches this repo's script. `bootstrap:admin` and `dev` don't collide
-with anything and work with or without `run` — `pnpm run setup` is called
-out here only because getting it wrong doesn't even fail loudly.
+**Why `setup:all` and not `setup`.** `setup` is a genuine, unrelated pnpm
+built-in (`pnpm setup` — "Sets up pnpm" itself: it writes `PNPM_HOME`/`PATH`
+changes to *your shell profile*). A bare `pnpm setup` silently runs pnpm's
+own command instead of this project's script, every time, on every pnpm
+version this was checked against — and documenting "always type `run`"
+is not good enough for a command whose whole job is a frictionless first
+run. `setup:all` cannot collide: no pnpm built-in command name ever contains
+a colon, the same reason `bootstrap:admin` and `db:migrate` don't collide
+with anything either. All three quickstart commands above work exactly as
+written, with no `run` needed.
 
-### 1. `pnpm run setup`
+### 1. `pnpm setup:all`
 
 - Runs preflight checks — Docker daemon reachable, ports `5432`/`8080`/`9000`/
   `3000`/`5173` free, Node ≥20, pnpm ≥9 — and fails with a specific,

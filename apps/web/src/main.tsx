@@ -4,6 +4,9 @@ import { AuthProvider } from 'react-oidc-context'
 import { BrowserRouter } from 'react-router-dom'
 import App from './App'
 import { oidcConfig } from './auth/oidc-config'
+import './styles/tokens.css'
+import './styles/base.css'
+import './styles/components.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

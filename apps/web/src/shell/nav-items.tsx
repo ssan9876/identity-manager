@@ -1,0 +1,100 @@
+import type { ReactElement } from 'react'
+import type { Action } from './permissions'
+
+export interface NavItem {
+  key: string
+  label: string
+  path: string
+  /**
+   * The action that gates this item's visibility. There is no dedicated
+   * "read" action for roles/imports/audit in today's static catalog
+   * (apps/api/src/authz/actions.ts) — each maps to the closest action that
+   * implies the caller should see that area at all: `role:assign` (only
+   * super_admin holds it — nobody else can act on roles anyway), `user:create`
+   * (bulk import creates/updates users), `audit:read` (the auditor role's
+   * whole purpose, per PRODUCT.md).
+   */
+  action: Action
+  icon: (props: { className?: string }) => ReactElement
+}
+
+function iconProps(className: string | undefined) {
+  return {
+    className,
+    viewBox: '0 0 20 20',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.5,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    'aria-hidden': true,
+  }
+}
+
+function PeopleIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)}>
+      <circle cx="7.5" cy="6.5" r="2.5" />
+      <path d="M2.5 16c0-2.9 2.24-4.5 5-4.5s5 1.6 5 4.5" />
+      <circle cx="14" cy="7.5" r="2" />
+      <path d="M13 11.5c2.1.2 3.5 1.7 3.5 4.5" />
+    </svg>
+  )
+}
+
+function GroupsIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)}>
+      <rect x="2.5" y="2.5" width="6" height="6" rx="1" />
+      <rect x="11.5" y="2.5" width="6" height="6" rx="1" />
+      <rect x="7" y="11.5" width="6" height="6" rx="1" />
+    </svg>
+  )
+}
+
+function OrgUnitsIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)}>
+      <path d="M10 3v5M10 8H5.5a1 1 0 0 0-1 1v3M10 8h4.5a1 1 0 0 1 1 1v3" />
+      <circle cx="10" cy="2.5" r="1.75" />
+      <circle cx="4.5" cy="15" r="1.75" />
+      <circle cx="15.5" cy="15" r="1.75" />
+    </svg>
+  )
+}
+
+function RolesIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)}>
+      <path d="M10 2.5 16 5v4.5c0 4-2.6 6.6-6 8-3.4-1.4-6-4-6-8V5l6-2.5Z" />
+      <path d="M7.3 9.7 9 11.4l3.7-3.7" />
+    </svg>
+  )
+}
+
+function ImportIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)}>
+      <path d="M10 2.5v9.5M6.5 8.5 10 12l3.5-3.5" />
+      <path d="M3 13.5v2A1.5 1.5 0 0 0 4.5 17h11a1.5 1.5 0 0 0 1.5-1.5v-2" />
+    </svg>
+  )
+}
+
+function AuditIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)}>
+      <circle cx="8.5" cy="8.5" r="5" />
+      <path d="M12.3 12.3 17 17" />
+    </svg>
+  )
+}
+
+export const NAV_ITEMS: NavItem[] = [
+  { key: 'people', label: 'People', path: '/people', action: 'user:read', icon: PeopleIcon },
+  { key: 'groups', label: 'Groups', path: '/groups', action: 'group:read', icon: GroupsIcon },
+  { key: 'org-units', label: 'Org units', path: '/org-units', action: 'org_unit:read', icon: OrgUnitsIcon },
+  { key: 'roles', label: 'Roles', path: '/roles', action: 'role:assign', icon: RolesIcon },
+  { key: 'import', label: 'Import', path: '/import', action: 'user:create', icon: ImportIcon },
+  { key: 'audit', label: 'Audit', path: '/audit', action: 'audit:read', icon: AuditIcon },
+]

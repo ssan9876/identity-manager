@@ -8,6 +8,7 @@ import {
 } from '../attributes/attribute-validator'
 import { type AuthenticatedRequest, JwtGuard } from '../auth/jwt.guard'
 import { AuditWriter } from '../audit/audit.writer'
+import { ALL_ACTIONS, type Action } from '../authz/actions'
 import { type Actor, PermissionEngine } from '../authz/permission.engine'
 import { DB_CLIENT } from '../common/db.token'
 import { NotFoundError } from '../common/errors'
@@ -98,7 +99,24 @@ export interface SelfGroupsResponse {
 }
 
 /**
- * `GET /self`, `PATCH /self`, `GET /self/groups` — Milestone 6, Task 3.
+ * `GET /self/permissions`'s response — Milestone 8, Task 2. Deliberately
+ * just the one field: "the caller's own effective actions and nothing
+ * else" (task-2-brief.md). No role names, no scope details — a role name
+ * discloses nothing sensitive on its own, but this endpoint's whole job is
+ * letting the console decide what UI to show, and the smallest response
+ * that answers that is a flat action list. The console still relies on the
+ * server to enforce every one of these per-resource (this list says
+ * nothing about WHICH org units/records are reachable) — see `permissions`
+ * below.
+ */
+export interface SelfPermissionsResponse {
+  actions: Action[]
+}
+
+/**
+ * `GET /self`, `PATCH /self`, `GET /self/groups`, `GET /self/permissions`
+ * — Milestone 6, Task 3 (the first three) and Milestone 8, Task 2 (the
+ * last).
  *
  * THE FOUR THINGS THAT MATTER MOST (from the milestone brief), and where
  * each is enforced:
@@ -220,6 +238,42 @@ export class SelfServiceController {
     ])
 
     return { direct, effective }
+  }
+
+  /**
+   * Milestone 8, Task 2 — the ONE new endpoint the admin console needs: the
+   * caller's own effective actions, so the console can hide nav items and
+   * screens the caller cannot use, without ever deciding authorization
+   * itself (PRODUCT.md: "The API is the authority. The UI hides what you
+   * cannot do; it never decides it."). Lives here, not on a new controller,
+   * for the exact same reason `GET /self`/`GET /self/groups` do: no `:id`
+   * anywhere, so there is nothing for a caller to substitute another
+   * principal's id into — IDOR-proof by the same construction (see this
+   * class's own doc comment, points 1 and 2).
+   *
+   * `ALL_ACTIONS.filter(...)` rather than a Set/sort: `filter` already
+   * preserves ALL_ACTIONS' own declared order (every `user:*` action
+   * together, then `group:*`, etc.), which is both deterministic (tests can
+   * assert an exact array) and more legible than an alphabetically-sorted
+   * one — no separate sort step earns its keep here.
+   *
+   * `canAnywhere` deliberately ignores scope entirely (see its own doc
+   * comment): this answers "does the caller hold this action at ALL,
+   * anywhere" — a help_desk scoped to one org unit and a help_desk scoped
+   * globally report the IDENTICAL action list, because scope only narrows
+   * WHICH resources an action reaches, never WHICH actions exist for that
+   * role. A caller with zero role assignments — the case task-2-brief.md
+   * calls out explicitly — gets `{ actions: [] }`, a normal 200, never an
+   * error: `resolveCaller` already guarantees an ACTIVE local user exists
+   * (a deactivated/pending principal never reaches this line at all, same
+   * 403 as every other route here), and holding no role is simply the
+   * actor's actual, valid state, not a failure.
+   */
+  @Get('permissions')
+  async permissions(@Req() request: AuthenticatedRequest): Promise<SelfPermissionsResponse> {
+    const actor = await this.resolveCaller(request)
+    const actions = ALL_ACTIONS.filter((action) => this.engine.canAnywhere(actor, action))
+    return { actions }
   }
 
   /**

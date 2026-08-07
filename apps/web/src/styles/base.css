@@ -1,0 +1,133 @@
+/**
+ * Minimal reset + base element styles. Consumes tokens.css exclusively —
+ * see that file's header comment. This is the ONLY place generic element
+ * defaults live; every component file styles its own classes, never bare
+ * tag selectors beyond what's set here.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:root {
+  /* DESIGN.md: light, single theme — deliberately not reactive to the OS/
+     browser's own dark-mode preference. color-scheme keeps native form
+     controls, scrollbars, etc. rendered light regardless of that setting. */
+  color-scheme: light;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--line-height-normal);
+  color: var(--ink);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+dl,
+dd {
+  margin: 0;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-weight: 600;
+  line-height: var(--line-height-tight);
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+table {
+  border-collapse: collapse;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+button {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+a {
+  color: var(--primary);
+}
+
+/* Placeholders held to the SAME 4.5:1 floor as body text (DESIGN.md,
+   explicit call-out) — never the browser's default low-contrast grey, and
+   never diluted by Firefox's default placeholder opacity. */
+::placeholder {
+  color: var(--ink-subtle);
+  opacity: 1;
+}
+
+/* Visible focus on every interactive element (DESIGN.md), via
+   :focus-visible so a mouse click doesn't ring every element — keyboard
+   navigation is what this exists for. Individual components may add
+   :focus-visible rules of their own (e.g. inset rings inside a scroll
+   container) but must use var(--focus) exclusively. */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Screen-reader-only text — used for icon-rail nav labels, tab/table
+   context, etc. Visually hidden, still in the accessibility tree. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Strings meant to be compared character-by-character — UUIDs, ltree org
+   paths, ids — per DESIGN.md's "mono is functional, not decorative". */
+.mono {
+  font-family: var(--font-mono);
+}

@@ -1,0 +1,27 @@
+.people-list__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-5);
+}
+
+.people-list__filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.people-list__search-field {
+  flex: 1 1 16rem;
+  min-width: 12rem;
+}
+
+.people-list__filters .field:not(.people-list__search-field) {
+  min-width: 12rem;
+}
+
+.people-list__filters .select {
+  width: 100%;
+}

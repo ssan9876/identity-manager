@@ -513,9 +513,9 @@ export class UsersRepository {
   }
 
   /**
-   * Builds the shared status/orgUnit/scope WHERE clause for list() and
-   * count(), so the two can never drift apart on which rows they agree count
-   * as "in".
+   * Builds the shared status/orgUnit/scope/search WHERE clause for list()
+   * and count(), so the two can never drift apart on which rows they agree
+   * count as "in".
    *
    * Deactivated users are excluded from all default list and search views
    * (core design spec). An explicit `status` — including `status:
@@ -528,8 +528,19 @@ export class UsersRepository {
    * collapse this to `if (filter.scopePaths?.length)`: that would treat an
    * actor entitled to `[]` (nowhere) the same as one passing `undefined`
    * (everywhere). See PermissionEngine.scopePathsFor's doc comment.
+   *
+   * `search`, when present, is already trimmed and non-empty (the
+   * controller's job — see UsersController.list) and is ANDed together with
+   * every other active filter, not ORed: a caller filtering by
+   * status=active AND searching "ada" expects someone who is both, not
+   * either.
    */
-  private listFilters(filter: { status?: UserStatus; orgUnitId?: string; scopePaths?: string[] | null }) {
+  private listFilters(filter: {
+    status?: UserStatus
+    orgUnitId?: string
+    scopePaths?: string[] | null
+    search?: string
+  }) {
     const filters = [
       filter.status !== undefined ? eq(users.status, filter.status) : ne(users.status, 'deactivated'),
     ]
@@ -537,7 +548,37 @@ export class UsersRepository {
     if (filter.scopePaths !== undefined && filter.scopePaths !== null) {
       filters.push(this.scopeFilter(filter.scopePaths))
     }
+    if (filter.search !== undefined) {
+      filters.push(this.searchFilter(filter.search))
+    }
     return and(...filters)
+  }
+
+  /**
+   * Case-insensitive substring match across displayName, username and
+   * primaryEmail — the fields an admin would actually recognise someone by.
+   * Milestone 8, Task 2: `GET /users` had no text search at all before
+   * this, only status/orgUnitId, which cannot do PRODUCT.md's #1 job
+   * ("find a person fast... search that survives hundreds of rows") on
+   * their own — a client-side filter over a single fetched page cannot
+   * either, once the directory outgrows one page.
+   *
+   * `%`, `_` and `\` in the caller's own term are escaped (prefixed with
+   * `\`) before being wrapped in `%...%`: Postgres's LIKE/ILIKE pattern
+   * language treats backslash as the default escape character WITHIN the
+   * pattern itself, independent of how that pattern string reaches the
+   * driver — so without this, a literal "%" or "_" in someone's name
+   * (or in whatever a caller types) would act as an ILIKE wildcard instead
+   * of matching itself. The pattern is bound as ONE parameter via the `sql`
+   * tag's ordinary `${...}` interpolation (a plain string, not an array —
+   * see PermissionEngine.canIn's doc comment for why arrays specifically
+   * need `sql.param`), never spliced into the query text, so there is no
+   * injection concern on top of the escaping.
+   */
+  private searchFilter(term: string) {
+    const escaped = term.replace(/[\\%_]/g, (match) => `\\${match}`)
+    const pattern = `%${escaped}%`
+    return sql`(${users.displayName} ILIKE ${pattern} OR ${users.username} ILIKE ${pattern} OR ${users.primaryEmail} ILIKE ${pattern})`
   }
 
   /**
@@ -567,6 +608,7 @@ export class UsersRepository {
       status?: UserStatus
       orgUnitId?: string
       scopePaths?: string[] | null
+      search?: string
     },
   ): Promise<User[]> {
     const rows = await this.db
@@ -581,7 +623,7 @@ export class UsersRepository {
   }
 
   async count(
-    filter: { status?: UserStatus; orgUnitId?: string; scopePaths?: string[] | null } = {},
+    filter: { status?: UserStatus; orgUnitId?: string; scopePaths?: string[] | null; search?: string } = {},
   ): Promise<number> {
     const [row] = await this.db
       .select({ value: sql<number>`count(*)::int` })

@@ -28,13 +28,18 @@
 //   5. `pnpm --filter @idm/api run db:migrate` — applies the schema AND
 //      provisions the runtime database role (see README's "Database roles").
 //
-// NOTE on invocation: `setup` collides with pnpm's OWN built-in `pnpm setup`
-// command ("Sets up pnpm" — an unrelated, real pnpm feature). A bare
-// `pnpm setup` ALWAYS runs pnpm's built-in, never a package.json script of
-// the same name, on any pnpm version tested. The only way to reach this
-// script is the explicit form: `pnpm run setup`. README.md and this script's
-// own output say `pnpm run setup` everywhere for that reason — never the
-// bare form.
+// NOTE on the script's name: this is NOT called "setup". `setup` is a
+// genuine, unrelated pnpm CLI built-in ("Sets up pnpm" itself — writes
+// PNPM_HOME/PATH changes to the user's shell profile). Confirmed empirically
+// (see task-1-report.md): a bare `pnpm setup` ALWAYS runs pnpm's own
+// command, never a same-named package.json script, on any pnpm version
+// tested — `pnpm run setup` was the only form that reached it, which is easy
+// to get wrong for a command whose whole purpose is a frictionless first
+// run. Task 2 renamed it to the colon-namespaced `setup:all`, matching the
+// `bootstrap:admin` convention: no pnpm built-in command name ever contains
+// a colon, so a colon-namespaced script name cannot collide with one, now or
+// on any future pnpm version. `pnpm setup:all` (bare, no `run` needed) is
+// the only form documented anywhere in this repo.
 
 import { spawnSync } from 'node:child_process'
 import { execSync } from 'node:child_process'
@@ -188,7 +193,7 @@ async function checkPorts(failures) {
 
     const occupant = describeOccupant(port)
     failures.push(
-      `port ${port} is required for ${label} but is already in use by ${occupant}. Stop whatever is using it (or, if it's a stale container from another project, remove it) and re-run \`pnpm run setup\`.`,
+      `port ${port} is required for ${label} but is already in use by ${occupant}. Stop whatever is using it (or, if it's a stale container from another project, remove it) and re-run \`pnpm setup:all\`.`,
     )
   }
 }
@@ -197,13 +202,13 @@ function checkDocker(failures) {
   const result = runCaptured('docker', ['info'], { shell: true })
   if (result.error) {
     failures.push(
-      'Docker was not found on PATH. Install Docker Desktop (https://www.docker.com/products/docker-desktop/), make sure it is running, and re-run `pnpm run setup`.',
+      'Docker was not found on PATH. Install Docker Desktop (https://www.docker.com/products/docker-desktop/), make sure it is running, and re-run `pnpm setup:all`.',
     )
     return
   }
   if (result.status !== 0) {
     failures.push(
-      'Docker does not appear to be running (`docker info` failed). Start Docker Desktop and re-run `pnpm run setup`.',
+      'Docker does not appear to be running (`docker info` failed). Start Docker Desktop and re-run `pnpm setup:all`.',
     )
   }
 }
@@ -212,7 +217,7 @@ function checkNodeVersion(failures) {
   const major = Number(process.versions.node.split('.')[0])
   if (!Number.isFinite(major) || major < MIN_NODE_MAJOR) {
     failures.push(
-      `Node ${process.versions.node} is running this script, but Node ${MIN_NODE_MAJOR}+ is required. Install a newer Node (https://nodejs.org/) and re-run \`pnpm run setup\`.`,
+      `Node ${process.versions.node} is running this script, but Node ${MIN_NODE_MAJOR}+ is required. Install a newer Node (https://nodejs.org/) and re-run \`pnpm setup:all\`.`,
     )
   }
 }
@@ -220,14 +225,14 @@ function checkNodeVersion(failures) {
 function checkPnpmVersion(failures) {
   const result = runCaptured('pnpm', ['--version'], { shell: true })
   if (result.error || result.status !== 0) {
-    failures.push('pnpm was not found on PATH. Install pnpm (https://pnpm.io/installation) and re-run `pnpm run setup`.')
+    failures.push('pnpm was not found on PATH. Install pnpm (https://pnpm.io/installation) and re-run `pnpm setup:all`.')
     return
   }
   const version = result.stdout.trim()
   const major = Number(version.split('.')[0])
   if (!Number.isFinite(major) || major < MIN_PNPM_MAJOR) {
     failures.push(
-      `pnpm ${version || '(unknown version)'} was found, but pnpm ${MIN_PNPM_MAJOR}+ is required. Upgrade pnpm (\`npm install -g pnpm@latest\`) and re-run \`pnpm run setup\`.`,
+      `pnpm ${version || '(unknown version)'} was found, but pnpm ${MIN_PNPM_MAJOR}+ is required. Upgrade pnpm (\`npm install -g pnpm@latest\`) and re-run \`pnpm setup:all\`.`,
     )
   }
 }
@@ -386,7 +391,7 @@ async function main() {
   log('setup complete.')
   console.log('')
   console.log('Next steps:')
-  console.log('  1. pnpm run bootstrap:admin   (creates your local admin account — safe to re-run)')
+  console.log('  1. pnpm bootstrap:admin       (creates your local admin account — safe to re-run)')
   console.log('  2. pnpm dev                   (starts the API and the web console together)')
   console.log('  3. Open http://localhost:5173 and sign in with:')
   console.log('       username: admin@example.com')

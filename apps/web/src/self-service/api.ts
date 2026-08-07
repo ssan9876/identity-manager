@@ -1,4 +1,11 @@
-import { apiBaseUrl } from '../auth/oidc-config'
+import { ApiError, authorizedRequest } from '../api/client'
+
+// Re-exported so every existing import site (`import { ApiError } from
+// './api'`, e.g. SelfServicePage.tsx) keeps working unchanged — this is a
+// re-export of the SAME class from ../api/client, not a second, divergent
+// definition, so `cause instanceof ApiError` still compares correctly no
+// matter which module a caller imports it from.
+export { ApiError }
 
 export type AttributeDataType = 'string' | 'number' | 'boolean' | 'date' | 'enum'
 
@@ -85,42 +92,6 @@ export interface SelfGroupsResponse {
  * what this type would otherwise let the client attempt.
  */
 export type SelfUpdatePatch = Record<string, unknown>
-
-export class ApiError extends Error {
-  constructor(
-    public readonly status: number,
-    public readonly code: string | undefined,
-    public readonly issues: string[] | undefined,
-    message: string,
-  ) {
-    super(message)
-    this.name = 'ApiError'
-  }
-}
-
-async function authorizedRequest<T>(path: string, accessToken: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${apiBaseUrl}${path}`, {
-    ...init,
-    headers: {
-      ...(init?.headers ?? {}),
-      Authorization: `Bearer ${accessToken}`,
-    },
-  })
-
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as
-      | { message?: string; code?: string; issues?: string[] }
-      | null
-    throw new ApiError(
-      res.status,
-      body?.code,
-      body?.issues,
-      body?.message ?? `request to ${path} failed with status ${res.status}`,
-    )
-  }
-
-  return res.json() as Promise<T>
-}
 
 export function fetchSelfProfile(accessToken: string): Promise<SelfProfile> {
   return authorizedRequest<SelfProfile>('/self', accessToken)

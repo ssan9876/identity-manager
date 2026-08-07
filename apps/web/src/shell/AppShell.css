@@ -1,0 +1,241 @@
+/**
+ * The console shell's layout. Responsive behaviour is driven entirely from
+ * JS (useNavMode, shell/breakpoints.ts) via the .shell--full/--rail/
+ * --disclosure modifier classes below — not a parallel set of @media
+ * queries — so there is exactly one place (breakpoints.ts) that knows
+ * where DESIGN.md's two nav breakpoints (1100px, 780px) are.
+ *
+ * Grid, not flexbox, for the outer shell: a header row plus a nav-column/
+ * content-column arrangement below it is genuinely 2D (DESIGN.md: "Grid
+ * for 2D. No Grid where flex-wrap suffices").
+ */
+
+.shell {
+  display: grid;
+  grid-template-rows: var(--topbar-height) 1fr;
+  grid-template-columns: var(--nav-width) 1fr;
+  grid-template-areas: 'topbar topbar' 'nav content';
+  min-height: 100vh;
+  background: var(--bg);
+  /* Prevent the whole page from scrolling horizontally when inner content
+     (the People table, mainly) is wider than a narrow viewport — every
+     grid item below additionally gets min-width: 0, since a grid item's
+     default min-width is "auto" (its content's intrinsic width), not 0.
+     Without both, a wide table forces its column, then this grid, then the
+     whole page wider than the viewport instead of scrolling inside its own
+     .table-wrap. */
+  overflow-x: hidden;
+}
+
+.topbar,
+.nav,
+.shell__content {
+  min-width: 0;
+}
+
+.shell--rail {
+  grid-template-columns: var(--nav-rail-width) 1fr;
+}
+
+.shell--disclosure {
+  grid-template-columns: 1fr;
+  grid-template-areas: 'topbar' 'content';
+}
+
+/* ---------------------------------------------------------------------
+ * Top bar
+ * ------------------------------------------------------------------- */
+
+.topbar {
+  grid-area: topbar;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  height: var(--topbar-height);
+  padding: 0 var(--space-4);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+}
+
+.topbar__menu-toggle {
+  flex: none;
+  padding: 0 var(--space-2);
+}
+
+.topbar__brand {
+  flex: none;
+  font-weight: 700;
+  font-size: var(--text-base);
+  color: var(--ink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.topbar__search-form {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 28rem;
+}
+
+.topbar__search-input {
+  width: 100%;
+}
+
+.topbar__identity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-left: auto;
+  flex: none;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.topbar__identity a {
+  color: var(--ink);
+  text-decoration: none;
+}
+.topbar__identity a:hover {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
+/* Below ~860px there isn't room for brand + search + the whole identity
+   cluster on one 48px row — the "My Profile" text link is the least
+   critical (it's also reachable via /self directly, and duplicated by the
+   nav once Task 3 adds a proper account area); hide it first. */
+@media (max-width: 860px) {
+  .topbar__identity a[data-testid='topbar-my-profile'] {
+    display: none;
+  }
+}
+@media (max-width: 640px) {
+  .topbar__search-form {
+    display: none;
+  }
+}
+
+/* ---------------------------------------------------------------------
+ * Left nav — full (240px) and rail (64px) share this markup; only the
+ * grid column width (above) and the label visibility (below) change.
+ * ------------------------------------------------------------------- */
+
+.nav {
+  grid-area: nav;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: var(--space-4) var(--space-2);
+  overflow-y: auto;
+}
+
+.nav__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.nav__message {
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  color: var(--ink-muted);
+  text-decoration: none;
+  font-size: var(--text-base);
+  font-weight: 500;
+  transition:
+    background-color var(--motion-duration) var(--motion-ease),
+    color var(--motion-duration) var(--motion-ease);
+}
+.nav-link:hover {
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+.nav-link:active {
+  background: var(--border);
+}
+/* Current selection -> --primary (DESIGN.md: one of the three sanctioned
+   uses of the brand colour, alongside primary actions and focus). */
+.nav-link--active {
+  background: var(--surface-sunken);
+  color: var(--primary);
+  font-weight: 600;
+}
+.nav-link__icon {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+}
+.nav-link--skeleton {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+}
+
+.shell--rail .nav-link {
+  justify-content: center;
+}
+
+/* ---------------------------------------------------------------------
+ * Narrow-width disclosure — native <dialog>, per DESIGN.md ("Dropdowns
+ * use the native popover/<dialog> API or position: fixed — never
+ * position: absolute inside an overflow container").
+ * ------------------------------------------------------------------- */
+
+.nav-dialog {
+  top: 0;
+  left: 0;
+  margin: 0;
+  height: 100%;
+  max-height: 100%;
+  width: min(20rem, 85vw);
+  border: none;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  padding: var(--space-4);
+  background: var(--bg);
+  box-shadow: var(--shadow-md);
+}
+.nav-dialog::backdrop {
+  background: oklch(0.205 0.01 110 / 0.4);
+}
+.nav-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+}
+
+/* Deliberately no open/close animation: DESIGN.md's own suggested
+   reduced-motion fallback is "typically ... an instant transition", and
+   the cross-browser semantics of animating a <dialog>'s open/close state
+   (@starting-style + allow-discrete) are new enough to be a real
+   reliability risk for a secondary, infrequently-used surface. Native
+   showModal()/close() is instant, correct, and fully keyboard/focus-
+   managed on every evergreen browser without any of that. */
+
+/* ---------------------------------------------------------------------
+ * Content region — DESIGN.md: max-width 1440px, 24px gutters.
+ * ------------------------------------------------------------------- */
+
+.shell__content {
+  grid-area: content;
+  overflow-y: auto;
+}
+.shell__content-inner {
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+  padding: var(--content-gutter);
+}
