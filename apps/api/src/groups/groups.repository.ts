@@ -554,7 +554,6 @@ export class GroupsRepository {
       validationRules: (row.validationRules ?? {}) as ValidationRules,
       appliesTo: row.appliesTo,
       isActive: row.isActive,
-      syncToKeycloak: row.syncToKeycloak,
       selfEditable: row.selfEditable,
     }))
   }

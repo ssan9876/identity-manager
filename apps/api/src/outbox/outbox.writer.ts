@@ -1,5 +1,8 @@
 import { Injectable } from '@nestjs/common'
+import { eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import type { ConnectorTarget } from '../connectors/connector'
+import { connectorTargets } from '../db/schema/connector-targets'
 import { outboxEvents } from '../db/schema/outbox-events'
 import * as schema from '../db/schema/index'
 
@@ -26,6 +29,19 @@ export type OutboxAggregateType = 'user' | 'group' | 'membership' | 'org_unit'
 // `deactivated` in the payload.
 export type OutboxEventType = 'created' | 'updated' | 'status_changed' | 'membership_changed'
 
+// Milestone 10, Task 1 — mirrors `outboxTarget` (db/schema/outbox-events.ts).
+// Milestone 10, Task 2 — re-exported from `connectors/connector.ts`'s
+// `ConnectorTarget` rather than re-hand-rolled here a second time: the
+// outbox is a CALLER of the connector spine (SyncWorker dispatches
+// per-target through `ConnectorRegistry`), so it depends on that module's
+// canonical type instead of maintaining an independent, driftable copy —
+// see `ConnectorTarget`'s own doc comment for why THAT module is the
+// canonical home. Deliberately NOT part of `OutboxEvent` below: which
+// target(s) a mutation reaches is decided by `OutboxWriter.record` itself
+// (one row per row in `connector_targets` with `enabled = true`), never by
+// the caller — see `record`'s own doc comment.
+export type OutboxTarget = ConnectorTarget
+
 /**
  * `payload` is diagnostic and ordering context ONLY. The sync worker
  * (Milestone 4, Task 3) reconciles by reading the CURRENT row for
@@ -48,28 +64,69 @@ export interface OutboxEvent {
 export class OutboxWriter {
   /**
    * Takes the caller's transaction handle rather than opening its own, so
-   * the outbox row and the mutation it describes commit or roll back
-   * together — the entire reason this milestone needs no distributed
-   * transaction between Postgres and Keycloak. `DbHandle` accepts only a
-   * live transaction handle — the pooled handle does not satisfy the type,
-   * so the compiler rejects it — meaning a standalone write must go through
-   * `db.transaction(async (tx) => writer.record(tx, event))`. Same
-   * reasoning, same shape, as `AuditWriter.record` — every write handler in
-   * this milestone calls both from inside the SAME `tx`.
+   * every outbox row this writes and the mutation it describes commit or
+   * roll back together — the entire reason this milestone needs no
+   * distributed transaction between Postgres and each target. `DbHandle`
+   * accepts only a live transaction handle — the pooled handle does not
+   * satisfy the type, so the compiler rejects it — meaning a standalone
+   * write must go through `db.transaction(async (tx) => writer.record(tx,
+   * event))`. Same reasoning, same shape, as `AuditWriter.record` — every
+   * write handler calls both from inside the SAME `tx`.
    *
-   * `target`, `status`, `attempts`, `nextAttemptAt`, `lastError` are never
-   * caller-supplied: every new event starts life as `target: 'keycloak'`,
-   * `status: 'pending'`, `attempts: 0`, `nextAttemptAt: now()` (the column
-   * defaults in db/schema/outbox-events.ts) — those fields belong to the
-   * worker (Task 3), which owns every transition away from that starting
-   * state. This method inserts one row and does nothing else.
+   * MILESTONE 10, TASK 1 — fan-out. `record` no longer writes exactly one
+   * row: it writes one row PER currently-`enabled` row in `connector_targets`
+   * (design doc decision 6: "One event row per (mutation × target). Fan-out
+   * happens at write time."), reading that table through the SAME `tx` — see
+   * this method's own connection-discipline note below. A target that is
+   * not enabled — whether because its `connector_targets` row has `enabled
+   * = false`, or because no row for it exists at all yet (both mean the
+   * same thing to the query below) — gets NO row, full stop: not a row that
+   * later fails, not a row skipped at claim time, nothing an operator would
+   * ever see in `/outbox/dead-letters`. Since the Task 1 migration seeds
+   * only `('keycloak', enabled: true)`, this is, for now, still exactly one
+   * row per call — the existing Keycloak behaviour is unchanged in practice,
+   * not just in intent (see outbox-emission.spec.ts's pre-existing,
+   * unmodified assertions, which remain the regression net for that claim).
+   *
+   * `target`, `status`, `attempts`, `nextAttemptAt`, `lastError` are still
+   * never caller-supplied — `event: OutboxEvent` has no `target` field at
+   * all (see `OutboxTarget`'s own doc comment above: fan-out is decided
+   * HERE, never by the caller): every new row starts life at `status:
+   * 'pending'`, `attempts: 0`, `nextAttemptAt: now()` (the column defaults
+   * in db/schema/outbox-events.ts), `target` set to whichever enabled row
+   * produced it. Those fields belong to the worker (Task 3), which owns
+   * every transition away from that starting state.
+   *
+   * CONNECTION DISCIPLINE: both the `connector_targets` read and the
+   * `outbox_events` insert(s) below run against the SAME `tx` the caller
+   * already holds open — never `this.db` or any second pooled connection.
+   * This project has previously deadlocked its own connection pool by
+   * opening a transaction and then calling something that checked out a
+   * SECOND connection from the same pool while the first sat open (finding
+   * C1, docs/superpowers/audit-integrity.md; regression-guarded by
+   * test/pool-exhaustion.spec.ts) — this method has no injected `DB_CLIENT`
+   * at all (constructor takes nothing, exactly as before this task), so
+   * there is no pool handle here it COULD reach for by mistake.
    */
   async record(tx: DbHandle, event: OutboxEvent): Promise<void> {
-    await tx.insert(outboxEvents).values({
-      aggregateType: event.aggregateType,
-      aggregateId: event.aggregateId,
-      eventType: event.eventType,
-      payload: event.payload,
-    })
+    const enabledTargets = await tx
+      .select({ target: connectorTargets.target })
+      .from(connectorTargets)
+      .where(eq(connectorTargets.enabled, true))
+      .orderBy(connectorTargets.target)
+
+    if (enabledTargets.length === 0) {
+      return
+    }
+
+    await tx.insert(outboxEvents).values(
+      enabledTargets.map(({ target }) => ({
+        aggregateType: event.aggregateType,
+        aggregateId: event.aggregateId,
+        eventType: event.eventType,
+        payload: event.payload,
+        target,
+      })),
+    )
   }
 }

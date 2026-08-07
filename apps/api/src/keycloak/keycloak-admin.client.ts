@@ -1,5 +1,4 @@
 import { Inject, Injectable } from '@nestjs/common'
-import type { AttributeDefinition } from '../attributes/attribute-validator'
 import { ConflictError, NotFoundError } from '../common/errors'
 
 /**
@@ -61,15 +60,26 @@ export interface KeycloakCredentialSummary {
 }
 
 /**
- * Only the fields `buildSyncedAttributes` needs — deliberately narrower than
- * the full `AttributeDefinition` (which also carries `dataType`,
- * `validationRules`, etc., none of which this client cares about). Every
- * real call site has a full `AttributeDefinition[]` on hand already (e.g.
- * `UsersRepository.listActiveAttributeDefinitions`) and can pass it straight
- * through — `Pick<...>` accepts that without requiring a caller to
- * re-shape anything.
+ * Only the fields `buildSyncedAttributes` needs. Milestone 10, Task 3:
+ * previously `Pick<AttributeDefinition, 'key' | 'syncToKeycloak'>` —
+ * deliberately decoupled from that type now that `syncToKeycloak` no longer
+ * exists on it (`attribute_definitions.sync_to_keycloak` is dropped;
+ * default-deny propagation moved to the per-target
+ * `attribute_target_mappings` table, see db/schema/attribute-target-
+ * mappings.ts). This class and `buildSyncedAttributes` below are otherwise
+ * COMPLETELY UNCHANGED by that migration: `KeycloakConnector.apply`
+ * (connectors/keycloak.connector.ts) still builds a synthetic, all-`true`
+ * `SyncableAttributeDefinition[]` from whichever keys survived the NEW
+ * per-target filter (`connectors/attribute-mapping.ts`'s
+ * `buildTargetAttributes`, run once in `SyncWorker.reconcileUser` before any
+ * connector is called) — this type's own field name stays `syncToKeycloak`
+ * so that passthrough construction, and this whole file's pre-existing,
+ * extensive test coverage, needed no changes at all.
  */
-export type SyncableAttributeDefinition = Pick<AttributeDefinition, 'key' | 'syncToKeycloak'>
+export interface SyncableAttributeDefinition {
+  key: string
+  syncToKeycloak: boolean
+}
 
 const REQUIRED_ACTION_UPDATE_PASSWORD = 'UPDATE_PASSWORD'
 
@@ -265,6 +275,31 @@ export class KeycloakAdminClient {
   }
 
   /**
+   * Milestone 10, Task 2 — "can we reach and authenticate right now"
+   * (`DirectoryConnector.health`, connectors/connector.ts), backing
+   * `KeycloakConnector.health`. Forces a FRESH token request
+   * (`forceRefresh: true`) rather than trusting a cached token: a cached
+   * value can be reused successfully right up until the moment it expires,
+   * so trusting it here would make `health()` report healthy through a
+   * window where the admin credentials could already be wrong (rotated,
+   * revoked) without this call ever finding out. Never throws — the whole
+   * point of this method is to turn a connection/auth failure into an
+   * ANSWER, not another exception for a caller to unwrap; `fetchToken`'s own
+   * error message is already safe to surface as-is (Keycloak's token
+   * endpoint error response never echoes back the client secret this class
+   * sent it — confirmed against `describeError`/`fetchToken` above, which
+   * only ever reads Keycloak's OWN response body).
+   */
+  async health(): Promise<{ ok: boolean; detail: string }> {
+    try {
+      await this.getToken(true)
+      return { ok: true, detail: 'authenticated with Keycloak' }
+    } catch (error) {
+      return { ok: false, detail: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  /**
    * One authenticated admin REST call, with EXACTLY one retry on a 401 —
    * covers the token expiring between the cache check and the request
    * actually reaching Keycloak, or the cached token being invalidated
@@ -436,6 +471,22 @@ export class KeycloakAdminClient {
     const id = await this.requireUserId(username)
     const res = await this.request('PUT', `/users/${id}`, { enabled })
     await this.assertOk(res, { resource: 'keycloak user', id: username })
+  }
+
+  /**
+   * Milestone 10, Task 2 — sets `enabled` by the Keycloak user's OWN id
+   * directly, with no username lookup. Backs `KeycloakConnector.disable`
+   * (connectors/keycloak.connector.ts), which — per the connector interface
+   * — is given only the target's immutable external id, never a username.
+   * Deliberately a SECOND, independent method rather than a refactor of
+   * `setEnabled` to call it: doing so would risk changing `setEnabled`'s own
+   * NotFoundError message (username vs. this method's Keycloak-id) on the
+   * rare user-deleted-mid-call race, which its own existing tests pin. Two
+   * near-identical lines costs less than that risk.
+   */
+  async setEnabledById(id: string, enabled: boolean): Promise<void> {
+    const res = await this.request('PUT', `/users/${id}`, { enabled })
+    await this.assertOk(res, { resource: 'keycloak user', id })
   }
 
   /**

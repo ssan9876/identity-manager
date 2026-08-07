@@ -1,11 +1,13 @@
-import { Inject, Injectable } from '@nestjs/common'
+import { Inject, Injectable, Optional } from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
-import type { AttributeDefinition } from '../attributes/attribute-validator'
+import { AttributeTargetMappingsRepository } from '../attributes/attribute-target-mappings.repository'
 import { AuditWriter } from '../audit/audit.writer'
 import { DB_CLIENT } from '../common/db.token'
+import { buildTargetAttributes, computeCoreFieldValues, type ResolvedTargetMapping } from '../connectors/attribute-mapping'
 import * as schema from '../db/schema/index'
 import { GroupsRepository } from '../groups/groups.repository'
-import { buildSyncedAttributes, type KeycloakUser, KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
+import { type KeycloakUser, KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
+import { OrgUnitsRepository } from '../org-units/org-units.repository'
 import { snapshotUser } from '../users/users.controller'
 import { type User, UsersRepository, type UserStatus } from '../users/users.repository'
 import { OutboxWriter } from './outbox.writer'
@@ -104,6 +106,9 @@ function sameNameSet(a: readonly string[], b: readonly string[]): boolean {
  */
 @Injectable()
 export class ReconciliationJob {
+  private readonly attributeTargetMappingsRepository: AttributeTargetMappingsRepository
+  private readonly orgUnitsRepository: OrgUnitsRepository
+
   constructor(
     @Inject(UsersRepository) private readonly usersRepository: UsersRepository,
     @Inject(GroupsRepository) private readonly groupsRepository: GroupsRepository,
@@ -112,10 +117,29 @@ export class ReconciliationJob {
     @Inject(SyncWorker) private readonly syncWorker: SyncWorker,
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
-  ) {}
+    // Milestone 10, Task 3 — same trailing-optional-with-fallback-default
+    // shape `SyncWorker`'s own constructor uses for the identical pair (see
+    // its doc comment): every pre-existing raw `new ReconciliationJob(...)`
+    // call site (reconciliation.spec.ts's `makeJob`, reconcile-cli.ts's
+    // `main`) keeps compiling and behaving unchanged; Nest DI supplies both
+    // real, already-registered providers in production.
+    @Optional() @Inject(AttributeTargetMappingsRepository)
+    attributeTargetMappingsRepository?: AttributeTargetMappingsRepository,
+    @Optional() @Inject(OrgUnitsRepository) orgUnitsRepository?: OrgUnitsRepository,
+  ) {
+    this.attributeTargetMappingsRepository =
+      attributeTargetMappingsRepository ?? new AttributeTargetMappingsRepository(db)
+    this.orgUnitsRepository = orgUnitsRepository ?? new OrgUnitsRepository(db)
+  }
 
   async run(): Promise<ReconciliationReport> {
-    const definitions = await this.usersRepository.listActiveAttributeDefinitions()
+    // This job compares against KEYCLOAK only (its constructor takes a
+    // single `KeycloakAdminClient`, not a `ConnectorRegistry` — genuine
+    // multi-target reconciliation is Milestone 10, Task 4). `mappings` is
+    // therefore fetched once for `target: 'keycloak'` and reused for every
+    // user in the walk — the SAME "compute once, reuse per-user" shape the
+    // `definitions` local this replaces already had.
+    const mappings = await this.attributeTargetMappingsRepository.listForTarget('keycloak')
     const drifted: UserDrift[] = []
     let checked = 0
     let enqueued = 0
@@ -135,7 +159,7 @@ export class ReconciliationJob {
 
         for (const user of page) {
           checked += 1
-          const { reasons, observed } = await this.detectDrift(user, definitions)
+          const { reasons, observed } = await this.detectDrift(user, mappings)
           if (reasons.length > 0) {
             drifted.push({ userId: user.id, username: user.username, reasons })
             await this.enqueueRepair(user, reasons, observed)
@@ -168,7 +192,7 @@ export class ReconciliationJob {
    */
   private async detectDrift(
     user: User,
-    definitions: AttributeDefinition[],
+    mappings: ResolvedTargetMapping[],
   ): Promise<{ reasons: DriftReason[]; observed: KeycloakUser | null }> {
     const existing = await this.keycloak.findUserByUsername(user.username)
     if (existing === null) {
@@ -183,7 +207,16 @@ export class ReconciliationJob {
     if ((existing.firstName ?? '') !== user.firstName) reasons.push('first_name_mismatch')
     if ((existing.lastName ?? '') !== user.lastName) reasons.push('last_name_mismatch')
 
-    const desiredAttributes = buildSyncedAttributes(user.attributes, definitions)
+    // Milestone 10, Task 3 — mirrors SyncWorker.reconcileUser's own
+    // computation exactly, INCLUDING the lazy org-unit fetch (`mappings`
+    // here is likewise pre-scoped to `target: 'keycloak'` — see `run()`
+    // above), so this job's notion of "desired" never drifts from what a
+    // real sync would actually assert.
+    const orgUnit = mappings.some((mapping) => mapping.source === 'core')
+      ? await this.orgUnitsRepository.findById(user.orgUnitId)
+      : null
+    const coreFieldValues = computeCoreFieldValues(user, orgUnit)
+    const desiredAttributes = buildTargetAttributes(mappings, user.attributes, coreFieldValues)
     if (!attributesEqual(existing.attributes, desiredAttributes)) {
       reasons.push('attributes_mismatch')
     }

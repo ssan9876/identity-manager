@@ -1,4 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { ConnectorRegistry } from '../src/connectors/connector-registry'
+import { EchoConnector } from '../src/connectors/echo.connector'
 import { GroupsRepository } from '../src/groups/groups.repository'
 import {
   KeycloakAdminClient,
@@ -175,8 +177,17 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
   const usersRepo = () => new UsersRepository(ctx.db)
   const groupsRepo = () => new GroupsRepository(ctx.db)
   const outboxRepo = () => new OutboxRepository()
-  const makeWorker = (kc: KeycloakAdminClient = client, config?: Partial<SyncWorkerConfig>) =>
-    new SyncWorker(ctx.db, outboxRepo(), usersRepo(), groupsRepo(), kc, config)
+  // `registry` (Milestone 10, Task 2) is a new, OPTIONAL, trailing parameter
+  // — every pre-existing call below (`makeWorker()`, `makeWorker(kc)`,
+  // `makeWorker(kc, config)`) is unaffected and keeps getting SyncWorker's
+  // own default (a registry wrapping `kc`); only the new "connector registry
+  // dispatch" block passes one explicitly, so it can hold onto a specific
+  // EchoConnector and inspect what it recorded afterward.
+  const makeWorker = (
+    kc: KeycloakAdminClient = client,
+    config?: Partial<SyncWorkerConfig>,
+    registry?: ConnectorRegistry,
+  ) => new SyncWorker(ctx.db, outboxRepo(), usersRepo(), groupsRepo(), kc, config, registry)
 
   beforeAll(async () => {
     keycloak = await startKeycloak()
@@ -188,14 +199,24 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
 
     orgUnitId = (await new OrgUnitsRepository(ctx.db).createRoot(`Sync Worker Root ${Date.now()}`)).id
 
-    // 'department' is sync_to_keycloak; 'internalNotes' is not. Shared by
+    // 'department' has an ENABLED attribute_target_mappings row for
+    // 'keycloak' (remote_name = its own key, mirroring exactly what
+    // migration 0014 does for a pre-existing `sync_to_keycloak = true`
+    // row); 'internalNotes' has NO mapping row at all — default-deny by
+    // absence, Milestone 10 Task 3's own structural guarantee. Shared by
     // every test that needs a real row here — there is no write path for
-    // `attribute_definitions` yet (see UsersRepository.listActiveAttributeDefinitions'
-    // own doc comment), so a direct insert is the only way to seed one.
+    // `attribute_definitions`/`attribute_target_mappings` yet (see
+    // AttributeTargetMappingsRepository's own doc comment), so a direct
+    // insert is the only way to seed one.
     await ctx.pool.query(`
-      INSERT INTO attribute_definitions (key, label, data_type, applies_to, sync_to_keycloak, is_active)
-      VALUES ('department', 'Department', 'string', 'user', true, true),
-             ('internalNotes', 'Internal Notes', 'string', 'user', false, true)
+      WITH inserted AS (
+        INSERT INTO attribute_definitions (key, label, data_type, applies_to, is_active)
+        VALUES ('department', 'Department', 'string', 'user', true),
+               ('internalNotes', 'Internal Notes', 'string', 'user', true)
+        RETURNING id, key
+      )
+      INSERT INTO attribute_target_mappings (attribute_definition_id, target, remote_name, enabled)
+      SELECT id, 'keycloak', key, true FROM inserted WHERE key = 'department'
     `)
 
     cleanupWorker = makeWorker()
@@ -244,12 +265,16 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
     eventType: string,
     payload: Record<string, unknown>,
     nextAttemptAt?: Date,
+    // Milestone 10, Task 1 — optional and trailing so every PRE-EXISTING
+    // call site (all of them implicitly wanting the column default) needs
+    // no change; only the multi-target ordering tests below pass one.
+    target?: string,
   ): Promise<number> {
     const { rows } = await ctx.pool.query<{ id: string }>(
-      `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, next_attempt_at)
-       VALUES ($1, $2, $3, $4, COALESCE($5, now()))
+      `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, next_attempt_at, target)
+       VALUES ($1, $2, $3, $4, COALESCE($5, now()), COALESCE($6, 'keycloak')::outbox_target)
        RETURNING id`,
-      [aggregateType, aggregateId, eventType, JSON.stringify(payload), nextAttemptAt ?? null],
+      [aggregateType, aggregateId, eventType, JSON.stringify(payload), nextAttemptAt ?? null, target ?? null],
     )
     return Number(rows[0]!.id)
   }
@@ -365,6 +390,456 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
       // NOW #2 is unblocked.
       expect(await worker.runOnce()).toBe('processed')
       expect((await outboxRow(eventTwo)).status).toBe('done')
+    })
+  })
+
+  // =====================================================================
+  // Multi-target ordering (Milestone 10, Task 1) — THE head-of-line fix,
+  // proven end to end through the real claim-apply-finalize cycle
+  // (`runOnce`), not just at the raw SQL level (see
+  // outbox-multi-target.spec.ts for that lower-level, container-lighter
+  // proof of the identical property).
+  // =====================================================================
+  describe('multi-target ordering (Milestone 10, Task 1)', () => {
+    it('a stalled active_directory event for a user does not block a keycloak event for that SAME user', async () => {
+      const user = await makeUser()
+
+      // Older (lower id), STALLED: an active_directory delivery mid-backoff
+      // for this user — not due for another minute, so it can never be
+      // claimed itself, but (pre-fix) still silently blocked EVERY later
+      // event for this aggregate regardless of which target it was for.
+      const future = new Date(Date.now() + 60_000)
+      const staleAdEvent = await insertOutboxEvent('user', user.id, 'updated', {}, future, 'active_directory')
+
+      // Newer (higher id), due right now, a keycloak event for the SAME
+      // user — the one that must still ship on time.
+      const dueKeycloakEvent = await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'keycloak')
+
+      const worker = makeWorker()
+
+      expect(await worker.runOnce()).toBe('processed')
+      expect((await outboxRow(dueKeycloakEvent)).status).toBe('done')
+
+      // Not just "the row flipped to done" — the user genuinely reached
+      // Keycloak. This is the exact gap the design doc calls out: "the user
+      // would look synced, be stale, and nothing would report it."
+      const kcUser = await client.findUserByUsername(user.username)
+      expect(kcUser).not.toBeNull()
+
+      // The stalled AD event is untouched by the keycloak claim above —
+      // still pending, still backing off, zero attempts. Its own eventual
+      // delivery (once due) is a separate concern from this test.
+      const adRow = await outboxRow(staleAdEvent)
+      expect(adRow.status).toBe('pending')
+      expect(adRow.attempts).toBe(0)
+
+      // Nothing else is claimable right now — the AD event genuinely isn't
+      // due yet, confirming the worker did not somehow also process it.
+      expect(await worker.runOnce()).toBe('idle')
+    })
+  })
+
+  // =====================================================================
+  // Connector registry dispatch (Milestone 10, Task 2) — `event.target` now
+  // genuinely SELECTS a connector via `ConnectorRegistry`, closing the gap
+  // Task 1's own report flagged ("claimed non-Keycloak events would be
+  // silently misprocessed as Keycloak ones"). Proven end to end through the
+  // real claim-apply-finalize cycle, against the SAME real Keycloak
+  // container this whole file already runs against: an echo-targeted event
+  // reaches `EchoConnector` and — the actual isolation proof — never
+  // touches Keycloak at all; enabling BOTH targets for one user fans out to
+  // two INDEPENDENT, correctly-routed applications.
+  // =====================================================================
+  describe('connector registry dispatch (Milestone 10, Task 2)', () => {
+    const ECHO_SECRET_NAME = 'SYNC_WORKER_ECHO_TEST_SECRET'
+
+    async function enableEchoTarget(): Promise<void> {
+      process.env[ECHO_SECRET_NAME] = 'echo-dispatch-test-secret'
+      await ctx.pool.query(
+        `INSERT INTO connector_targets (target, enabled, config) VALUES ('echo', true, $1)
+         ON CONFLICT (target) DO UPDATE SET enabled = true, config = $1`,
+        [JSON.stringify({ credentialSecretName: ECHO_SECRET_NAME })],
+      )
+    }
+
+    async function disableEchoTarget(): Promise<void> {
+      await ctx.pool.query(`DELETE FROM connector_targets WHERE target = 'echo'`)
+      delete process.env[ECHO_SECRET_NAME]
+    }
+
+    it('an echo-targeted event reaches EchoConnector with the correct desired state and NEVER reaches the real Keycloak', async () => {
+      await enableEchoTarget()
+      try {
+        const user = await makeUser({ department: 'Engineering', internalNotes: 'do not sync me' })
+        await usersRepo().changeStatus(user.id, 'active')
+        const eventId = await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'echo')
+
+        const echoConnector = new EchoConnector()
+        const registry = new ConnectorRegistry(client, echoConnector)
+        const worker = makeWorker(client, undefined, registry)
+
+        expect(await worker.runOnce()).toBe('processed')
+        expect((await outboxRow(eventId)).status).toBe('done')
+
+        // Reached the ECHO connector, with exactly the desired state —
+        // default-deny already applied, and applied PER TARGET (Milestone
+        // 10, Task 3): `department` has an enabled mapping row for
+        // 'keycloak' only (this file's own `beforeAll` seed) — attributes
+        // is EMPTY here, not `{ department: [...] }`, because echo has no
+        // mapping row for it at all. See
+        // "default-deny per target (Milestone 10, Task 3)" below for the
+        // dedicated proof that this is a REAL per-target gate, not
+        // coincidental absence.
+        const applyCall = echoConnector.calls.find((call) => call.method === 'apply')
+        expect(applyCall?.desired).toEqual({
+          username: user.username,
+          email: user.primaryEmail,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          enabled: true,
+          attributes: {},
+          groups: [],
+        })
+
+        // Correlated under system='echo', with ECHO's own synthetic id —
+        // never Keycloak's.
+        const { rows } = await ctx.pool.query<{
+          external_id: string
+          system: string
+          sync_state: string
+        }>(
+          "SELECT external_id, system, sync_state FROM external_identities WHERE user_id = $1 AND system = 'echo'",
+          [user.id],
+        )
+        expect(rows).toHaveLength(1)
+        expect(rows[0]?.external_id).toBe(applyCall?.externalId)
+        expect(rows[0]?.external_id).toMatch(/^echo-/)
+        expect(rows[0]?.sync_state).toBe('synced')
+
+        // THE isolation proof: this user never reached the real Keycloak.
+        expect(await client.findUserByUsername(user.username)).toBeNull()
+      } finally {
+        await disableEchoTarget()
+      }
+    })
+
+    it('enabling BOTH keycloak and echo fans out one event per target, and each converges independently and correctly', async () => {
+      await enableEchoTarget()
+      try {
+        const user = await makeUser()
+        await usersRepo().changeStatus(user.id, 'active')
+
+        const kcEventId = await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'keycloak')
+        const echoEventId = await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'echo')
+
+        const echoConnector = new EchoConnector()
+        const registry = new ConnectorRegistry(client, echoConnector)
+        const worker = makeWorker(client, undefined, registry)
+
+        expect(await worker.drain()).toBe(2)
+        expect((await outboxRow(kcEventId)).status).toBe('done')
+        expect((await outboxRow(echoEventId)).status).toBe('done')
+
+        // Keycloak side genuinely converged.
+        expect(await client.findUserByUsername(user.username)).not.toBeNull()
+        // Echo side genuinely converged, independently.
+        expect(
+          echoConnector.calls.some(
+            (call) => call.method === 'apply' && call.desired?.username === user.username,
+          ),
+        ).toBe(true)
+
+        const { rows } = await ctx.pool.query<{ system: string }>(
+          'SELECT system FROM external_identities WHERE user_id = $1',
+          [user.id],
+        )
+        // Sorted in JS, not SQL: `ORDER BY system` sorts by the Postgres
+        // ENUM's declaration ordinal (keycloak, then ... then echo — see
+        // outbox-events.ts's `outboxTarget`), not lexicographically — same
+        // reasoning outbox-emission.spec.ts's own multi-target fan-out test
+        // already documents for `target.sort()`.
+        expect(rows.map((row) => row.system).sort()).toEqual(['echo', 'keycloak'])
+      } finally {
+        await disableEchoTarget()
+      }
+    })
+
+    it('a target with no registered connector (active_directory) dead-letters cleanly instead of silently reaching Keycloak', async () => {
+      // No `connector_targets` row needed to CLAIM this event — inserted
+      // directly, bypassing OutboxWriter's enabled-only fan-out, exactly
+      // like outbox-multi-target.spec.ts already does for active_directory.
+      // The point here is purely SyncWorker's OWN dispatch: does a claimed
+      // event for a target with NO implementation ever silently reach
+      // Keycloak instead? It must not — it must fail loudly and visibly.
+      const user = await makeUser()
+      const eventId = await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'active_directory')
+
+      const worker = makeWorker(client, { maxAttempts: 1, baseDelayMs: 10, maxDelayMs: 20 })
+      expect(await worker.runOnce()).toBe('processed')
+
+      const row = await outboxRow(eventId)
+      expect(row.status).toBe('failed')
+      expect(row.last_error).toMatch(/no connector registered for target "active_directory"/)
+
+      // Never reached Keycloak — the exact failure mode Task 1's report
+      // flagged as the risk of leaving dispatch unwired.
+      expect(await client.findUserByUsername(user.username)).toBeNull()
+    })
+  })
+
+  // =====================================================================
+  // Default-deny per target (Milestone 10, Task 3) —
+  // `attribute_target_mappings` replaces the single, target-uniform
+  // `sync_to_keycloak` boolean. THE non-negotiable this whole block re-
+  // proves: "for every target, an attribute (custom OR core) with no
+  // mapping row must not leave the system" — asserted against what EACH
+  // target actually received via the REAL send path (`SyncWorker.runOnce`
+  // -> `ConnectorRegistry` -> `EchoConnector`/a real Keycloak container),
+  // never against `buildTargetAttributes` called in isolation (see
+  // attribute-mapping.spec.ts for that separate, purely-algorithmic proof,
+  // which by itself CANNOT show the filter is actually wired into the send
+  // path — precisely the "vacuous test" failure class this project has
+  // already shipped three times).
+  //
+  // 'department' (this file's own `beforeAll` seed) has an enabled mapping
+  // to 'keycloak' only; 'internalNotes' has no mapping row at all. Both are
+  // reused below alongside fixtures created per-test.
+  // =====================================================================
+  describe('default-deny per target (Milestone 10, Task 3)', () => {
+    const ECHO_SECRET_NAME = 'SYNC_WORKER_DEFAULT_DENY_ECHO_SECRET'
+
+    async function enableEchoTarget(): Promise<void> {
+      process.env[ECHO_SECRET_NAME] = 'default-deny-test-secret'
+      await ctx.pool.query(
+        `INSERT INTO connector_targets (target, enabled, config) VALUES ('echo', true, $1)
+         ON CONFLICT (target) DO UPDATE SET enabled = true, config = $1`,
+        [JSON.stringify({ credentialSecretName: ECHO_SECRET_NAME })],
+      )
+    }
+
+    async function disableEchoTarget(): Promise<void> {
+      await ctx.pool.query(`DELETE FROM connector_targets WHERE target = 'echo'`)
+      delete process.env[ECHO_SECRET_NAME]
+    }
+
+    /** A fresh, uniquely-keyed custom attribute definition — never collides with 'department'/'internalNotes' or another test's own fixture. */
+    async function makeCustomAttributeDefinition(): Promise<{ id: string; key: string }> {
+      const key = `dd_custom_${nextTag()}`
+      const { rows } = await ctx.pool.query<{ id: string }>(
+        `INSERT INTO attribute_definitions (key, label, data_type, applies_to, is_active)
+         VALUES ($1, $1, 'string', 'user', true) RETURNING id`,
+        [key],
+      )
+      return { id: rows[0]!.id, key }
+    }
+
+    /** Upserts one custom-attribute mapping row — the ONLY way to configure one in this milestone (no write endpoint yet; mirrors how connector_targets rows are seeded directly in outbox-multi-target.spec.ts). */
+    async function mapAttribute(
+      attributeDefinitionId: string,
+      target: string,
+      remoteName: string,
+      enabled = true,
+    ): Promise<void> {
+      await ctx.pool.query(
+        `INSERT INTO attribute_target_mappings (attribute_definition_id, target, remote_name, enabled)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (attribute_definition_id, target) WHERE attribute_definition_id IS NOT NULL
+         DO UPDATE SET remote_name = $3, enabled = $4`,
+        [attributeDefinitionId, target, remoteName, enabled],
+      )
+    }
+
+    /** Same as `mapAttribute`, for a CORE field row instead of a custom-attribute one. */
+    async function mapCoreField(
+      coreField: string,
+      target: string,
+      remoteName: string,
+      enabled = true,
+    ): Promise<void> {
+      await ctx.pool.query(
+        `INSERT INTO attribute_target_mappings (core_field, target, remote_name, enabled)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (core_field, target) WHERE core_field IS NOT NULL
+         DO UPDATE SET remote_name = $3, enabled = $4`,
+        [coreField, target, remoteName, enabled],
+      )
+    }
+
+    async function deleteAttributeMappings(attributeDefinitionId: string): Promise<void> {
+      await ctx.pool.query(`DELETE FROM attribute_target_mappings WHERE attribute_definition_id = $1`, [
+        attributeDefinitionId,
+      ])
+    }
+
+    async function deleteCoreFieldMappings(coreField: string): Promise<void> {
+      await ctx.pool.query(`DELETE FROM attribute_target_mappings WHERE core_field = $1`, [coreField])
+    }
+
+    it('a custom attribute mapped to echo ONLY reaches echo under its remote name, and never reaches keycloak', async () => {
+      await enableEchoTarget()
+      const def = await makeCustomAttributeDefinition()
+      await mapAttribute(def.id, 'echo', 'echoRemoteName')
+      try {
+        const user = await makeUser({ [def.key]: 'echo-only-value' })
+        await usersRepo().changeStatus(user.id, 'active')
+
+        const echoConnector = new EchoConnector()
+        const registry = new ConnectorRegistry(client, echoConnector)
+        const worker = makeWorker(client, undefined, registry)
+
+        await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'echo')
+        await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'keycloak')
+        expect(await worker.drain()).toBe(2)
+
+        const applyCall = echoConnector.calls.find((call) => call.method === 'apply')
+        expect(applyCall?.desired?.attributes).toEqual({ echoRemoteName: ['echo-only-value'] })
+
+        // The SAME attribute has NO mapping row for 'keycloak' — it must
+        // not reach Keycloak under either its local key or its echo remote
+        // name.
+        const kcUser = await client.findUserByUsername(user.username)
+        expect(kcUser?.attributes[def.key]).toBeUndefined()
+        expect(kcUser?.attributes.echoRemoteName).toBeUndefined()
+      } finally {
+        await deleteAttributeMappings(def.id)
+        await disableEchoTarget()
+      }
+    })
+
+    it('an attribute mapped to keycloak does not automatically reach echo — each target is gated independently', async () => {
+      // 'department' (this file's own beforeAll seed) is mapped to
+      // 'keycloak' only, never 'echo'.
+      await enableEchoTarget()
+      try {
+        const user = await makeUser({ department: 'Engineering' })
+        await usersRepo().changeStatus(user.id, 'active')
+
+        const echoConnector = new EchoConnector()
+        const registry = new ConnectorRegistry(client, echoConnector)
+        const worker = makeWorker(client, undefined, registry)
+
+        await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'echo')
+        expect(await worker.drain()).toBe(1)
+
+        const applyCall = echoConnector.calls.find((call) => call.method === 'apply')
+        expect(applyCall?.desired?.attributes).toEqual({})
+        expect(applyCall?.desired?.attributes.department).toBeUndefined()
+      } finally {
+        await disableEchoTarget()
+      }
+    })
+
+    it('an attribute with NO mapping row for ANY target reaches neither echo nor keycloak', async () => {
+      // 'internalNotes' (this file's own beforeAll seed) has no mapping row
+      // at all, for any target.
+      await enableEchoTarget()
+      try {
+        const user = await makeUser({ internalNotes: 'must never propagate anywhere' })
+        await usersRepo().changeStatus(user.id, 'active')
+
+        const echoConnector = new EchoConnector()
+        const registry = new ConnectorRegistry(client, echoConnector)
+        const worker = makeWorker(client, undefined, registry)
+
+        await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'echo')
+        await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'keycloak')
+        expect(await worker.drain()).toBe(2)
+
+        const applyCall = echoConnector.calls.find((call) => call.method === 'apply')
+        expect(applyCall?.desired?.attributes.internalNotes).toBeUndefined()
+        expect(applyCall?.desired?.attributes).toEqual({})
+
+        const kcUser = await client.findUserByUsername(user.username)
+        expect(kcUser?.attributes.internalNotes).toBeUndefined()
+      } finally {
+        await disableEchoTarget()
+      }
+    })
+
+    it('a mapping DISABLED after being enabled stops propagating, without deleting the row', async () => {
+      await enableEchoTarget()
+      const def = await makeCustomAttributeDefinition()
+      await mapAttribute(def.id, 'echo', 'toggle')
+      try {
+        const user = await makeUser({ [def.key]: 'toggle-value' })
+        await usersRepo().changeStatus(user.id, 'active')
+
+        const echoConnector = new EchoConnector()
+        const registry = new ConnectorRegistry(client, echoConnector)
+        const worker = makeWorker(client, undefined, registry)
+
+        await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'echo')
+        expect(await worker.runOnce()).toBe('processed')
+        expect(echoConnector.calls.find((call) => call.method === 'apply')?.desired?.attributes).toEqual(
+          { toggle: ['toggle-value'] },
+        )
+
+        // Disable — the row is UPDATED, not deleted.
+        await mapAttribute(def.id, 'echo', 'toggle', false)
+
+        await insertOutboxEvent('user', user.id, 'updated', {}, undefined, 'echo')
+        expect(await worker.runOnce()).toBe('processed')
+        const secondApply = echoConnector.calls.filter((call) => call.method === 'apply').at(-1)
+        expect(secondApply?.desired?.attributes).toEqual({})
+
+        const { rows } = await ctx.pool.query<{ enabled: boolean }>(
+          `SELECT enabled FROM attribute_target_mappings WHERE attribute_definition_id = $1 AND target = 'echo'`,
+          [def.id],
+        )
+        expect(rows).toHaveLength(1) // still exists — disabled, not removed
+        expect(rows[0]?.enabled).toBe(false)
+      } finally {
+        await deleteAttributeMappings(def.id)
+        await disableEchoTarget()
+      }
+    })
+
+    it('core fields (title, department-from-org-path) map per target: a mapped one reaches echo under its remote name; an unmapped one reaches neither target', async () => {
+      await enableEchoTarget()
+      await mapCoreField('title', 'echo', 'jobTitleForEcho')
+      // Deliberately do NOT map the 'department' CORE field anywhere — the
+      // custom attribute of the same name (seeded in beforeAll) is a
+      // DIFFERENT row and must not be confused with it (see attribute-
+      // mapping.spec.ts's own "share the same LOCAL key without colliding"
+      // test for the pure-function half of this proof).
+      try {
+        const orgUnit = await new OrgUnitsRepository(ctx.db).createRoot(`Core Field Dept ${nextTag()}`)
+        const tag = nextTag()
+        const username = `core-field-${tag}@example.com`.toLowerCase()
+        const user = await usersRepo().create({
+          primaryEmail: username,
+          username,
+          firstName: 'Core',
+          lastName: 'Field',
+          orgUnitId: orgUnit.id,
+          jobTitle: 'Staff Engineer',
+        })
+        await usersRepo().changeStatus(user.id, 'active')
+
+        const echoConnector = new EchoConnector()
+        const registry = new ConnectorRegistry(client, echoConnector)
+        const worker = makeWorker(client, undefined, registry)
+
+        await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'echo')
+        await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'keycloak')
+        expect(await worker.drain()).toBe(2)
+
+        const applyCall = echoConnector.calls.find((call) => call.method === 'apply')
+        expect(applyCall?.desired?.attributes).toEqual({ jobTitleForEcho: ['Staff Engineer'] })
+        expect(applyCall?.desired?.attributes.department).toBeUndefined()
+
+        // No core-field mapping exists for 'keycloak' AT ALL (by design —
+        // see db/schema/attribute-target-mappings.ts's own doc comment):
+        // title and department never appear in Keycloak's attributes bag
+        // either, under ANY name.
+        const kcUser = await client.findUserByUsername(user.username)
+        expect(kcUser?.attributes.jobTitleForEcho).toBeUndefined()
+        expect(kcUser?.attributes.title).toBeUndefined()
+        expect(kcUser?.attributes.department).toBeUndefined()
+      } finally {
+        await deleteCoreFieldMappings('title')
+        await disableEchoTarget()
+      }
     })
   })
 

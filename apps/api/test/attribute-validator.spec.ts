@@ -13,7 +13,6 @@ const def = (
   validationRules: {},
   appliesTo: 'user',
   isActive: true,
-  syncToKeycloak: false,
   selfEditable: false,
   ...overrides,
 })

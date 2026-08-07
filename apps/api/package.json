@@ -12,6 +12,7 @@
     "db:migrate": "tsx --env-file-if-exists=../../.env src/db/migrate-cli.ts",
     "bootstrap:admin": "tsx --env-file-if-exists=../../.env src/admin/bootstrap-admin-cli.ts",
     "reconcile": "tsx --env-file-if-exists=../../.env src/outbox/reconcile-cli.ts",
+    "target-reconcile": "tsx --env-file-if-exists=../../.env src/outbox/target-reconcile-cli.ts",
     "jml:lifecycle": "tsx --env-file-if-exists=../../.env src/jml/lifecycle-cli.ts"
   },
   "dependencies": {

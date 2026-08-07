@@ -78,6 +78,41 @@
       "when": 1786003018436,
       "tag": "0010_plain_viper",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1786086434887,
+      "tag": "0011_bumpy_joshua_kane",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1786086782415,
+      "tag": "0012_chemical_nightcrawler",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1786089168402,
+      "tag": "0013_natural_microbe",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1786092105304,
+      "tag": "0014_known_photon",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1786096015355,
+      "tag": "0015_cold_doomsday",
+      "breakpoints": true
     }
   ]
 }

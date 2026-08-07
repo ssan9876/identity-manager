@@ -230,7 +230,6 @@ describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
       validationRules: { options: ['a', 'b'] },
       appliesTo: 'user',
       isActive: true,
-      syncToKeycloak: true,
       selfEditable: false,
     })
 
@@ -247,8 +246,11 @@ describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
       validationRules: { options: ['a', 'b'] },
       appliesTo: 'user',
       isActive: true,
-      syncToKeycloak: true,
       selfEditable: false,
     })
+    // Milestone 10, Task 3: sync_to_keycloak is dropped from
+    // attribute_definitions entirely — propagation is no longer part of
+    // this shape at all, not merely defaulted false.
+    expect(shaped).not.toHaveProperty('syncToKeycloak')
   })
 })
