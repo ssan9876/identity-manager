@@ -564,35 +564,32 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
       }
     })
 
-    it('a target with no registered connector (google_workspace) dead-letters cleanly instead of silently reaching Keycloak', async () => {
-      // No `connector_targets` row needed to CLAIM this event — inserted
-      // directly, bypassing OutboxWriter's enabled-only fan-out, exactly
-      // like outbox-multi-target.spec.ts already does for active_directory.
-      // The point here is purely SyncWorker's OWN dispatch: does a claimed
-      // event for a target with NO implementation ever silently reach
-      // Keycloak instead? It must not — it must fail loudly and visibly.
-      // `google_workspace` (not `active_directory`/`entra_id`, which
-      // Milestones 11/12 gave a real connector each) is the still-
-      // unimplemented target for this proof as of this milestone — see
-      // connector-registry.spec.ts's own `it.each` for the equivalent,
-      // target-agnostic version of this. Milestone 12, Task 7 moved this
-      // test OFF `entra_id` for the identical reason Milestone 11, Task 5's
-      // own report already documents doing for `active_directory`: true
-      // before that task, false after.
-      const user = await makeUser()
-      const eventId = await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'google_workspace')
-
-      const worker = makeWorker(client, { maxAttempts: 1, baseDelayMs: 10, maxDelayMs: 20 })
-      expect(await worker.runOnce()).toBe('processed')
-
-      const row = await outboxRow(eventId)
-      expect(row.status).toBe('failed')
-      expect(row.last_error).toMatch(/no connector registered for target "google_workspace"/)
-
-      // Never reached Keycloak — the exact failure mode Task 1's report
-      // flagged as the risk of leaving dispatch unwired.
-      expect(await client.findUserByUsername(user.username)).toBeNull()
-    })
+    // Milestone 13, Task 8 — REMOVED (not merely moved, this time): every
+    // real target `ConnectorTarget`/`outbox_target` names now has an
+    // implementation (`active_directory`/Milestone 11, `entra_id`/
+    // Milestone 12, `google_workspace`/Milestone 13). This test used to
+    // live here, moved off `active_directory` then `entra_id` in turn as
+    // each gained a real connector (see git history / this project's own
+    // Task 5/Task 7 reports) — but this time there is no NEXT unimplemented
+    // real target to move it to, and, unlike connector-registry.spec.ts's
+    // own equivalent (which calls `ConnectorRegistry.resolve` directly,
+    // in-memory, so it can probe a fabricated target name past the
+    // compile-time type), THIS test's scenario requires a genuinely
+    // CLAIMABLE `outbox_events` row — and `target` is a real Postgres enum
+    // column (`outbox_target`): `INSERT ... target = 'anything_made_up'`
+    // fails at the SQL layer with an enum-cast error, never producing a
+    // claimable row to test dispatch against at all. The underlying safety
+    // property this test proved — `SyncWorker` never silently misprocesses
+    // a claimed event as Keycloak's when its OWN target's operation fails —
+    // remains covered, just via different, still-real triggers: `connector-
+    // registry.spec.ts`'s "resolve() rejects a target with no registered
+    // connector at all" (the registry-level mechanism THIS test's dispatch
+    // relies on) and `connector-secrets.spec.ts`'s sentinel test, whose own
+    // "failing path through the REAL SyncWorker/outbox machinery" already
+    // proves a claimed event whose target's connector operation throws
+    // (there: a missing secret) dead-letters/retries cleanly and never
+    // reaches Keycloak — the identical class of proof, a different real
+    // cause.
   })
 
   // =====================================================================

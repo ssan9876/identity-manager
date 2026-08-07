@@ -81,7 +81,7 @@ describe('ConnectorRegistry (Milestone 10, Task 2)', () => {
   // Exhaustiveness / known-implemented-targets.
   // =========================================================================
   describe('implemented vs. not-yet-implemented targets', () => {
-    it('resolves keycloak, echo, and entra_id', async () => {
+    it('resolves keycloak, echo, entra_id, and google_workspace', async () => {
       const registry = new ConnectorRegistry(unreachableKeycloak())
       await insertConnectorTarget('echo', { credentialSecretName: 'IRRELEVANT_FOR_THIS_TEST' })
 
@@ -102,32 +102,42 @@ describe('ConnectorRegistry (Milestone 10, Task 2)', () => {
           const entraConnector = await registry.resolve('entra_id', tx)
           expect(entraConnector).toBeDefined()
           expect(typeof entraConnector.apply).toBe('function')
+
+          // Milestone 13, Task 8 — same shape again: a dedicated
+          // `GoogleWorkspaceConnector` request/response proof lives in
+          // google-workspace.connector.spec.ts; this only proves the
+          // REGISTRY resolves it at all.
+          const googleConnector = await registry.resolve('google_workspace', tx)
+          expect(googleConnector).toBeDefined()
+          expect(typeof googleConnector.apply).toBe('function')
         })
       } finally {
         await deleteConnectorTarget('echo')
       }
     })
 
-    // Milestone 13 has not shipped an adapter yet — a claimed event for it
-    // must fail LOUDLY (dead-lettered, visible) rather than being silently
-    // misprocessed by whichever connector happens to be first in the map.
-    // This is exactly the failure mode Task 1's own report flagged as the
-    // risk of leaving dispatch unwired. `active_directory` moved OUT of this
-    // list in Milestone 11, Task 5, and `entra_id` moves out in Milestone 12,
-    // Task 7 — see the sibling `resolves keycloak, echo, and entra_id` test's
-    // own shape; dedicated per-connector resolution proofs live in
-    // active-directory.connector.spec.ts / entra-id.connector.spec.ts.
-    it.each(['google_workspace'] as const)(
-      'resolve() rejects the not-yet-implemented target %s with a clear error',
-      async (target) => {
-        const registry = new ConnectorRegistry(unreachableKeycloak())
-        await ctx.db.transaction(async (tx) => {
-          await expect(registry.resolve(target, tx)).rejects.toThrow(
-            `no connector registered for target "${target}"`,
-          )
-        })
-      },
-    )
+    // Every real target `ConnectorTarget` names now has an implementation
+    // (`active_directory`/Milestone 11, `entra_id`/Milestone 12,
+    // `google_workspace`/Milestone 13 — moved out of this "not-yet-
+    // implemented" list in that order, mirroring the sibling
+    // `resolves keycloak, echo, entra_id, and google_workspace` test's own
+    // shape each time) — a genuinely positive milestone outcome, not a gap.
+    // The underlying safety property this block exists to prove —
+    // `resolve()` fails LOUDLY, never silently misprocessing a claimed
+    // event by whichever connector happens to be first in the map, exactly
+    // the failure mode Task 1's own report flagged — still matters for
+    // whatever FUTURE target this project has not built yet, so it stays
+    // covered here against a synthetic, definitely-never-real target name,
+    // the same technique the "prototype-chain-bypass safety" tests above
+    // already use for their own fabricated keys.
+    it('resolve() rejects a target with no registered connector at all, with a clear error', async () => {
+      const registry = new ConnectorRegistry(unreachableKeycloak())
+      await ctx.db.transaction(async (tx) => {
+        await expect(registry.resolve('definitely_not_a_real_target' as ConnectorTarget, tx)).rejects.toThrow(
+          'no connector registered for target "definitely_not_a_real_target"',
+        )
+      })
+    })
   })
 
   // =========================================================================
