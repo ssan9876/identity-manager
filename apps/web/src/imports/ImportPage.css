@@ -1,0 +1,138 @@
+.import-page__intro {
+  max-width: 68ch;
+  color: var(--ink-muted);
+  margin-bottom: var(--space-5);
+}
+
+.import-page__format {
+  padding: var(--space-4) var(--space-5);
+  margin-bottom: var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.import-page__format h2 {
+  font-size: var(--text-md);
+  margin-bottom: var(--space-2);
+}
+.import-page__format p {
+  margin-bottom: var(--space-2);
+  color: var(--ink-muted);
+}
+.import-page__format p:last-child {
+  margin-bottom: 0;
+}
+.import-page__format strong {
+  color: var(--ink);
+}
+
+.import-page__upload {
+  padding: var(--space-5);
+  margin-bottom: var(--space-5);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+}
+
+/* Native file input — the button PART is skinned via the standard
+   ::file-selector-button pseudo-element (never a reinvented control:
+   the browser still owns the real file-picker dialog and keyboard/focus
+   behaviour end-to-end). Mirrors .btn--secondary's own token values rather
+   than the class itself, since a pseudo-element cannot share a class. */
+.file-input {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-base);
+  color: var(--ink);
+}
+.file-input::file-selector-button,
+.file-input::-webkit-file-upload-button {
+  height: 2.25rem;
+  padding: 0 var(--space-4);
+  margin-right: var(--space-1);
+  font-family: inherit;
+  font-size: var(--text-base);
+  font-weight: 500;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-duration) var(--motion-ease),
+    border-color var(--motion-duration) var(--motion-ease);
+}
+.file-input:hover::file-selector-button,
+.file-input:hover::-webkit-file-upload-button {
+  background: var(--surface);
+  border-color: var(--ink-subtle);
+}
+.file-input:active::file-selector-button,
+.file-input:active::-webkit-file-upload-button {
+  background: var(--surface-sunken);
+}
+.file-input:disabled::file-selector-button,
+.file-input:disabled::-webkit-file-upload-button {
+  background: var(--bg);
+  border-color: var(--border);
+  color: var(--ink-subtle);
+  cursor: not-allowed;
+}
+
+.import-page__chosen-file {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+.import-page__chosen-file p {
+  color: var(--ink-muted);
+}
+
+/* The safety-rail banner — informational, never a warning: same visual
+   language as OrgUnitsPage's own scope-legibility note (surface-sunken +
+   border + muted ink), deliberately NOT --warn/--danger, which DESIGN.md
+   reserves for exceptions this note is not one of. */
+.import-page__safety-note {
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-5);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--ink-muted);
+}
+.import-page__safety-note strong {
+  color: var(--ink);
+}
+
+.import-page__group {
+  margin-bottom: var(--space-6);
+}
+.import-page__group h3 {
+  margin-bottom: var(--space-3);
+}
+
+.import-page__reasons {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.import-page__commit-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+}
+
+.import-page__result {
+  margin-top: var(--space-2);
+}
+.import-page__result h2 {
+  margin-bottom: var(--space-4);
+}
+.import-page__result .detail-grid {
+  margin-bottom: var(--space-6);
+}

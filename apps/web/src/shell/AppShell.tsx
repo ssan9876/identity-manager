@@ -1,0 +1,286 @@
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react'
+import { useAuth } from 'react-oidc-context'
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { GroupsProvider } from '../groups/GroupsContext'
+import { OrgUnitsProvider } from '../org-units/OrgUnitsContext'
+import { NAV_ITEMS } from './nav-items'
+import { useSelfPermissions, type Action } from './permissions'
+import { useNavMode } from './useMediaQuery'
+import './AppShell.css'
+
+function hasAction(
+  perms: ReturnType<typeof useSelfPermissions>,
+  action: Action,
+): boolean {
+  return perms.status === 'ready' && perms.actions.has(action)
+}
+
+/**
+ * `⌘K`/`Ctrl-K` focuses the global search input, from anywhere in the
+ * console (DESIGN.md). Deliberately NOT guarded against firing while focus
+ * is already inside another field: unlike a bare-letter shortcut, this one
+ * requires a modifier key, so it cannot collide with ordinary typing
+ * (the same reasoning command palettes in Slack/Linear/GitHub rely on) —
+ * always intercepting it, regardless of current focus, is what makes it
+ * reachable "from anywhere" in the first place.
+ */
+function useGlobalSearchShortcut(inputRef: React.RefObject<HTMLInputElement>) {
+  useEffect(() => {
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'k') return
+      event.preventDefault()
+      inputRef.current?.focus()
+      inputRef.current?.select()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [inputRef])
+}
+
+/**
+ * `/` and `/people` both render PeopleListPage (PRODUCT.md bans a
+ * dashboard-opener landing page — this product opens straight onto the
+ * People list, so `/` IS that screen, not a separate thing that redirects
+ * to it — see App.tsx's own doc comment for why a client-side redirect was
+ * deliberately avoided). react-router's own NavLink `isActive` only
+ * matches `to="/people"` against literal `/people*` paths, so landing on
+ * bare `/` would otherwise show NO nav item as current — the one case this
+ * function exists to special-case. Every other item matches an exact path
+ * or one of its sub-routes (e.g. `/people/:id` still highlights People).
+ */
+function isNavItemActive(pathname: string, itemPath: string): boolean {
+  if (itemPath === '/people' && pathname === '/') return true
+  return pathname === itemPath || pathname.startsWith(`${itemPath}/`)
+}
+
+function NavList({ variant, onNavigate }: { variant: 'full' | 'rail' | 'dialog'; onNavigate?: () => void }) {
+  const perms = useSelfPermissions()
+  const location = useLocation()
+  const visibleItems = NAV_ITEMS.filter((item) => perms.status !== 'error' && hasAction(perms, item.action))
+
+  if (perms.status === 'loading') {
+    return (
+      <ul className="nav__list" aria-label="Primary" data-testid="nav-loading">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <li key={i} className="nav-link nav-link--skeleton" aria-hidden="true">
+            <span className="skeleton" style={{ width: '1.25rem', height: '1.25rem', borderRadius: '4px' }} />
+            {variant !== 'rail' && <span className="skeleton" style={{ width: '5rem', height: '0.8rem' }} />}
+          </li>
+        ))}
+      </ul>
+    )
+  }
+
+  if (perms.status === 'error') {
+    return <p className="nav__message" role="alert">Could not load navigation.</p>
+  }
+
+  if (visibleItems.length === 0) {
+    return <p className="nav__message">No sections available for your account.</p>
+  }
+
+  return (
+    <ul className="nav__list" aria-label="Primary">
+      {visibleItems.map((item) => {
+        const active = isNavItemActive(location.pathname, item.path)
+        return (
+          <li key={item.key}>
+            <Link
+              to={item.path}
+              onClick={onNavigate}
+              className={`nav-link${active ? ' nav-link--active' : ''}`}
+              aria-current={active ? 'page' : undefined}
+              title={variant === 'rail' ? item.label : undefined}
+            >
+              <item.icon className="nav-link__icon" />
+              <span className={variant === 'rail' ? 'sr-only' : 'nav-link__label'}>{item.label}</span>
+            </Link>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+/**
+ * Both session-cached reference-data providers this shell's screens share,
+ * combined into one so AppShell's own return only nests one extra element
+ * (not two) around its actual markup. Order between the two is arbitrary —
+ * neither depends on the other's data.
+ */
+function ShellProviders({ children }: { children: ReactNode }) {
+  return (
+    <OrgUnitsProvider>
+      <GroupsProvider>{children}</GroupsProvider>
+    </OrgUnitsProvider>
+  )
+}
+
+/**
+ * The console shell — Milestone 8, Task 2. 48px top bar, 240px left nav
+ * (collapsing to a 64px icon rail under 1100px, and behind a `<dialog>`
+ * disclosure under 780px — see useNavMode), content region capped at
+ * DESIGN.md's 1440px. Nav items are hidden, not merely disabled, for
+ * anything the caller's own GET /self/permissions doesn't grant
+ * (PRODUCT.md: "The API is the authority. The UI hides what you cannot
+ * do; it never decides it" — every route behind these links still checks
+ * for itself).
+ *
+ * Wraps its content in OrgUnitsProvider and GroupsProvider (ShellProviders,
+ * above): every screen this shell renders needs the same id -> org-unit-path
+ * and id -> group lookups, fetched once per session here rather than once
+ * per screen.
+ */
+export default function AppShell() {
+  const auth = useAuth()
+  const navigate = useNavigate()
+  const navMode = useNavMode()
+  const isDisclosure = navMode === 'disclosure'
+
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  useGlobalSearchShortcut(searchInputRef)
+
+  const dialogRef = useRef<HTMLDialogElement>(null)
+  const menuButtonRef = useRef<HTMLButtonElement>(null)
+  const [signingOut, setSigningOut] = useState(false)
+
+  // A dialog left open while the viewport grows past the disclosure
+  // breakpoint (e.g. rotating a tablet, or a live resize during a demo)
+  // would otherwise strand an invisible modal blocking the page under
+  // its own inert full-width nav — close it the moment disclosure mode
+  // is no longer active.
+  useEffect(() => {
+    if (!isDisclosure) dialogRef.current?.close()
+  }, [isDisclosure])
+
+  function openMenu() {
+    dialogRef.current?.showModal()
+  }
+  function closeMenu() {
+    dialogRef.current?.close()
+    menuButtonRef.current?.focus()
+  }
+
+  function handleSearchSubmit(event: FormEvent) {
+    event.preventDefault()
+    const value = searchInputRef.current?.value.trim() ?? ''
+    navigate(value.length > 0 ? `/people?q=${encodeURIComponent(value)}` : '/people')
+    if (searchInputRef.current) searchInputRef.current.value = ''
+    searchInputRef.current?.blur()
+  }
+
+  async function handleSignOut() {
+    setSigningOut(true)
+    try {
+      await auth.signoutRedirect()
+    } catch {
+      setSigningOut(false)
+    }
+  }
+
+  const username = auth.user?.profile.preferred_username
+
+  return (
+    <ShellProviders>
+      <div className={`shell shell--${navMode}`}>
+        <header className="topbar">
+          {isDisclosure && (
+            <button
+              ref={menuButtonRef}
+              type="button"
+              className="btn btn--ghost topbar__menu-toggle"
+              onClick={openMenu}
+              aria-haspopup="dialog"
+            >
+              <span aria-hidden="true">&#9776;</span>
+              <span className="sr-only">Open navigation menu</span>
+            </button>
+          )}
+
+          <Link to="/people" className="topbar__brand">
+            Identity Manager
+          </Link>
+
+          <form className="topbar__search-form" role="search" onSubmit={handleSearchSubmit}>
+            <label htmlFor="global-search" className="sr-only">
+              Search people
+            </label>
+            <input
+              ref={searchInputRef}
+              id="global-search"
+              type="search"
+              className="input topbar__search-input"
+              placeholder="Search people…"
+              title="Search people (Ctrl+K / Cmd+K)"
+              data-testid="global-search"
+            />
+          </form>
+
+          <div className="topbar__identity">
+            <Link to="/self" data-testid="topbar-my-profile">
+              My Profile
+            </Link>
+            <span>
+              Signed in as <strong data-testid="signed-in-as">{username}</strong>
+            </span>
+            <button
+              type="button"
+              className="btn btn--secondary"
+              data-loading={signingOut ? 'true' : undefined}
+              disabled={signingOut}
+              onClick={() => void handleSignOut()}
+            >
+              <span className="btn__label">Sign out</span>
+              <span className="btn__spinner" aria-hidden="true" />
+            </button>
+          </div>
+        </header>
+
+        {!isDisclosure && (
+          <nav className="nav">
+            <NavList variant={navMode === 'rail' ? 'rail' : 'full'} />
+          </nav>
+        )}
+
+        {isDisclosure && (
+          <dialog
+            ref={dialogRef}
+            className="nav-dialog"
+            aria-label="Navigation menu"
+            onClose={() => menuButtonRef.current?.focus()}
+            onClick={(event) => {
+              if (event.target === dialogRef.current) closeMenu()
+            }}
+            onKeyDown={(event: ReactKeyboardEvent<HTMLDialogElement>) => {
+              // Escape is handled natively by <dialog>; nothing to do here —
+              // present only so the handler's intent is documented in one
+              // place alongside the click-outside-to-close handler above.
+              void event
+            }}
+          >
+            <div className="nav-dialog__header">
+              <span className="text-title">Menu</span>
+              <button type="button" className="btn btn--ghost" onClick={closeMenu}>
+                Close
+              </button>
+            </div>
+            <NavList variant="dialog" onNavigate={closeMenu} />
+          </dialog>
+        )}
+
+        <main className="shell__content">
+          <div className="shell__content-inner">
+            <Outlet />
+          </div>
+        </main>
+      </div>
+    </ShellProviders>
+  )
+}

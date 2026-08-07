@@ -5,6 +5,7 @@ import request from 'supertest'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { AuditWriter } from '../src/audit/audit.writer'
 import { JwtGuard } from '../src/auth/jwt.guard'
+import { ALL_ACTIONS } from '../src/authz/actions'
 import { PermissionEngine } from '../src/authz/permission.engine'
 import { PermissionGuard } from '../src/authz/permission.guard'
 import { PrivilegeGuards } from '../src/authz/privilege.guards'
@@ -173,6 +174,7 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
   const orgUnitsRepo = () => new OrgUnitsRepository(ctx.db)
   const usersRepo = () => new UsersRepository(ctx.db)
   const groupsRepo = () => new GroupsRepository(ctx.db)
+  const roleAssignmentsRepo = () => new RoleAssignmentsRepository(ctx.db)
 
   async function makeOrgUnit(label: string): Promise<OrgUnit> {
     return orgUnitsRepo().createRoot(`${label} ${nextTag()}`)
@@ -695,6 +697,255 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
 
       const res = await request(app.getHttpServer()).get('/self/groups').expect(403)
       expect(res.body.code).toBe('FORBIDDEN')
+    })
+  })
+
+  // =======================================================================
+  // GET /self/permissions (Milestone 8, Task 2)
+  // =======================================================================
+  describe('GET /self/permissions', () => {
+    it('returns an empty action set for a user holding no role at all', async () => {
+      const org = await makeOrgUnit('Permissions Empty Root')
+      const actor = await makeActiveUser('actor', org.id)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer()).get('/self/permissions').expect(200)
+      expect(res.body).toEqual({ actions: [] })
+    })
+
+    it('returns exactly the actions granted by a single scoped role assignment', async () => {
+      const org = await makeOrgUnit('Permissions Help Desk Root')
+      const actor = await makeActiveUser('actor', org.id)
+      currentUsername = actor.username
+
+      await roleAssignmentsRepo().assign({
+        userId: actor.id,
+        roleKey: 'help_desk',
+        scopeOrgUnitId: org.id,
+      })
+
+      const res = await request(app.getHttpServer()).get('/self/permissions').expect(200)
+      expect([...res.body.actions].sort()).toEqual(
+        ['user:read', 'user:update', 'group:read', 'org_unit:read'].sort(),
+      )
+    })
+
+    it('reports the identical action list whether the grant is scoped or global — scope narrows resources, never the action catalog', async () => {
+      const org = await makeOrgUnit('Permissions Global Root')
+      const actor = await makeActiveUser('actor', org.id)
+      currentUsername = actor.username
+
+      // scopeOrgUnitId omitted -> global, per RoleAssignmentsRepository.assign's own default.
+      await roleAssignmentsRepo().assign({ userId: actor.id, roleKey: 'read_only' })
+
+      const res = await request(app.getHttpServer()).get('/self/permissions').expect(200)
+      expect([...res.body.actions].sort()).toEqual(['user:read', 'group:read', 'org_unit:read'].sort())
+    })
+
+    it('unions actions across multiple role assignments, with no duplicates', async () => {
+      const orgA = await makeOrgUnit('Permissions Union Root A')
+      const orgB = await makeOrgUnit('Permissions Union Root B')
+      const actor = await makeActiveUser('actor', orgA.id)
+      currentUsername = actor.username
+
+      await roleAssignmentsRepo().assign({
+        userId: actor.id,
+        roleKey: 'help_desk',
+        scopeOrgUnitId: orgA.id,
+      })
+      await roleAssignmentsRepo().assign({
+        userId: actor.id,
+        roleKey: 'auditor',
+        scopeOrgUnitId: orgB.id,
+      })
+
+      const res = await request(app.getHttpServer()).get('/self/permissions').expect(200)
+      const actions: string[] = res.body.actions
+      expect(new Set(actions).size).toBe(actions.length) // no duplicate 'user:read'/'group:read'/'org_unit:read'
+      expect([...actions].sort()).toEqual(
+        ['user:read', 'user:update', 'group:read', 'org_unit:read', 'audit:read'].sort(),
+      )
+    })
+
+    it('a super_admin sees every action in the catalog', async () => {
+      const org = await makeOrgUnit('Permissions Super Admin Root')
+      const actor = await makeActiveUser('actor', org.id)
+      currentUsername = actor.username
+
+      await roleAssignmentsRepo().assign({ userId: actor.id, roleKey: 'super_admin' })
+
+      const res = await request(app.getHttpServer()).get('/self/permissions').expect(200)
+      expect([...res.body.actions].sort()).toEqual([...ALL_ACTIONS].sort())
+    })
+
+    it("ignores another user's id supplied via query string — always the caller's own actions, never the named user's", async () => {
+      const org = await makeOrgUnit('Permissions Query Id Root')
+      const actor = await makeActiveUser('actor', org.id)
+      const victim = await makeActiveUser('victim', org.id)
+      currentUsername = actor.username
+
+      await roleAssignmentsRepo().assign({ userId: victim.id, roleKey: 'super_admin' })
+
+      const res = await request(app.getHttpServer())
+        .get(`/self/permissions?id=${victim.id}&userId=${victim.id}`)
+        .expect(200)
+      // The caller (actor) holds no role — must NOT reflect the victim's super_admin.
+      expect(res.body).toEqual({ actions: [] })
+    })
+
+    it('a deactivated user gets 403', async () => {
+      const org = await makeOrgUnit('Permissions Deactivated Root')
+      const actor = await makeActiveUser('actor', org.id)
+      await usersRepo().changeStatus(actor.id, 'deactivated')
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer()).get('/self/permissions').expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+    })
+
+    it('a pending (never activated) user gets 403 too', async () => {
+      const org = await makeOrgUnit('Permissions Pending Root')
+      const tag = nextTag()
+      const pending = await usersRepo().create({
+        primaryEmail: `permspending-${tag}@example.com`,
+        username: `permspending-${tag}`,
+        firstName: 'Pending',
+        lastName: 'User',
+        orgUnitId: org.id,
+      })
+      currentUsername = pending.username
+
+      const res = await request(app.getHttpServer()).get('/self/permissions').expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+    })
+
+    it('has no id-parameterized variant of this route: GET /self/permissions/<uuid> is not found', async () => {
+      const org = await makeOrgUnit('Permissions No Id Route Root')
+      const actor = await makeActiveUser('actor', org.id)
+      currentUsername = actor.username
+
+      await request(app.getHttpServer())
+        .get('/self/permissions/00000000-0000-0000-0000-000000000000')
+        .expect(404)
+    })
+  })
+
+  // =======================================================================
+  // GET /self/roles — Milestone 8, Task 4. Backs the admin console's
+  // role-assignment scope picker (see SelfRolesResponse's own doc comment):
+  // unlike GET /self/permissions (a flat action list), this needs to expose
+  // WHICH role at WHICH scope, so the client can replicate (for picker
+  // options only — the server still re-decides for real on submit)
+  // PrivilegeGuards.assertCanAssignRole's own "may only grant a role you
+  // hold, at a scope your holding covers" logic.
+  // =======================================================================
+  describe('GET /self/roles', () => {
+    it('returns an empty assignments array for a user holding no role at all', async () => {
+      const org = await makeOrgUnit('Roles Empty Root')
+      const actor = await makeActiveUser('actor', org.id)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer()).get('/self/roles').expect(200)
+      expect(res.body).toEqual({ assignments: [] })
+    })
+
+    it('reports a scoped grant with its scope org unit id AND path', async () => {
+      const org = await makeOrgUnit('Roles Scoped Root')
+      const actor = await makeActiveUser('actor', org.id)
+      currentUsername = actor.username
+
+      await roleAssignmentsRepo().assign({
+        userId: actor.id,
+        roleKey: 'help_desk',
+        scopeOrgUnitId: org.id,
+      })
+
+      const res = await request(app.getHttpServer()).get('/self/roles').expect(200)
+      expect(res.body.assignments).toEqual([
+        { roleKey: 'help_desk', scopeOrgUnitId: org.id, scopePath: org.path },
+      ])
+    })
+
+    it('reports a global grant with scopeOrgUnitId AND scopePath both null', async () => {
+      const org = await makeOrgUnit('Roles Global Root')
+      const actor = await makeActiveUser('actor', org.id)
+      currentUsername = actor.username
+
+      // scopeOrgUnitId omitted -> global, per RoleAssignmentsRepository.assign's own default.
+      await roleAssignmentsRepo().assign({ userId: actor.id, roleKey: 'super_admin' })
+
+      const res = await request(app.getHttpServer()).get('/self/roles').expect(200)
+      expect(res.body.assignments).toEqual([
+        { roleKey: 'super_admin', scopeOrgUnitId: null, scopePath: null },
+      ])
+    })
+
+    it('reports every assignment when the caller holds more than one', async () => {
+      const orgA = await makeOrgUnit('Roles Multi Root A')
+      const orgB = await makeOrgUnit('Roles Multi Root B')
+      const actor = await makeActiveUser('actor', orgA.id)
+      currentUsername = actor.username
+
+      await roleAssignmentsRepo().assign({ userId: actor.id, roleKey: 'help_desk', scopeOrgUnitId: orgA.id })
+      await roleAssignmentsRepo().assign({ userId: actor.id, roleKey: 'auditor', scopeOrgUnitId: orgB.id })
+
+      const res = await request(app.getHttpServer()).get('/self/roles').expect(200)
+      const byRole = new Map(
+        (res.body.assignments as { roleKey: string; scopeOrgUnitId: string }[]).map((a) => [a.roleKey, a]),
+      )
+      expect(byRole.get('help_desk')).toMatchObject({ scopeOrgUnitId: orgA.id })
+      expect(byRole.get('auditor')).toMatchObject({ scopeOrgUnitId: orgB.id })
+    })
+
+    it("ignores another user's id supplied via query string — always the caller's own assignments, never the named user's", async () => {
+      const org = await makeOrgUnit('Roles Query Id Root')
+      const actor = await makeActiveUser('actor', org.id)
+      const victim = await makeActiveUser('victim', org.id)
+      currentUsername = actor.username
+
+      await roleAssignmentsRepo().assign({ userId: victim.id, roleKey: 'super_admin' })
+
+      const res = await request(app.getHttpServer())
+        .get(`/self/roles?id=${victim.id}&userId=${victim.id}`)
+        .expect(200)
+      // The caller (actor) holds no role — must NOT reflect the victim's super_admin.
+      expect(res.body).toEqual({ assignments: [] })
+    })
+
+    it('a deactivated user gets 403', async () => {
+      const org = await makeOrgUnit('Roles Deactivated Root')
+      const actor = await makeActiveUser('actor', org.id)
+      await usersRepo().changeStatus(actor.id, 'deactivated')
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer()).get('/self/roles').expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+    })
+
+    it('a pending (never activated) user gets 403 too', async () => {
+      const org = await makeOrgUnit('Roles Pending Root')
+      const tag = nextTag()
+      const pending = await usersRepo().create({
+        primaryEmail: `rolespending-${tag}@example.com`,
+        username: `rolespending-${tag}`,
+        firstName: 'Pending',
+        lastName: 'User',
+        orgUnitId: org.id,
+      })
+      currentUsername = pending.username
+
+      const res = await request(app.getHttpServer()).get('/self/roles').expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+    })
+
+    it('has no id-parameterized variant of this route: GET /self/roles/<uuid> is not found', async () => {
+      const org = await makeOrgUnit('Roles No Id Route Root')
+      const actor = await makeActiveUser('actor', org.id)
+      currentUsername = actor.username
+
+      await request(app.getHttpServer())
+        .get('/self/roles/00000000-0000-0000-0000-000000000000')
+        .expect(404)
     })
   })
 })

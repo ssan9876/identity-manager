@@ -1,0 +1,25 @@
+.roles-catalog {
+  max-width: 60rem;
+}
+
+.roles-catalog__intro {
+  color: var(--ink-muted);
+  max-width: 68ch;
+  margin: var(--space-2) 0 var(--space-5);
+}
+
+.roles-catalog__name {
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.roles-catalog__note {
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  max-width: 68ch;
+  margin-top: var(--space-5);
+}
+.roles-catalog__note strong {
+  color: var(--ink);
+}

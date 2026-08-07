@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { AuditRepository } from '../src/audit/audit.repository'
 import { AuditWriter } from '../src/audit/audit.writer'
@@ -383,5 +384,244 @@ describe('finding H1 — the append-only trigger still blocks the OWNER role dir
 
   it('TRUNCATE is blocked by the trigger even for the owner (who can always TRUNCATE a table it owns)', async () => {
     await expect(ctx.ownerPool.query('TRUNCATE audit_log')).rejects.toThrow(/append-only/i)
+  })
+})
+
+/**
+ * Milestone 8, Task 5: `AuditRepository.list`/`count` grew actor/action/
+ * resourceType/resourceId/batchId/date-range filters, all ANDed together —
+ * the read side `GET /audit` (AuditController) needs, now that the
+ * `auditor` role finally has a screen to read this table from at all. Own
+ * `describe`/`withTestDatabase()` (a fresh throwaway Postgres), same as the
+ * "finding H1" blocks above, rather than sharing the first block's fixtures:
+ * these tests need MULTIPLE distinct actors and deliberately-marked rows,
+ * which is clearer built fresh than threaded through the first block's
+ * single-actor setup.
+ */
+describe('audit log — list/count filters (Milestone 8, Task 5)', () => {
+  const ctx = withTestDatabase()
+  let writer: AuditWriter
+  let audit: AuditRepository
+  let alphaId: string
+  let betaId: string
+  let orgUnitId: string
+
+  beforeAll(async () => {
+    writer = new AuditWriter()
+    audit = new AuditRepository(ctx.db)
+    const orgUnits = new OrgUnitsRepository(ctx.db)
+    const users = new UsersRepository(ctx.db)
+    const root = await orgUnits.createRoot(`Audit Filters Root ${Date.now()}`)
+    orgUnitId = root.id
+
+    alphaId = (
+      await users.create({
+        primaryEmail: 'filter-alpha@example.com',
+        username: 'filter-actor-alpha',
+        firstName: 'Alpha',
+        lastName: 'Filterson',
+        orgUnitId,
+      })
+    ).id
+    betaId = (
+      await users.create({
+        primaryEmail: 'filter-beta@example.com',
+        username: 'filter-actor-beta',
+        firstName: 'Beta',
+        lastName: 'Filterson',
+        orgUnitId,
+      })
+    ).id
+  })
+
+  it('filters by actor — a case-insensitive substring match on the JOINED username/displayName, never the raw id', async () => {
+    await ctx.db.transaction(async (tx) => {
+      await writer.record(tx, {
+        actorUserId: alphaId,
+        action: 'filter-test:by-actor-alpha',
+        resourceType: 'user',
+        resourceId: alphaId,
+        before: null,
+        after: null,
+      })
+      await writer.record(tx, {
+        actorUserId: betaId,
+        action: 'filter-test:by-actor-beta',
+        resourceType: 'user',
+        resourceId: betaId,
+        before: null,
+        after: null,
+      })
+    })
+
+    const byUsername = await audit.list({ actor: 'FILTER-ACTOR-ALPHA', limit: 50, offset: 0 })
+    expect(byUsername.map((r) => r.action)).toContain('filter-test:by-actor-alpha')
+    expect(byUsername.map((r) => r.action)).not.toContain('filter-test:by-actor-beta')
+    expect(await audit.count({ actor: 'FILTER-ACTOR-ALPHA' })).toBe(byUsername.length)
+
+    const byDisplayName = await audit.list({ actor: 'Beta Filterson', limit: 50, offset: 0 })
+    expect(byDisplayName.map((r) => r.action)).toContain('filter-test:by-actor-beta')
+    expect(byDisplayName.map((r) => r.action)).not.toContain('filter-test:by-actor-alpha')
+
+    const noMatch = await audit.list({ actor: 'no-such-actor-xyz', limit: 50, offset: 0 })
+    expect(noMatch).toHaveLength(0)
+    expect(await audit.count({ actor: 'no-such-actor-xyz' })).toBe(0)
+
+    const row = byUsername.find((r) => r.action === 'filter-test:by-actor-alpha')
+    expect(row?.actorUsername).toBe('filter-actor-alpha')
+    expect(row?.actorDisplayName).toBe('Alpha Filterson')
+  })
+
+  it('a null (system) actor never matches an actor search, and resolves to null actorUsername/actorDisplayName', async () => {
+    await ctx.db.transaction(async (tx) => {
+      await writer.record(tx, {
+        actorUserId: null,
+        action: 'filter-test:system-origin',
+        resourceType: 'user',
+        resourceId: alphaId,
+        before: null,
+        after: null,
+      })
+    })
+
+    const bySystemSearch = await audit.list({ actor: 'filter-actor', limit: 50, offset: 0 })
+    expect(bySystemSearch.map((r) => r.action)).not.toContain('filter-test:system-origin')
+
+    const [systemRow] = await audit.list({ action: 'filter-test:system-origin', limit: 1, offset: 0 })
+    expect(systemRow.actorUserId).toBeNull()
+    expect(systemRow.actorUsername).toBeNull()
+    expect(systemRow.actorDisplayName).toBeNull()
+  })
+
+  it('filters by action — an EXACT match, not a substring (a longer action sharing a prefix must not match)', async () => {
+    await ctx.db.transaction(async (tx) => {
+      await writer.record(tx, {
+        actorUserId: alphaId,
+        action: 'filter-test:exact',
+        resourceType: 'user',
+        resourceId: alphaId,
+        before: null,
+        after: null,
+      })
+      await writer.record(tx, {
+        actorUserId: alphaId,
+        action: 'filter-test:exact-but-longer',
+        resourceType: 'user',
+        resourceId: alphaId,
+        before: null,
+        after: null,
+      })
+    })
+
+    const rows = await audit.list({ action: 'filter-test:exact', limit: 50, offset: 0 })
+    expect(rows.map((r) => r.action)).toEqual(['filter-test:exact'])
+    expect(await audit.count({ action: 'filter-test:exact' })).toBe(1)
+  })
+
+  it('filters by resourceType AND resourceId together — both must match', async () => {
+    const markerAction = `filter-test:resource-${Date.now()}`
+    await ctx.db.transaction(async (tx) => {
+      await writer.record(tx, {
+        actorUserId: alphaId,
+        action: markerAction,
+        resourceType: 'group',
+        resourceId: alphaId, // reusing a real uuid, not a real group — the column has no FK
+        before: null,
+        after: null,
+      })
+      await writer.record(tx, {
+        actorUserId: alphaId,
+        action: markerAction,
+        resourceType: 'org_unit',
+        resourceId: alphaId,
+        before: null,
+        after: null,
+      })
+    })
+
+    const rows = await audit.list({
+      action: markerAction,
+      resourceType: 'group',
+      resourceId: alphaId,
+      limit: 50,
+      offset: 0,
+    })
+    expect(rows).toHaveLength(1)
+    expect(rows[0].resourceType).toBe('group')
+
+    const wrongType = await audit.list({
+      action: markerAction,
+      resourceType: 'role_assignment',
+      resourceId: alphaId,
+      limit: 50,
+      offset: 0,
+    })
+    expect(wrongType).toHaveLength(0)
+  })
+
+  it('filters by batchId — reviews an import commit as a unit, newest first', async () => {
+    const batchId = randomUUID()
+    const otherBatchId = randomUUID()
+
+    await ctx.db.transaction(async (tx) => {
+      await writer.record(tx, {
+        actorUserId: alphaId,
+        action: 'user:create',
+        resourceType: 'user',
+        resourceId: alphaId,
+        before: null,
+        after: { row: 1 },
+        batchId,
+      })
+      await writer.record(tx, {
+        actorUserId: alphaId,
+        action: 'user:create',
+        resourceType: 'user',
+        resourceId: betaId,
+        before: null,
+        after: { row: 2 },
+        batchId,
+      })
+      await writer.record(tx, {
+        actorUserId: alphaId,
+        action: 'user:create',
+        resourceType: 'user',
+        resourceId: alphaId,
+        before: null,
+        after: { row: 1 },
+        batchId: otherBatchId,
+      })
+    })
+
+    const rows = await audit.list({ batchId, limit: 50, offset: 0 })
+    expect(rows).toHaveLength(2)
+    expect(rows.every((r) => r.batchId === batchId)).toBe(true)
+    expect(await audit.count({ batchId })).toBe(2)
+  })
+
+  it('filters by a from/to date range — inclusive of "today", exclusive of ranges that do not contain it', async () => {
+    const markerAction = `filter-test:date-range-${Date.now()}`
+    await ctx.db.transaction(async (tx) => {
+      await writer.record(tx, {
+        actorUserId: alphaId,
+        action: markerAction,
+        resourceType: 'user',
+        resourceId: alphaId,
+        before: null,
+        after: null,
+      })
+    })
+
+    const past = new Date('2020-01-01T00:00:00.000Z')
+    const future = new Date('2099-12-31T23:59:59.999Z')
+
+    const withinRange = await audit.list({ action: markerAction, from: past, to: future, limit: 50, offset: 0 })
+    expect(withinRange).toHaveLength(1)
+
+    const beforeItExisted = await audit.list({ action: markerAction, to: past, limit: 50, offset: 0 })
+    expect(beforeItExisted).toHaveLength(0)
+
+    const afterAnyPossibleRun = await audit.list({ action: markerAction, from: future, limit: 50, offset: 0 })
+    expect(afterAnyPossibleRun).toHaveLength(0)
   })
 })

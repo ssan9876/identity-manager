@@ -243,4 +243,230 @@ describe('GET /users', () => {
       expect(res.body.items.map((u: { username: string }) => u.username)).toEqual(['gone2'])
     })
   })
+
+  // Milestone 8, Task 2: GET /users had no text search before this — only
+  // status/orgUnitId, which cannot do PRODUCT.md's #1 job ("find a person
+  // fast... search that survives hundreds of rows") on their own.
+  describe('search', () => {
+    it('matches by username substring, case-insensitively, and narrows total to match', async () => {
+      const res = await request(app.getHttpServer()).get('/users?search=AD').expect(200)
+      expect(res.body.total).toBe(1)
+      expect(res.body.items.map((u: { username: string }) => u.username)).toEqual(['ada'])
+    })
+
+    it('matches by email substring', async () => {
+      const res = await request(app.getHttpServer()).get('/users?search=grace%40example').expect(200)
+      expect(res.body.items.map((u: { username: string }) => u.username)).toEqual(['grace'])
+    })
+
+    it('matches by display name substring', async () => {
+      const repo = new UsersRepository(ctx.db)
+      await repo.create({
+        primaryEmail: 'hopper@example.com',
+        username: 'ghopper',
+        firstName: 'Grace',
+        lastName: 'Hopper',
+        orgUnitId,
+      })
+
+      const res = await request(app.getHttpServer()).get('/users?search=Hopper').expect(200)
+      expect(res.body.items.map((u: { username: string }) => u.username)).toEqual(['ghopper'])
+    })
+
+    it('combines with other filters as AND, not OR', async () => {
+      // 'ada' exists (from beforeEach) but every fixture user is 'pending',
+      // never 'active' — so search+status together must match nobody, which
+      // would only happen if the two filters were ANDed, not ORed (an OR
+      // would still return 'ada' on the search half alone).
+      const res = await request(app.getHttpServer()).get('/users?search=ada&status=active').expect(200)
+      expect(res.body.total).toBe(0)
+    })
+
+    it('returns an empty page, not an error, for a search that matches nobody', async () => {
+      const res = await request(app.getHttpServer()).get('/users?search=zzz-nobody-zzz').expect(200)
+      expect(res.body.total).toBe(0)
+      expect(res.body.items).toEqual([])
+    })
+
+    it('treats a whitespace-only search as no search at all, never a 400', async () => {
+      const res = await request(app.getHttpServer()).get('/users?search=%20%20').expect(200)
+      expect(res.body.total).toBe(3)
+    })
+
+    it('an absent search param behaves exactly as before (no filter)', async () => {
+      const res = await request(app.getHttpServer()).get('/users').expect(200)
+      expect(res.body.total).toBe(3)
+    })
+
+    it('escapes a literal "%" in the search term rather than treating it as an ILIKE wildcard', async () => {
+      const repo = new UsersRepository(ctx.db)
+      await repo.create({
+        primaryEmail: 'literal-percent@example.com',
+        username: 'has%percent',
+        firstName: 'Literal',
+        lastName: 'Percent',
+        orgUnitId,
+      })
+      await repo.create({
+        primaryEmail: 'wildcard-decoy@example.com',
+        // Would ALSO match the unescaped pattern "%has%percent%" if '%'
+        // were left as a live wildcard (any characters between "has" and
+        // "percent") — asserting it is EXCLUDED below is what proves
+        // escaping actually happened, not just that the literal match works.
+        username: 'hasZZZpercent',
+        firstName: 'Wildcard',
+        lastName: 'Decoy',
+        orgUnitId,
+      })
+
+      const res = await request(app.getHttpServer()).get('/users?search=has%25percent').expect(200)
+      expect(res.body.items.map((u: { username: string }) => u.username)).toEqual(['has%percent'])
+    })
+
+    it('escapes a literal "_" in the search term rather than treating it as an ILIKE single-char wildcard', async () => {
+      const repo = new UsersRepository(ctx.db)
+      await repo.create({
+        primaryEmail: 'literal-underscore@example.com',
+        username: 'has_underscore',
+        firstName: 'Literal',
+        lastName: 'Underscore',
+        orgUnitId,
+      })
+      await repo.create({
+        primaryEmail: 'underscore-decoy@example.com',
+        // Would ALSO match the unescaped pattern "%has_underscore%" if '_'
+        // were left as a live single-character wildcard ('X' standing in
+        // for the wildcard) — excluded below only if escaping worked.
+        username: 'hasXunderscore',
+        firstName: 'Underscore',
+        lastName: 'Decoy',
+        orgUnitId,
+      })
+
+      const res = await request(app.getHttpServer()).get('/users?search=has_underscore').expect(200)
+      expect(res.body.items.map((u: { username: string }) => u.username)).toEqual(['has_underscore'])
+    })
+
+    it('rejects a NUL character in the search term with 400 VALIDATION_FAILED, never an unmapped 500', async () => {
+      const res = await request(app.getHttpServer()).get('/users?search=x%00y').expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+    })
+
+    it('rejects a search term over 255 characters with 400', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/users?search=${'a'.repeat(256)}`)
+        .expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+    })
+
+    it('rejects a non-string search value (repeated query param) with 400 rather than 500', async () => {
+      const res = await request(app.getHttpServer()).get('/users?search=a&search=b').expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+    })
+  })
+
+  // Milestone 8, Task 4: resolves a known set of ids to full records — the
+  // admin console's group-membership screens need this to turn the bare id
+  // arrays GET /groups/:id/(effective-)members returns into displayable
+  // rows (see users.controller.ts's own doc comment on parseIdsQuery).
+  describe('ids filter', () => {
+    async function idOf(username: string): Promise<string> {
+      const res = await request(app.getHttpServer()).get(`/users?search=${username}`).expect(200)
+      const match = (res.body.items as { id: string; username: string }[]).find(
+        (u) => u.username === username,
+      )
+      if (match === undefined) throw new Error(`fixture user "${username}" not found`)
+      return match.id
+    }
+
+    it('resolves exactly the named ids, in any number, and excludes ids not named', async () => {
+      const [adaId, graceId] = await Promise.all([idOf('ada'), idOf('grace')])
+
+      const res = await request(app.getHttpServer())
+        .get(`/users?ids=${adaId},${graceId}`)
+        .expect(200)
+
+      expect(res.body.total).toBe(2)
+      expect(
+        (res.body.items as { username: string }[]).map((u) => u.username).sort(),
+      ).toEqual(['ada', 'grace'])
+    })
+
+    it('tolerates surrounding whitespace around each id', async () => {
+      const adaId = await idOf('ada')
+      const res = await request(app.getHttpServer())
+        .get(`/users?ids=${encodeURIComponent(` ${adaId} `)}`)
+        .expect(200)
+      expect(res.body.items.map((u: { username: string }) => u.username)).toEqual(['ada'])
+    })
+
+    it('an explicit empty ids value matches nothing — never silently "no filter" (which would return everyone)', async () => {
+      const res = await request(app.getHttpServer()).get('/users?ids=').expect(200)
+      expect(res.body).toMatchObject({ total: 0, items: [] })
+    })
+
+    it('an absent ids param behaves exactly as before (no filter)', async () => {
+      const res = await request(app.getHttpServer()).get('/users').expect(200)
+      expect(res.body.total).toBe(3)
+    })
+
+    it('a well-formed id that matches nobody resolves to an empty page, not an error', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/users?ids=00000000-0000-0000-0000-000000000000')
+        .expect(200)
+      expect(res.body).toMatchObject({ total: 0, items: [] })
+    })
+
+    it('rejects a malformed id inside the list with 400 VALIDATION_FAILED, not 500', async () => {
+      const adaId = await idOf('ada')
+      const res = await request(app.getHttpServer())
+        .get(`/users?ids=${adaId},not-a-uuid`)
+        .expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+    })
+
+    it('rejects more than 200 ids with 400', async () => {
+      const tooMany = Array.from({ length: 201 }, () => '00000000-0000-0000-0000-000000000000').join(',')
+      const res = await request(app.getHttpServer()).get(`/users?ids=${tooMany}`).expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+    })
+
+    it('combines with an explicit status filter as AND: a deactivated id is excluded when status=active is also requested', async () => {
+      const repo = new UsersRepository(ctx.db)
+      const toDeactivate = await repo.create({
+        primaryEmail: 'ids-gone@example.com',
+        username: 'ids-gone',
+        firstName: 'Ids',
+        lastName: 'Gone',
+        orgUnitId,
+      })
+      await repo.changeStatus(toDeactivate.id, 'active')
+      await repo.changeStatus(toDeactivate.id, 'deactivated')
+
+      const withStatus = await request(app.getHttpServer())
+        .get(`/users?ids=${toDeactivate.id}&status=active`)
+        .expect(200)
+      expect(withStatus.body).toMatchObject({ total: 0, items: [] })
+    })
+
+    it('unlike the plain list, resolving by ids includes a deactivated member with no status filter — a silent drop would look like a shorter membership list, not a filtered one', async () => {
+      const repo = new UsersRepository(ctx.db)
+      const toDeactivate = await repo.create({
+        primaryEmail: 'ids-gone2@example.com',
+        username: 'ids-gone2',
+        firstName: 'Ids',
+        lastName: 'Gone2',
+        orgUnitId,
+      })
+      await repo.changeStatus(toDeactivate.id, 'active')
+      await repo.changeStatus(toDeactivate.id, 'deactivated')
+
+      const plainList = await request(app.getHttpServer()).get('/users').expect(200)
+      expect(plainList.body.items.map((u: { username: string }) => u.username)).not.toContain('ids-gone2')
+
+      const byId = await request(app.getHttpServer()).get(`/users?ids=${toDeactivate.id}`).expect(200)
+      expect(byId.body).toMatchObject({ total: 1 })
+      expect(byId.body.items[0]).toMatchObject({ username: 'ids-gone2', status: 'deactivated' })
+    })
+  })
 })

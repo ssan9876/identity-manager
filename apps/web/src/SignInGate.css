@@ -1,0 +1,32 @@
+/* The pre-authentication gate — the one screen outside the admin shell, so
+   it gets its own tiny stylesheet rather than borrowing shell/AppShell.css. */
+
+.signin-gate {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+}
+
+.signin-gate__panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: var(--space-8);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  min-width: 20rem;
+}
+
+.signin-gate__hint {
+  color: var(--ink-muted);
+  font-size: var(--text-base);
+}
+
+.signin-gate--loading {
+  color: var(--ink-muted);
+  font-size: var(--text-base);
+}

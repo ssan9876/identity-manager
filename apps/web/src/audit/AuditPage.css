@@ -1,0 +1,133 @@
+.audit-page__intro,
+.audit-log__intro {
+  max-width: 68ch;
+  color: var(--ink-muted);
+  margin-bottom: var(--space-5);
+}
+
+.audit-log__filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.audit-log__actor-field {
+  flex: 1 1 16rem;
+  min-width: 12rem;
+}
+.audit-log__filters .field:not(.audit-log__actor-field) {
+  min-width: 10rem;
+}
+.audit-log__filters .select,
+.audit-log__filters .input {
+  width: 100%;
+}
+
+.audit-log__chip {
+  margin-bottom: var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+.audit-log__chip-clear {
+  height: auto;
+  padding: 0;
+  font-size: var(--text-sm);
+  text-decoration: underline;
+}
+
+.audit-log__resource-id {
+  display: block;
+  margin-top: var(--space-1);
+}
+.audit-log__action-raw {
+  font-size: var(--text-xs);
+  margin-top: var(--space-1);
+}
+
+.audit-log__error-cell {
+  max-width: 28rem;
+}
+.audit-log__event-type {
+  font-size: var(--text-xs);
+  margin-top: var(--space-1);
+}
+
+/* ---------------------------------------------------------------------
+ * Before/after diff (AuditDiff.tsx) — rendered inside an expanded table
+ * row, so kept visually lighter/denser than a full detail page's own
+ * .detail-grid usage: narrower label column, smaller gaps.
+ * ------------------------------------------------------------------- */
+
+/* Visual-pass finding: at a narrow viewport, clicking the trailing
+   "Details" toggle auto-scrolls .table-wrap fully right to bring that
+   button into view — and the newly-revealed diff content, rendered at the
+   table's natural (unscrolled) left edge, was left entirely out of the
+   visible area: a click that flips the button to "Hide" (so the state
+   change IS real) while showing nothing, which reads as broken.
+   `position: sticky` on this element was tried first and rejected: sticky
+   descendants of a colSpan `<td>` interact badly with table cell intrinsic
+   sizing (confirmed live — the panel's computed position went NEGATIVE,
+   partly off-screen, for the wider Field/Before/After update-diff shape
+   specifically, while the simpler create-diff shape happened to render
+   fine, both under the SAME rule). The actual fix is JS, not CSS — see
+   AuditLogTable.tsx's toggle handler, which resets .table-wrap's own
+   scrollLeft to 0 at the moment a row OPENS, so the content that renders
+   next is simply never off-screen to begin with. Nothing here needs
+   position/left any more; this class is purely spacing.
+   */
+.audit-diff {
+  padding: var(--space-2) 0 var(--space-3);
+}
+
+.audit-diff__fields {
+  grid-template-columns: minmax(10rem, 16rem) 1fr;
+  gap: var(--space-2) var(--space-5);
+}
+.audit-diff__fields dt {
+  margin-bottom: 0;
+}
+
+.audit-diff__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+.audit-diff__table th {
+  text-align: left;
+  font-weight: 600;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--ink-muted);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+.audit-diff__table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.audit-diff__table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.audit-diff__unchanged {
+  margin-top: var(--space-4);
+}
+.audit-diff__unchanged summary {
+  cursor: pointer;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  width: fit-content;
+}
+.audit-diff__unchanged summary:hover {
+  color: var(--ink);
+}
+.audit-diff__unchanged .detail-grid {
+  margin-top: var(--space-3);
+}

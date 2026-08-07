@@ -501,6 +501,92 @@ describe('role assignment write endpoints (Milestone 3b, Task 4)', () => {
   })
 
   // =======================================================================
+  // GET /users/:id/roles — Milestone 8, Task 4. Lets the admin console's
+  // Roles tab show a target's CURRENT grants before offering to revoke any
+  // of them. Gated identically to assign/revoke (RequirePermission +
+  // assertCanIn against the target's own org unit — see the class doc
+  // comment's "check 2") — a caller who could not grant/revoke a role for
+  // this target cannot enumerate their grants either.
+  // =======================================================================
+  describe('GET /users/:id/roles', () => {
+    it("lists the target's existing assignments", async () => {
+      const org = await makeOrgUnit('List Root')
+      const actor = await makeActiveUser('lister', org.id)
+      await grant(actor.id, 'super_admin', null)
+      const target = await makeActiveUser('target', org.id)
+      await grant(target.id, 'help_desk', org.id)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer()).get(`/users/${target.id}/roles`).expect(200)
+      expect(res.body).toHaveLength(1)
+      expect(res.body[0]).toMatchObject({
+        userId: target.id,
+        roleKey: 'help_desk',
+        scopeOrgUnitId: org.id,
+      })
+    })
+
+    it('returns an empty array for a target with no role assignments', async () => {
+      const org = await makeOrgUnit('List Empty Root')
+      const actor = await makeActiveUser('lister', org.id)
+      await grant(actor.id, 'super_admin', null)
+      const target = await makeActiveUser('target', org.id)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer()).get(`/users/${target.id}/roles`).expect(200)
+      expect(res.body).toEqual([])
+    })
+
+    it("never includes a DIFFERENT user's assignments", async () => {
+      const org = await makeOrgUnit('List Isolation Root')
+      const actor = await makeActiveUser('lister', org.id)
+      await grant(actor.id, 'super_admin', null)
+      const target = await makeActiveUser('target', org.id)
+      const other = await makeActiveUser('other', org.id)
+      await grant(other.id, 'auditor', org.id)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer()).get(`/users/${target.id}/roles`).expect(200)
+      expect(res.body).toEqual([])
+    })
+
+    it('returns 404 NOT_FOUND for a nonexistent target user', async () => {
+      const org = await makeOrgUnit('List Missing User Root')
+      const actor = await makeActiveUser('lister', org.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .get(`/users/${BOGUS_ID}/roles`)
+        .expect(404)
+      expect(res.body.code).toBe('NOT_FOUND')
+    })
+
+    it('rejects an actor holding no role:assign grant at all, with 403, before any query runs', async () => {
+      const org = await makeOrgUnit('List No Permission Root')
+      const actor = await makeActiveUser('nobody', org.id) // no role assignment at all
+      const target = await makeActiveUser('target', org.id)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer()).get(`/users/${target.id}/roles`).expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+    })
+
+    it("rejects listing a target outside the actor's own scope, with 403 — even though the actor holds role:assign elsewhere (H-1 symmetry)", async () => {
+      const acme = await makeOrgUnit('List Scope Acme')
+      const sales = await makeChildOrgUnit(acme.id, 'Sales')
+      const otherco = await makeOrgUnit('List Scope OtherCo') // a separate root, disjoint from acme entirely
+      const actor = await makeActiveUser('scoped-lister', sales.id)
+      await grant(actor.id, 'super_admin', sales.id)
+      const target = await makeActiveUser('target', otherco.id)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer()).get(`/users/${target.id}/roles`).expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+    })
+  })
+
+  // =======================================================================
   // DELETE /users/:id/roles/:assignmentId
   // =======================================================================
   describe('DELETE /users/:id/roles/:assignmentId', () => {

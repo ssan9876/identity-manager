@@ -48,6 +48,71 @@ const statusSchema = z
   .enum(['pending', 'active', 'suspended', 'deactivated'])
   .optional()
 
+// Milestone 8, Task 2: GET /users had no text search at all before this —
+// only status/orgUnitId, which cannot do PRODUCT.md's #1 job ("find a
+// person fast... search that survives hundreds of rows") on their own. No
+// `.min()` — an empty or whitespace-only term is treated as "no search"
+// by the trim-and-check below, never a 400: a debounced search box that
+// clears itself sends exactly this, and erroring on it would be hostile,
+// not helpful. `.max(255)` matches every other free-text field's ceiling
+// in this controller (jobTitle, location). noNulChar — same
+// docs/superpowers/audit-injection.md convention as every other free-text
+// field; this value reaches a bound SQL parameter (UsersRepository's own
+// ILIKE filter), never spliced into query text, so this is defence in
+// depth/consistency, not a distinct vulnerability being closed here.
+const searchQuerySchema = noNulChar(z.string().max(255)).optional()
+
+// Milestone 8, Task 4: lets a caller resolve a known SET of user ids to full
+// records in one round trip. The admin console's group-membership screens
+// learn a group's member ids from GET /groups/:id/members and GET
+// /groups/:id/effective-members (both return bare `string[]` of ids, never
+// full records — see GroupsController), and need a way to turn those into
+// displayable name/status/sync rows without one GET per member. Reuses this
+// existing list route (with its existing scope narrowing and default
+// deactivated-user exclusion both still applying — see `listFilters` below)
+// rather than a new endpoint, the same "extend GET /users with a query
+// param" move Milestone 8 Task 2 already made for `search`.
+//
+// Comma-separated, not `ids[]=`/a repeated `ids=`: every other filter on
+// this route is a single scalar value, and a comma-separated string needs no
+// special query-string array handling on either side (see parsePageQuery's
+// own `scalarOnly` doc comment for the kind of surprise a repeated/array
+// query param can cause here). `MAX_IDS` bounds the list defensively — this
+// is a lookup for a known, already-small set (a single group's membership,
+// not an open-ended search), never expected to legitimately need thousands.
+const MAX_IDS = 200
+const idsQuerySchema = noNulChar(z.string().max(8000)).optional()
+
+/**
+ * `undefined` (the param was never sent) means "no ids filter at all" — list
+ * behaves exactly as before. A param that IS sent but resolves to zero
+ * actual ids (`ids=`, or `ids=,,`) means "filter to nothing", returned as
+ * `[]` — never silently reinterpreted as "no filter", which would turn an
+ * explicit empty request into "show everyone". Every non-empty entry must be
+ * a real UUID, named by its own position — a malformed id is a 400, not a
+ * silently-dropped filter.
+ */
+function parseIdsQuery(raw: unknown): string[] | undefined {
+  const parsed = idsQuerySchema.safeParse(raw)
+  if (!parsed.success) {
+    throw new ValidationError(['ids: must be a comma-separated list of UUIDs'])
+  }
+  if (parsed.data === undefined) {
+    return undefined
+  }
+
+  const rawIds = parsed.data
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+
+  if (rawIds.length > MAX_IDS) {
+    throw new ValidationError([`ids: at most ${MAX_IDS} ids per request`])
+  }
+
+  return rawIds.map((rawId, index) => parseId(rawId, `ids[${index}]`))
+}
+
 // YYYY-MM-DD shape only, not full calendar validity (e.g. "2026-02-30"
 // passes this and would then be rejected by Postgres's own `date` column,
 // which is out of scope to harden further here — see the comment on
@@ -168,12 +233,21 @@ export class UsersController {
         ? undefined
         : parseId(String(query.orgUnitId), 'orgUnitId')
 
+    const searchParsed = searchQuerySchema.safeParse(query.search)
+    if (!searchParsed.success) {
+      throw new ValidationError(['search: must be a string of at most 255 characters'])
+    }
+    const trimmedSearch = searchParsed.data?.trim()
+    const search = trimmedSearch !== undefined && trimmedSearch.length > 0 ? trimmedSearch : undefined
+
+    const ids = parseIdsQuery(query.ids)
+
     // null = unrestricted (no filter); [] = entitled nowhere (filter that
     // matches nothing). Passed straight through to the repository, which
     // applies the same null-vs-[] distinction — never collapsed here first.
     const scopePaths = await this.engine.scopePathsFor(request.actor, 'user:read')
 
-    const filter = { status: status.data as UserStatus | undefined, orgUnitId, scopePaths }
+    const filter = { status: status.data as UserStatus | undefined, orgUnitId, scopePaths, search, ids }
 
     const [items, total] = await Promise.all([
       this.users.list({ ...page, ...filter }),

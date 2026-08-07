@@ -1,0 +1,152 @@
+/**
+ * Design tokens — the single implementation of DESIGN.md's palette, type
+ * scale, spacing and z-index scale as CSS custom properties. Every screen in
+ * this console consumes these; no component file may hard-code a colour,
+ * font size, spacing value or z-index of its own. If a value is missing
+ * here, add the token — do not inline the literal.
+ *
+ * Color values are copied verbatim from DESIGN.md's `:root` block (OKLCH
+ * throughout). Spacing, radius, shadow, motion and layout tokens are NOT
+ * individually spelled out in DESIGN.md (only "24px gutters" and the z-index
+ * scale are literal) — those are this file's own considered extension,
+ * built to the same restrained, institutional brief ("a municipal records
+ * office at 4pm"), kept internally consistent (e.g. --space-6 === the
+ * documented 24px gutter) rather than invented ad hoc per component.
+ */
+
+:root {
+  /* ---------------------------------------------------------------------
+   * Color — DESIGN.md, verbatim
+   * ------------------------------------------------------------------- */
+
+  /* Surfaces */
+  --bg: oklch(1 0 0); /* pure white — literal #fff */
+  --surface: oklch(0.985 0.002 110); /* nav, toolbars — second neutral layer */
+  --surface-sunken: oklch(0.968 0.003 110); /* table headers, inset wells */
+
+  /* Ink */
+  --ink: oklch(0.205 0.01 110); /* body — 16.1:1 on bg */
+  --ink-muted: oklch(0.455 0.012 110); /* secondary — 7.4:1 on bg */
+  --ink-subtle: oklch(0.58 0.01 110); /* placeholders, meta — 4.7:1 on bg */
+
+  /* Lines */
+  --border: oklch(0.905 0.004 110);
+  --border-strong: oklch(0.82 0.006 110);
+
+  /* Brand — deep olive. Primary actions, current selection, focus. Nothing else. */
+  --primary: oklch(0.35 0.075 110);
+  --primary-hover: oklch(0.3 0.078 110);
+  --primary-ink: oklch(0.995 0.005 110); /* on --primary — 11.3:1 */
+  --focus: oklch(0.52 0.11 110); /* focus ring, brighter to read on white */
+
+  /* Semantic — exceptions only. Active/synced status render in --ink-muted
+     with no fill; these three are reserved for pending / suspended /
+     deactivated / sync-failed. Never used for the norm. */
+  --warn: oklch(0.62 0.13 65); /* pending, sync in flight */
+  --warn-bg: oklch(0.972 0.03 65);
+  --danger: oklch(0.505 0.15 32); /* deactivate, destructive, sync failed */
+  --danger-hover: oklch(0.445 0.155 32);
+  --danger-bg: oklch(0.968 0.028 32);
+
+  /* ---------------------------------------------------------------------
+   * Typography — DESIGN.md, verbatim
+   * ------------------------------------------------------------------- */
+
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Roboto Mono', monospace;
+
+  /* Fixed rem scale, ratio ~1.15 — not fluid/clamp-sized (DESIGN.md: a
+     sidebar-adjacent h1 gets worse, not better, from fluid type). */
+  --text-xs: 0.75rem; /* 12px — badges, table meta */
+  --text-sm: 0.8125rem; /* 13px — dense table cells, form labels */
+  --text-base: 0.875rem; /* 14px — UI default, body */
+  --text-md: 1rem; /* 16px — section headings, prose */
+  --text-lg: 1.25rem; /* 20px — page title */
+  --text-xl: 1.5rem; /* 24px — detail-page subject name */
+
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+
+  /* ---------------------------------------------------------------------
+   * Spacing — 4px baseline grid, rem-based so it scales with user font
+   * settings. --space-6 is deliberately exactly DESIGN.md's "24px gutters".
+   * ------------------------------------------------------------------- */
+
+  --space-1: 0.25rem; /* 4px */
+  --space-2: 0.5rem; /* 8px */
+  --space-3: 0.75rem; /* 12px */
+  --space-4: 1rem; /* 16px */
+  --space-5: 1.25rem; /* 20px */
+  --space-6: 1.5rem; /* 24px — content gutter */
+  --space-7: 2rem; /* 32px */
+  --space-8: 2.5rem; /* 40px */
+  --space-9: 3rem; /* 48px — topbar height */
+  --space-10: 4rem; /* 64px */
+
+  /* ---------------------------------------------------------------------
+   * Layout — DESIGN.md's shell measurements
+   * ------------------------------------------------------------------- */
+
+  --topbar-height: 48px;
+  --nav-width: 240px;
+  --nav-rail-width: 64px; /* icon rail, 1100px and under */
+  --content-max-width: 1440px;
+  --content-gutter: var(--space-6); /* 24px */
+
+  /* Breakpoints below are documented here for reference but CANNOT be read
+     from a media query as custom properties (CSS has no var() support
+     inside @media conditions) — the literal px values are duplicated in
+     component CSS files' @media rules and in
+     apps/web/src/shell/breakpoints.ts (the single JS source of truth used
+     by the useMediaQuery-driven icon-rail/disclosure switch). Keep all
+     three in sync if either changes:
+       nav -> icon rail:    max-width: 1099px  (DESIGN.md: "under 1100px")
+       nav -> disclosure:   max-width: 779px   (DESIGN.md: "under 780px") */
+
+  /* ---------------------------------------------------------------------
+   * Radius & shadow — restrained, not spelled out in DESIGN.md but kept to
+   * the same "considered, not soft" brief: small radii, one quiet shadow
+   * used only where a layer genuinely floats above content (the narrow-nav
+   * disclosure dialog). No shadow is used to fake depth on ordinary
+   * surfaces — DESIGN.md bans glassmorphism and this is the same instinct.
+   * ------------------------------------------------------------------- */
+
+  --radius-sm: 3px; /* badges, inputs, buttons */
+  --radius-md: 6px; /* cards, dialogs */
+
+  --shadow-md: 0 8px 24px oklch(0.205 0.01 110 / 0.16);
+
+  /* ---------------------------------------------------------------------
+   * Motion — DESIGN.md: 150-200ms, ease-out (quart/quint), state only.
+   * ------------------------------------------------------------------- */
+
+  --motion-duration: 180ms;
+  --motion-ease: cubic-bezier(0.22, 1, 0.36, 1); /* ease-out quint */
+
+  /* ---------------------------------------------------------------------
+   * z-index — DESIGN.md, verbatim. Semantic, never arbitrary: every
+   * stacking-context rule in this codebase references one of these, never
+   * a bare number.
+   * ------------------------------------------------------------------- */
+
+  --z-dropdown: 10;
+  --z-sticky: 20;
+  --z-backdrop: 30;
+  --z-modal: 40;
+  --z-toast: 50;
+  --z-tooltip: 60;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    /* Every transition/animation in this codebase is written in terms of
+       these two tokens, so collapsing them here is sufficient to satisfy
+       DESIGN.md's "every animation needs a prefers-reduced-motion
+       alternative" for the whole app at once, without every component
+       needing its own reduced-motion branch. duration:1ms rather than 0ms —
+       a genuine 0 causes some browsers to skip firing `transitionend`,
+       which a couple of components (the narrow-nav dialog) rely on. */
+    --motion-duration: 1ms;
+    --motion-ease: linear;
+  }
+}
