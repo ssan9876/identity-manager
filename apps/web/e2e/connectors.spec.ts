@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { trackUser } from './support/cleanup-tracker'
 
 const USERNAME = 'admin@example.com'
 const PASSWORD = 'dev_password_change_me'
@@ -43,11 +44,17 @@ interface ReconcileReportResponse {
  * The FULL, UNCAPPED plan for `echo`, read directly from the API (never the
  * console's own rendered table, which caps what it displays client-side —
  * DryRunTab.tsx's own `MAX_ROWS_SHOWN`). This shared dev database's
- * in-scope population only grows across repeated runs (nothing in this
- * project's own E2E fixtures is ever deleted — the whole system has no
- * delete for a user, by design), so "is THIS ONE specific person still in
- * the plan" is asserted against the complete, authoritative set, never
- * against however many rows happen to fit on screen.
+ * in-scope population is large, and keeps growing WHILE this run is still
+ * in progress — every OTHER concurrently-running spec is creating its own
+ * people too (see this file's own "Prove it" doc comment below) — so "is
+ * THIS ONE specific person still in the plan" is asserted against the
+ * complete, authoritative set, never against however many rows happen to
+ * fit on screen. (There is still no `DELETE /users/:id` anywhere in this
+ * product, by design — see UsersController's own doc comment — but growth
+ * no longer compounds ACROSS runs the way it used to: `e2e/support/
+ * global-teardown.ts` now removes what a run's own fixtures created, once
+ * the WHOLE run finishes. Nothing is ever removed mid-run, which is the
+ * only part this reasoning actually depends on.)
  */
 async function fetchEchoPlanUsernames(request: APIRequestContext, token: string): Promise<Set<string>> {
   const res = await request.post(`${API_BASE_URL}/connector-targets/echo/reconcile`, {
@@ -82,14 +89,17 @@ async function fetchEchoPlanUsernames(request: APIRequestContext, token: string)
  *     test's own dry run.
  *  2. The console's own rendered plan table is intentionally CAPPED
  *     (DryRunTab's `MAX_ROWS_SHOWN`) — and this database's own
- *     never-converged-to-echo population (every person any spec in this
- *     suite has ever created, across every run, since nothing here is ever
- *     deleted) is large enough that a freshly created person is not
- *     guaranteed to land inside that cap. Checking "is my person still
- *     un-synced" against the rendered table is exactly as flaky as
- *     checking the global timestamp, for the same underlying reason: both
- *     read a view that is legitimately affected by everything else this
- *     shared environment is concurrently doing.
+ *     never-converged-to-echo population (every person any OTHER spec in
+ *     this same run has created so far, on top of this database's own
+ *     substantial pre-existing baseline) is large enough that a freshly
+ *     created person is not guaranteed to land inside that cap. Checking
+ *     "is my person still un-synced" against the rendered table is exactly
+ *     as flaky as checking the global timestamp, for the same underlying
+ *     reason: both read a view that is legitimately affected by everything
+ *     else this shared environment is concurrently doing. (`e2e/support/
+ *     global-teardown.ts` cleans up what a run creates once the WHOLE run
+ *     finishes, so this no longer compounds ACROSS runs — but nothing is
+ *     removed mid-run, which is all this specific reasoning needs.)
  *
  * (A controlled, single-writer proof of the identical dry-run-writes-
  * nothing guarantee — using an isolated Testcontainer, not this shared dev
@@ -175,6 +185,8 @@ test('configure the echo target, dry-run, read the plan, apply, and watch health
     },
   })
   expect(createRes.ok()).toBeTruthy()
+  const createdPerson = (await createRes.json()) as { id: string }
+  trackUser(createdPerson.id)
 
   // ---- Configure the echo target through the real console ----
   await page.goto('http://localhost:5173/connectors')

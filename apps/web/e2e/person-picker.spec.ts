@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { trackOrgUnit, trackUser } from './support/cleanup-tracker'
 
 const ADMIN_USERNAME = 'admin@example.com'
 const ADMIN_PASSWORD = 'dev_password_change_me'
@@ -78,7 +79,9 @@ async function createPersonViaApi(
     },
   })
   expect(res.ok()).toBeTruthy()
-  return (await res.json()) as CreatedPerson
+  const created = (await res.json()) as CreatedPerson
+  trackUser(created.id)
+  return created
 }
 
 /**
@@ -117,7 +120,9 @@ async function createOrgUnitViaApi(
     data: { name, parentId },
   })
   expect(res.ok()).toBeTruthy()
-  return (await res.json()) as { id: string }
+  const created = (await res.json()) as { id: string }
+  trackOrgUnit(created.id)
+  return created
 }
 
 async function getKeycloakAdminToken(): Promise<string> {
@@ -293,6 +298,9 @@ test('sets a user\'s manager by typing a name and choosing from results; the man
 
   await page.getByTestId('person-form-submit').click()
   await page.waitForURL(/\/people\/[0-9a-f-]{36}$/)
+  const reportMatch = /\/people\/([0-9a-f-]{36})$/.exec(page.url())
+  if (!reportMatch) throw new Error(`unexpected URL after creating the report: ${page.url()}`)
+  trackUser(reportMatch[1]!)
 
   // ---- Detail page: the manager renders as a NAME (and a link to them),
   // never a raw id ----

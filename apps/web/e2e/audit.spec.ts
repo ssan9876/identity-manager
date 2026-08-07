@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { trackUser } from './support/cleanup-tracker'
 
 const USERNAME = 'admin@example.com'
 const PASSWORD = 'dev_password_change_me'
@@ -68,6 +69,7 @@ test('a person\'s Activity tab shows both a create and an update entry, each wit
   })
   expect(createRes.ok()).toBeTruthy()
   const created = (await createRes.json()) as { id: string; displayName: string }
+  trackUser(created.id)
 
   const patchRes = await page.request.patch(`${API_BASE_URL}/users/${created.id}`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -121,6 +123,18 @@ test('the Import page\'s batch link opens the audit log pre-filtered to that bat
   expect(commitRes.ok()).toBeTruthy()
   const commit = (await commitRes.json()) as { batchId: string; created: number }
   expect(commit.created).toBe(1)
+
+  // The commit response carries no id — imports.controller.ts only reports
+  // created/failed counts plus the batchId — so look the new person up by
+  // the exact username this test just imported, to track it for cleanup.
+  const lookupRes = await page.request.get(
+    `${API_BASE_URL}/users?search=${encodeURIComponent(username)}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  )
+  expect(lookupRes.ok()).toBeTruthy()
+  const lookup = (await lookupRes.json()) as { items: { id: string }[] }
+  expect(lookup.items).toHaveLength(1)
+  trackUser(lookup.items[0]!.id)
 
   await page.goto(`http://localhost:5173/audit?batchId=${commit.batchId}`)
   await expect(page.getByTestId('audit-batch-chip')).toContainText(commit.batchId)

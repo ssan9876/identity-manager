@@ -1,4 +1,12 @@
 import { expect, test, type Page } from '@playwright/test'
+import { trackOrgUnit, trackUser } from './support/cleanup-tracker'
+
+/** Pulls the trailing UUID off the current URL — `/people/<id>` or `/org-units/<id>` alike — so a just-created row's id can be handed to the cleanup tracker without a second round trip. */
+function idFromUrl(page: Page): string {
+  const match = /([0-9a-f-]{36})$/.exec(page.url())
+  if (!match) throw new Error(`expected a trailing UUID in the URL, got: ${page.url()}`)
+  return match[1]!
+}
 
 const USERNAME = 'admin@example.com'
 const PASSWORD = 'dev_password_change_me'
@@ -74,6 +82,7 @@ test('creates a user, finds them in the list, deactivates them, and sees status/
 
   await page.getByTestId('person-form-submit').click()
   await page.waitForURL(/\/people\/[0-9a-f-]{36}$/)
+  trackUser(idFromUrl(page))
   await expect(page.getByTestId('person-detail-name')).toHaveText('E2E Created')
   await expect(page.getByTestId('toast').last()).toContainText('Created E2E Created.')
 
@@ -145,6 +154,7 @@ test('edits a user and the change persists after reload; the API rejects a dupli
   await page.getByLabel('Last name').fill('Target')
   await page.getByTestId('person-form-submit').click()
   await page.waitForURL(/\/people\/[0-9a-f-]{36}$/)
+  trackUser(idFromUrl(page))
 
   await page.getByTestId('edit-person-link').click()
   await page.waitForURL(/\/people\/[0-9a-f-]{36}\/edit$/)
@@ -193,8 +203,20 @@ test('org units: creates a child under an existing unit and sees it in the tree 
   await page.getByTestId('org-unit-create-name').fill(childName)
   await page.getByTestId('org-unit-create-submit').click()
 
+  // NOT trackOrgUnit(idFromUrl(page)) immediately after this waitForURL: the
+  // PARENT's own detail page (line 198 above) matches this EXACT SAME regex
+  // — any UUID does — so if the child's own navigation hasn't landed yet,
+  // waitForURL can resolve while the browser is STILL on the parent's URL,
+  // and reading the id right then would track the PARENT (a pre-existing
+  // org unit this test did not create) instead of the new child. Mirrors
+  // goToCreateUserForm's own doc comment above: a URL match alone does not
+  // prove React has actually rendered the NEW page yet — only the
+  // content-based assertion immediately below (which can only pass once the
+  // child's own name is genuinely showing) does. The id is read AFTER it,
+  // never before.
   await page.waitForURL(/\/org-units\/[0-9a-f-]{36}$/)
   await expect(page.getByTestId('org-unit-detail-name')).toHaveText(childName)
+  trackOrgUnit(idFromUrl(page))
   await expect(page.getByTestId('org-unit-detail-path')).toHaveClass(/mono/)
   // ltree paths render mono (DESIGN.md), and a CHILD's path is its parent's
   // path plus one more dot-separated segment.

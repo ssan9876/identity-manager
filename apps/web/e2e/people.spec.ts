@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
+import { trackGroup } from './support/cleanup-tracker'
 
 const USERNAME = 'admin@example.com'
 const PASSWORD = 'dev_password_change_me'
@@ -110,6 +111,7 @@ test('signs in, lands on People, finds a seeded user, opens their detail, and se
   })
   expect(createRes.ok()).toBeTruthy()
   const group = (await createRes.json()) as { id: string }
+  trackGroup(group.id)
 
   const addRes = await request.post(`${API_BASE_URL}/groups/${group.id}/members`, {
     headers: { Authorization: `Bearer ${token}` },
