@@ -860,6 +860,158 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
 
       expect(await outboxEventsFor(ctx, 'user', user.id)).toHaveLength(1)
     })
+
+    // =====================================================================
+    // MILESTONE 10, TASK 1 — fan-out per enabled `connector_targets` row.
+    // "The writer emits one event row per enabled target... a target that
+    // is not enabled produces no row at all — not a row that fails later."
+    // =====================================================================
+    describe('multi-target fan-out', () => {
+      it('a target with no connector_targets row at all receives no fan-out row', async () => {
+        const writer = new OutboxWriter()
+        const org = await makeOrgUnit('No AD Row Root')
+        const user = await makeActiveUser('no-ad-row-subject', org.id)
+
+        await ctx.db.transaction(async (tx) => {
+          await writer.record(tx, {
+            aggregateType: 'user',
+            aggregateId: user.id,
+            eventType: 'updated',
+            payload: { jobTitle: 'Only Keycloak' },
+          })
+        })
+
+        const events = await outboxEventsFor(ctx, 'user', user.id)
+        // Exactly the one enabled target (keycloak) — NOT a second row for
+        // active_directory that will fail later, and not one skipped at
+        // claim time either: there is no row for it at all, because the
+        // Task 1 migration seeded no connector_targets row for it (see
+        // connector-targets.ts's own doc comment on why).
+        expect(events).toHaveLength(1)
+        expect(events[0].target).toBe('keycloak')
+        expect(events.some((e) => e.target === 'active_directory')).toBe(false)
+      })
+
+      it('a target with an explicit enabled=false row also receives no fan-out row', async () => {
+        const writer = new OutboxWriter()
+        const org = await makeOrgUnit('Disabled AD Row Root')
+        const user = await makeActiveUser('disabled-ad-row-subject', org.id)
+
+        // Proves the OTHER half of "not enabled" — a row that EXISTS but is
+        // disabled — behaves identically to no row at all (both fail
+        // `WHERE enabled = true` in OutboxWriter.record). Scoped to this one
+        // test via try/finally: this file shares one database across all
+        // its tests (no reset between them — see this file's header
+        // comment), so connector_targets, a genuinely GLOBAL table, must be
+        // restored before the next test runs.
+        await ctx.pool.query(
+          `INSERT INTO connector_targets (target, enabled) VALUES ('active_directory', false)
+           ON CONFLICT (target) DO UPDATE SET enabled = false`,
+        )
+
+        try {
+          await ctx.db.transaction(async (tx) => {
+            await writer.record(tx, {
+              aggregateType: 'user',
+              aggregateId: user.id,
+              eventType: 'updated',
+              payload: { jobTitle: 'Still Only Keycloak' },
+            })
+          })
+
+          const events = await outboxEventsFor(ctx, 'user', user.id)
+          expect(events).toHaveLength(1)
+          expect(events[0].target).toBe('keycloak')
+        } finally {
+          await ctx.pool.query(`DELETE FROM connector_targets WHERE target = 'active_directory'`)
+        }
+      })
+
+      it('fans out one row per enabled target when more than one is enabled, sharing the SAME aggregate/event/payload', async () => {
+        const writer = new OutboxWriter()
+        const org = await makeOrgUnit('Multi Target Root')
+        const user = await makeActiveUser('multi-target-subject', org.id)
+
+        await ctx.pool.query(
+          `INSERT INTO connector_targets (target, enabled) VALUES ('active_directory', true)
+           ON CONFLICT (target) DO UPDATE SET enabled = true`,
+        )
+
+        try {
+          await ctx.db.transaction(async (tx) => {
+            await writer.record(tx, {
+              aggregateType: 'user',
+              aggregateId: user.id,
+              eventType: 'created',
+              payload: { username: user.username, action: 'user:create' },
+            })
+          })
+
+          const events = await outboxEventsFor(ctx, 'user', user.id)
+          expect(events).toHaveLength(2)
+          expect(events.map((e) => e.target).sort()).toEqual(['active_directory', 'keycloak'])
+
+          // Only `target` differs across the fanned-out rows — same
+          // aggregate, same event type, same payload, each independently
+          // `pending` with zero attempts (design doc decision 6: "Each
+          // target gets independent status, attempts and backoff").
+          for (const event of events) {
+            expect(event.aggregate_type).toBe('user')
+            expect(event.event_type).toBe('created')
+            expect(event.payload.username).toBe(user.username)
+            expect(event.status).toBe('pending')
+            expect(event.attempts).toBe(0)
+          }
+        } finally {
+          await ctx.pool.query(`DELETE FROM connector_targets WHERE target = 'active_directory'`)
+        }
+      })
+
+      it('a rejected mutation still fans out to zero targets — the outbox-only half of "audited AND outboxed in one transaction"', async () => {
+        const org = await makeOrgUnit('Multi Target Rollback Root')
+        const user = await makeActiveUser('multi-target-rollback-subject', org.id)
+
+        await ctx.pool.query(
+          `INSERT INTO connector_targets (target, enabled) VALUES ('active_directory', true)
+           ON CONFLICT (target) DO UPDATE SET enabled = true`,
+        )
+
+        try {
+          const outboxWriter = new OutboxWriter()
+          const auditWriter = new AuditWriter()
+          const before = await totalOutboxCount(ctx)
+
+          await expect(
+            ctx.db.transaction(async (tx) => {
+              await auditWriter.record(tx, {
+                actorUserId: null,
+                action: 'user:update',
+                resourceType: 'user',
+                resourceId: user.id,
+                before: null,
+                after: { jobTitle: 'Should Not Land Anywhere' },
+              })
+              await outboxWriter.record(tx, {
+                aggregateType: 'user',
+                aggregateId: user.id,
+                eventType: 'updated',
+                payload: { jobTitle: 'Should Not Land Anywhere' },
+              })
+              throw new Error('mutation failed after both writes')
+            }),
+          ).rejects.toThrow('mutation failed')
+
+          // Neither the keycloak row NOR the active_directory row survives —
+          // a partial fan-out (one target's row committed, another's rolled
+          // back) would be exactly the kind of half-applied mutation
+          // binding constraint 7 exists to rule out.
+          expect(await totalOutboxCount(ctx)).toBe(before)
+          expect(await outboxEventsFor(ctx, 'user', user.id)).toHaveLength(0)
+        } finally {
+          await ctx.pool.query(`DELETE FROM connector_targets WHERE target = 'active_directory'`)
+        }
+      })
+    })
   })
 })
 

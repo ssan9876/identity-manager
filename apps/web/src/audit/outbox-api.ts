@@ -1,13 +1,24 @@
 import { authorizedRequest, buildQuery } from '../api/client'
 import type { Page } from '../org-units/api'
 
-/** Mirrors `DeadLetterEvent` (apps/api/src/outbox/outbox.repository.ts). `payload` is whatever the mutation that enqueued this event recorded — see DeadLettersTab.tsx for how each aggregate type's shape is read. */
+/**
+ * Mirrors `DeadLetterEvent` (apps/api/src/outbox/outbox.repository.ts).
+ * `payload` is whatever the mutation that enqueued this event recorded — see
+ * DeadLettersTab.tsx for how each aggregate type's shape is read.
+ *
+ * `target` (Milestone 10, Task 1 — multi-target outbox) mirrors the API's
+ * own addition type-only, for now: today it is always `'keycloak'` (the
+ * only target `connector_targets` seeds as enabled), so nothing here reads
+ * it yet — Milestone 14, Task 9 ("connector console") is where the Dead
+ * letters table actually grows a Target column.
+ */
 export interface DeadLetterEvent {
   id: number
   aggregateType: 'user' | 'group' | 'membership'
   aggregateId: string
   eventType: string
   payload: Record<string, unknown>
+  target: 'keycloak' | 'active_directory' | 'entra_id' | 'google_workspace'
   attempts: number
   lastError: string | null
   createdAt: string

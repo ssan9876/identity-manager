@@ -244,12 +244,16 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
     eventType: string,
     payload: Record<string, unknown>,
     nextAttemptAt?: Date,
+    // Milestone 10, Task 1 — optional and trailing so every PRE-EXISTING
+    // call site (all of them implicitly wanting the column default) needs
+    // no change; only the multi-target ordering tests below pass one.
+    target?: string,
   ): Promise<number> {
     const { rows } = await ctx.pool.query<{ id: string }>(
-      `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, next_attempt_at)
-       VALUES ($1, $2, $3, $4, COALESCE($5, now()))
+      `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, next_attempt_at, target)
+       VALUES ($1, $2, $3, $4, COALESCE($5, now()), COALESCE($6, 'keycloak')::outbox_target)
        RETURNING id`,
-      [aggregateType, aggregateId, eventType, JSON.stringify(payload), nextAttemptAt ?? null],
+      [aggregateType, aggregateId, eventType, JSON.stringify(payload), nextAttemptAt ?? null, target ?? null],
     )
     return Number(rows[0]!.id)
   }
@@ -365,6 +369,52 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
       // NOW #2 is unblocked.
       expect(await worker.runOnce()).toBe('processed')
       expect((await outboxRow(eventTwo)).status).toBe('done')
+    })
+  })
+
+  // =====================================================================
+  // Multi-target ordering (Milestone 10, Task 1) — THE head-of-line fix,
+  // proven end to end through the real claim-apply-finalize cycle
+  // (`runOnce`), not just at the raw SQL level (see
+  // outbox-multi-target.spec.ts for that lower-level, container-lighter
+  // proof of the identical property).
+  // =====================================================================
+  describe('multi-target ordering (Milestone 10, Task 1)', () => {
+    it('a stalled active_directory event for a user does not block a keycloak event for that SAME user', async () => {
+      const user = await makeUser()
+
+      // Older (lower id), STALLED: an active_directory delivery mid-backoff
+      // for this user — not due for another minute, so it can never be
+      // claimed itself, but (pre-fix) still silently blocked EVERY later
+      // event for this aggregate regardless of which target it was for.
+      const future = new Date(Date.now() + 60_000)
+      const staleAdEvent = await insertOutboxEvent('user', user.id, 'updated', {}, future, 'active_directory')
+
+      // Newer (higher id), due right now, a keycloak event for the SAME
+      // user — the one that must still ship on time.
+      const dueKeycloakEvent = await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'keycloak')
+
+      const worker = makeWorker()
+
+      expect(await worker.runOnce()).toBe('processed')
+      expect((await outboxRow(dueKeycloakEvent)).status).toBe('done')
+
+      // Not just "the row flipped to done" — the user genuinely reached
+      // Keycloak. This is the exact gap the design doc calls out: "the user
+      // would look synced, be stale, and nothing would report it."
+      const kcUser = await client.findUserByUsername(user.username)
+      expect(kcUser).not.toBeNull()
+
+      // The stalled AD event is untouched by the keycloak claim above —
+      // still pending, still backing off, zero attempts. Its own eventual
+      // delivery (once due) is a separate concern from this test.
+      const adRow = await outboxRow(staleAdEvent)
+      expect(adRow.status).toBe('pending')
+      expect(adRow.attempts).toBe(0)
+
+      // Nothing else is claimable right now — the AD event genuinely isn't
+      // due yet, confirming the worker did not somehow also process it.
+      expect(await worker.runOnce()).toBe('idle')
     })
   })
 

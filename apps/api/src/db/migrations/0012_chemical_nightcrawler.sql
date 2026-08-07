@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS "outbox_events_aggregate_idx";--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "outbox_events_aggregate_idx" ON "outbox_events" USING btree ("aggregate_type","aggregate_id","target","id");

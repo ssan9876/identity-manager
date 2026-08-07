@@ -93,12 +93,13 @@ describe('OutboxController (finding H3, docs/superpowers/audit-integrity.md)', (
     aggregateType: 'user' | 'group' | 'membership',
     status: 'pending' | 'processing' | 'done' | 'failed',
     lastError: string | null = null,
+    target: 'keycloak' | 'active_directory' | 'entra_id' | 'google_workspace' | null = null,
   ): Promise<number> {
     const { rows } = await ctx.pool.query<{ id: string }>(
-      `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, status, last_error, attempts)
-       VALUES ($1, gen_random_uuid(), 'updated', '{}'::jsonb, $2, $3, 8)
+      `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, status, last_error, attempts, target)
+       VALUES ($1, gen_random_uuid(), 'updated', '{}'::jsonb, $2, $3, 8, COALESCE($4, 'keycloak')::outbox_target)
        RETURNING id`,
-      [aggregateType, status, lastError],
+      [aggregateType, status, lastError, target],
     )
     return Number(rows[0]!.id)
   }
@@ -130,6 +131,29 @@ describe('OutboxController (finding H3, docs/superpowers/audit-integrity.md)', (
     expect(failedItem.aggregateType).toBe('membership')
     expect(failedItem.lastError).toBe('boom, attempt 2')
     expect(failedItem.attempts).toBe(8)
+    expect(failedItem.target).toBe('keycloak')
+  })
+
+  // Milestone 10, Task 1: "/outbox/dead-letters gains a target dimension
+  // without breaking its current response shape" — proven two ways: the
+  // response still has exactly the same envelope (items/total/limit/offset,
+  // asserted throughout this file's other tests, all still passing
+  // unmodified) AND each item now names WHICH target failed, so an operator
+  // (or Milestone 14's console) can tell a stalled Active Directory delivery
+  // apart from a stalled Keycloak one at a glance.
+  it('each dead letter names which target failed, not just which principal', async () => {
+    const auditor = await makeActiveUser('auditor2')
+    await rolesRepo().assign({ userId: auditor.id, roleKey: 'auditor', scopeOrgUnitId: null })
+    currentUsername = auditor.username
+
+    const adFailure = await insertOutboxEvent('user', 'failed', 'LDAP bind failed', 'active_directory')
+    const kcFailure = await insertOutboxEvent('user', 'failed', 'Keycloak unreachable', 'keycloak')
+
+    const res = await request(app.getHttpServer()).get('/outbox/dead-letters?limit=100').expect(200)
+
+    const items: Array<{ id: number; target: string }> = res.body.items
+    expect(items.find((item) => item.id === adFailure)?.target).toBe('active_directory')
+    expect(items.find((item) => item.id === kcFailure)?.target).toBe('keycloak')
   })
 
   it('total/limit/offset reflect ONLY the failed count, not the whole outbox table', async () => {

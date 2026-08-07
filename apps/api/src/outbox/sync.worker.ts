@@ -207,6 +207,20 @@ export class SyncWorker implements OnApplicationShutdown {
   // Reconciliation — one branch per aggregate type
   // -------------------------------------------------------------------
 
+  /**
+   * Dispatches on `event.aggregateType` only — NOT `event.target`, even
+   * though `ClaimedOutboxEvent` has carried `target` since Milestone 10,
+   * Task 1. That is deliberate, not an oversight: `connector_targets`
+   * (Task 1) seeds only `'keycloak'` as `enabled`, so `OutboxWriter.record`
+   * cannot yet emit — and this method can therefore never actually claim —
+   * a row for any other target; every branch below reaching Keycloak
+   * directly is still the ENTIRE correct behaviour today. Task 2 (connector
+   * interface, registry, echo target) is where a real target→connector
+   * dispatch belongs, once there is a second implementation to dispatch TO.
+   * Wiring that in ahead of Task 2 would mean guessing at an interface this
+   * task deliberately leaves unspecified — see the milestone plan's Task 2
+   * contract (`plan`/`apply`/`disable`/`health`).
+   */
   private async applyEvent(tx: DbHandle, event: ClaimedOutboxEvent): Promise<void> {
     switch (event.aggregateType) {
       case 'user':
