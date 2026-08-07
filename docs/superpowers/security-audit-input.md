@@ -32,8 +32,6 @@ self-service portal, and joiner/mover/leaver automation.
   DB-sourced pattern. Measured: `^(a+)+$` blocked the event loop **96.7s on a 33-char input**.
   Currently unreachable — `attribute_definitions` has no write path. Verify that is still true.
 - **No row-count or file-size cap on bulk import** — a DoS surface.
-- **`apps/api/scripts/` is outside the `tsc` program**, so that code is never type-checked.
-- **No CI exists**, so every compile-time guarantee depends on a human running `build`.
 - **Principal resolution uses `username`**, deliberately, not `external_identities`.
 - **No suspend/activate HTTP endpoint** — revocation exists as a private method.
 - **Group-rename fan-out** re-syncs only *current* effective members; the reconciliation job
