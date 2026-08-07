@@ -16,6 +16,7 @@ import { DB_CLIENT } from './common/db.token'
 import { ActiveDirectoryConnector } from './connectors/active-directory.connector'
 import { ConnectorRegistry } from './connectors/connector-registry'
 import { EchoConnector } from './connectors/echo.connector'
+import { EntraIdConnector } from './connectors/entra-id.connector'
 import { loadEnv } from './config/env'
 import { createDbClient } from './db/client'
 import { GroupsController } from './groups/groups.controller'
@@ -152,6 +153,15 @@ import { UsersRepository } from './users/users.repository'
     // not (see EchoConnector's own doc comment above for the exact failure
     // this avoids).
     ActiveDirectoryConnector,
+    // Milestone 12, Task 7: real, no-network-at-construction (same property
+    // as ActiveDirectoryConnector/EchoConnector/KeycloakAdminClient above —
+    // the token endpoint is only ever called lazily, from inside `getToken`,
+    // never a constructor) — registered for the identical reason those are:
+    // `ConnectorRegistry`'s own `EntraIdConnector` constructor parameter
+    // needs a REAL registered provider to resolve through DI at all,
+    // JS-level default or not (see EchoConnector's own doc comment above for
+    // the exact failure this avoids).
+    EntraIdConnector,
     ConnectorRegistry,
     SyncWorker,
     SyncStateRepository,
