@@ -15,28 +15,18 @@ export interface KeycloakAdminClientConfig {
   clientId: string
   clientSecret: string
   /**
-   * Optional per-request abort bound, applied to every outbound `fetch`
-   * (token requests and admin REST calls alike) via `AbortSignal.timeout`.
-   * `undefined` (the default, and every pre-existing call site's behaviour,
-   * unchanged) means what Node's native `fetch` already means with no
-   * `signal` at all: no client-side ceiling — a genuinely stuck TCP
-   * connection can hang for as long as the underlying socket/OS allows.
-   * That is fine for production (`app.module.ts` does not set this) and for
-   * every other test file, none of which has ever needed to bound a single
-   * call's duration. It stopped being fine for `sync.worker.spec.ts`'s own
-   * "cross-aggregate races" tests specifically (see `h2-race-flake-report.md`):
-   * under real `pnpm verify` full-suite host contention, occasionally ONE
-   * real HTTP call to the real Keycloak container in that file legitimately
-   * — not a bug, a resource-starved JVM under 15+ concurrent Testcontainer-
-   * backed files sharing 16 cores — takes long enough that even a 300-second
-   * PER-TEST timeout was insufficient (see that report's evidence). Without
-   * SOME bound on an individual call, no fixed test-level timeout is a
-   * principled choice — it is a guess at how bad contention can get. With
-   * one, a stalled call fails FAST and cleanly instead of silently
-   * consuming the whole test budget, letting the worker's own retry/backoff
-   * (`recordFailure`, sync.worker.ts) — or that test's own bounded
-   * `driveToDone` helper — do exactly what they are already designed to do
-   * for a transient failure.
+   * Per-request abort bound, applied to every outbound `fetch` (token
+   * requests and admin REST calls alike) via `AbortSignal.timeout`. Optional
+   * on this CONFIG type — `undefined` here means "use `DEFAULT_REQUEST_
+   * TIMEOUT_MS`", not "no bound at all" (see that constant's own doc
+   * comment for why unbounded is no longer an available behaviour for this
+   * client). Overridable per instance, exactly like `EntraIdConnectorConfig.
+   * requestTimeoutMs`/`GoogleWorkspaceConnectorConfig.requestTimeoutMs` are:
+   * `app.module.ts`'s production wiring leaves this unset and gets the
+   * default; `sync.worker.spec.ts` sets it explicitly to 20s (see that
+   * file's own `KEYCLOAK_REQUEST_TIMEOUT_MS`) because it is the single most
+   * Keycloak-round-trip-dense spec in the suite and wants a little more
+   * headroom under full-suite host contention than the default gives.
    */
   requestTimeoutMs?: number
 }
@@ -113,6 +103,35 @@ const REQUIRED_ACTION_UPDATE_PASSWORD = 'UPDATE_PASSWORD'
 // mid-flight. Capped at half the token's own lifetime so a very short-lived
 // token (e.g. a misconfigured realm) never computes a non-positive TTL.
 const TOKEN_EXPIRY_SAFETY_MARGIN_MS = 10_000
+
+// The production default for `KeycloakAdminClientConfig.requestTimeoutMs`
+// when a caller doesn't set one — including `app.module.ts`'s real DI
+// wiring, which does not (see KEYCLOAK_ADMIN_CONFIG's factory there). Same
+// value, same rationale, as `EntraIdConnector`'s/`GoogleWorkspaceConnector`'s
+// own `DEFAULT_REQUEST_TIMEOUT_MS`: "a single apply() call blocking the sync
+// worker indefinitely" is exactly as real for Keycloak as for either of
+// those two targets — arguably more so, since Keycloak is the original
+// Milestone-4 connector and is on the critical path for every login-
+// affecting change, and has been in production the longest of the three.
+// Before this, `KeycloakAdminClient` was the one connector in this codebase
+// without any bound at all: a stalled admin-REST or token call could hang
+// the caller (the sync worker's open transaction, or `UsersController`'s
+// synchronous revocation path) indefinitely, holding that event's claim —
+// and, per `SyncWorker.reconcileUser`'s own per-aggregate-user advisory
+// lock, blocking every OTHER event queued behind it for the same user too.
+// The H2 investigation (h2-race-flake-report.md) added the FIELD but scoped
+// its use to one test file, flagging the production gap as a named,
+// deliberately out-of-scope follow-up (that report's Concern #1) — this is
+// that follow-up. A timeout firing surfaces as an ordinary thrown error from
+// `fetch` (an `AbortError`/`TimeoutError`), which every caller already
+// propagates as a plain rejected promise — no new error type, no new catch
+// needed anywhere: `SyncWorker.runOnce`'s existing try/catch turns it into
+// exactly the same retryable, backed-off `recordFailure` outcome as any
+// other transient Keycloak failure (a 5xx, a dropped connection, ...), and
+// `UsersController.revokeKeycloakAccess`'s existing catch-and-log already
+// treats ANY Keycloak error, this one included, as non-fatal to the request
+// it backs (see that method's own doc comment).
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000
 
 /**
  * Thrown for any Keycloak admin REST failure NOT mapped to a DomainError
@@ -266,11 +285,9 @@ export class KeycloakAdminClient {
   // expiry, forced refresh on a 401 from any admin call (see `request`).
   // ---------------------------------------------------------------------
 
-  /** `undefined` (no signal at all — unbounded, exactly today's behaviour) unless `config.requestTimeoutMs` opts in. See that field's own doc comment. */
-  private abortSignal(): AbortSignal | undefined {
-    return this.config.requestTimeoutMs !== undefined
-      ? AbortSignal.timeout(this.config.requestTimeoutMs)
-      : undefined
+  /** `config.requestTimeoutMs` when the caller set one, else `DEFAULT_REQUEST_TIMEOUT_MS` — see that constant's and `KeycloakAdminClientConfig.requestTimeoutMs`'s own doc comments. Every outbound `fetch` in this class carries this, unconditionally: there is no longer an unbounded call site. */
+  private abortSignal(): AbortSignal {
+    return AbortSignal.timeout(this.config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS)
   }
 
   private async fetchToken(): Promise<{ value: string; expiresAt: number }> {

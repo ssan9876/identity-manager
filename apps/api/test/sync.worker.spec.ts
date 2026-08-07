@@ -1,3 +1,4 @@
+import { createServer, type Server } from 'node:http'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { ConnectorRegistry } from '../src/connectors/connector-registry'
 import { EchoConnector } from '../src/connectors/echo.connector'
@@ -43,6 +44,37 @@ function unreachableClient(): KeycloakAdminClient {
     issuer: UNREACHABLE_ISSUER,
     clientId: 'irrelevant',
     clientSecret: 'irrelevant',
+  })
+}
+
+/**
+ * A real TCP listener that accepts every connection and then never writes a
+ * response — deliberately DIFFERENT from `UNREACHABLE_ISSUER` above (a
+ * closed port, which fails FAST with ECONNREFUSED and so never exercises any
+ * timeout at all). This is what `KeycloakAdminClientConfig.requestTimeoutMs`'s
+ * production DEFAULT (`DEFAULT_REQUEST_TIMEOUT_MS`, keycloak-admin.client.ts)
+ * exists to bound: a stalled Keycloak that has accepted the socket but is
+ * never going to answer, the one shape of failure nothing except a
+ * client-side abort can ever end.
+ */
+function startHangingServer(): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const server: Server = createServer((_req, _res) => {
+      // Deliberately does nothing — no res.write(), no res.end(). The
+      // request just sits open until the CLIENT gives up.
+    })
+    server.on('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      if (address === null || typeof address === 'string') {
+        reject(new Error('expected a real AddressInfo from an ephemeral TCP listener'))
+        return
+      }
+      resolve({
+        port: address.port,
+        close: () => new Promise((res) => server.close(() => res())),
+      })
+    })
   })
 }
 
@@ -939,6 +971,72 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
       expect((await outboxRow(eventId)).status).toBe('done')
 
       expect(await client.findUserByUsername(user.username)).not.toBeNull()
+    })
+
+    /**
+     * The production-default counterpart to the "unreachable" test above.
+     * That test's `unreachableClient()` sets no `requestTimeoutMs` EITHER,
+     * but a closed port fails almost instantly (ECONNREFUSED) — it proves
+     * `runOnce` handles a Keycloak-side connection failure cleanly, but it
+     * cannot tell the difference between "the default timeout works" and
+     * "there is no default at all," because it never waits long enough to
+     * expose that gap. This test closes exactly that gap: a REAL listener
+     * that accepts the connection and then never answers is the one failure
+     * shape only a client-side abort can ever end, and the client here is
+     * built with NO `requestTimeoutMs` override — proving
+     * `KeycloakAdminClient`'s own `DEFAULT_REQUEST_TIMEOUT_MS` (15s,
+     * keycloak-admin.client.ts), not a test-supplied value, is what bounds
+     * it. If that default is ever removed (e.g. `abortSignal()` reverts to
+     * returning `undefined` when `config.requestTimeoutMs` is unset), this
+     * test hangs until vitest's own 120s `testTimeout` kills it — RED, not a
+     * silently-passing false negative. See h2-race-flake-report.md's own
+     * Concern #1, which named this exact gap as a follow-up.
+     */
+    it('a Keycloak that accepts the connection but never responds is bounded by the PRODUCTION DEFAULT timeout (no override configured) — never hangs, and produces the same retryable pending/attempts outcome', async () => {
+      const hanging = await startHangingServer()
+      try {
+        const user = await makeUser()
+        const eventId = await insertOutboxEvent('user', user.id, 'created', {})
+
+        // No requestTimeoutMs — this is the whole point. Every OTHER client
+        // this file constructs (client, unreachableClient()) sets one
+        // explicitly, which would not catch a regression that removed the
+        // DEFAULT specifically while leaving the override mechanism intact.
+        const hangingClient = new KeycloakAdminClient({
+          issuer: `http://127.0.0.1:${hanging.port}/realms/hang-test`,
+          clientId: 'irrelevant',
+          clientSecret: 'irrelevant',
+        })
+        const badWorker = makeWorker(hangingClient, { maxAttempts: 10, baseDelayMs: 300, maxDelayMs: 600 })
+
+        const startedAt = Date.now()
+        expect(await badWorker.runOnce()).toBe('processed') // claimed + attempted — critically, NOT hung forever
+        const elapsedMs = Date.now() - startedAt
+
+        // Bounded around the real 15s default — not near-instant (which
+        // would mean this accidentally hit a fast-fail path instead of a
+        // genuine timeout) and not unbounded either.
+        expect(elapsedMs).toBeGreaterThan(12_000)
+        expect(elapsedMs).toBeLessThan(30_000)
+
+        // The SAME clean, retryable outcome as the "unreachable" test above
+        // — never a crash, never silently marked done.
+        const afterTimeout = await outboxRow(eventId)
+        expect(afterTimeout.status).toBe('pending')
+        expect(afterTimeout.attempts).toBe(1)
+        expect(afterTimeout.last_error).toBeTruthy()
+        expect(new Date(afterTimeout.next_attempt_at).getTime()).toBeGreaterThan(Date.now())
+
+        // Converge before this test ends — see this file's own doc comment
+        // on why a row left pending-and-due must never be left for an
+        // unrelated later test's own runOnce()/drain() to stumble onto.
+        await setNextAttemptAt(eventId, new Date(Date.now() - 1_000))
+        const goodWorker = makeWorker()
+        expect(await goodWorker.runOnce()).toBe('processed')
+        expect((await outboxRow(eventId)).status).toBe('done')
+      } finally {
+        await hanging.close()
+      }
     })
   })
 
