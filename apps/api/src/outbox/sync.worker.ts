@@ -75,11 +75,42 @@ const SYNC_USER_LOCK_NAMESPACE = 0x1d3a_0002
  * set to null will be cleared" text, independently of Graph's own,
  * separately-confirmed identical-shaped gap.
  */
-const TARGETS_NEEDING_IMMUTABLE_ID_CORRELATION: readonly OutboxTarget[] = [
+// SPLIT (sub-project 4) from a single `TARGETS_NEEDING_IMMUTABLE_ID_CORRELATION`
+// that gated BOTH `existingExternalId` and `managedAttributeRemoteNames`
+// together. They were ever one constant only because the three vendor targets
+// above happen to need both; `mail_server` needs exactly one of them, and
+// gating them together would buy it a per-event
+// `listAllRemoteNamesForTarget` query for data it never reads.
+//
+// `mail_server` needs THIS half because its eligibility branch must tell
+// "never had mail" from "had mail, now revoked" — see
+// `MailServerConnector.apply`'s own doc comment. Without it an ineligible
+// user would be PUT unconditionally, and the counterpart's upsert CREATES on
+// first write: a mailbox for someone who should never have had one, their
+// address reserved against future collisions, then deactivated.
+const TARGETS_NEEDING_EXTERNAL_ID_CORRELATION: readonly OutboxTarget[] = [
+  'active_directory',
+  'entra_id',
+  'google_workspace',
+  'mail_server',
+]
+
+/** Targets that additionally need every remote name ever mapped for them, so one whose mapping was just disabled can be actively CLEARED — see `DesiredUser.managedAttributeRemoteNames`'s own doc comment for why omitting a key is not enough against a partial-update API. Membership is unchanged by the split above. */
+const TARGETS_NEEDING_MANAGED_ATTRIBUTE_NAMES: readonly OutboxTarget[] = [
   'active_directory',
   'entra_id',
   'google_workspace',
 ]
+
+/**
+ * Targets whose own status model has more than the two states `enabled`
+ * expresses — see `DesiredUser.status`'s own doc comment for why collapsing
+ * four lifecycle values into a boolean is data loss for the mail target
+ * specifically. Its own gate rather than a reuse of either constant above:
+ * these are unrelated questions about a target, and `mail_server` happens to
+ * answer them differently.
+ */
+const TARGETS_NEEDING_FULL_STATUS: readonly OutboxTarget[] = ['mail_server']
 
 /**
  * Exponential backoff with EQUAL jitter (delay is always in
@@ -512,7 +543,7 @@ export class SyncWorker implements OnApplicationShutdown {
     // past correlation from. One extra indexed lookup —
     // `external_identities_user_system_unique` — paid only by a target that
     // structurally needs it.
-    const existingExternalId = TARGETS_NEEDING_IMMUTABLE_ID_CORRELATION.includes(target)
+    const existingExternalId = TARGETS_NEEDING_EXTERNAL_ID_CORRELATION.includes(target)
       ? await this.findExistingExternalId(tx, user.id, target)
       : undefined
 
@@ -523,7 +554,7 @@ export class SyncWorker implements OnApplicationShutdown {
     // source here: a mapping that just transitioned to disabled must still be
     // found so its stale AD/Entra value can be actively cleared, and
     // `mappings` no longer contains it the moment it is disabled).
-    const managedAttributeRemoteNames = TARGETS_NEEDING_IMMUTABLE_ID_CORRELATION.includes(target)
+    const managedAttributeRemoteNames = TARGETS_NEEDING_MANAGED_ATTRIBUTE_NAMES.includes(target)
       ? await this.attributeTargetMappingsRepository.listAllRemoteNamesForTarget(target, tx)
       : undefined
 
@@ -545,6 +576,10 @@ export class SyncWorker implements OnApplicationShutdown {
       firstName: user.firstName,
       lastName: user.lastName,
       enabled: desiredEnabled,
+      // The FULL four-value status, for a target that models more than
+      // enabled/disabled — see `DesiredUser.status`'s own doc comment for why
+      // `desiredEnabled` above cannot stand in for it.
+      status: TARGETS_NEEDING_FULL_STATUS.includes(target) ? user.status : undefined,
       // Default-deny filter, computed ONCE here (per-TARGET, since Milestone
       // 10 Task 3 — `mappings` above is already scoped to this event's own
       // `target`) and handed to whichever connector `target` resolves to.

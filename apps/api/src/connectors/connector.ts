@@ -1,3 +1,5 @@
+import type { UserStatus } from '../users/users.repository'
+
 // The canonical "which directory backend" literal union — hand-rolled to
 // mirror the `outbox_target` pgEnum (db/schema/outbox-events.ts), same
 // convention as `OutboxAggregateType`/`OutboxEventType` (outbox.writer.ts)
@@ -69,6 +71,28 @@ export interface DesiredUser {
   firstName: string
   lastName: string
   enabled: boolean
+
+  /**
+   * This user's FULL lifecycle status, for a target whose own model has more
+   * than the two states `enabled` can express. OPTIONAL and target-gated,
+   * exactly like `orgUnitPath` below: populated for `'mail_server'` only (see
+   * sync.worker.ts's `TARGETS_NEEDING_FULL_STATUS`), `undefined` for every
+   * other target, and structurally invisible to the connectors that ignore
+   * it — no existing connector reads it or has to acknowledge it.
+   *
+   * `enabled` immediately above cannot stand in for this. It is
+   * `status === 'active'`, so `pending`, `suspended` and `deactivated` all
+   * collapse into one value — and for the mail target that is DATA LOSS, not
+   * merely lost fidelity: only `deactivated` stamps the counterpart's
+   * `deactivated_at`, which starts its retention clock. Map `suspended` onto
+   * `deactivated` and a suspended employee's mail is eventually purged; map
+   * `deactivated` onto `suspended` and offboarded mail never purges at all.
+   * The counterpart's spec states the rule directly: "A suspension must never
+   * stamp deactivated_at — suspension is not offboarding and must not start
+   * the retention clock."
+   */
+  status?: UserStatus
+
   attributes: Record<string, string[]>
   groups: readonly string[]
 

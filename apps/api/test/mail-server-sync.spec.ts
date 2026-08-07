@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { ConnectorRegistry } from '../src/connectors/connector-registry'
-import { externalIdentitySystem } from '../src/db/schema/external-identities'
+import { externalIdentities, externalIdentitySystem } from '../src/db/schema/external-identities'
 import { outboxTarget } from '../src/db/schema/outbox-events'
 import { GroupsRepository } from '../src/groups/groups.repository'
 import { KeycloakAdminClient } from '../src/keycloak/keycloak-admin.client'
@@ -67,6 +67,16 @@ describe('mail server connector (DB-backed)', () => {
     })
   }
 
+  /** A user is created `pending`, and the lifecycle forbids `pending -> suspended` — so reaching any later status goes through `active` first. */
+  async function makeUserWithStatus(status: 'pending' | 'active' | 'suspended' | 'deactivated'): Promise<User> {
+    const user = await makeUser()
+    if (status === 'pending') {
+      return user
+    }
+    const active = await usersRepo().changeStatus(user.id, 'active')
+    return status === 'active' ? active : usersRepo().changeStatus(user.id, status)
+  }
+
   /** `buildDesiredUser` takes a `DbHandle` (a transaction), the same way every production caller reaches it — see TargetReconciliationJob, which wraps its own call identically. */
   const desiredFor = (user: User, target: Parameters<SyncWorker['buildDesiredUser']>[2]) =>
     ctx.db.transaction((tx) => makeWorker().buildDesiredUser(tx, user, target))
@@ -76,6 +86,68 @@ describe('mail server connector (DB-backed)', () => {
       const user = await makeUser()
       const desired = await desiredFor(user, 'keycloak')
       expect(desired.userId).toBe(user.id)
+    })
+  })
+
+  describe('DesiredUser.status', () => {
+    it('carries the full four-value status for mail_server', async () => {
+      const suspended = await makeUserWithStatus('suspended')
+
+      const desired = await desiredFor(suspended, 'mail_server')
+      expect(desired.status).toBe('suspended')
+    })
+
+    it('distinguishes suspended from deactivated, which enabled cannot', async () => {
+      const suspended = await makeUserWithStatus('suspended')
+      const deactivated = await makeUserWithStatus('deactivated')
+
+      const a = await desiredFor(suspended, 'mail_server')
+      const b = await desiredFor(deactivated, 'mail_server')
+
+      // The distinction `enabled` alone loses — and the one that decides
+      // whether the counterpart stamps `deactivated_at` and starts its
+      // retention clock. Conflating these is data loss, not lost fidelity.
+      expect(a.enabled).toBe(b.enabled)
+      expect(a.status).not.toBe(b.status)
+    })
+
+    it('is undefined for every other target', async () => {
+      const user = await makeUser()
+      for (const target of ['keycloak', 'echo', 'active_directory', 'entra_id', 'google_workspace'] as const) {
+        const desired = await desiredFor(user, target)
+        expect(desired.status).toBeUndefined()
+      }
+    })
+  })
+
+  describe('correlation gate', () => {
+    it('gives mail_server its prior external id, so it can tell create from entitlement-removal', async () => {
+      const user = await makeUser()
+      await ctx.db.insert(externalIdentities).values({
+        userId: user.id,
+        system: 'mail_server',
+        externalId: user.id,
+        lastSyncedAt: new Date(),
+        syncState: 'synced',
+      })
+
+      const desired = await desiredFor(user, 'mail_server')
+      expect(desired.existingExternalId).toBe(user.id)
+    })
+
+    it('does not pay for managed attribute names mail_server never reads', async () => {
+      const user = await makeUser()
+      const desired = await desiredFor(user, 'mail_server')
+      expect(desired.managedAttributeRemoteNames).toBeUndefined()
+    })
+
+    it('leaves both halves populated for every target already in the gate', async () => {
+      const user = await makeUser()
+      for (const target of ['active_directory', 'entra_id', 'google_workspace'] as const) {
+        const desired = await desiredFor(user, target)
+        expect(desired.managedAttributeRemoteNames).toBeDefined()
+        expect(desired.existingExternalId).toBeUndefined()
+      }
     })
   })
 })
