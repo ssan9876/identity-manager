@@ -186,9 +186,16 @@ test('the Person detail tabs are keyboard operable with arrow keys (WAI-ARIA tab
   await expect(page.getByRole('tab', { name: 'Groups' })).toBeFocused()
   await expect(page.getByRole('tabpanel', { name: 'Groups' })).toBeVisible()
 
+  // Milestone 8, Task 4 replaced the "later task" placeholder with real
+  // content: the signed-in admin (global super_admin, per bootstrap:admin)
+  // holds role:assign, so the Roles tab renders its real grant/revoke UI
+  // rather than an explanation of why it can't. The target person here is
+  // whichever row happens to sort first, so this asserts something true
+  // regardless of who that is — the "Grant a role" affordance is always
+  // available to this actor — rather than a specific assignment.
   await page.keyboard.press('ArrowRight')
   await expect(page.getByRole('tab', { name: 'Roles' })).toHaveAttribute('aria-selected', 'true')
-  await expect(page.getByRole('tabpanel', { name: 'Roles' })).toContainText('later task')
+  await expect(page.getByRole('tabpanel', { name: 'Roles' }).getByTestId('role-show-grant')).toBeVisible()
 
   await page.keyboard.press('ArrowLeft')
   await expect(page.getByRole('tab', { name: 'Groups' })).toHaveAttribute('aria-selected', 'true')

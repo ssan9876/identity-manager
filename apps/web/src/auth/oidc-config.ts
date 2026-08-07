@@ -16,6 +16,16 @@ export const apiBaseUrl =
  */
 export const keycloakIssuer: string = import.meta.env.VITE_KEYCLOAK_ISSUER
 
+/**
+ * Deliberately carries NO `onSigninCallback` — that has to be supplied by
+ * `AuthRoot` (auth/AuthRoot.tsx) instead, as a value produced by
+ * react-router's own `useNavigate()`, which only exists inside a component
+ * rendered under `<BrowserRouter>`. This file is plain, router-free
+ * configuration (imported by AuthRoot, by main.tsx indirectly, and by
+ * anything else that just needs the issuer/client id), so it cannot supply
+ * that callback itself. See AuthRoot's own doc comment for why the callback
+ * has to come from there at all — a real, Milestone-1-era bug this fixes.
+ */
 export const oidcConfig: AuthProviderProps = {
   authority: keycloakIssuer,
   client_id: import.meta.env.VITE_KEYCLOAK_CLIENT_ID,
@@ -24,8 +34,4 @@ export const oidcConfig: AuthProviderProps = {
   response_type: 'code',
   scope: 'openid profile email',
   userStore: new WebStorageStateStore({ store: window.sessionStorage }),
-  // Strip the ?code=&state= query params after the redirect completes.
-  onSigninCallback: () => {
-    window.history.replaceState({}, document.title, window.location.pathname)
-  },
 }

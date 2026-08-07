@@ -1,6 +1,10 @@
 import { authorizedRequest, buildQuery } from '../api/client'
 import type { Page } from '../org-units/api'
 
+/** Re-exported from groups/api.ts, their natural home as of Milestone 8, Task 4 — see that module's own doc comment on `Group`/`fetchGroupsForUser` for why. */
+export type { Group } from '../groups/api'
+export { fetchGroupsForUser } from '../groups/api'
+
 export type UserStatus = 'pending' | 'active' | 'suspended' | 'deactivated'
 export type SyncState = 'pending' | 'synced' | 'failed'
 
@@ -27,16 +31,6 @@ export interface Person {
   syncState: SyncState
 }
 
-export interface Group {
-  id: string
-  name: string
-  description: string | null
-  orgUnitId: string | null
-  attributes: Record<string, unknown>
-  createdAt: string
-  updatedAt: string
-}
-
 export interface ListPeopleParams {
   limit: number
   offset: number
@@ -60,6 +54,36 @@ export function fetchPeople(accessToken: string, params: ListPeopleParams): Prom
 
 export function fetchPerson(accessToken: string, id: string): Promise<Person> {
   return authorizedRequest<Person>(`/users/${id}`, accessToken)
+}
+
+// The API caps a single `ids` request at 200 (users.controller.ts's
+// MAX_IDS) — generous for "one to a handful" of admins at "a single
+// organisation" (PRODUCT.md), the same scale assumption
+// org-units/api.ts's fetchAllOrgUnits already makes explicit. A single
+// group's direct membership exceeding this is not handled specially here.
+const PEOPLE_BY_IDS_LIMIT = 200
+
+/**
+ * Resolves a known set of user ids to full, displayable records in one
+ * request, via `GET /users?ids=` (Milestone 8, Task 4's addition to this
+ * existing route — see users.controller.ts's own doc comment on
+ * `parseIdsQuery`). The Group detail page's Members tab is the reason this
+ * exists: `GET /groups/:id/members` and `GET /groups/:id/effective-members`
+ * both return bare `string[]` of ids, never full records.
+ *
+ * An empty `ids` array resolves locally to an empty page with NO request —
+ * the server would answer identically (its own "explicit empty -> matches
+ * nothing" contract, `UsersRepository.list`'s own doc comment), so there is
+ * nothing to gain by making the round trip for an answer already known.
+ */
+export function fetchPeopleByIds(accessToken: string, ids: string[]): Promise<Page<Person>> {
+  if (ids.length === 0) {
+    return Promise.resolve({ items: [], total: 0, limit: PEOPLE_BY_IDS_LIMIT, offset: 0 })
+  }
+  return authorizedRequest<Page<Person>>(
+    `/users${buildQuery({ ids: ids.join(','), limit: PEOPLE_BY_IDS_LIMIT, offset: 0 })}`,
+    accessToken,
+  )
 }
 
 /** Mirrors `createUserBodySchema` (apps/api/src/users/users.controller.ts) exactly — every field this form may send, and no others (that schema is `.strict()`). */
@@ -127,21 +151,3 @@ export function deactivatePerson(accessToken: string, id: string): Promise<Perso
   return authorizedRequest<Person>(`/users/${id}/deactivate`, accessToken, { method: 'POST' })
 }
 
-const GROUPS_FOR_USER_LIMIT = 100
-
-/**
- * Effective group membership for an arbitrary user (via GET /groups?userId=,
- * the existing admin equivalent of the self-service GroupsController route)
- * — this is EFFECTIVE membership only, never direct-vs-inherited: unlike
- * `GET /self/groups`, there is no admin endpoint that separates the two for
- * an arbitrary target user (that distinction is Milestone 8 Task 4's own
- * "membership" work, not this task's). PersonDetailPage's Groups tab is
- * honest about that — it lists membership, it does not claim a
- * direct/inherited split it cannot back up.
- */
-export function fetchGroupsForUser(accessToken: string, userId: string): Promise<Page<Group>> {
-  return authorizedRequest<Page<Group>>(
-    `/groups${buildQuery({ userId, limit: GROUPS_FOR_USER_LIMIT, offset: 0 })}`,
-    accessToken,
-  )
-}

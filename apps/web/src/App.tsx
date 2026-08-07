@@ -1,10 +1,15 @@
 import { useAuth } from 'react-oidc-context'
 import { Route, Routes } from 'react-router-dom'
+import CreateGroupPage from './groups/CreateGroupPage'
+import EditGroupPage from './groups/EditGroupPage'
+import GroupDetailPage from './groups/GroupDetailPage'
+import GroupsListPage from './groups/GroupsListPage'
 import CreateUserPage from './people/CreateUserPage'
 import EditUserPage from './people/EditUserPage'
 import PeopleListPage from './people/PeopleListPage'
 import PersonDetailPage from './people/PersonDetailPage'
 import OrgUnitsPage from './org-units/OrgUnitsPage'
+import RolesCatalogPage from './roles/RolesCatalogPage'
 import SelfServicePage from './self-service/SelfServicePage'
 import AppShell from './shell/AppShell'
 import { NotYetBuilt } from './shell/NotYetBuilt'
@@ -12,16 +17,6 @@ import { ToastProvider } from './shell/ToastProvider'
 import './SignInGate.css'
 
 const NOT_YET_BUILT_ROUTES: { path: string; title: string; note: string }[] = [
-  {
-    path: '/groups',
-    title: 'Groups',
-    note: 'Group management arrives in a later task of this milestone.',
-  },
-  {
-    path: '/roles',
-    title: 'Roles',
-    note: 'Granting and revoking role assignments arrives in a later task of this milestone.',
-  },
   {
     path: '/import',
     title: 'Import',
@@ -55,13 +50,21 @@ const NOT_YET_BUILT_ROUTES: { path: string; title: string; note: string }[] = [
  * the Org units tree/create-child/detail (`OrgUnitsPage`) — so `/org-units`
  * moves out of NOT_YET_BUILT_ROUTES below and into a real route.
  *
- * Every nav destination still not built (Groups, Roles, Import, Audit)
- * keeps a real route — an honest "coming in a later task" panel, never a
- * dead link (task-2-brief.md) — gated by the SAME permission the nav item
- * itself is gated by (shell/nav-items.tsx); a caller who reaches one of
- * these routes directly (typed URL, bookmark) without the underlying
- * permission sees the identical panel regardless, since there is no data
- * behind any of them yet to protect either way.
+ * Milestone 8, Task 4 adds Groups (list/detail/create/edit, membership,
+ * nesting) and Roles (a catalog page plus per-person grant/revoke on
+ * PersonDetailPage's own Roles tab — see PersonRolesTab.tsx) — so `/groups*`
+ * and `/roles` move out of NOT_YET_BUILT_ROUTES too, the same way
+ * `/org-units` did in Task 3. `/groups/new` is declared before `/groups/:id`
+ * for the identical documentation-only reason `/people/new` precedes
+ * `/people/:id` above.
+ *
+ * Every nav destination still not built (Import, Audit) keeps a real route
+ * — an honest "coming in a later task" panel, never a dead link (task-2-
+ * brief.md) — gated by the SAME permission the nav item itself is gated by
+ * (shell/nav-items.tsx); a caller who reaches one of these routes directly
+ * (typed URL, bookmark) without the underlying permission sees the
+ * identical panel regardless, since there is no data behind either yet to
+ * protect either way.
  *
  * `ToastProvider` wraps `<Routes>`, not any single page — DESIGN.md's
  * "Toasts for the result of an action" must survive the navigation an
@@ -105,6 +108,11 @@ export default function App() {
           <Route path="/people/:id/edit" element={<EditUserPage />} />
           <Route path="/org-units" element={<OrgUnitsPage />} />
           <Route path="/org-units/:id" element={<OrgUnitsPage />} />
+          <Route path="/groups" element={<GroupsListPage />} />
+          <Route path="/groups/new" element={<CreateGroupPage />} />
+          <Route path="/groups/:id" element={<GroupDetailPage />} />
+          <Route path="/groups/:id/edit" element={<EditGroupPage />} />
+          <Route path="/roles" element={<RolesCatalogPage />} />
           <Route path="/self" element={<SelfServicePage />} />
           {NOT_YET_BUILT_ROUTES.map((route) => (
             <Route

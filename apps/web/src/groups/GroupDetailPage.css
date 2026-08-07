@@ -1,0 +1,112 @@
+/* .person-detail__back / .person-detail__header / .person-detail__title-row /
+   .person-detail__title-actions / .person-detail__meta are reused verbatim
+   from people/PersonDetailPage.css — "same table and tab vocabulary as
+   People" (task-4-brief.md) extends to the detail-header chrome too, so
+   this file adds only what is genuinely group-specific. */
+
+.group-detail__global-note {
+  margin-top: var(--space-5);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  max-width: 68ch;
+}
+.group-detail__global-note strong {
+  color: var(--ink);
+}
+
+.group-detail__attributes {
+  margin-top: var(--space-7);
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--border);
+}
+
+/* ---------------------------------------------------------------------
+ * Members tab — direct/effective are two structurally separate sections
+ * (task-4-brief.md: "structural, not a tooltip"), sharing one row style.
+ * ------------------------------------------------------------------- */
+
+.group-members {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+}
+.group-members__section h3 {
+  margin-bottom: var(--space-2);
+}
+.group-members__note {
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  max-width: 68ch;
+  margin-bottom: var(--space-3);
+}
+
+/* `.group-member-list` itself now lives in styles/components.css — it
+   backs this tab's rows, the Nested-groups tab's child rows, AND (Milestone
+   8, Task 4) the Person detail page's Roles tab, so it moved to the shared
+   stylesheet rather than staying feature-scoped here. See that file's own
+   comment on the class for why. */
+
+/* ---------------------------------------------------------------------
+ * Add member / nest child group — progressive disclosure, never a modal.
+ * Search results render as a plain block-flow list UNDER the input, never
+ * an absolutely-positioned floating dropdown (DESIGN.md bans `position:
+ * absolute` dropdowns inside an overflow container — not floating at all
+ * is the simplest way to never collide with that).
+ * ------------------------------------------------------------------- */
+
+.group-member-add,
+.group-nested__add {
+  margin-top: var(--space-5);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  max-width: 28rem;
+}
+
+.group-member-add__results {
+  margin-top: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  max-height: 14rem;
+  overflow-y: auto;
+}
+.group-member-add__result-note {
+  padding: var(--space-3);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+.group-member-add__result {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  transition: background-color var(--motion-duration) var(--motion-ease);
+}
+.group-member-add__result:last-child {
+  border-bottom: none;
+}
+.group-member-add__result:hover {
+  background: var(--surface-sunken);
+}
+
+.group-member-add__actions,
+.group-nested__add-actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.group-nested {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}

@@ -335,6 +335,23 @@
   border-collapse: collapse;
   font-size: var(--text-sm);
 }
+/* Milestone 8, Task 4 visual pass: `.mono`'s own `overflow-wrap: anywhere`
+   (base.css, Task 3) is right for a `.detail-grid`, which has no scroll
+   affordance of its own — but INSIDE a `.table-wrap` (which already scrolls
+   horizontally, exactly how the People table already handles a long mono
+   org-unit path at narrow widths) that same rule lets a mono cell's minimum
+   content width shrink to "one character," which table auto-layout then
+   satisfies by wrapping the cell mid-string ("organi"/"zation" on two
+   lines) instead of growing the table and letting `.table-wrap` scroll —
+   confirmed live: the Groups list's Scope column did exactly this at
+   375px. `.table`'s own columns revert to normal (space-only) wrapping, so
+   a dot-separated path has nowhere to break and the table grows instead,
+   matching the People table's already-correct behavior — which was working
+   by coincidence of its own column content, not because it was immune to
+   this. */
+.table .mono {
+  overflow-wrap: normal;
+}
 .table thead {
   position: sticky;
   top: 0;
@@ -511,6 +528,45 @@
   .detail-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* ---------------------------------------------------------------------
+ * Removable-entity-row list — Milestone 8, Task 4. One row style for
+ * "a named thing, with a status/scope indicator, and maybe a trailing
+ * removal action": group direct/effective members, a group's direct child
+ * groups, and a person's role assignments (revoke) all render through this.
+ * Promoted here from a group-feature-scoped file the moment a SECOND
+ * feature area (People's Roles tab) needed the identical shape — one row
+ * style for the same real-world pattern, not three near-duplicates drifting
+ * independently.
+ * ------------------------------------------------------------------- */
+
+.group-member-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.group-member-list__row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.group-member-list__name {
+  font-weight: 500;
+  color: var(--ink);
+  text-decoration: none;
+}
+.group-member-list__name:hover {
+  color: var(--primary);
+  text-decoration: underline;
+}
+.group-member-list__remove {
+  margin-left: auto;
+  flex: none;
 }
 
 /* ---------------------------------------------------------------------

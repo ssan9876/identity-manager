@@ -1,6 +1,14 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react'
 import { useAuth } from 'react-oidc-context'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { GroupsProvider } from '../groups/GroupsContext'
 import { OrgUnitsProvider } from '../org-units/OrgUnitsContext'
 import { NAV_ITEMS } from './nav-items'
 import { useSelfPermissions, type Action } from './permissions'
@@ -102,6 +110,20 @@ function NavList({ variant, onNavigate }: { variant: 'full' | 'rail' | 'dialog';
 }
 
 /**
+ * Both session-cached reference-data providers this shell's screens share,
+ * combined into one so AppShell's own return only nests one extra element
+ * (not two) around its actual markup. Order between the two is arbitrary —
+ * neither depends on the other's data.
+ */
+function ShellProviders({ children }: { children: ReactNode }) {
+  return (
+    <OrgUnitsProvider>
+      <GroupsProvider>{children}</GroupsProvider>
+    </OrgUnitsProvider>
+  )
+}
+
+/**
  * The console shell — Milestone 8, Task 2. 48px top bar, 240px left nav
  * (collapsing to a 64px icon rail under 1100px, and behind a `<dialog>`
  * disclosure under 780px — see useNavMode), content region capped at
@@ -111,10 +133,10 @@ function NavList({ variant, onNavigate }: { variant: 'full' | 'rail' | 'dialog';
  * do; it never decides it" — every route behind these links still checks
  * for itself).
  *
- * Wraps its content in OrgUnitsProvider: every screen this shell renders
- * (People list/detail today, more from Task 3 onward) needs the same
- * id -> org-unit-path lookup, fetched once per session here rather than
- * once per screen.
+ * Wraps its content in OrgUnitsProvider and GroupsProvider (ShellProviders,
+ * above): every screen this shell renders needs the same id -> org-unit-path
+ * and id -> group lookups, fetched once per session here rather than once
+ * per screen.
  */
 export default function AppShell() {
   const auth = useAuth()
@@ -166,7 +188,7 @@ export default function AppShell() {
   const username = auth.user?.profile.preferred_username
 
   return (
-    <OrgUnitsProvider>
+    <ShellProviders>
       <div className={`shell shell--${navMode}`}>
         <header className="topbar">
           {isDisclosure && (
@@ -259,6 +281,6 @@ export default function AppShell() {
           </div>
         </main>
       </div>
-    </OrgUnitsProvider>
+    </ShellProviders>
   )
 }

@@ -62,3 +62,38 @@
   color: var(--ink-muted);
   font-size: var(--text-sm);
 }
+
+/* ---------------------------------------------------------------------
+ * Roles tab — Milestone 8, Task 4. Rows reuse `.group-member-list`
+ * (styles/components.css) — see that class's own doc comment for why.
+ * ------------------------------------------------------------------- */
+
+.person-roles {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.person-roles__role-name {
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.role-grant-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-top: var(--space-2);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  max-width: 28rem;
+}
+.role-grant-form__actions {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.role-grant-toggle {
+  margin-top: var(--space-2);
+}

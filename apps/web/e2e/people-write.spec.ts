@@ -15,30 +15,39 @@ async function signIn(page: Page): Promise<void> {
 }
 
 /**
- * Navigates to the create-user form and lets it fully settle before the
- * caller's first interaction.
+ * Navigates to the create-user form.
  *
- * The extra wait below is deliberate, not decorative: interacting with a
- * freshly-navigated page immediately (in particular, selecting the Org
- * unit dropdown as the very first action) intermittently reproduced a
- * pre-existing history/OIDC-callback desync — `oidc-config.ts`'s
- * `onSigninCallback` calls the native `window.history.replaceState`
- * directly, bypassing react-router's own history abstraction, which can
- * leave react-router's internal notion of "current location" briefly out
- * of sync with the real URL. The very next `useSearchParams`-driven update
- * anywhere in the app then merges onto that STALE internal location instead
- * of the real one, resurrecting old OIDC query params into the URL.
- * Confirmed independent of anything this task built: it reproduces
- * identically on Task 2's own, unmodified People-list org-unit filter
- * select — see task-3-report.md. A semantic wait (e.g. "the org-unit select
- * is enabled") does not reliably avoid it, since that select is frequently
- * already enabled by the time it's checked regardless of the underlying
- * race; an explicit settle does, empirically and repeatably.
+ * Task 4 fixed the history/OIDC-callback desync task-3-report.md described
+ * (auth/AuthRoot.tsx now drives `onSigninCallback` through react-router's
+ * own `useNavigate()` instead of a raw `window.history.replaceState`, so
+ * react-router's internal location can no longer drift from the real URL —
+ * see AuthRoot's own doc comment, and e2e/groups.spec.ts's dedicated
+ * regression test for that exact scenario).
+ *
+ * The wait below is a DIFFERENT, narrower one, discovered while removing
+ * the old blanket 400ms settle: `waitForURL` only proves the BROWSER's
+ * address bar changed (react-router's `navigate()` calls `history.
+ * pushState` synchronously); it says nothing about whether REACT has
+ * actually re-rendered yet, which happens asynchronously. `PeopleListPage`'s
+ * own org-unit FILTER and `CreateUserPage`'s org-unit FIELD both carry the
+ * accessible name "Org unit" — in the narrow window between the URL
+ * changing and React swapping the two pages, `getByLabel('Org unit')`
+ * uniquely resolves (no strict-mode ambiguity) to whichever one is STILL
+ * attached, which can be the OLD page's filter — reproduced directly via a
+ * throwaway diagnostic script: selecting an option landed on
+ * `PeopleListPage`'s own handler and changed the URL to `/?orgUnit=...`
+ * instead of updating the form. Waiting for `CreateUserPage`'s own,
+ * unique-to-it heading first is a real, content-based wait (not a timeout)
+ * that closes the gap `waitForURL` alone leaves open — task-3-report.md's
+ * own "a semantic wait... does not reliably avoid it" referred to waiting
+ * on the SAME ambiguous org-unit select, which is a weak signal since the
+ * stale element is already enabled too; waiting on something that can only
+ * ever belong to the NEW page is a stronger one.
  */
 async function goToCreateUserForm(page: Page): Promise<void> {
   await page.getByTestId('create-user-link').click()
   await page.waitForURL('http://localhost:5173/people/new')
-  await page.waitForTimeout(400)
+  await expect(page.getByRole('heading', { name: 'Create user' })).toBeVisible()
 }
 
 /**

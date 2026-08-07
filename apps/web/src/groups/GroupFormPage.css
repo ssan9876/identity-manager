@@ -1,0 +1,46 @@
+/* Shared by CreateGroupPage and EditGroupPage — mirrors people/
+   PersonFormPage.css exactly (same structure, same tokens): GroupForm is one
+   component in two modes, and these two pages are thin wrappers around it. */
+
+.group-form-page {
+  max-width: 40rem;
+}
+
+.group-form-page h1 {
+  margin: var(--space-2) 0 var(--space-5);
+}
+
+.group-form-page__readonly {
+  margin-bottom: var(--space-2);
+}
+
+.group-form-page__notice {
+  margin-bottom: var(--space-5);
+}
+
+.group-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 32rem;
+}
+
+.group-form__attributes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: var(--space-2) 0 0;
+  padding: var(--space-5) 0 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+.group-form__attributes legend {
+  padding: 0;
+  margin-bottom: var(--space-1);
+}
+
+.group-form__actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}

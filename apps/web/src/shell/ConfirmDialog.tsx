@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ApiError } from '../api/client'
 
 export interface ConfirmDialogProps {
   open: boolean
@@ -86,7 +85,17 @@ export function ConfirmDialog({
       // back to its idle state first.
     } catch (cause) {
       setSubmitting(false)
-      setLocalError(cause instanceof ApiError ? cause.message : 'Could not complete this action.')
+      // `instanceof Error`, not the narrower `instanceof ApiError` this used
+      // to check: every existing caller only ever throws `ApiError` (a
+      // subclass of `Error`) from `onConfirm`, so this is a pure widening
+      // with no behavior change for them — `cause.message` is identical
+      // either way. It exists so a caller with its OWN, friendlier mapping
+      // from a raw API error to admin-facing text (e.g. PersonRolesTab's
+      // `explainRoleAssignError` — Milestone 8, Task 4) can throw a plain
+      // `Error` carrying that already-mapped message from `onConfirm` and
+      // have IT shown here, rather than this dialog's generic fallback
+      // discarding it.
+      setLocalError(cause instanceof Error ? cause.message : 'Could not complete this action.')
     }
   }
 

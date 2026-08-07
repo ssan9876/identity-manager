@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Inject, Param, Post, Req, UseGuards } from '@nestjs/common'
+import { Body, Controller, Delete, Get, Inject, Param, Post, Req, UseGuards } from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
 import { JwtGuard } from '../auth/jwt.guard'
@@ -118,6 +118,46 @@ export class RoleAssignmentsController {
     @Inject(OutboxWriter) private readonly outboxWriter: OutboxWriter,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
   ) {}
+
+  /**
+   * Milestone 8, Task 4 — the admin console's Roles tab needs to SHOW a
+   * target user's current grants before it can offer to revoke any of them,
+   * and nothing before this task ever exposed `RoleAssignmentsRepository.
+   * listForUser` over HTTP. Gated by the SAME `role:assign` permission as
+   * every write route on this controller (`@RequirePermission` below), not
+   * a broader `user:read` — this file's own header already establishes that
+   * only `super_admin` holds `role:assign` in today's static catalog, and
+   * "who holds what role, at what scope" is exactly the kind of privilege
+   * information that permission is meant to gate, read or write alike. That
+   * also keeps this route's authorization shape symmetric with `assign`/
+   * `revoke`: a caller who could never grant or revoke a role for this
+   * target cannot enumerate their existing grants either.
+   *
+   * Runs the SAME check 2 `assign`/`revoke` both run (finding H-1,
+   * docs/superpowers/audit-authz.md) — `assertCanIn(actor, 'role:assign',
+   * target.orgUnitId)` — and nothing else: `assertCanAssignRole`/
+   * `assertCanModifyPrincipal` answer "may I CHANGE this specific grant",
+   * which has no meaning for a plain read. A target the actor cannot reach
+   * under `role:assign` 403s here exactly as it would for `assign`, so this
+   * route cannot be used to learn anything about a principal `assign`/
+   * `revoke` would already refuse to disclose.
+   */
+  @Get(':id/roles')
+  @RequirePermission('role:assign')
+  async list(
+    @Param('id') rawUserId: string,
+    @Req() request: AuthorizedRequest,
+  ): Promise<RoleAssignment[]> {
+    const userId = parseId(rawUserId)
+
+    const target = await this.users.findById(userId)
+    if (target === null) {
+      throw new NotFoundError('user', userId)
+    }
+    await this.engine.assertCanIn(request.actor, 'role:assign', target.orgUnitId)
+
+    return this.roleAssignments.listForUser(userId)
+  }
 
   /**
    * All three pre-transaction checks run BEFORE the transaction opens:

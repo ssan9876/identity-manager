@@ -62,6 +62,12 @@ export function mapApiErrorToFields(error: ApiError, knownFields: ReadonlySet<st
     ['employeeId', 'employee id'],
     ['orgUnitId', 'org unit'],
     ['managerId', 'manager'],
+    // Milestone 8, Task 4: GroupsRepository.translateWriteError's own
+    // ConflictError text is `a group named "X" already exists` — no
+    // `issues` array, same shape as the user-side duplicate-email/username
+    // cases above, so it needs the identical keyword-match treatment to
+    // land on GroupForm's `name` field instead of a top-of-form banner.
+    ['name', 'named'],
   ]
   for (const [field, needle] of referenceFieldByKeyword) {
     if (knownFields.has(field) && message.includes(needle)) {

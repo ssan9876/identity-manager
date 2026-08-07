@@ -364,4 +364,109 @@ describe('GET /users', () => {
       expect(res.body.code).toBe('VALIDATION_FAILED')
     })
   })
+
+  // Milestone 8, Task 4: resolves a known set of ids to full records — the
+  // admin console's group-membership screens need this to turn the bare id
+  // arrays GET /groups/:id/(effective-)members returns into displayable
+  // rows (see users.controller.ts's own doc comment on parseIdsQuery).
+  describe('ids filter', () => {
+    async function idOf(username: string): Promise<string> {
+      const res = await request(app.getHttpServer()).get(`/users?search=${username}`).expect(200)
+      const match = (res.body.items as { id: string; username: string }[]).find(
+        (u) => u.username === username,
+      )
+      if (match === undefined) throw new Error(`fixture user "${username}" not found`)
+      return match.id
+    }
+
+    it('resolves exactly the named ids, in any number, and excludes ids not named', async () => {
+      const [adaId, graceId] = await Promise.all([idOf('ada'), idOf('grace')])
+
+      const res = await request(app.getHttpServer())
+        .get(`/users?ids=${adaId},${graceId}`)
+        .expect(200)
+
+      expect(res.body.total).toBe(2)
+      expect(
+        (res.body.items as { username: string }[]).map((u) => u.username).sort(),
+      ).toEqual(['ada', 'grace'])
+    })
+
+    it('tolerates surrounding whitespace around each id', async () => {
+      const adaId = await idOf('ada')
+      const res = await request(app.getHttpServer())
+        .get(`/users?ids=${encodeURIComponent(` ${adaId} `)}`)
+        .expect(200)
+      expect(res.body.items.map((u: { username: string }) => u.username)).toEqual(['ada'])
+    })
+
+    it('an explicit empty ids value matches nothing — never silently "no filter" (which would return everyone)', async () => {
+      const res = await request(app.getHttpServer()).get('/users?ids=').expect(200)
+      expect(res.body).toMatchObject({ total: 0, items: [] })
+    })
+
+    it('an absent ids param behaves exactly as before (no filter)', async () => {
+      const res = await request(app.getHttpServer()).get('/users').expect(200)
+      expect(res.body.total).toBe(3)
+    })
+
+    it('a well-formed id that matches nobody resolves to an empty page, not an error', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/users?ids=00000000-0000-0000-0000-000000000000')
+        .expect(200)
+      expect(res.body).toMatchObject({ total: 0, items: [] })
+    })
+
+    it('rejects a malformed id inside the list with 400 VALIDATION_FAILED, not 500', async () => {
+      const adaId = await idOf('ada')
+      const res = await request(app.getHttpServer())
+        .get(`/users?ids=${adaId},not-a-uuid`)
+        .expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+    })
+
+    it('rejects more than 200 ids with 400', async () => {
+      const tooMany = Array.from({ length: 201 }, () => '00000000-0000-0000-0000-000000000000').join(',')
+      const res = await request(app.getHttpServer()).get(`/users?ids=${tooMany}`).expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+    })
+
+    it('combines with an explicit status filter as AND: a deactivated id is excluded when status=active is also requested', async () => {
+      const repo = new UsersRepository(ctx.db)
+      const toDeactivate = await repo.create({
+        primaryEmail: 'ids-gone@example.com',
+        username: 'ids-gone',
+        firstName: 'Ids',
+        lastName: 'Gone',
+        orgUnitId,
+      })
+      await repo.changeStatus(toDeactivate.id, 'active')
+      await repo.changeStatus(toDeactivate.id, 'deactivated')
+
+      const withStatus = await request(app.getHttpServer())
+        .get(`/users?ids=${toDeactivate.id}&status=active`)
+        .expect(200)
+      expect(withStatus.body).toMatchObject({ total: 0, items: [] })
+    })
+
+    it('unlike the plain list, resolving by ids includes a deactivated member with no status filter — a silent drop would look like a shorter membership list, not a filtered one', async () => {
+      const repo = new UsersRepository(ctx.db)
+      const toDeactivate = await repo.create({
+        primaryEmail: 'ids-gone2@example.com',
+        username: 'ids-gone2',
+        firstName: 'Ids',
+        lastName: 'Gone2',
+        orgUnitId,
+      })
+      await repo.changeStatus(toDeactivate.id, 'active')
+      await repo.changeStatus(toDeactivate.id, 'deactivated')
+
+      const plainList = await request(app.getHttpServer()).get('/users').expect(200)
+      expect(plainList.body.items.map((u: { username: string }) => u.username)).not.toContain('ids-gone2')
+
+      const byId = await request(app.getHttpServer()).get(`/users?ids=${toDeactivate.id}`).expect(200)
+      expect(byId.body).toMatchObject({ total: 1 })
+      expect(byId.body.items[0]).toMatchObject({ username: 'ids-gone2', status: 'deactivated' })
+    })
+  })
 })

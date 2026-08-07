@@ -10,6 +10,7 @@ import { useToast } from '../shell/ToastProvider'
 import { formatDateOnly, formatDateTime } from '../format'
 import { deactivatePerson, fetchGroupsForUser, fetchPerson, type Group, type Person } from './api'
 import { StatusBadge, SYNC_WORD, SyncBadge } from './badges'
+import { PersonRolesTab } from './PersonRolesTab'
 import './PersonDetailPage.css'
 
 type TabKey = 'profile' | 'groups' | 'roles' | 'activity'
@@ -400,10 +401,24 @@ export default function PersonDetailPage() {
         tabIndex={0}
         className="tabpanel"
       >
-        <NotYetBuilt
-          title="Roles"
-          note="Viewing and granting role assignments from here is coming in a later task. Ask a super admin to check assignments directly for now."
-        />
+        {/* Milestone 8, Task 4: gated on role:assign BEFORE ever rendering
+            PersonRolesTab (which would otherwise fetch and 403) — only
+            super_admin holds role:assign in today's static catalog (see
+            RoleAssignmentsController's own file header), so most callers
+            who can reach this page at all (via user:read) will not hold
+            it. Explained here rather than an unexplained empty panel,
+            same "make scope legible" spirit as OrgUnitsPage's own
+            scope-legibility banner. */}
+        {permissions.status === 'loading' ? (
+          <span className="skeleton" style={{ width: '10rem', height: '1rem', display: 'block' }} />
+        ) : permissions.status === 'ready' && permissions.actions.has('role:assign') ? (
+          <PersonRolesTab userId={person.id} userName={person.displayName} />
+        ) : (
+          <p className="cell-muted" data-testid="roles-permission-note">
+            You don&rsquo;t hold the role:assign permission, so you can&rsquo;t view or manage role
+            assignments here. Ask a super admin if you need this.
+          </p>
+        )}
       </div>
       <div
         id="panel-activity"

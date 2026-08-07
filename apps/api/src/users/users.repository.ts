@@ -513,14 +513,24 @@ export class UsersRepository {
   }
 
   /**
-   * Builds the shared status/orgUnit/scope/search WHERE clause for list()
-   * and count(), so the two can never drift apart on which rows they agree
-   * count as "in".
+   * Builds the shared status/orgUnit/scope/search/ids WHERE clause for
+   * list() and count(), so the two can never drift apart on which rows they
+   * agree count as "in".
    *
    * Deactivated users are excluded from all default list and search views
    * (core design spec). An explicit `status` — including `status:
    * 'deactivated'` itself, so an admin can still find them — overrides that
-   * default rather than combining with it.
+   * default rather than combining with it. `ids` (Milestone 8, Task 4) ALSO
+   * overrides that default, when `status` was not itself given: this branch
+   * exists to resolve an already-known, already-identified set of ids (a
+   * group's membership — see UsersController.list's own doc comment on
+   * `ids`), and silently dropping a deactivated member from that resolution
+   * would look like a shorter membership list rather than what it actually
+   * is — exactly the kind of silent mismatch PRODUCT.md calls out ("a user
+   * who *looks* healthy while their group sync dead-lettered is the worst
+   * outcome this product can produce" — the same "don't silently hide state
+   * that changes what a screen is telling you" principle, applied here to
+   * status instead of sync).
    *
    * `scopePaths` follows PermissionEngine.scopePathsFor's contract exactly:
    * `undefined`/`null` means unrestricted (no scope filter at all); an array
@@ -533,23 +543,34 @@ export class UsersRepository {
    * controller's job — see UsersController.list) and is ANDed together with
    * every other active filter, not ORed: a caller filtering by
    * status=active AND searching "ada" expects someone who is both, not
-   * either.
+   * either. `ids`, when present, is guaranteed non-empty by both callers
+   * below (list()/count() short-circuit an explicitly-empty `ids` before
+   * ever reaching this method — see their own doc comments) — `inArray`
+   * with an empty array is unsafe to hand to the driver, mirroring
+   * GroupsRepository.listByIds's identical guard and reasoning.
    */
   private listFilters(filter: {
     status?: UserStatus
     orgUnitId?: string
     scopePaths?: string[] | null
     search?: string
+    ids?: string[]
   }) {
-    const filters = [
-      filter.status !== undefined ? eq(users.status, filter.status) : ne(users.status, 'deactivated'),
-    ]
+    const filters = []
+    if (filter.status !== undefined) {
+      filters.push(eq(users.status, filter.status))
+    } else if (filter.ids === undefined) {
+      filters.push(ne(users.status, 'deactivated'))
+    }
     if (filter.orgUnitId !== undefined) filters.push(eq(users.orgUnitId, filter.orgUnitId))
     if (filter.scopePaths !== undefined && filter.scopePaths !== null) {
       filters.push(this.scopeFilter(filter.scopePaths))
     }
     if (filter.search !== undefined) {
       filters.push(this.searchFilter(filter.search))
+    }
+    if (filter.ids !== undefined) {
+      filters.push(inArray(users.id, filter.ids))
     }
     return and(...filters)
   }
@@ -609,8 +630,18 @@ export class UsersRepository {
       orgUnitId?: string
       scopePaths?: string[] | null
       search?: string
+      ids?: string[]
     },
   ): Promise<User[]> {
+    // An explicitly-empty `ids` (the caller asked to resolve "no ids") means
+    // "matches nothing" — returned directly, never sent to Postgres as
+    // `IN ()` (invalid SQL) or, worse, silently treated as "no ids filter"
+    // (which would return everyone). Mirrors GroupsRepository.listByIds's
+    // identical early return.
+    if (options.ids !== undefined && options.ids.length === 0) {
+      return []
+    }
+
     const rows = await this.db
       .select()
       .from(users)
@@ -623,8 +654,18 @@ export class UsersRepository {
   }
 
   async count(
-    filter: { status?: UserStatus; orgUnitId?: string; scopePaths?: string[] | null; search?: string } = {},
+    filter: {
+      status?: UserStatus
+      orgUnitId?: string
+      scopePaths?: string[] | null
+      search?: string
+      ids?: string[]
+    } = {},
   ): Promise<number> {
+    if (filter.ids !== undefined && filter.ids.length === 0) {
+      return 0
+    }
+
     const [row] = await this.db
       .select({ value: sql<number>`count(*)::int` })
       .from(users)

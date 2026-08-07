@@ -9,7 +9,7 @@ import {
 import { type AuthenticatedRequest, JwtGuard } from '../auth/jwt.guard'
 import { AuditWriter } from '../audit/audit.writer'
 import { ALL_ACTIONS, type Action } from '../authz/actions'
-import { type Actor, PermissionEngine } from '../authz/permission.engine'
+import { type Actor, type ActorAssignment, PermissionEngine } from '../authz/permission.engine'
 import { DB_CLIENT } from '../common/db.token'
 import { NotFoundError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
@@ -111,6 +111,33 @@ export interface SelfGroupsResponse {
  */
 export interface SelfPermissionsResponse {
   actions: Action[]
+}
+
+/**
+ * `GET /self/roles`'s response — Milestone 8, Task 4. Unlike `GET /self/
+ * permissions` (a flat action list, deliberately silent on scope), this
+ * endpoint's whole reason to exist IS scope: the admin console's role-
+ * assignment screen must constrain its scope picker to "scopes the caller
+ * can actually grant at" (task-4-brief.md) rather than offering an org unit
+ * the API will reject, and replicating that decision client-side (for
+ * picker options ONLY — the server still re-decides for real on submit; see
+ * `RoleAssignmentsController.assign`'s own doc comment on the three checks)
+ * needs the same inputs `PrivilegeGuards.assertCanAssignRole` itself reads:
+ * which roles the caller holds, and at which scope. `actor.assignments` —
+ * `ActorAssignment[]`, reused directly rather than redeclaring an identical
+ * shape (same move `SelfGroupsResponse` above already makes with `Group`) —
+ * is exactly that: `resolveActor` already joins each assignment's org unit
+ * to resolve `scopePath`, so this costs no extra query beyond the one
+ * `resolveCaller` always runs.
+ *
+ * Never anyone else's assignments (this file's own "no id, anywhere"
+ * guarantee — see the class doc comment) and never gated behind a
+ * permission of its own: an actor holding NO role at all legitimately gets
+ * `{ assignments: [] }`, the same "holding nothing is a valid state, not an
+ * error" contract `permissions` below already has.
+ */
+export interface SelfRolesResponse {
+  assignments: ActorAssignment[]
 }
 
 /**
@@ -274,6 +301,17 @@ export class SelfServiceController {
     const actor = await this.resolveCaller(request)
     const actions = ALL_ACTIONS.filter((action) => this.engine.canAnywhere(actor, action))
     return { actions }
+  }
+
+  /**
+   * Milestone 8, Task 4 — see `SelfRolesResponse`'s own doc comment for why
+   * this exists at all (the role-assignment scope picker) and why
+   * `actor.assignments` is returned as-is rather than re-derived.
+   */
+  @Get('roles')
+  async roles(@Req() request: AuthenticatedRequest): Promise<SelfRolesResponse> {
+    const actor = await this.resolveCaller(request)
+    return { assignments: actor.assignments }
   }
 
   /**
