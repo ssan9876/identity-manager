@@ -14,6 +14,31 @@ export interface KeycloakAdminClientConfig {
   issuer: string
   clientId: string
   clientSecret: string
+  /**
+   * Optional per-request abort bound, applied to every outbound `fetch`
+   * (token requests and admin REST calls alike) via `AbortSignal.timeout`.
+   * `undefined` (the default, and every pre-existing call site's behaviour,
+   * unchanged) means what Node's native `fetch` already means with no
+   * `signal` at all: no client-side ceiling — a genuinely stuck TCP
+   * connection can hang for as long as the underlying socket/OS allows.
+   * That is fine for production (`app.module.ts` does not set this) and for
+   * every other test file, none of which has ever needed to bound a single
+   * call's duration. It stopped being fine for `sync.worker.spec.ts`'s own
+   * "cross-aggregate races" tests specifically (see `h2-race-flake-report.md`):
+   * under real `pnpm verify` full-suite host contention, occasionally ONE
+   * real HTTP call to the real Keycloak container in that file legitimately
+   * — not a bug, a resource-starved JVM under 15+ concurrent Testcontainer-
+   * backed files sharing 16 cores — takes long enough that even a 300-second
+   * PER-TEST timeout was insufficient (see that report's evidence). Without
+   * SOME bound on an individual call, no fixed test-level timeout is a
+   * principled choice — it is a guess at how bad contention can get. With
+   * one, a stalled call fails FAST and cleanly instead of silently
+   * consuming the whole test budget, letting the worker's own retry/backoff
+   * (`recordFailure`, sync.worker.ts) — or that test's own bounded
+   * `driveToDone` helper — do exactly what they are already designed to do
+   * for a transient failure.
+   */
+  requestTimeoutMs?: number
 }
 
 /** What this client reads back off Keycloak's own user representation. */
@@ -241,6 +266,13 @@ export class KeycloakAdminClient {
   // expiry, forced refresh on a 401 from any admin call (see `request`).
   // ---------------------------------------------------------------------
 
+  /** `undefined` (no signal at all — unbounded, exactly today's behaviour) unless `config.requestTimeoutMs` opts in. See that field's own doc comment. */
+  private abortSignal(): AbortSignal | undefined {
+    return this.config.requestTimeoutMs !== undefined
+      ? AbortSignal.timeout(this.config.requestTimeoutMs)
+      : undefined
+  }
+
   private async fetchToken(): Promise<{ value: string; expiresAt: number }> {
     const requestedAt = Date.now()
     const res = await fetch(this.tokenUrl, {
@@ -251,6 +283,7 @@ export class KeycloakAdminClient {
         client_id: this.config.clientId,
         client_secret: this.config.clientSecret,
       }),
+      signal: this.abortSignal(),
     })
 
     if (!res.ok) {
@@ -314,6 +347,7 @@ export class KeycloakAdminClient {
           ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: this.abortSignal(),
       })
 
     const res = await attempt(await this.getToken(false))

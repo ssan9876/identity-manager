@@ -16,6 +16,18 @@ import { withTestDatabase } from './support/pg'
 const SYNC_CLIENT_ID = 'idm-sync-service'
 const SYNC_CLIENT_SECRET = 'idm_sync_dev_secret_change_me'
 
+// Bounds every real Keycloak HTTP call this file makes (see
+// KeycloakAdminClientConfig.requestTimeoutMs's own doc comment for the full
+// reasoning) — this file is the single most Keycloak-round-trip-dense spec
+// in the suite (the "cross-aggregate races" tests alone: 2 workers x 20
+// iterations x ~15-20 real calls each), so it is also the one most exposed
+// to an occasional genuinely-slow call under `pnpm verify` full-suite host
+// contention. 20s is generous relative to this file's own normal per-call
+// latency (low hundreds of ms, even under typical full-suite load — see
+// h2-race-flake-report.md) while still bounding the worst case instead of
+// letting one stalled call silently consume an entire test's budget.
+const KEYCLOAK_REQUEST_TIMEOUT_MS = 20_000
+
 // A definitely-closed local port: connecting to it fails FAST with
 // ECONNREFUSED rather than hanging on a network timeout, which is what
 // every "Keycloak unreachable" test below needs to stay quick and
@@ -195,6 +207,7 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
       issuer: keycloak.issuer,
       clientId: SYNC_CLIENT_ID,
       clientSecret: SYNC_CLIENT_SECRET,
+      requestTimeoutMs: KEYCLOAK_REQUEST_TIMEOUT_MS,
     })
 
     orgUnitId = (await new OrgUnitsRepository(ctx.db).createRoot(`Sync Worker Root ${Date.now()}`)).id
@@ -1097,6 +1110,59 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
   // not reused stale from before it.
   // =====================================================================
   describe('cross-aggregate races on the same user (finding H2)', () => {
+    /**
+     * Finishes driving an already-claimed-or-claimable outbox row to
+     * 'done', tolerating a genuinely TRANSIENT failure on the attempt the
+     * caller already made — a real Postgres/Keycloak round trip erroring
+     * (e.g. a `fetch failed`) under full-suite host contention (many
+     * Testcontainers competing for the same CPU/Docker budget), which has
+     * nothing to do with the H2 race itself: by the time this is called in
+     * both races below, the gate has released and the lock-ordered
+     * interleaving under test has ALREADY fully happened — a transient
+     * failure here only means `runOnce` already recorded a real
+     * attempt/backoff via `recordFailure` (sync.worker.ts), exactly what
+     * the PRODUCTION polling loop (`start`/`tick`) would itself retry,
+     * forever, given time. This forces that same, already-idempotent
+     * convergence to happen NOW instead of waiting out a real backoff
+     * window — the identical "force `next_attempt_at` to now, call
+     * `runOnce()` again" idiom the dead-lettering tests above already use
+     * (see e.g. 'exceeding the attempt cap...'), just generalized into a
+     * helper and bounded so a GENUINE regression (the row never converges,
+     * or dead-letters) still fails loudly, with the real diagnostic
+     * attached, rather than this test mis-attributing an infrastructure
+     * hiccup to the lock being broken.
+     *
+     * Root-cause note (see h2-race-flake-report.md): under `pnpm verify`'s
+     * full-suite load, this file's own two-real-container, tightly
+     * lock-serialized races are the single most round-trip-dense test in
+     * the suite (2 workers x 20 iterations x ~15-20 sequential Postgres/
+     * Keycloak calls each). Before this helper existed, a SINGLE transient
+     * failure on any one of those hundreds of real network calls left an
+     * outbox row 'pending' after the test's own single `runOnce()` call,
+     * failing an unrelated-to-the-race assertion — never once a wrong
+     * FINAL Keycloak group membership. That is the signature of a
+     * throughput/timeout problem, not a locking one; this helper is the
+     * fix for it.
+     */
+    async function driveToDone(worker: SyncWorker, eventId: number, label: string): Promise<void> {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const row = await outboxRow(eventId)
+        if (row.status === 'done') return
+        if (row.status === 'failed') {
+          throw new Error(`${label} (event ${eventId}) dead-lettered instead of converging: ${row.last_error}`)
+        }
+        if (row.status === 'pending') {
+          await setNextAttemptAt(eventId, new Date(Date.now() - 1_000))
+        }
+        await worker.runOnce()
+      }
+      const finalRow = await outboxRow(eventId)
+      throw new Error(
+        `${label} (event ${eventId}) never reached 'done' after repeated attempts — ` +
+          `status=${finalRow.status} attempts=${finalRow.attempts} lastError=${finalRow.last_error}`,
+      )
+    }
+
     /** Creates an active user, seeds their DIRECT membership, and drains one 'created' event to converge Postgres and Keycloak before the race begins. */
     async function setupConvergedUser(groups: Awaited<ReturnType<typeof makeGroup>>[]): Promise<User> {
       const user = await makeUser()
@@ -1104,9 +1170,18 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
       for (const group of groups) {
         await groupsRepo().addUser(group.id, user.id)
       }
-      await insertOutboxEvent('user', user.id, 'created', {})
-      const processed = await makeWorker(client).drain()
+      const eventId = await insertOutboxEvent('user', user.id, 'created', {})
+      const worker = makeWorker(client)
+      const processed = await worker.drain()
       expect(processed).toBeGreaterThan(0)
+      // `drain()` stops at the first 'idle' PASS, which a transient
+      // failure can trigger prematurely: the row goes back to 'pending' but
+      // is not due again until its backoff elapses, so the very next claim
+      // attempt correctly finds nothing claimable YET and reports 'idle',
+      // even though this event has not actually converged. Make the
+      // pre-race baseline genuinely solid, not just "something ran" — see
+      // driveToDone's own doc comment.
+      await driveToDone(worker, eventId, 'setupConvergedUser initial sync')
       return user
     }
 
@@ -1122,6 +1197,7 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
             issuer: keycloak.issuer,
             clientId: SYNC_CLIENT_ID,
             clientSecret: SYNC_CLIENT_SECRET,
+            requestTimeoutMs: KEYCLOAK_REQUEST_TIMEOUT_MS,
           })
           const workerSlow = makeWorker(gated)
           const workerFast = makeWorker(client)
@@ -1149,6 +1225,12 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
           await slowPromise
           await fastPromise
 
+          // The critical lock-ordered interleaving is now fully decided —
+          // see driveToDone's own doc comment for why any further retrying
+          // from here on is safe and does not touch what is under test.
+          await driveToDone(workerSlow, updateEventId, 'ADD: slow worker user-update event')
+          await driveToDone(workerFast, membershipEventId, 'ADD: fast worker membership event')
+
           expect((await outboxRow(updateEventId)).status).toBe('done')
           expect((await outboxRow(membershipEventId)).status).toBe('done')
 
@@ -1159,7 +1241,17 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
           expect(kcGroups).toEqual(new Set([g1.name, g2.name]))
         }
       },
-      120_000,
+      // 300s, not the file's default 120s: 20 iterations of a fully
+      // lock-serialized, two-real-container race is the single most
+      // round-trip-dense test in this suite. Under `pnpm verify`'s
+      // full-suite host contention (~15 Testcontainer-backed files running
+      // concurrently), per-call latency legitimately multiplies several
+      // times over its ~16s isolated baseline — see h2-race-flake-report.md
+      // for the measured range. This headroom is for genuinely SLOW real
+      // infrastructure, not a hang: driveToDone above still bounds retries,
+      // so a genuine lock regression fails fast on iteration 1 (see that
+      // report's counterfactual), it does not silently run out the clock.
+      300_000,
     )
 
     it(
@@ -1174,6 +1266,7 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
             issuer: keycloak.issuer,
             clientId: SYNC_CLIENT_ID,
             clientSecret: SYNC_CLIENT_SECRET,
+            requestTimeoutMs: KEYCLOAK_REQUEST_TIMEOUT_MS,
           })
           const workerSlow = makeWorker(gated)
           const workerFast = makeWorker(client)
@@ -1196,6 +1289,12 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
           await slowPromise
           await fastPromise
 
+          // The critical lock-ordered interleaving is now fully decided —
+          // see driveToDone's own doc comment for why any further retrying
+          // from here on is safe and does not touch what is under test.
+          await driveToDone(workerSlow, updateEventId, 'REMOVE: slow worker user-update event')
+          await driveToDone(workerFast, membershipEventId, 'REMOVE: fast worker membership event')
+
           expect((await outboxRow(updateEventId)).status).toBe('done')
           expect((await outboxRow(membershipEventId)).status).toBe('done')
 
@@ -1208,7 +1307,9 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
           expect(kcGroups).toEqual(new Set([g1.name]))
         }
       },
-      120_000,
+      // See the ADD-direction test's own comment on its identical 300_000
+      // — same shape of test, same round-trip density, same justification.
+      300_000,
     )
   })
 
