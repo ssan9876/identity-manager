@@ -7,10 +7,14 @@ import { ActiveDirectoryConnector } from './active-directory.connector'
 import type { ConnectorTarget, DirectoryConnector, DirectoryGroupConnector } from './connector'
 import { EchoConnector } from './echo.connector'
 import { EntraIdConnector } from './entra-id.connector'
+import { GoogleWorkspaceConnector } from './google-workspace.connector'
 import { KeycloakConnector } from './keycloak.connector'
 
 /** Builds a connector instance already bound to ITS target's current `connector_targets.config` (see `ConnectorRegistry.resolve`). */
 type ConnectorFactory = (config: Record<string, unknown>) => DirectoryConnector
+
+/** The GROUP-shaped mirror of `ConnectorFactory`, for `resolveGroupConnector` below. */
+type GroupConnectorFactory = (config: Record<string, unknown>) => DirectoryGroupConnector
 
 // Only the targets with a REAL implementation TODAY. Widening this (and the
 // `satisfies` literal in the constructor below) together, in the SAME
@@ -22,8 +26,31 @@ type ConnectorFactory = (config: Record<string, unknown>) => DirectoryConnector
 // FIRST real (non-echo) target added since Task 2 — proof this "cast a
 // runtime-known-safe value, `satisfies`-check the literal" shape genuinely
 // generalises rather than being echo-specific. Milestone 12, Task 7 widens it
-// a second time to `entra_id` — proof it generalises again, not a one-off.
-type ImplementedConnectorTarget = 'keycloak' | 'echo' | 'active_directory' | 'entra_id'
+// a second time to `entra_id`; Milestone 13, Task 8 widens it a THIRD time
+// to `google_workspace` — the last of the three real vendor targets this
+// sub-project set out to build (design doc build order M11-M13), and proof
+// this shape holds regardless of how many real targets accumulate.
+type ImplementedConnectorTarget = 'keycloak' | 'echo' | 'active_directory' | 'entra_id' | 'google_workspace'
+
+// Milestone 13, Task 8 — the targets with a REAL `DirectoryGroupConnector`
+// implementation today: `active_directory` (Milestone 11, Task 6) and
+// `echo` (this task — see `EchoConnector`'s own doc comment for why the
+// in-repo target gains this capability too). Deliberately NOT `entra_id`/
+// `google_workspace`: both represent group membership through the FLAT
+// `DesiredUser.groups` shape instead (Entra via `$ref`, Google via the
+// Members API — see each connector's own doc comment), the same choice
+// `KeycloakConnector` already made, so neither implements this optional
+// capability. This is the "second real case" `resolveGroupConnector`'s
+// PREVIOUS single-`!==`-comparison implementation explicitly named as the
+// trigger to adopt the catalog shape `factories` above already uses — see
+// `resolveGroupConnector`'s own doc comment for why THIS array now needs
+// the identical `Object.create(null)` + `Object.hasOwn` + `satisfies`
+// defence `factories` already has: a second real entry means this is now a
+// genuine lookup table indexed by a value sourced from `outbox_events.target`
+// (a Postgres enum column — closed today, but not a compile-time guarantee
+// — see `factories`'s own doc comment for the full prototype-chain-bypass
+// reasoning, identical here).
+type ImplementedGroupConnectorTarget = 'active_directory' | 'echo'
 
 /**
  * Target -> connector. This project has been bitten FOUR times by
@@ -60,6 +87,7 @@ type ImplementedConnectorTarget = 'keycloak' | 'echo' | 'active_directory' | 'en
 @Injectable()
 export class ConnectorRegistry {
   private readonly factories: Record<ImplementedConnectorTarget, ConnectorFactory>
+  private readonly groupFactories: Record<ImplementedGroupConnectorTarget, GroupConnectorFactory>
 
   constructor(
     @Inject(KeycloakAdminClient) keycloak: KeycloakAdminClient,
@@ -92,6 +120,15 @@ export class ConnectorRegistry {
     @Optional()
     @Inject(EntraIdConnector)
     private readonly entraIdConnector: EntraIdConnector = new EntraIdConnector(),
+    // Milestone 13, Task 8 — the SAME `@Optional()`-with-JS-default shape as
+    // `entraIdConnector` immediately above, for the identical reason: a raw
+    // `new ConnectorRegistry(keycloak)` (every pre-Task-8 test in this file)
+    // keeps compiling and working via the TS default, while real Nest DI
+    // (app.module.ts) hands every caller the ONE registered instance
+    // instead.
+    @Optional()
+    @Inject(GoogleWorkspaceConnector)
+    private readonly googleWorkspaceConnector: GoogleWorkspaceConnector = new GoogleWorkspaceConnector(),
   ) {
     // Keycloak's OWN config source is unchanged by this task (still the
     // env-sourced KEYCLOAK_ADMIN_CONFIG token — see keycloak.connector.ts's
@@ -129,7 +166,30 @@ export class ConnectorRegistry {
         // token's identity against the freshly-bound config on every actual
         // use instead (see that class's own `getToken` doc comment).
         entra_id: (config: Record<string, unknown>) => this.entraIdConnector.configure(config),
+        // Milestone 13, Task 8 — same `configure(config)`-rebinds-the-long-
+        // lived-instance shape as every other real target above: ONE
+        // `GoogleWorkspaceConnector` instance (and its own in-memory token
+        // cache) is reused across `resolve()` calls, only its config
+        // snapshot changes. No persistent socket to invalidate/reconnect
+        // here (unlike AD's LDAPS client) — `GoogleWorkspaceConnector`
+        // re-validates its cached token's identity against the
+        // freshly-bound config on every actual use, the identical pattern
+        // `EntraIdConnector.getToken` already establishes.
+        google_workspace: (config: Record<string, unknown>) => this.googleWorkspaceConnector.configure(config),
       } satisfies Record<ImplementedConnectorTarget, ConnectorFactory>,
+    )
+
+    // Milestone 13, Task 8 — the GROUP-shaped mirror of `this.factories`
+    // immediately above, same `Object.create(null)` + `satisfies` shape, now
+    // that a SECOND target (`echo`) genuinely implements `DirectoryGroupConnector`
+    // — see `ImplementedGroupConnectorTarget`'s own doc comment for why this
+    // stopped being a single `!==` comparison.
+    this.groupFactories = Object.assign(
+      Object.create(null) as Record<ImplementedGroupConnectorTarget, GroupConnectorFactory>,
+      {
+        active_directory: (config: Record<string, unknown>) => this.activeDirectoryConnector.configure(config),
+        echo: (config: Record<string, unknown>) => this.echoConnector.configure(config),
+      } satisfies Record<ImplementedGroupConnectorTarget, GroupConnectorFactory>,
     )
   }
 
@@ -148,17 +208,18 @@ export class ConnectorRegistry {
    * (`EchoConnector.health`/`apply`/`plan`/`disable` -> `MissingSecretError`)
    * — never a silent misconfiguration.
    *
-   * A `target` with NO implementation yet (`google_workspace` — Milestone
-   * 13; `active_directory` and `entra_id` shipped in Milestones 11 and 12
-   * respectively) throws a clear, immediate error rather than guessing or
+   * Every target `ConnectorTarget` names has a real implementation as of
+   * Milestone 13 (`active_directory`/Milestone 11, `entra_id`/Milestone 12,
+   * `google_workspace`/Milestone 13, plus `keycloak`/`echo` from Milestone
+   * 10) — but this method still fails LOUDLY, never silently, for any
+   * target absent from `this.factories` (a hypothetical FUTURE enum value,
+   * or a typo'd/synthetic one — see `test/connector-registry.spec.ts`'s own
+   * prototype-chain-bypass tests, which deliberately probe values outside
+   * the compile-time `ConnectorTarget` union), rather than guessing or
    * silently deferring to Keycloak's own connector — exactly the failure
    * mode Task 1's own report flagged as the risk of leaving
    * `SyncWorker.applyEvent` dispatching on `aggregateType` alone: "claimed
    * non-Keycloak events would be silently misprocessed as Keycloak ones."
-   * `connector_targets` seeds no ENABLED row for `google_workspace` yet
-   * (Task 1), so `OutboxWriter.record`'s fan-out can never actually produce
-   * a claimable event for it in practice — this is defence in depth, not a
-   * path exercised by today's real traffic.
    */
   async resolve(target: ConnectorTarget, tx: DbHandle): Promise<DirectoryConnector> {
     if (!Object.hasOwn(this.factories, target)) {
@@ -185,27 +246,35 @@ export class ConnectorRegistry {
    * fall back to that pre-existing per-user path, exactly as it did before
    * this task for every target.
    *
-   * A single literal `!==` comparison, not an `Object.hasOwn`-guarded
-   * catalog lookup — deliberately: the prototype-chain-bypass hazard that
-   * pattern defends against is specific to INDEXING an object by an
-   * untrusted key (`this.factories[target]`, where `target` could
-   * coincidentally name an inherited `Object.prototype` member); a plain
-   * `===`/`!==` comparison against one fixed string literal has no such
-   * hazard, so the extra machinery would add nothing here. When a second
-   * target gains this capability (Entra ID/Google Workspace, Milestones
-   * 12-13), this becomes a real multi-entry catalog and should adopt the
-   * SAME `Object.create(null)` + `Object.hasOwn` + `satisfies` shape
-   * `factories` above already uses — not before, per this project's own
-   * "generalise when there is a second real case, not before" precedent
-   * (see e.g. `ImplementedConnectorTarget`'s own doc comment on why
-   * `active_directory` was the proof this shape genuinely generalises).
+   * Milestone 13, Task 8 — WIDENED from a single literal `!==` comparison to
+   * the SAME `Object.create(null)` + `Object.hasOwn` + `satisfies` catalog
+   * shape `resolve`/`factories` above already use, now that `echo` is a
+   * SECOND real `DirectoryGroupConnector` implementation (see
+   * `EchoConnector`'s own doc comment for why, and `ImplementedGroupConnectorTarget`'s
+   * own doc comment for why this specific migration is the "second real
+   * case" this method's own PREVIOUS doc comment named as the trigger).
+   * `target` is sourced from the exact same untrusted-enum-column origin as
+   * `resolve`'s own `target` parameter (`outbox_events.target` /
+   * `TargetReconciliationJob`'s own `target` argument) — the identical
+   * prototype-chain-bypass hazard `factories` defends against now genuinely
+   * applies here too, since this is a real lookup table indexed by that
+   * value, not a single fixed-literal comparison.
+   *
+   * Still returns `null`, never throws, for a target absent from this
+   * catalog — a normal, expected outcome (Keycloak, Entra ID and Google
+   * Workspace all resolve their OWN group membership entirely through
+   * `DesiredUser.groups` inside `apply()` — see connector.ts's own
+   * `DirectoryGroupConnector` doc comment), not a misconfiguration the way
+   * an unimplemented user-facing target is (`resolve`'s own thrown error,
+   * above).
    */
   async resolveGroupConnector(target: ConnectorTarget, tx: DbHandle): Promise<DirectoryGroupConnector | null> {
-    if (target !== 'active_directory') {
+    if (!Object.hasOwn(this.groupFactories, target)) {
       return null
     }
     const config = await this.loadConfig(target, tx)
-    return this.activeDirectoryConnector.configure(config)
+    const factory = this.groupFactories[target as ImplementedGroupConnectorTarget]
+    return factory(config)
   }
 
   /** The one Postgres read every `resolve*` method needs — `connector_targets.config` for `target`, via the CALLER's own `tx` (see `resolve`'s own doc comment on connection discipline). `undefined`/no row resolves to an empty config, same as before this was extracted. */

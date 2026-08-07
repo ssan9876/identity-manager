@@ -51,24 +51,35 @@ const SYNC_USER_LOCK_NAMESPACE = 0x1d3a_0002
 /**
  * Targets whose connector needs `DesiredUser.existingExternalId`/
  * `managedAttributeRemoteNames` — see either field's own doc comment
- * (connectors/connector.ts) for the full reasoning. Both are closed-set
- * literal comparisons via `.includes`, never an object-keyed catalog lookup —
- * no `Object.hasOwn`/`Object.create(null)` hazard applies here (that defence
- * is specific to INDEXING an object by an untrusted key; this is a fixed,
- * developer-written array checked with `.includes`, the same "no hazard, no
- * extra machinery needed" reasoning `ConnectorRegistry.resolveGroupConnector`
- * already gives for its own single-target `!==` check). Milestone 11, Task 5
- * introduced this gate scoped to `active_directory` alone; Milestone 12, Task
- * 7 widens it to a real array shared by two targets, `entra_id` gains the
- * SAME two fields for a DIFFERENT but analogous reason: Microsoft Graph's
- * `id` is immutable exactly like AD's `objectGUID` (`userPrincipalName`/
- * `mail` both move — this task's own binding rule), and Graph's `PATCH` is a
- * partial update exactly like LDAP's `modify` (a name dropped from the
- * request body is left untouched, never cleared — confirmed directly against
- * https://learn.microsoft.com/en-us/graph/api/user-update's own "Request
- * body" text, not rediscovered empirically the way AD's identical gap was).
+ * (connectors/connector.ts) for the full reasoning. A closed-set array
+ * checked via `.includes`, never an object-keyed catalog lookup — no
+ * `Object.hasOwn`/`Object.create(null)` hazard applies here (that defence
+ * is specific to INDEXING an object by an untrusted key, e.g.
+ * `ConnectorRegistry.factories`/`groupFactories`; this is a fixed,
+ * developer-written array checked with `.includes` against a value, never
+ * used as an index). Milestone 11, Task 5 introduced this gate scoped to
+ * `active_directory` alone; Milestone 12, Task 7 widened it to a real array
+ * shared by two targets (`entra_id` gains the SAME two fields for a
+ * DIFFERENT but analogous reason: Microsoft Graph's `id` is immutable
+ * exactly like AD's `objectGUID` — `userPrincipalName`/`mail` both move —
+ * and Graph's `PATCH` is a partial update exactly like LDAP's `modify`, a
+ * name dropped from the request body left untouched, never cleared,
+ * confirmed directly against Graph's own "Update user" doc); Milestone 13,
+ * Task 8 widens it a THIRD time to `google_workspace`, for the identical
+ * reasoning again: Google's own `id` is immutable exactly like AD's
+ * `objectGUID`/Graph's `id` (`primaryEmail` moves — this task's own binding
+ * rule), and the Admin SDK's `users.update` is a partial update exactly
+ * like LDAP's `modify`/Graph's `PATCH` — confirmed directly against
+ * https://developers.google.com/admin-sdk/directory/reference/rest/v1/users/update's
+ * own "you only need to include the fields you wish to update... fields
+ * set to null will be cleared" text, independently of Graph's own,
+ * separately-confirmed identical-shaped gap.
  */
-const TARGETS_NEEDING_IMMUTABLE_ID_CORRELATION: readonly OutboxTarget[] = ['active_directory', 'entra_id']
+const TARGETS_NEEDING_IMMUTABLE_ID_CORRELATION: readonly OutboxTarget[] = [
+  'active_directory',
+  'entra_id',
+  'google_workspace',
+]
 
 /**
  * Exponential backoff with EQUAL jitter (delay is always in
@@ -756,15 +767,18 @@ export class SyncWorker implements OnApplicationShutdown {
 
   // -------------------------------------------------------------------
   // Group-shaped sync (Milestone 11, Task 6) — for any target with a real
-  // DirectoryGroupConnector (today: active_directory only). Mirrors
-  // `reconcileUser`/`buildDesiredUser`'s own split (assert vs. compute) for
-  // the identical reason: `TargetReconciliationJob`'s own dry-run/plan path
-  // does not walk groups this milestone (see this task's own report,
-  // "Concerns" — a deliberate scope boundary, not an oversight), so unlike
-  // `buildDesiredUser` this is not YET reused by a second caller, but is
-  // still split the same way on the same principle: one computation, no
-  // future risk of a plan/apply divergence if a group-aware dry run is ever
-  // added.
+  // DirectoryGroupConnector (`active_directory` in production; `echo` too,
+  // as of Milestone 13 Task 8 — see EchoConnector's own doc comment for why
+  // the in-repo target gained this capability). Mirrors `reconcileUser`/
+  // `buildDesiredUser`'s own split (assert vs. compute) for the identical
+  // reason: Milestone 11 Task 6's own report flagged, as a carried gap, that
+  // `TargetReconciliationJob`'s dry-run/plan path did not walk groups —
+  // Milestone 13 Task 8 closes that gap by reusing BOTH halves of this
+  // split directly (`buildDesiredGroup` for its PLAN phase,
+  // `reconcileGroupById` — a thin public wrapper around
+  // `reconcileAdStyleGroup` immediately below — for its APPLY phase), the
+  // identical "one computation, no future risk of a plan/apply divergence"
+  // reasoning `buildDesiredUser` already established for users.
   // -------------------------------------------------------------------
 
   /**
@@ -781,12 +795,28 @@ export class SyncWorker implements OnApplicationShutdown {
    * (`SYNC_USER_LOCK_NAMESPACE`) — that lock exists because a `user`, a
    * `group` and a `membership` event can all fan into `reconcileUser` for
    * the SAME user concurrently (finding H2). A group's own AD identity and
-   * membership, by contrast, is asserted from EXACTLY ONE place
-   * (`reconcileGroup`/`reconcileMembership`, both gated to this same
-   * method), and `OutboxRepository.claimNext`'s existing per-(aggregate,
-   * target) ordering already serializes every event for the SAME group
-   * against itself — there is no cross-aggregate race analogous to H2 here
-   * to close.
+   * membership, by contrast, is asserted from ONE of exactly THREE gated
+   * entry points (`reconcileGroup`/`reconcileMembership`, both driven by the
+   * OUTBOX's own per-(aggregate, target) ordering; `reconcileGroupById`,
+   * driven synchronously and on-demand by `TargetReconciliationJob` — added
+   * Milestone 13, Task 8, the identical relationship `reconcileUser` already
+   * has with THAT job's own per-user apply phase). `OutboxRepository.
+   * claimNext`'s per-(aggregate, target) ordering serializes the first two
+   * against each other and against themselves; `TargetReconciliationJob`'s
+   * OWN per-group try/catch loop (never concurrent within one reconcile
+   * run — see that job's own doc comment) serializes the third against
+   * itself. Two DIFFERENT mechanisms (the outbox claim, driven by real
+   * mutations; a synchronous on-demand reconcile pass) could in principle
+   * still race each other for the SAME group — the identical "two
+   * independent mutation paths for the same entity" shape H2 found for
+   * users — but `TargetReconciliationJob.reconcile`'s own per-entity
+   * transaction already reasserts the group's WHOLE desired state read
+   * fresh at that moment (never a delta), so the worst a genuine race
+   * produces is one of the two writers' assertions being immediately
+   * superseded by the other's — never a corrupted intermediate state —
+   * and the NEXT reconcile pass (either path) converges regardless, the
+   * same self-healing property every other reconcile-to-desired-state path
+   * in this codebase already relies on.
    */
   private async reconcileAdStyleGroup(
     tx: DbHandle,
@@ -817,11 +847,69 @@ export class SyncWorker implements OnApplicationShutdown {
       })
   }
 
-  /** Computes one group's `DesiredGroup` — its name, its previously-correlated id (if any), and its direct membership resolved per `DesiredGroup.memberExternalIds`'s own doc comment (connector.ts) — WITHOUT asserting it anywhere. Pure read, same "compute vs. assert" split `buildDesiredUser` already establishes. */
-  private async buildDesiredGroup(tx: DbHandle, group: Group, target: OutboxTarget): Promise<DesiredGroup> {
+  /**
+   * Computes one group's `DesiredGroup` — its name, its previously-correlated id (if any), and its direct membership resolved per `DesiredGroup.memberExternalIds`'s own doc comment (connector.ts) — WITHOUT asserting it anywhere. Pure read, same "compute vs. assert" split `buildDesiredUser` already establishes.
+   *
+   * Milestone 13, Task 8 — widened from `private` to `public` (no other
+   * change), the SAME "let a proven method be called directly instead of
+   * re-implementing its logic" reasoning `buildDesiredUser`'s own doc
+   * comment already gives for its identical widening in Milestone 10, Task
+   * 4: this lets `TargetReconciliationJob` (connectors/target-reconciliation.
+   * job.ts) compute a group's desired state for its own PLAN phase — reused
+   * by `connector.planGroup(...)` only, never applied during that read-only
+   * pass — closing Milestone 11 Task 6's own carried gap ("the dry-run/
+   * blast-radius guard... does not walk groups this milestone" — that
+   * task's own report, Concerns #1). Keeping this ONE computation, rather
+   * than a second independently-maintained copy, is what stops a group's
+   * dry-run PLAN from ever silently drifting from what a real reconcile
+   * would actually assert — the identical reasoning `buildDesiredUser`'s own
+   * doc comment already gives for users.
+   */
+  async buildDesiredGroup(tx: DbHandle, group: Group, target: OutboxTarget): Promise<DesiredGroup> {
     const existingExternalId = await this.findExistingGroupExternalId(tx, group.id, target)
     const memberExternalIds = await this.buildDesiredGroupMemberExternalIds(tx, group.id, target)
     return { name: group.name, memberExternalIds, existingExternalId }
+  }
+
+  /**
+   * Milestone 13, Task 8 — the GROUP-shaped mirror of `reconcileUser`'s own
+   * public contract (see that method's own doc comment for the identical
+   * "widened so `TargetReconciliationJob` can call this SAME, already-proven
+   * method directly for its own apply phase" reasoning): asserts ONE
+   * already-flagged group's desired state into `target`, closing Milestone
+   * 11 Task 6's own carried gap for the APPLY half (the PLAN half is closed
+   * by `buildDesiredGroup`'s own widening immediately above).
+   *
+   * Resolves its OWN group connector fresh via `ConnectorRegistry.
+   * resolveGroupConnector` — never trusts one a caller resolved earlier and
+   * might be holding stale — and RE-READS `groupId` fresh via `tx`, the
+   * identical "never trust a value read before this call" discipline
+   * `reconcileUser` already follows for `userId` (see that method's own doc
+   * comment: "always re-reads fresh, never trusts a value read before the
+   * lock"). A `null` group connector (target has no native group-nesting
+   * capability) is a silent no-op, not an error — mirrors `reconcileGroup`'s
+   * OWN existing early-return shape for exactly the same target check; a
+   * caller that already used `buildDesiredGroup`/`resolveGroupConnector` to
+   * confirm one exists before flagging this group for APPLY (as
+   * `TargetReconciliationJob` does) never actually hits this branch in
+   * practice, but it is safe regardless — the same "safe even though never
+   * exercised by this caller" posture `DirectoryConnector.disable`'s own
+   * unknown-id handling documents elsewhere in this codebase.
+   *
+   * Deliberately does NOT take `reconcileUser`'s own per-USER advisory lock
+   * — see `reconcileAdStyleGroup`'s own doc comment for why no analogous
+   * cross-aggregate race exists for a group's own AD identity/membership.
+   */
+  async reconcileGroupById(tx: DbHandle, groupId: string, target: OutboxTarget): Promise<void> {
+    const groupConnector = await this.connectorRegistry.resolveGroupConnector(target, tx)
+    if (groupConnector === null) {
+      return
+    }
+    const group = await this.groupsRepository.findById(groupId, tx)
+    if (group === null) {
+      throw new Error(`sync worker: no group found for id ${groupId}`)
+    }
+    await this.reconcileAdStyleGroup(tx, group, target, groupConnector)
   }
 
   /**

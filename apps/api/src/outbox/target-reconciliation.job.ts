@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common'
+import { Inject, Injectable, Optional } from '@nestjs/common'
 import { eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { AuditWriter } from '../audit/audit.writer'
@@ -7,6 +7,7 @@ import type { ConnectorOperation, ConnectorTarget } from '../connectors/connecto
 import { ConnectorRegistry } from '../connectors/connector-registry'
 import { connectorTargets } from '../db/schema/connector-targets'
 import * as schema from '../db/schema/index'
+import { type Group, GroupsRepository } from '../groups/groups.repository'
 import { type User, UsersRepository, type UserStatus } from '../users/users.repository'
 import { SyncWorker } from './sync.worker'
 
@@ -86,6 +87,28 @@ export interface PlannedPrincipal {
   operations: ConnectorOperation[]
 }
 
+/**
+ * Milestone 13, Task 8 — the GROUP-shaped mirror of `PlannedPrincipal`,
+ * closing Milestone 11 Task 6's own carried gap ("the dry-run/blast-radius
+ * guard... does not walk groups this milestone" — that task's own report,
+ * Concerns #1). One in-scope GROUP `planGroup()` found at least one
+ * operation for, for a target with a real `DirectoryGroupConnector`
+ * (`ConnectorRegistry.resolveGroupConnector` — today: `active_directory`,
+ * plus `echo` for this job's own spine-level tests; see `EchoConnector`'s
+ * own doc comment). A SEPARATE array from `toMutate` (`PlannedPrincipal`),
+ * never merged into it — a group has no `userId`, and keeping the two
+ * apart is what lets every EXISTING assertion against `toMutate` in this
+ * job's own test suite stay exact and unchanged for every target that has
+ * no group connector at all (i.e. every target except `active_directory`/
+ * `echo`), which is precisely what keeps this a genuinely additive,
+ * non-breaking change.
+ */
+export interface PlannedGroup {
+  groupId: string
+  name: string
+  operations: ConnectorOperation[]
+}
+
 export interface TargetReconciliationOptions {
   /** When `true`, computes and returns the plan but never applies anything, regardless of the blast-radius outcome — writes nothing anywhere (design doc decision 7: "every connector is dry-runnable"). Defaults to `false`. */
   dryRun?: boolean
@@ -100,20 +123,49 @@ export interface FailedPrincipal {
   error: string
 }
 
+/** Milestone 13, Task 8 — the GROUP-shaped mirror of `FailedPrincipal`, for `TargetReconciliationReport.failedGroups`'s own per-group failure isolation. */
+export interface FailedGroup {
+  groupId: string
+  name: string
+  error: string
+}
+
 export interface TargetReconciliationReport {
   target: ConnectorTarget
-  /** Every in-scope principal walked — every user, every status (see `ALL_USER_STATUSES`). */
+  /**
+   * Every in-scope principal walked — every user, every status (see
+   * `ALL_USER_STATUSES`), PLUS every in-scope GROUP walked when `target` has
+   * a real `DirectoryGroupConnector` (Milestone 13, Task 8 — see
+   * `PlannedGroup`'s own doc comment). Zero groups contribute here for a
+   * target with no group connector (every target except `active_directory`/
+   * `echo`), which is what keeps this field's value byte-for-byte unchanged,
+   * for every one of those targets, from what Milestone 10 Task 4 originally
+   * shipped.
+   */
   populationSize: number
   /** Every principal `plan()` found a non-empty operation list for — the FULL set, regardless of whether this run went on to apply it. */
   toMutate: PlannedPrincipal[]
+  /** Milestone 13, Task 8 — every GROUP `planGroup()` found a non-empty operation list for. See `PlannedGroup`'s own doc comment for why this is a separate array from `toMutate`, not merged into it. Always empty for a target with no group connector. */
+  toMutateGroups: PlannedGroup[]
+  /**
+   * Milestone 13, Task 8 — now evaluated against the COMBINED user +
+   * group population/changed-count (`populationSize` above,
+   * `toMutate.length + toMutateGroups.length`) rather than users alone —
+   * "group and membership operations must count toward blast radius" (this
+   * task's own brief). For a target with no group connector this is
+   * identical to Milestone 10 Task 4's original behaviour, since both group
+   * quantities are always zero there.
+   */
   blastRadius: BlastRadiusEvaluation
   dryRun: boolean
-  /** `true` iff the blast-radius guard tripped and this run was NOT overridden — nothing in `toMutate` was applied. */
+  /** `true` iff the blast-radius guard tripped and this run was NOT overridden — nothing in `toMutate` OR `toMutateGroups` was applied. */
   halted: boolean
-  /** `true` iff the blast-radius guard tripped AND `force` was set — every entry in `toMutate` WAS applied, and the override was audited. */
+  /** `true` iff the blast-radius guard tripped AND `force` was set — every entry in `toMutate` AND `toMutateGroups` WAS applied, and the override was audited. */
   overridden: boolean
   /** How many principals were ACTUALLY reconciled against the target this run — 0 for a dry run or a halted run, otherwise `toMutate.length - failed.length` (see `failed`'s own doc comment: a per-principal failure does not stop the rest of the batch, so this can be less than `toMutate.length` on a real, non-halted run). */
   appliedCount: number
+  /** Milestone 13, Task 8 — the GROUP-shaped mirror of `appliedCount`, counting entries in `toMutateGroups` actually applied. 0 for a dry run, a halted run, or a target with no group connector. */
+  appliedGroupCount: number
   /**
    * Milestone 10 Task 4 concern 3, closed by Milestone 11 Task 5 —
    * per-principal failure isolation. Every principal in `toMutate` whose OWN
@@ -128,6 +180,8 @@ export interface TargetReconciliationReport {
    * principal in `toMutate` succeeded.
    */
   failed: FailedPrincipal[]
+  /** Milestone 13, Task 8 — the GROUP-shaped mirror of `failed`, with the identical per-entity isolation guarantee: one group's `reconcileGroupById` throwing does not abort the batch and does not affect any other group (or any user). Empty on a dry run, a halted run, or a real run where every group in `toMutateGroups` succeeded. */
+  failedGroups: FailedGroup[]
 }
 
 /**
@@ -192,6 +246,27 @@ export interface TargetReconciliationReport {
  * desired-state assertion uses, never a distinct removal-shaped call. There
  * is no code path here — or anywhere in `SyncWorker`/the connectors
  * themselves — that removes a principal from a target.
+ *
+ * GROUPS (Milestone 13, Task 8): for a target with a real
+ * `DirectoryGroupConnector` (`ConnectorRegistry.resolveGroupConnector` —
+ * today `active_directory`, plus `echo` for this job's own fast, container-
+ * free tests), PLAN and APPLY additionally walk every group exactly the
+ * same two-phase way, via `SyncWorker.buildDesiredGroup`/`reconcileGroupById`
+ * (the group-shaped mirrors of `buildDesiredUser`/`reconcileUser` this job
+ * already reused for users) — see `PlannedGroup`/`TargetReconciliationReport.
+ * toMutateGroups`'s own doc comments. This closes a real, previously-carried
+ * gap: Milestone 11 Task 6's own report flagged, in its "Concerns", that
+ * this job's dry-run/blast-radius guard did not walk groups at all — group-
+ * level AD sync happened ONLY via the outbox (`group`/`membership` events),
+ * so a mass group-membership change was invisible to the ONE safety rail
+ * that exists to catch exactly that shape of incident (design doc, "Safety
+ * rails": "Directory syncs that went wrong at scale are a well-known way to
+ * take down an organisation's logins"). Group and user mutations now share
+ * ONE combined population/changed-count and ONE blast-radius verdict — a
+ * run that trips the guard applies NEITHER, and a target with no group
+ * connector sees this job behave byte-for-byte as it did before this task
+ * (zero groups ever contribute to a population/count that was always
+ * user-only for that target).
  */
 @Injectable()
 export class TargetReconciliationJob {
@@ -201,6 +276,15 @@ export class TargetReconciliationJob {
     @Inject(SyncWorker) private readonly syncWorker: SyncWorker,
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
+    // Milestone 13, Task 8 — `@Optional()`-with-JS-default, the SAME shape
+    // `SyncWorker`'s own trailing constructor parameters already establish
+    // (see that class's own doc comment): this class is never Nest-DI-
+    // resolved today (constructed directly by target-reconcile-cli.ts and by
+    // this job's own tests, not registered in app.module.ts), so every
+    // existing raw `new TargetReconciliationJob(...)` call site keeps
+    // compiling and behaving unchanged, defaulting to a fresh
+    // `GroupsRepository` bound to the SAME `db` this job itself was given.
+    @Optional() @Inject(GroupsRepository) private readonly groupsRepository: GroupsRepository = new GroupsRepository(db),
   ) {}
 
   async reconcile(
@@ -238,51 +322,97 @@ export class TargetReconciliationJob {
       }
     }
 
-    const blastRadius = evaluateBlastRadius(toMutate.length, populationSize, thresholdPercent, floor)
+    // GROUP WALK (Milestone 13, Task 8) — see this class's own top doc
+    // comment, "GROUPS", for the full reasoning. `hasGroupConnector` is ONE
+    // cheap, throwaway-transaction check before ever touching
+    // `groupsRepository.list` — a target with no group connector (every
+    // target except `active_directory`/`echo`) pays that one check and
+    // nothing more; `groupPopulationSize`/`toMutateGroups` stay exactly `0`/
+    // `[]`, which is what keeps `populationSize`/`blastRadius` byte-for-byte
+    // unchanged for those targets from what Milestone 10 Task 4 shipped.
+    const toMutateGroups: PlannedGroup[] = []
+    let groupPopulationSize = 0
+
+    if (await this.hasGroupConnector(target)) {
+      let offset = 0
+      for (;;) {
+        const page = await this.groupsRepository.list({ limit: PAGE_SIZE, offset, scopePaths: null })
+        if (page.length === 0) {
+          break
+        }
+
+        for (const group of page) {
+          groupPopulationSize += 1
+          const operations = await this.planForGroup(group, target)
+          if (operations.length > 0) {
+            toMutateGroups.push({ groupId: group.id, name: group.name, operations })
+          }
+        }
+
+        if (page.length < PAGE_SIZE) {
+          break
+        }
+        offset += PAGE_SIZE
+      }
+    }
+
+    // ONE combined population/changed-count feeds the blast-radius guard —
+    // "group and membership operations must count toward blast radius"
+    // (this task's own brief), not a second, independent guard alongside
+    // the user one.
+    populationSize += groupPopulationSize
+    const changedCount = toMutate.length + toMutateGroups.length
+    const blastRadius = evaluateBlastRadius(changedCount, populationSize, thresholdPercent, floor)
 
     if (dryRun) {
       // Design doc decision 7 / this task's own brief: "printing the plan
       // for a target and writing nothing — the same shape as the
       // bulk-import preview." Nothing above this line ever wrote anything
-      // either (PLAN calls `connector.plan()` only), so returning here,
-      // before the blast-radius branch even runs, is what makes dry run
-      // unconditional: it writes nothing REGARDLESS of what the guard would
-      // have decided.
+      // either (PLAN calls `connector.plan()`/`planGroup()` only), so
+      // returning here, before the blast-radius branch even runs, is what
+      // makes dry run unconditional: it writes nothing REGARDLESS of what
+      // the guard would have decided.
       return {
         target,
         populationSize,
         toMutate,
+        toMutateGroups,
         blastRadius,
         dryRun: true,
         halted: false,
         overridden: false,
         appliedCount: 0,
+        appliedGroupCount: 0,
         failed: [],
+        failedGroups: [],
       }
     }
 
     if (blastRadius.tripped && !force) {
       // Halts and applies NOTHING — not a partial prefix, not
-      // apply-then-warn. `toMutate` is still returned so a caller (the CLI)
-      // can report exactly what would have happened.
+      // apply-then-warn. `toMutate`/`toMutateGroups` are still returned so a
+      // caller (the CLI) can report exactly what would have happened.
       return {
         target,
         populationSize,
         toMutate,
+        toMutateGroups,
         blastRadius,
         dryRun: false,
         halted: true,
         overridden: false,
         appliedCount: 0,
+        appliedGroupCount: 0,
         failed: [],
+        failedGroups: [],
       }
     }
 
     const overridden = blastRadius.tripped && force
     if (overridden) {
-      // Audited BEFORE a single principal is touched — the override
-      // decision is what is being recorded, independent of whether the
-      // apply phase below fully succeeds.
+      // Audited BEFORE a single principal or group is touched — the
+      // override decision is what is being recorded, independent of
+      // whether the apply phase below fully succeeds.
       await this.auditOverride(target, blastRadius)
     }
 
@@ -315,16 +445,40 @@ export class TargetReconciliationJob {
       }
     }
 
+    // PER-GROUP FAILURE ISOLATION (Milestone 13, Task 8) — the identical
+    // shape immediately above, applied to `toMutateGroups`: one group's
+    // `reconcileGroupById` throwing neither aborts this loop nor un-applies
+    // anything already-succeeded (earlier in this loop, or any user above).
+    const failedGroups: FailedGroup[] = []
+    let appliedGroupCount = 0
+    for (const plannedGroup of toMutateGroups) {
+      try {
+        await this.db.transaction(async (tx) => {
+          await this.syncWorker.reconcileGroupById(tx, plannedGroup.groupId, target)
+        })
+        appliedGroupCount += 1
+      } catch (error) {
+        failedGroups.push({
+          groupId: plannedGroup.groupId,
+          name: plannedGroup.name,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+
     return {
       target,
       populationSize,
       toMutate,
+      toMutateGroups,
       blastRadius,
       dryRun: false,
       halted: false,
       overridden,
       appliedCount,
+      appliedGroupCount,
       failed,
+      failedGroups,
     }
   }
 
@@ -352,6 +506,53 @@ export class TargetReconciliationJob {
       const desired = await this.syncWorker.buildDesiredUser(tx, user, target)
       const connector = await this.connectorRegistry.resolve(target, tx)
       return connector.plan(desired)
+    })
+  }
+
+  /**
+   * Milestone 13, Task 8 — ONE cheap, throwaway-transaction check, run
+   * BEFORE the group population walk even starts: does `target` have a real
+   * `DirectoryGroupConnector` at all (`ConnectorRegistry.resolveGroupConnector`)?
+   * A target with none (every target except `active_directory`/`echo`) skips
+   * `groupsRepository.list`'s pagination entirely — no wasted round trips —
+   * and `groupPopulationSize`/`toMutateGroups` stay exactly `0`/`[]`, which
+   * is what keeps this job's behaviour byte-for-byte unchanged, for every
+   * one of those targets, from what Milestone 10 Task 4 originally shipped.
+   */
+  private async hasGroupConnector(target: ConnectorTarget): Promise<boolean> {
+    return this.db.transaction(
+      async (tx) => (await this.connectorRegistry.resolveGroupConnector(target, tx)) !== null,
+    )
+  }
+
+  /**
+   * The PLAN half for one group — the GROUP-shaped mirror of `planForUser`
+   * immediately above, identical reasoning throughout (reuses `SyncWorker.
+   * buildDesiredGroup`; its own short, fresh transaction per group, never
+   * one long-lived transaction spanning the whole walk — see `planForUser`'s
+   * own doc comment for the connection-discipline reasoning this mirrors
+   * exactly). Resolves the group connector FRESH inside this same
+   * transaction rather than reusing one resolved by `hasGroupConnector`
+   * earlier — the identical "never trust a connector resolved before this
+   * call" discipline `planForUser` already applies to `connectorRegistry.
+   * resolve`, so a live admin edit to `connector_targets.config` mid-walk is
+   * picked up on the very next group, not just the next `reconcile()` call.
+   * A `null` result here (the connector disappeared between
+   * `hasGroupConnector`'s check and this call — a narrow, theoretical race
+   * with a concurrent admin deconfiguring the target mid-walk) degrades to
+   * "no operations for this group" rather than throwing, the same fail-safe
+   * "this group simply reports nothing to do" a target genuinely already
+   * converged would also report — never a hard failure over a race this
+   * narrow.
+   */
+  private async planForGroup(group: Group, target: ConnectorTarget): Promise<ConnectorOperation[]> {
+    return this.db.transaction(async (tx) => {
+      const groupConnector = await this.connectorRegistry.resolveGroupConnector(target, tx)
+      if (groupConnector === null) {
+        return []
+      }
+      const desired = await this.syncWorker.buildDesiredGroup(tx, group, target)
+      return groupConnector.planGroup(desired)
     })
   }
 

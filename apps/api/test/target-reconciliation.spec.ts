@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { AuditWriter } from '../src/audit/audit.writer'
 import { ConnectorRegistry } from '../src/connectors/connector-registry'
 import { EchoConnector } from '../src/connectors/echo.connector'
-import { GroupsRepository } from '../src/groups/groups.repository'
+import { type Group, GroupsRepository } from '../src/groups/groups.repository'
 import { KeycloakAdminClient } from '../src/keycloak/keycloak-admin.client'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { OutboxRepository } from '../src/outbox/outbox.repository'
@@ -170,6 +170,27 @@ describe('TargetReconciliationJob (Milestone 10, Task 4)', () => {
     return users
   }
 
+  // Milestone 13, Task 8 — the GROUP-shaped mirror of `makeActiveUser(s)`
+  // immediately above, for the new "group walk" describe block below. No
+  // ORG-unit/status dimension for a group (unlike a user), so this is
+  // simpler: `GroupsRepository.create` directly, nothing else needed to
+  // make a group an in-scope principal for `TargetReconciliationJob`'s own
+  // walk (every group, unconditionally — see that job's own doc comment).
+  const groupsRepo = () => new GroupsRepository(ctx.db)
+
+  async function makeGroup(): Promise<Group> {
+    const tag = nextTag()
+    return groupsRepo().create({ name: `tr-group-${tag}-${Date.now()}` })
+  }
+
+  async function makeGroups(count: number): Promise<Group[]> {
+    const groups: Group[] = []
+    for (let i = 0; i < count; i++) {
+      groups.push(await makeGroup())
+    }
+    return groups
+  }
+
   /** Upserts the echo `connector_targets` row with EXPLICIT blast-radius config — every test controls its own threshold/floor rather than relying on schema defaults, since this file's population accumulates across tests (see this file's own doc comment). */
   async function configureEchoTarget(thresholdPercent: number, floor: number): Promise<void> {
     await ctx.pool.query(
@@ -202,6 +223,27 @@ describe('TargetReconciliationJob (Milestone 10, Task 4)', () => {
         .filter((call) => call.method === 'apply')
         .map((call) => call.desired?.username)
         .filter((username): username is string => username !== undefined),
+    )
+  }
+
+  // Milestone 13, Task 8 — the GROUP-shaped mirror of `applyCallCount`/
+  // `appliedUsernames` immediately above, reading `echoConnector.groupCalls`
+  // (a SEPARATE array from `calls` — see `EchoRecordedGroupCall`'s own doc
+  // comment, echo.connector.ts). THE assertion every guarantee test below
+  // ultimately reduces to: not "the report says appliedGroupCount: 0", but
+  // "the target's own call log shows zero applyGroup calls" — asserted
+  // against what the target ACTUALLY received, per this task's own
+  // instruction.
+  function groupApplyCallCount(): number {
+    return echoConnector.groupCalls.filter((call) => call.method === 'applyGroup').length
+  }
+
+  function appliedGroupNames(): Set<string> {
+    return new Set(
+      echoConnector.groupCalls
+        .filter((call) => call.method === 'applyGroup')
+        .map((call) => call.desiredGroup?.name)
+        .filter((name): name is string => name !== undefined),
     )
   }
 
@@ -482,6 +524,207 @@ describe('TargetReconciliationJob (Milestone 10, Task 4)', () => {
       await expect(
         ctx.pool.query(`UPDATE connector_targets SET blast_radius_floor = -1 WHERE target = 'echo'`),
       ).rejects.toThrow(/connector_targets_floor_non_negative/)
+    })
+  })
+
+  // =====================================================================
+  // MILESTONE 13, TASK 8 — closing Milestone 11 Task 6's own carried gap:
+  // "TargetReconciliationJob (dry-run/blast-radius) does not walk groups
+  // this milestone" (that task's own report, Concerns #1). Proven the SAME
+  // way the user-side guard was proven immediately above — against the
+  // real, registered `EchoConnector`, now ALSO a real `DirectoryGroupConnector`
+  // (Milestone 13, Task 8 — see that connector's own doc comment for why
+  // the in-repo spine-proving target gained this capability), never a mock.
+  // `EchoConnector.groupCalls` is the target's own call log — every
+  // "reached/did not reach the target" assertion below reads THAT, never
+  // the report alone, per this task's own "asserted against what the
+  // target actually received" instruction.
+  //
+  // Placed LAST in this file, deliberately: it is the first describe block
+  // that creates GROUPS at all (nothing earlier in this file touches
+  // `groups`), and every test in it either converges what it creates
+  // before finishing or is itself the final test — the identical
+  // cumulative-population discipline this file's own top doc comment
+  // already documents for users, extended to groups.
+  // =====================================================================
+  describe('group walk — dry-run plan and blast radius (Milestone 13, Task 8)', () => {
+    it('a brand-new group appears in toMutateGroups as a "create" op, and dry run writes nothing for it either', async () => {
+      await configureEchoTarget(100, 1_000_000) // lenient
+      const groups = await makeGroups(2)
+      const groupCallsBefore = groupApplyCallCount()
+
+      const report = await job.reconcile('echo', { dryRun: true })
+
+      expect(report.dryRun).toBe(true)
+      expect(report.appliedGroupCount).toBe(0)
+      expect(groups.every((g) => report.toMutateGroups.some((p) => p.groupId === g.id))).toBe(true)
+      const g0Plan = report.toMutateGroups.find((p) => p.groupId === groups[0]!.id)
+      expect(g0Plan?.operations).toEqual([expect.objectContaining({ kind: 'create' })])
+      // Nothing reached the target — dry run means dry run for groups too.
+      expect(groupApplyCallCount()).toBe(groupCallsBefore)
+      expect(echoConnector.groupCalls.some((c) => c.method === 'applyGroup')).toBe(false)
+
+      // Cleanup + bonus proof: a REAL run afterward still converges these
+      // groups normally — dry run left no corrupted/partial state behind.
+      const real = await job.reconcile('echo', { dryRun: false })
+      expect(groups.every((g) => real.toMutateGroups.some((p) => p.groupId === g.id))).toBe(true)
+      expect(real.appliedGroupCount).toBeGreaterThanOrEqual(2)
+    })
+
+    it('a second REAL run is a no-op for groups — idempotent, exactly like the user-side guarantee', async () => {
+      await configureEchoTarget(100, 1_000_000)
+      const groups = await makeGroups(1)
+
+      const first = await job.reconcile('echo', {})
+      expect(groups.every((g) => first.toMutateGroups.some((p) => p.groupId === g.id))).toBe(true)
+      expect(first.appliedGroupCount).toBeGreaterThanOrEqual(1)
+
+      const callsAfterFirst = groupApplyCallCount()
+      const second = await job.reconcile('echo', {})
+      expect(groups.every((g) => second.toMutateGroups.some((p) => p.groupId === g.id))).toBe(false)
+      expect(groupApplyCallCount()).toBe(callsAfterFirst)
+    })
+
+    it('applying a group correlates it in external_group_identities, under the ECHO synthetic id — the group-shaped mirror of the user correlation proof', async () => {
+      await configureEchoTarget(100, 1_000_000)
+      const [group] = await makeGroups(1)
+
+      await job.reconcile('echo', {})
+
+      const { rows } = await ctx.pool.query<{ external_id: string; sync_state: string }>(
+        "SELECT external_id, sync_state FROM external_group_identities WHERE group_id = $1 AND system = 'echo'",
+        [group!.id],
+      )
+      expect(rows).toHaveLength(1)
+      expect(rows[0]?.external_id).toMatch(/^echo-group-/)
+      expect(rows[0]?.sync_state).toBe('synced')
+    })
+
+    // =====================================================================
+    // THE central deliverable of this task's carried gap: a run exceeding
+    // the threshold applies ZERO group mutations — proven against the
+    // target's own call log, not merely a report field.
+    // =====================================================================
+    it('a run exceeding BOTH the threshold and the floor from GROUP changes ALONE halts and applies ZERO group mutations — reports what it would have done', async () => {
+      await configureEchoTarget(1, 1) // trips on virtually any handful of genuine changes
+      const groups = await makeGroups(6)
+      const groupCallsBefore = groupApplyCallCount()
+
+      const report = await job.reconcile('echo', {})
+
+      expect(report.blastRadius.tripped).toBe(true)
+      expect(report.halted).toBe(true)
+      expect(report.overridden).toBe(false)
+      expect(report.appliedGroupCount).toBe(0)
+      // It still REPORTS what it would have done.
+      expect(groups.every((g) => report.toMutateGroups.some((p) => p.groupId === g.id))).toBe(true)
+
+      // THE assertion that matters: nothing arrived at the target. Not "a
+      // warning was logged" — the echo connector's own group call log is
+      // untouched.
+      expect(groupApplyCallCount()).toBe(groupCallsBefore)
+      for (const group of groups) {
+        expect(appliedGroupNames().has(group.name)).toBe(false)
+      }
+
+      // Cleanup: converge these 6 under a lenient config so they do not
+      // pollute a later run's population/changedCount arithmetic.
+      await configureEchoTarget(100, 1_000_000)
+      const cleanup = await job.reconcile('echo', {})
+      expect(groups.every((g) => cleanup.toMutateGroups.some((p) => p.groupId === g.id))).toBe(true)
+      expect(groupApplyCallCount()).toBe(groupCallsBefore + 6)
+    })
+
+    it('user AND group changes combine into ONE blast-radius evaluation — together they trip a guard that NEITHER half alone would', async () => {
+      // floor 5: 3 users alone would not exceed it (3 is not > 5), and 3
+      // groups alone would not either — but evaluated TOGETHER, in the SAME
+      // run, 3 + 3 = 6 > 5. This is the direct proof that group mutations
+      // "count toward blast radius" (this task's own brief) rather than
+      // being tracked by a second, independent guard.
+      await configureEchoTarget(1, 5)
+      const users = await makeActiveUsers(3)
+      const groups = await makeGroups(3)
+      const userCallsBefore = applyCallCount()
+      const groupCallsBefore = groupApplyCallCount()
+
+      const report = await job.reconcile('echo', {})
+
+      expect(report.blastRadius.changedCount).toBe(6) // 3 + 3, evaluated as ONE number
+      expect(report.blastRadius.tripped).toBe(true)
+      expect(report.halted).toBe(true)
+      expect(report.appliedCount).toBe(0)
+      expect(report.appliedGroupCount).toBe(0)
+      // Neither side reached the target.
+      expect(applyCallCount()).toBe(userCallsBefore)
+      expect(groupApplyCallCount()).toBe(groupCallsBefore)
+      for (const user of users) {
+        expect(appliedUsernames().has(user.username)).toBe(false)
+      }
+      for (const group of groups) {
+        expect(appliedGroupNames().has(group.name)).toBe(false)
+      }
+
+      // Cleanup — lenient config converges both sides.
+      await configureEchoTarget(100, 1_000_000)
+      const cleanup = await job.reconcile('echo', {})
+      expect(users.every((u) => cleanup.toMutate.some((p) => p.userId === u.id))).toBe(true)
+      expect(groups.every((g) => cleanup.toMutateGroups.some((p) => p.groupId === g.id))).toBe(true)
+    })
+
+    it('a small number of group changes below the floor proceeds even though the percentage alone would exceed the threshold — the group-shaped mirror of the identical user-side worked example', async () => {
+      await configureEchoTarget(20, 5)
+      const groups = await makeGroups(3)
+      const groupCallsBefore = groupApplyCallCount()
+
+      const report = await job.reconcile('echo', {})
+
+      expect(report.blastRadius.tripped).toBe(false)
+      expect(report.halted).toBe(false)
+      expect(report.appliedGroupCount).toBeGreaterThanOrEqual(3)
+      expect(groupApplyCallCount()).toBe(groupCallsBefore + 3)
+      for (const group of groups) {
+        expect(appliedGroupNames().has(group.name)).toBe(true)
+      }
+    })
+
+    // =====================================================================
+    // Per-group failure isolation — the group-shaped mirror of "one
+    // principal failing does not abort the batch", proven the same fast,
+    // echo-based way (EchoConnector.forcedFailureGroupNames).
+    // =====================================================================
+    it('one group failing does not abort the batch, and does not affect any other group or any user', async () => {
+      await configureEchoTarget(100, 1_000_000) // lenient — this test is about isolation, not the guard
+      const [a, b, c] = await makeGroups(3)
+      echoConnector.forcedFailureGroupNames.add(b!.name)
+      const groupCallsBefore = groupApplyCallCount()
+
+      try {
+        const report = await job.reconcile('echo', {})
+
+        expect(report.halted).toBe(false)
+        expect(report.toMutateGroups.map((p) => p.groupId).sort()).toEqual([a!.id, b!.id, c!.id].sort())
+        // THE isolation claim: b's failure did not stop a (before it) or c
+        // (after it, in insertion order) from being attempted and applied.
+        expect(report.appliedGroupCount).toBe(2)
+        expect(report.failedGroups).toHaveLength(1)
+        expect(report.failedGroups[0]).toEqual({
+          groupId: b!.id,
+          name: b!.name,
+          error: expect.stringMatching(/forced failure/),
+        })
+        expect(appliedGroupNames().has(a!.name)).toBe(true)
+        expect(appliedGroupNames().has(c!.name)).toBe(true)
+        expect(appliedGroupNames().has(b!.name)).toBe(false)
+        expect(groupApplyCallCount()).toBe(groupCallsBefore + 2)
+      } finally {
+        echoConnector.forcedFailureGroupNames.delete(b!.name)
+      }
+
+      // Self-heals: b converges on the VERY NEXT run once its transient
+      // error clears.
+      const followUp = await job.reconcile('echo', {})
+      expect(followUp.failedGroups).toHaveLength(0)
+      expect(appliedGroupNames().has(b!.name)).toBe(true)
     })
   })
 })

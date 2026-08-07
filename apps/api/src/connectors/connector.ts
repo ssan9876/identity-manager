@@ -66,35 +66,40 @@ export interface DesiredUser {
   orgUnitPath?: readonly string[]
 
   /**
-   * Milestone 11, Task 5 (widened to `entra_id` in Milestone 12, Task 7) —
-   * this user's PREVIOUSLY-correlated immutable id for THIS SAME target, if
+   * Milestone 11, Task 5 (widened to `entra_id` in Milestone 12, Task 7;
+   * widened to `google_workspace` in Milestone 13, Task 8) — this user's
+   * PREVIOUSLY-correlated immutable id for THIS SAME target, if
    * `external_identities` already has a row for (user, target) — i.e. what a
    * past successful `apply()` returned as `externalId`. `apply(desired)`
    * deliberately takes no `externalId` parameter of its own (Milestone 10,
    * Task 2 — settled interface), so a connector that wants to re-identify "is
    * this a known principal" by an IMMUTABLE key rather than a mutable one
-   * (decision: "Correlate on objectGUID/Graph id... never the DN/UPN, never
-   * sAMAccountName, never mail — all move") has nowhere else to receive it
-   * from. OPTIONAL and `undefined` when no prior correlation exists
-   * (first-ever sync) or for a target that has not opted in to the extra read
-   * (see `sync.worker.ts`'s own `TARGETS_NEEDING_IMMUTABLE_ID_CORRELATION` —
-   * currently `active_directory` and `entra_id`, NOT `orgUnitPath`'s own
-   * narrower AD-only gate, since Graph has no OU-equivalent concept for
-   * `entra_id` to need). `ActiveDirectoryConnector` uses this to find an
-   * existing entry by `objectGUID` FIRST, falling back to `sAMAccountName`
-   * only when this is absent; `EntraIdConnector` does the identical thing
-   * with Graph's `id` and a `userPrincipalName` bootstrap fallback — so a
-   * local username change still resolves to the SAME remote object instead
-   * of minting a duplicate. Keycloak/echo ignore it; both already correlate
-   * by username, which Milestone 10 accepted as sufficient for those targets
+   * (decision: "Correlate on objectGUID/Graph id/Google id... never the
+   * DN/UPN, never sAMAccountName, never mail, never the primary email — all
+   * move") has nowhere else to receive it from. OPTIONAL and `undefined`
+   * when no prior correlation exists (first-ever sync) or for a target that
+   * has not opted in to the extra read (see `sync.worker.ts`'s own
+   * `TARGETS_NEEDING_IMMUTABLE_ID_CORRELATION` — currently
+   * `active_directory`, `entra_id` and `google_workspace`, NOT
+   * `orgUnitPath`'s own narrower AD-only gate, since neither Graph nor the
+   * Admin SDK has an OU-equivalent concept those two targets need).
+   * `ActiveDirectoryConnector` uses this to find an existing entry by
+   * `objectGUID` FIRST, falling back to `sAMAccountName` only when this is
+   * absent; `EntraIdConnector`/`GoogleWorkspaceConnector` each do the
+   * identical thing with their own target's `id` and a
+   * `userPrincipalName`/`primaryEmail` bootstrap fallback — so a local
+   * username change still resolves to the SAME remote object instead of
+   * minting a duplicate. Keycloak/echo ignore it; both already correlate by
+   * username, which Milestone 10 accepted as sufficient for those targets
    * (their own ids are not subject to the "immutable-key fields all move"
-   * hazard AD/Entra have).
+   * hazard AD/Entra/Google have).
    */
   existingExternalId?: string
 
   /**
-   * Milestone 11, Task 5 (widened to `entra_id` in Milestone 12, Task 7) —
-   * every REMOTE name (custom and core alike) that has an ENABLED
+   * Milestone 11, Task 5 (widened to `entra_id` in Milestone 12, Task 7;
+   * widened to `google_workspace` in Milestone 13, Task 8) — every REMOTE
+   * name (custom and core alike) that has an ENABLED
    * `attribute_target_mappings` row for THIS target right now — i.e.
    * `mappings.map(m => remoteName)`, the same `mappings` array `attributes`
    * above was already built from (`buildTargetAttributes`). OPTIONAL,
@@ -107,22 +112,28 @@ export interface DesiredUser {
    * property/attribute NAMES explicitly named in the request — unlike
    * Keycloak's Admin REST API, where sending the whole `attributes` map
    * REPLACES the stored map wholesale, so simply omitting a key already
-   * clears it there. Both LDAP's `modify` (AD) AND Microsoft Graph's `PATCH`
-   * (Entra — confirmed directly against
+   * clears it there. LDAP's `modify` (AD), Microsoft Graph's `PATCH` (Entra
+   * — confirmed directly against
    * https://learn.microsoft.com/en-us/graph/api/user-update's own "Request
    * body" text: "Existing properties that aren't included in the request
-   * body maintain their previous values") share this gap: omitting a key
+   * body maintain their previous values"), AND the Admin SDK Directory
+   * API's `users.update` (Google — confirmed directly against
+   * https://developers.google.com/admin-sdk/directory/reference/rest/v1/users/update's
+   * own text: "you only need to include the fields you wish to update...
+   * fields set to null will be cleared") ALL share this gap: omitting a key
    * leaves whatever the target already has for that name COMPLETELY
    * UNTOUCHED — so the moment an admin disables a mapping (or a value goes
    * from set to empty), `attributes` correctly stops carrying it, but
    * nothing tells the connector a REMOTE name that used to be managed now
    * needs to be ACTIVELY CLEARED rather than merely not re-sent.
-   * `ActiveDirectoryConnector.apply`/`EntraIdConnector.apply` each diff THIS
-   * set against `attributes`' own keys to find exactly that gap and clear it
-   * (AD: an explicit empty-values `replace`; Entra: an explicit `null`, per
-   * that same Graph doc's extension-clearing note). Keycloak/echo need no
-   * such thing (their own "send the whole map" semantics already self-clear)
-   * and ignore this field entirely.
+   * `ActiveDirectoryConnector.apply`/`EntraIdConnector.apply`/
+   * `GoogleWorkspaceConnector.apply` each diff THIS set against
+   * `attributes`' own keys to find exactly that gap and clear it (AD: an
+   * explicit empty-values `replace`; Entra/Google: an explicit `null`, per
+   * each target's own documented clearing convention — both confirmed
+   * independently, not assumed to match just because the shape rhymes).
+   * Keycloak/echo need no such thing (their own "send the whole map"
+   * semantics already self-clear) and ignore this field entirely.
    */
   managedAttributeRemoteNames?: readonly string[]
 }
@@ -254,17 +265,24 @@ export interface DesiredGroup {
  * interface rather than two more methods bolted onto `DirectoryConnector`).
  *
  * OPTIONAL: a target implements this ONLY when it has a genuine native
- * group-nesting concept worth preserving. `KeycloakConnector`/`EchoConnector`
- * do not implement it — their own group membership is already fully
- * expressed through `DesiredUser.groups` inside `apply()` (Keycloak:
- * `ensureGroup` + `setUserGroups`, one flat Keycloak group per local group;
- * echo: recorded verbatim) and stays exactly as it was before this task.
- * `ActiveDirectoryConnector` is the first (and, this milestone, only)
- * implementation — see its own doc comment for the concrete nesting rule.
- * `ConnectorRegistry.resolveGroupConnector` is how a caller (`SyncWorker`)
- * discovers, per target, whether this capability exists at all; a target
- * with no group connector falls back to the pre-existing per-user
- * `DesiredUser.groups` path, unchanged.
+ * group-nesting concept worth preserving, or (Milestone 13, Task 8) a
+ * strong reason to stand in for one in tests. `KeycloakConnector`/
+ * `EntraIdConnector`/`GoogleWorkspaceConnector` do NOT implement it — their
+ * own group membership is already fully expressed through `DesiredUser.
+ * groups` inside `apply()` (Keycloak: `ensureGroup` + `setUserGroups`;
+ * Entra: `$ref`; Google: the Members API — one flat remote group per local
+ * group, in all three cases) and stays exactly as it was before this task.
+ * `ActiveDirectoryConnector` is the first, and remains the only REAL
+ * vendor, implementation — see its own doc comment for the concrete
+ * nesting rule. `EchoConnector` is the second (Milestone 13, Task 8): the
+ * in-repo spine-proving target gained this capability so
+ * `TargetReconciliationJob`'s dry-run/blast-radius guard could be proven
+ * against GROUP mutations fast and deterministically, with no AD container
+ * needed — see that connector's own doc comment. `ConnectorRegistry.
+ * resolveGroupConnector` is how a caller (`SyncWorker`,
+ * `TargetReconciliationJob`) discovers, per target, whether this
+ * capability exists at all; a target with no group connector falls back to
+ * the pre-existing per-user `DesiredUser.groups` path, unchanged.
  */
 export interface DirectoryGroupConnector {
   /** The operations `applyGroup(desired)` WOULD run, writing nothing — same contract as `DirectoryConnector.plan`. */

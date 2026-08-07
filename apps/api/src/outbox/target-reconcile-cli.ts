@@ -83,15 +83,32 @@ function parseArgs(argv: string[]): ParsedArgs {
   return { target: target as ConnectorTarget, apply, force }
 }
 
+/**
+ * Milestone 13, Task 8 — `report.populationSize`/`toMutate`/`appliedCount`
+ * already include groups (see `TargetReconciliationReport`'s own doc
+ * comment) for any target with a group connector, so the totals below are
+ * already correct with no change; `toMutateGroups` is printed as its own
+ * clearly-labelled section so an operator reading dry-run output can see
+ * group-level changes explicitly rather than them being silently folded
+ * into the user list — "must appear in the dry-run plan" (this task's own
+ * brief). Empty (`[]`) for a target with no group connector, so this prints
+ * nothing extra for keycloak/entra_id/google_workspace, exactly as before
+ * this task.
+ */
 function printReport(report: TargetReconciliationReport): void {
-  console.log(`[target-reconcile] checked ${report.populationSize} in-scope principal(s)`)
+  console.log(`[target-reconcile] checked ${report.populationSize} in-scope principal(s)/group(s)`)
   console.log(
-    `[target-reconcile] plan: ${report.toMutate.length} principal(s) would be mutated ` +
+    `[target-reconcile] plan: ${report.toMutate.length} principal(s) and ${report.toMutateGroups.length} group(s) would be mutated ` +
       `(threshold ${report.blastRadius.thresholdPercent}%, floor ${report.blastRadius.floor})`,
   )
   for (const principal of report.toMutate) {
     for (const op of principal.operations) {
       console.log(`[target-reconcile]   - ${principal.username}: ${op.kind} — ${op.description}`)
+    }
+  }
+  for (const group of report.toMutateGroups) {
+    for (const op of group.operations) {
+      console.log(`[target-reconcile]   - group "${group.name}": ${op.kind} — ${op.description}`)
     }
   }
 }

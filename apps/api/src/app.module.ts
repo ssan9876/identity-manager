@@ -17,6 +17,7 @@ import { ActiveDirectoryConnector } from './connectors/active-directory.connecto
 import { ConnectorRegistry } from './connectors/connector-registry'
 import { EchoConnector } from './connectors/echo.connector'
 import { EntraIdConnector } from './connectors/entra-id.connector'
+import { GoogleWorkspaceConnector } from './connectors/google-workspace.connector'
 import { loadEnv } from './config/env'
 import { createDbClient } from './db/client'
 import { GroupsController } from './groups/groups.controller'
@@ -162,6 +163,16 @@ import { UsersRepository } from './users/users.repository'
     // JS-level default or not (see EchoConnector's own doc comment above for
     // the exact failure this avoids).
     EntraIdConnector,
+    // Milestone 13, Task 8: real, no-network-at-construction (same property
+    // as EntraIdConnector/ActiveDirectoryConnector/EchoConnector/
+    // KeycloakAdminClient above — the token endpoint is only ever called
+    // lazily, from inside `getToken`, never a constructor) — registered for
+    // the identical reason those are: `ConnectorRegistry`'s own
+    // `GoogleWorkspaceConnector` constructor parameter needs a REAL
+    // registered provider to resolve through DI at all, JS-level default or
+    // not (see EchoConnector's own doc comment above for the exact failure
+    // this avoids).
+    GoogleWorkspaceConnector,
     ConnectorRegistry,
     SyncWorker,
     SyncStateRepository,

@@ -2,8 +2,10 @@ import { Injectable } from '@nestjs/common'
 import type {
   ConnectorHealth,
   ConnectorOperation,
+  DesiredGroup,
   DesiredUser,
   DirectoryConnector,
+  DirectoryGroupConnector,
 } from './connector'
 import { resolveSecret } from './secrets'
 
@@ -11,6 +13,26 @@ import { resolveSecret } from './secrets'
 export interface EchoRecordedCall {
   method: 'plan' | 'apply' | 'disable'
   desired?: DesiredUser
+  externalId?: string
+  at: Date
+}
+
+/**
+ * Milestone 13, Task 8 — the GROUP-shaped mirror of `EchoRecordedCall`,
+ * kept as its OWN array (`EchoConnector.groupCalls`) rather than widening
+ * `calls` into a discriminated union: `desired` (a `DesiredUser`) and
+ * `desiredGroup` (a `DesiredGroup`) are different payload shapes, and every
+ * EXISTING test filtering `calls` by `method` (e.g. `calls.filter(call =>
+ * call.method === 'apply')`) would otherwise need to additionally narrow
+ * away group-shaped entries it never asked about. A separate array also
+ * makes "zero group mutations reached the target" a direct, one-line
+ * assertion (`groupCalls.filter(c => c.method === 'applyGroup').length ===
+ * 0`) — exactly the shape the carried blast-radius gap (Milestone 11, Task
+ * 6's own report, "Concerns" #1) needs proven against.
+ */
+export interface EchoRecordedGroupCall {
+  method: 'planGroup' | 'applyGroup'
+  desiredGroup?: DesiredGroup
   externalId?: string
   at: Date
 }
@@ -37,6 +59,13 @@ function sameNameSet(a: Iterable<string>, b: Iterable<string>): boolean {
   return setA.size === setB.size && [...setA].every((name) => setB.has(name))
 }
 
+/** Order-independent equality on two id sets — `planGroup`'s own "would membership actually change" check, the group-membership analogue of `sameNameSet` immediately above. Mirrors `ActiveDirectoryConnector`'s own (private) `sameDnSet`, re-derived locally rather than imported — the same repeated-per-file convention every helper in this function already follows. */
+function sameIdSet(a: Iterable<string>, b: Iterable<string>): boolean {
+  const setA = new Set(a)
+  const setB = new Set(b)
+  return setA.size === setB.size && [...setA].every((id) => setB.has(id))
+}
+
 /**
  * The in-repo target Milestone 10 ships with — "a full in-repo
  * implementation recording what it was asked to do. This proves the spine
@@ -44,6 +73,22 @@ function sameNameSet(a: Iterable<string>, b: Iterable<string>): boolean {
  * Not a test double: it is a genuine `outbox_target`/`connector_targets`
  * citizen (see `ConnectorTarget`'s own doc comment) that Milestone 14's
  * console E2E configures and drives through the real spine.
+ *
+ * Milestone 13, Task 8 — ALSO implements `DirectoryGroupConnector`
+ * (`planGroup`/`applyGroup`, below), the SECOND target to do so after
+ * `ActiveDirectoryConnector` (Milestone 11, Task 6). This is what makes
+ * `TargetReconciliationJob`'s dry-run/blast-radius guard testable against
+ * GROUP mutations fast and deterministically, with no AD container needed —
+ * the identical "fast, echo-based proof... no AD container needed for the
+ * GENERIC fix" reasoning `test/target-reconciliation.spec.ts`'s own
+ * per-principal-isolation tests already use for the USER-shaped guard (see
+ * that file's own doc comment on that describe block). It is also the
+ * second real case `ConnectorRegistry.resolveGroupConnector`'s own doc
+ * comment explicitly anticipated ("When a second target gains this
+ * capability... this becomes a real multi-entry catalog") — that
+ * generalisation happens alongside this change, not before it, per this
+ * project's own "generalise when there is a second real case, not before"
+ * precedent.
  *
  * REQUIRES a `credentialSecretName` in its `connector_targets.config`,
  * exactly like a real vendor connector requires a bind password / client
@@ -75,7 +120,7 @@ function sameNameSet(a: Iterable<string>, b: Iterable<string>): boolean {
  * ever call `app.init()`.
  */
 @Injectable()
-export class EchoConnector implements DirectoryConnector {
+export class EchoConnector implements DirectoryConnector, DirectoryGroupConnector {
   readonly calls: EchoRecordedCall[] = []
   private readonly externalIdsByUsername = new Map<string, string>()
   // Milestone 10, Task 4 — the LAST desired state a successful `apply()`
@@ -86,6 +131,20 @@ export class EchoConnector implements DirectoryConnector {
   private readonly lastAppliedByUsername = new Map<string, DesiredUser>()
   private nextSequence = 1
   private config: Record<string, unknown> = {}
+
+  // Milestone 13, Task 8 — the GROUP-shaped mirror of the four fields
+  // immediately above, same purpose each: `groupCalls` is this class's own
+  // "recording what it was asked to do" for `planGroup`/`applyGroup` (see
+  // `EchoRecordedGroupCall`'s own doc comment for why this is a SEPARATE
+  // array rather than folded into `calls`); `lastAppliedGroupByName` is what
+  // `planGroup` diffs against, updated ONLY by `applyGroup`; `externalGroupIdsByName`
+  // is the group-shaped mirror of `externalIdsByUsername` (a stable synthetic
+  // id, minted once per name and returned on every later `applyGroup` call —
+  // idempotence depends on this exactly as it does for users).
+  readonly groupCalls: EchoRecordedGroupCall[] = []
+  private readonly lastAppliedGroupByName = new Map<string, DesiredGroup>()
+  private readonly externalGroupIdsByName = new Map<string, string>()
+  private nextGroupSequence = 1
 
   /**
    * Milestone 11, Task 5 test support — usernames whose NEXT `apply()` call
@@ -103,6 +162,16 @@ export class EchoConnector implements DirectoryConnector {
    * (empty means unchanged, real-connector behaviour).
    */
   readonly forcedFailureUsernames = new Set<string>()
+
+  /**
+   * Milestone 13, Task 8 test support — the GROUP-shaped mirror of
+   * `forcedFailureUsernames` immediately above, for the identical reason:
+   * proving per-GROUP failure isolation in `TargetReconciliationJob`'s new
+   * group-apply loop without needing the real, slow AD container. Checked
+   * FIRST in `applyGroup()`, before `requireSecret`/recording — a forced
+   * failure records NOTHING.
+   */
+  readonly forcedFailureGroupNames = new Set<string>()
 
   /**
    * Binds this connector to a FRESH read of `connector_targets.config` —
@@ -218,6 +287,69 @@ export class EchoConnector implements DirectoryConnector {
     } catch (error) {
       return { ok: false, detail: error instanceof Error ? error.message : String(error) }
     }
+  }
+
+  // -------------------------------------------------------------------
+  // Group sync (Milestone 13, Task 8) — the SAME "genuine diff against the
+  // last state APPLY actually recorded" shape `plan()`/`apply()` above
+  // already establish for users, applied to `DesiredGroup`. Exists so
+  // `TargetReconciliationJob`'s dry-run/blast-radius guard is provable
+  // against GROUP mutations without a real AD container — see this class's
+  // own top doc comment.
+  // -------------------------------------------------------------------
+
+  async planGroup(desired: DesiredGroup): Promise<ConnectorOperation[]> {
+    this.requireSecret()
+    this.groupCalls.push({ method: 'planGroup', desiredGroup: desired, at: new Date() })
+
+    const existing = this.lastAppliedGroupByName.get(desired.name)
+    if (existing === undefined) {
+      return [
+        {
+          kind: 'create',
+          description: `create echo group "${desired.name}" (members=[${desired.memberExternalIds.join(', ')}])`,
+        },
+      ]
+    }
+
+    if (!sameIdSet(existing.memberExternalIds, desired.memberExternalIds)) {
+      return [
+        {
+          kind: 'update',
+          description: `reconcile echo group "${desired.name}" membership`,
+        },
+      ]
+    }
+    return []
+  }
+
+  /**
+   * Assigns a NEW synthetic external id the first time a given group `name`
+   * is seen, and returns the SAME one on every later call — the group-shaped
+   * mirror of `apply()`'s own identical discipline for `externalIdsByUsername`
+   * (see that method's own doc comment: idempotence depends on this).
+   * `requireSecret` runs FIRST, before any recording or map mutation, so a
+   * missing secret leaves NOTHING applied — same "never partially applies"
+   * contract.
+   */
+  async applyGroup(desired: DesiredGroup): Promise<{ externalId: string }> {
+    if (this.forcedFailureGroupNames.has(desired.name)) {
+      throw new Error(`echo connector: forced failure for group "${desired.name}" (test support)`)
+    }
+    this.requireSecret()
+
+    let externalId = this.externalGroupIdsByName.get(desired.name)
+    if (externalId === undefined) {
+      externalId = `echo-group-${this.nextGroupSequence++}`
+      this.externalGroupIdsByName.set(desired.name, externalId)
+    }
+
+    this.groupCalls.push({ method: 'applyGroup', desiredGroup: desired, externalId, at: new Date() })
+    // Recorded AFTER pushing to `groupCalls` (which never fails) so a
+    // genuinely successful apply is always what future `planGroup` calls
+    // diff against — see `lastAppliedGroupByName`'s own doc comment.
+    this.lastAppliedGroupByName.set(desired.name, desired)
+    return { externalId }
   }
 
   /** Throws `MissingSecretError` (secrets.ts) if the configured secret name has no value in the environment. Discards the resolved value immediately — it exists only to prove resolution succeeded. */
