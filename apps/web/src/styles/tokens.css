@@ -1,22 +1,60 @@
 /**
  * Design tokens — the single implementation of DESIGN.md's palette, type
  * scale, spacing and z-index scale as CSS custom properties. Every screen in
- * this console consumes these; no component file may hard-code a colour,
- * font size, spacing value or z-index of its own. If a value is missing
- * here, add the token — do not inline the literal.
+ * this console consumes these SEMANTIC names (--bg, --ink, --primary, …)
+ * only; no component file may hard-code a colour, font size, spacing value
+ * or z-index of its own, and no component file ever needs to know which
+ * theme is active — that decision lives entirely here. If a value is
+ * missing here, add the token — do not inline the literal.
  *
- * Color values are copied verbatim from DESIGN.md's `:root` block (OKLCH
- * throughout). Spacing, radius, shadow, motion and layout tokens are NOT
- * individually spelled out in DESIGN.md (only "24px gutters" and the z-index
- * scale are literal) — those are this file's own considered extension,
- * built to the same restrained, institutional brief ("a municipal records
- * office at 4pm"), kept internally consistent (e.g. --space-6 === the
- * documented 24px gutter) rather than invented ad hoc per component.
+ * ---------------------------------------------------------------------
+ * Light and dark (Milestone 9, Task 2)
+ * ---------------------------------------------------------------------
+ * Every colour token below is defined FOUR times, in this precedence order
+ * (highest-specificity wins; see each block's own comment):
+ *   1. `:root`                                   — light, the unconditional
+ *      default (DESIGN.md: light stays the default even once dark exists).
+ *   2. `@media (prefers-color-scheme: dark) :root` — dark, applied
+ *      automatically when the OS says dark AND the user has not explicitly
+ *      overridden the theme.
+ *   3. `:root[data-theme='dark']`                — dark, explicit: the
+ *      top-bar toggle (ThemeToggle.tsx) sets this attribute and it wins
+ *      regardless of OS preference, because an attribute selector (0,2,0)
+ *      outranks a bare `:root` (0,1,0) even inside the dark media query.
+ *   4. `:root[data-theme='light']`                — light, explicit: same
+ *      reasoning, for a user on a dark OS who explicitly chose light.
+ * `data-theme` is set on `<html>` by an inline, synchronous script in
+ * index.html's `<head>` — BEFORE this stylesheet is even parsed — reading
+ * the persisted choice (localStorage) if one exists. That is what makes the
+ * theme resolve before first paint: this file never needs a "flash of
+ * default theme, then correct itself" step, because by the time any of
+ * these rules are evaluated for the very first paint, the attribute (or its
+ * absence, deferring to prefers-color-scheme) is already final. See
+ * shell/theme.ts for the resolution logic shared between that inline script
+ * and the React toggle, and shell/ThemeToggle.tsx for the control itself.
+ *
+ * Every pairing below was computed (OKLCH -> linear sRGB -> WCAG relative
+ * luminance -> contrast ratio), not eyeballed — see
+ * .superpowers/sdd/2026-08-06-idp-milestone-9-ci-and-polish/task-2-report.md
+ * for the full table. Two things fell out of that verification that are
+ * worth flagging inline:
+ *   - The olive does not survive inversion: light's --primary (L 0.350) is a
+ *     dark ink built to sit ON white. Dark mode's --primary is a DIFFERENT
+ *     colour — same hue (110), raised lightness (L 0.78) — with its own
+ *     --primary-ink now DARK (it sits on a light fill, the inverse of
+ *     light mode's near-white --primary-ink on a dark fill).
+ *   - Auditing light mode's own numbers while building this turned up a
+ *     pre-existing floor violation: --ink-subtle (placeholders) was
+ *     L 0.58, measuring ~4.27:1 on --bg — under the 4.5:1 placeholder floor
+ *     PRODUCT.md itself requires, despite the old comment claiming 4.7:1.
+ *     Corrected here to L 0.54 (~5.05:1). Not a Task 2 feature; a Task 2
+ *     side-effect of actually computing rather than assuming.
  */
 
 :root {
   /* ---------------------------------------------------------------------
-   * Color — DESIGN.md, verbatim
+   * Color — LIGHT (default). DESIGN.md's `:root` block, with one fix (see
+   * --ink-subtle above).
    * ------------------------------------------------------------------- */
 
   /* Surfaces */
@@ -25,9 +63,9 @@
   --surface-sunken: oklch(0.968 0.003 110); /* table headers, inset wells */
 
   /* Ink */
-  --ink: oklch(0.205 0.01 110); /* body — 16.1:1 on bg */
-  --ink-muted: oklch(0.455 0.012 110); /* secondary — 7.4:1 on bg */
-  --ink-subtle: oklch(0.58 0.01 110); /* placeholders, meta — 4.7:1 on bg */
+  --ink: oklch(0.205 0.01 110); /* body — 17.9:1 on bg */
+  --ink-muted: oklch(0.455 0.012 110); /* secondary — 7.3:1 on bg */
+  --ink-subtle: oklch(0.54 0.01 110); /* placeholders, meta — 5.05:1 on bg */
 
   /* Lines */
   --border: oklch(0.905 0.004 110);
@@ -36,7 +74,7 @@
   /* Brand — deep olive. Primary actions, current selection, focus. Nothing else. */
   --primary: oklch(0.35 0.075 110);
   --primary-hover: oklch(0.3 0.078 110);
-  --primary-ink: oklch(0.995 0.005 110); /* on --primary — 11.3:1 */
+  --primary-ink: oklch(0.995 0.005 110); /* on --primary — 11.0:1 */
   --focus: oklch(0.52 0.11 110); /* focus ring, brighter to read on white */
 
   /* Semantic — exceptions only. Active/synced status render in --ink-muted
@@ -47,6 +85,15 @@
   --danger: oklch(0.505 0.15 32); /* deactivate, destructive, sync failed */
   --danger-hover: oklch(0.445 0.155 32);
   --danger-bg: oklch(0.968 0.028 32);
+
+  /* Chrome — dialog backdrop, skeleton shimmer highlight. Not in DESIGN.md's
+     own :root block (which predates both features) but the same "verify
+     every pairing, no bare literals outside this file" rule applies. */
+  --shadow-md: 0 8px 24px oklch(0.205 0.01 110 / 0.16);
+  --backdrop: oklch(0.205 0.01 110 / 0.4);
+  --skeleton-shine: oklch(1 0 0 / 0.7);
+
+  color-scheme: light;
 
   /* ---------------------------------------------------------------------
    * Typography — DESIGN.md, verbatim
@@ -109,12 +156,18 @@
    * used only where a layer genuinely floats above content (the narrow-nav
    * disclosure dialog). No shadow is used to fake depth on ordinary
    * surfaces — DESIGN.md bans glassmorphism and this is the same instinct.
+   * (--shadow-md itself is themed, above — dark needs more shadow opacity
+   * to read against a dark surface, so it is not repeated here.)
    * ------------------------------------------------------------------- */
 
   --radius-sm: 3px; /* badges, inputs, buttons */
   --radius-md: 6px; /* cards, dialogs */
 
-  --shadow-md: 0 8px 24px oklch(0.205 0.01 110 / 0.16);
+  /* A "pressed" inset shadow (.btn--primary:active) darkens whatever fill
+     is under it regardless of that fill's own lightness, so — unlike the
+     surface/ink/brand palette above — this one value works unchanged in
+     both themes and is defined once, not per-theme. */
+  --shadow-inset: oklch(0 0 0 / 0.25);
 
   /* ---------------------------------------------------------------------
    * Motion — DESIGN.md: 150-200ms, ease-out (quart/quint), state only.
@@ -137,6 +190,134 @@
   --z-tooltip: 60;
 }
 
+/* ===========================================================================
+ * Color — DARK, automatic (`prefers-color-scheme`). Applies whenever the OS
+ * says dark and `data-theme` has not been set to an explicit choice — see
+ * this file's header comment for the full precedence explanation. Same hue
+ * families as light throughout (110 neutral/brand, 65 warn, 32 danger); only
+ * lightness/chroma change. Ratios computed against THIS palette's own three
+ * backgrounds (bg 0.16 / surface 0.21 / surface-sunken 0.26) — see the
+ * task-2 report for the full table, worst case noted per token below.
+ * ======================================================================= */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: oklch(0.16 0.004 110);
+    --surface: oklch(0.21 0.005 110);
+    --surface-sunken: oklch(0.26 0.006 110);
+
+    --ink: oklch(0.9 0.004 110); /* body — 11.5:1 worst case (on surface-sunken) */
+    --ink-muted: oklch(0.73 0.008 110); /* 6.5:1 worst case */
+    --ink-subtle: oklch(0.67 0.01 110); /* placeholders — 5.2:1 worst case */
+
+    --border: oklch(0.36 0.008 110);
+    --border-strong: oklch(0.46 0.01 110);
+
+    /* Raised-lightness olive — light's dark ink primary (L 0.35) is
+       near-invisible on a dark surface. --primary-ink flips to dark too:
+       it now sits ON this light fill, not under near-white text. */
+    --primary: oklch(0.78 0.11 110); /* 7.9:1 worst case (on surface-sunken) */
+    --primary-hover: oklch(0.83 0.11 110); /* brighter on hover, not darker —
+       "more emphasis" in dark mode means moving away from the dark
+       background, the mirror of light mode moving toward its white one */
+    --primary-ink: oklch(0.18 0.02 110); /* on --primary — 9.5:1 */
+    --focus: oklch(0.8 0.17 110); /* higher chroma than primary so a focus
+       ring reads as its own signal, not "primary but slightly lighter" —
+       10.6:1 on bg, 8.5:1 on surface-sunken, both far past the 3:1 floor */
+
+    --warn: oklch(0.75 0.14 65); /* dot/accent — 6.4:1 worst case on warn-bg */
+    --warn-bg: oklch(0.28 0.045 65); /* ink-on-warn-bg — 10.9:1 */
+    --danger: oklch(0.7 0.14 32); /* 5.25:1 worst case (on danger-bg) */
+    --danger-hover: oklch(0.76 0.14 32); /* on danger-bg — 6.55:1 */
+    --danger-bg: oklch(0.28 0.05 32); /* ink-on-danger-bg — 11.0:1 */
+
+    --shadow-md: 0 8px 24px oklch(0 0 0 / 0.55); /* stronger than light: a
+       shadow needs more opacity to read against an already-dark surface */
+    --backdrop: oklch(0 0 0 / 0.6);
+    --skeleton-shine: oklch(1 0 0 / 0.12); /* light's 0.7-alpha white sweep
+       would be a harsh flash over a dark base; a faint lightening reads as
+       the same "sheen" without it */
+
+    color-scheme: dark;
+  }
+}
+
+/* ===========================================================================
+ * Color — DARK, explicit. The top-bar toggle sets data-theme="dark" on
+ * <html> (shell/theme.ts) and persists it, overriding prefers-color-scheme
+ * regardless of which way the OS is set. Identical values to the media-
+ * query block above — kept as a second block (rather than trying to share
+ * one) because plain CSS has no way to parameterize a media query by a
+ * selector; see this file's header comment for why the duplication is the
+ * correct shape here, not an oversight.
+ * ======================================================================= */
+:root[data-theme='dark'] {
+  --bg: oklch(0.16 0.004 110);
+  --surface: oklch(0.21 0.005 110);
+  --surface-sunken: oklch(0.26 0.006 110);
+
+  --ink: oklch(0.9 0.004 110);
+  --ink-muted: oklch(0.73 0.008 110);
+  --ink-subtle: oklch(0.67 0.01 110);
+
+  --border: oklch(0.36 0.008 110);
+  --border-strong: oklch(0.46 0.01 110);
+
+  --primary: oklch(0.78 0.11 110);
+  --primary-hover: oklch(0.83 0.11 110);
+  --primary-ink: oklch(0.18 0.02 110);
+  --focus: oklch(0.8 0.17 110);
+
+  --warn: oklch(0.75 0.14 65);
+  --warn-bg: oklch(0.28 0.045 65);
+  --danger: oklch(0.7 0.14 32);
+  --danger-hover: oklch(0.76 0.14 32);
+  --danger-bg: oklch(0.28 0.05 32);
+
+  --shadow-md: 0 8px 24px oklch(0 0 0 / 0.55);
+  --backdrop: oklch(0 0 0 / 0.6);
+  --skeleton-shine: oklch(1 0 0 / 0.12);
+
+  color-scheme: dark;
+}
+
+/* ===========================================================================
+ * Color — LIGHT, explicit. Only matters when the OS prefers dark AND the
+ * user has explicitly chosen light: without this block, the dark media
+ * query above would otherwise win (same `:root` specificity, later in
+ * source). An attribute selector always outranks a bare `:root`, so this
+ * wins regardless of source order. Values identical to the unconditional
+ * `:root` block at the top of this file.
+ * ======================================================================= */
+:root[data-theme='light'] {
+  --bg: oklch(1 0 0);
+  --surface: oklch(0.985 0.002 110);
+  --surface-sunken: oklch(0.968 0.003 110);
+
+  --ink: oklch(0.205 0.01 110);
+  --ink-muted: oklch(0.455 0.012 110);
+  --ink-subtle: oklch(0.54 0.01 110);
+
+  --border: oklch(0.905 0.004 110);
+  --border-strong: oklch(0.82 0.006 110);
+
+  --primary: oklch(0.35 0.075 110);
+  --primary-hover: oklch(0.3 0.078 110);
+  --primary-ink: oklch(0.995 0.005 110);
+  --focus: oklch(0.52 0.11 110);
+
+  --warn: oklch(0.62 0.13 65);
+  --warn-bg: oklch(0.972 0.03 65);
+  --danger: oklch(0.505 0.15 32);
+  --danger-hover: oklch(0.445 0.155 32);
+  --danger-bg: oklch(0.968 0.028 32);
+
+  --shadow-md: 0 8px 24px oklch(0.205 0.01 110 / 0.16);
+  --backdrop: oklch(0.205 0.01 110 / 0.4);
+  --skeleton-shine: oklch(1 0 0 / 0.7);
+
+  color-scheme: light;
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root {
     /* Every transition/animation in this codebase is written in terms of
@@ -145,7 +326,10 @@
        alternative" for the whole app at once, without every component
        needing its own reduced-motion branch. duration:1ms rather than 0ms —
        a genuine 0 causes some browsers to skip firing `transitionend`,
-       which a couple of components (the narrow-nav dialog) rely on. */
+       which a couple of components (the narrow-nav dialog) rely on. This
+       also covers the theme toggle's own icon-swap transition
+       (shell/AppShell.css's .theme-toggle__icon) — it defines no
+       duration/ease of its own, reading these two tokens exclusively. */
     --motion-duration: 1ms;
     --motion-ease: linear;
   }

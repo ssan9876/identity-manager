@@ -34,7 +34,12 @@
 //                     build` for the web console — proves both packages
 //                     actually produce their real build artifacts, not just
 //                     that --noEmit is happy
-//   4. API suite   — `pnpm --filter @idm/api test` (vitest + Testcontainers,
+//   4. web tokens  — `pnpm --filter @idm/web test` (apps/web/scripts/
+//                     check-css-tokens.mjs): fails if any CSS file under
+//                     apps/web/src, other than styles/tokens.css, contains a
+//                     raw colour literal (Milestone 9, Task 2's own "prove
+//                     it"). No containers, so this runs under --quick too.
+//   5. API suite   — `pnpm --filter @idm/api test` (vitest + Testcontainers,
 //                     ~756 tests, ~150s). SKIPPED by `--quick`: this is the
 //                     only stage that needs Docker containers, and the one
 //                     `verify:quick` exists to avoid for a fast pre-commit
@@ -115,6 +120,8 @@ async function main() {
   }
 
   stage('build', 'pnpm', ['run', 'build'])
+
+  stage('web tokens', 'pnpm', ['--filter', '@idm/web', 'run', 'test'])
 
   if (quick) {
     log('--quick: skipping the API suite (needs Docker/Testcontainers).')

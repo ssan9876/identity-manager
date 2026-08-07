@@ -12,6 +12,7 @@ import { GroupsProvider } from '../groups/GroupsContext'
 import { OrgUnitsProvider } from '../org-units/OrgUnitsContext'
 import { NAV_ITEMS } from './nav-items'
 import { useSelfPermissions, type Action } from './permissions'
+import { ThemeToggle } from './ThemeToggle'
 import { useNavMode } from './useMediaQuery'
 import './AppShell.css'
 
@@ -224,6 +225,7 @@ export default function AppShell() {
           </form>
 
           <div className="topbar__identity">
+            <ThemeToggle />
             <Link to="/self" data-testid="topbar-my-profile">
               My Profile
             </Link>
