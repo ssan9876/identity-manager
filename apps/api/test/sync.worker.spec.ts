@@ -564,22 +564,26 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
       }
     })
 
-    it('a target with no registered connector (active_directory) dead-letters cleanly instead of silently reaching Keycloak', async () => {
+    it('a target with no registered connector (entra_id) dead-letters cleanly instead of silently reaching Keycloak', async () => {
       // No `connector_targets` row needed to CLAIM this event — inserted
       // directly, bypassing OutboxWriter's enabled-only fan-out, exactly
       // like outbox-multi-target.spec.ts already does for active_directory.
       // The point here is purely SyncWorker's OWN dispatch: does a claimed
       // event for a target with NO implementation ever silently reach
       // Keycloak instead? It must not — it must fail loudly and visibly.
+      // `entra_id` (not `active_directory`, which Milestone 11 Task 5 gave a
+      // real `ActiveDirectoryConnector`) is the still-unimplemented target
+      // for this proof as of this milestone — see connector-registry.spec.ts's
+      // own `it.each` for the equivalent, target-agnostic version of this.
       const user = await makeUser()
-      const eventId = await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'active_directory')
+      const eventId = await insertOutboxEvent('user', user.id, 'created', {}, undefined, 'entra_id')
 
       const worker = makeWorker(client, { maxAttempts: 1, baseDelayMs: 10, maxDelayMs: 20 })
       expect(await worker.runOnce()).toBe('processed')
 
       const row = await outboxRow(eventId)
       expect(row.status).toBe('failed')
-      expect(row.last_error).toMatch(/no connector registered for target "active_directory"/)
+      expect(row.last_error).toMatch(/no connector registered for target "entra_id"/)
 
       // Never reached Keycloak — the exact failure mode Task 1's report
       // flagged as the risk of leaving dispatch unwired.

@@ -5,10 +5,11 @@ import { AttributeTargetMappingsRepository } from '../attributes/attribute-targe
 import { DB_CLIENT } from '../common/db.token'
 import { buildTargetAttributes, computeCoreFieldValues } from '../connectors/attribute-mapping'
 import { ConnectorRegistry } from '../connectors/connector-registry'
-import type { DesiredUser } from '../connectors/connector'
+import type { DesiredGroup, DesiredUser, DirectoryGroupConnector } from '../connectors/connector'
 import * as schema from '../db/schema/index'
+import { externalGroupIdentities } from '../db/schema/external-group-identities'
 import { externalIdentities } from '../db/schema/external-identities'
-import { GroupsRepository } from '../groups/groups.repository'
+import { type Group, GroupsRepository } from '../groups/groups.repository'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
 import { OrgUnitsRepository } from '../org-units/org-units.repository'
 import { type User, UsersRepository } from '../users/users.repository'
@@ -444,20 +445,50 @@ export class SyncWorker implements OnApplicationShutdown {
     // `department` core field ("derived from the org path" — see
     // connectors/attribute-mapping.ts's `computeCoreFieldValues` doc
     // comment) and is fetched LAZILY — only when `mappings` actually
-    // contains a core-field row for this target — rather than
-    // unconditionally on every call: no target seeds a core-field mapping
-    // by default (this task's own migration deliberately seeds none for
-    // 'keycloak' — see attribute-target-mappings.ts), so this keeps the
-    // COMMON case at exactly one extra round trip versus the
-    // `listActiveAttributeDefinitions` call this replaces, not two. Both
-    // reads go through `tx` — never a second pool connection while this
-    // worker's own transaction is open (finding C1, docs/superpowers/
-    // audit-integrity.md).
+    // contains a core-field row for this target, OR `target` is
+    // `'active_directory'` (Milestone 11, Task 5 — AD structurally needs the
+    // FULL org-unit path to place a principal in the right nested OU, not
+    // just the leaf NAME `department` carries; see `DesiredUser.orgUnitPath`'s
+    // own doc comment) — rather than unconditionally on every call: no OTHER
+    // target seeds a core-field mapping by default (this task's own
+    // migration deliberately seeds none for 'keycloak' — see
+    // attribute-target-mappings.ts), so this keeps every non-AD target at
+    // exactly the SAME round-trip count Milestone 10, Task 3 already
+    // calibrated against the timing-sensitive finding-H2 races (see that
+    // task's own report — the identical reason this stayed lazy rather than
+    // unconditional in the first place). Both reads go through `tx` — never
+    // a second pool connection while this worker's own transaction is open
+    // (finding C1, docs/superpowers/audit-integrity.md).
     const mappings = await this.attributeTargetMappingsRepository.listForTarget(target, tx)
-    const orgUnit = mappings.some((mapping) => mapping.source === 'core')
-      ? await this.orgUnitsRepository.findById(user.orgUnitId, tx)
-      : null
+    const needsOrgUnit = target === 'active_directory' || mappings.some((mapping) => mapping.source === 'core')
+    const orgUnit = needsOrgUnit ? await this.orgUnitsRepository.findById(user.orgUnitId, tx) : null
     const coreFieldValues = computeCoreFieldValues(user, orgUnit)
+
+    // Milestone 11, Task 5 — the SAME `target === 'active_directory'` gate as
+    // `orgUnit` immediately above, for the identical reason (one extra
+    // indexed lookup — `external_identities_user_system_unique` — paid only
+    // by the one target that structurally needs it). See
+    // `DesiredUser.existingExternalId`'s own doc comment for why AD needs
+    // this and Keycloak/echo do not: `apply(desired)` has no `externalId`
+    // parameter of its own (Milestone 10, Task 2 — settled interface), so a
+    // connector wanting to re-identify a principal by its IMMUTABLE id
+    // (never DN, sAMAccountName or mail — all three move) has nowhere else
+    // to receive its own past correlation from.
+    const existingExternalId =
+      target === 'active_directory' ? await this.findExistingExternalId(tx, user.id, target) : undefined
+
+    // Milestone 11, Task 5 — same gate again, for `DesiredUser.
+    // managedAttributeRemoteNames`'s own purpose: EVERY remote name ever
+    // configured for this target, enabled or not (see
+    // `AttributeTargetMappingsRepository.listAllRemoteNamesForTarget`'s own
+    // doc comment for why `mappings` above — enabled-only — is the WRONG
+    // source here: a mapping that just transitioned to disabled must still
+    // be found so its stale AD value can be cleared, and `mappings` no
+    // longer contains it the moment it is disabled).
+    const managedAttributeRemoteNames =
+      target === 'active_directory'
+        ? await this.attributeTargetMappingsRepository.listAllRemoteNamesForTarget(target, tx)
+        : undefined
 
     // Only an 'active' user is treated as a live principal anywhere else in
     // this system (PermissionEngine.resolveActor requires it). Mirroring
@@ -485,7 +516,34 @@ export class SyncWorker implements OnApplicationShutdown {
       // `createUser`/`updateUser` calls do not need to filter a second time.
       attributes: buildTargetAttributes(mappings, user.attributes, coreFieldValues),
       groups: await this.effectiveGroupNames(tx, user.id),
+      orgUnitPath: target === 'active_directory' && orgUnit !== null ? orgUnit.path.split('.') : undefined,
+      existingExternalId,
+      managedAttributeRemoteNames,
     }
+  }
+
+  /**
+   * The immutable id a PAST successful `apply()` correlated for
+   * (userId, target), if any — a direct read of `external_identities`
+   * (Milestone 11, Task 5). `undefined` on a genuine first-ever sync (no row
+   * yet) — never distinguished from "row exists but is stale/failed": even a
+   * `syncState: 'failed'` row's `external_id` is still the target's real,
+   * still-valid immutable id for whatever was last successfully applied (see
+   * `external_identities.sync_state`'s own doc comment — a regression to
+   * `'failed'` never clears `external_id`), so it remains the right value to
+   * re-identify by.
+   */
+  private async findExistingExternalId(
+    tx: DbHandle,
+    userId: string,
+    target: OutboxTarget,
+  ): Promise<string | undefined> {
+    const [row] = await tx
+      .select({ externalId: externalIdentities.externalId })
+      .from(externalIdentities)
+      .where(and(eq(externalIdentities.userId, userId), eq(externalIdentities.system, target)))
+      .limit(1)
+    return row?.externalId
   }
 
   /**
@@ -566,11 +624,39 @@ export class SyncWorker implements OnApplicationShutdown {
    * it compares every user's CURRENT desired groups against Keycloak's
    * CURRENT actual ones directly, independent of which fan-out did or
    * did not reach them.
+   *
+   * Milestone 11, Task 6 — widened from `private` to `public` (no other
+   * change), the SAME "let a proven method be called directly instead of
+   * re-implementing its logic" reasoning `reconcileUser`'s own doc comment
+   * already gives for its identical widening in Milestone 10, Task 4: this
+   * lets `test/active-directory-groups.connector.spec.ts` drive one group's
+   * full sync (identity + direct membership, native-nested or flattened per
+   * `ActiveDirectoryConnector`'s own rule) directly, the same way Task 5's
+   * own connector tests drive `reconcileUser` directly, rather than needing
+   * every scenario to round-trip through the full outbox claim/drain
+   * machinery.
    */
-  private async reconcileGroup(tx: DbHandle, groupId: string, target: OutboxTarget): Promise<void> {
+  async reconcileGroup(tx: DbHandle, groupId: string, target: OutboxTarget): Promise<void> {
     const group = await this.groupsRepository.findById(groupId, tx)
     if (group === null) {
       throw new Error(`sync worker: no group found for id ${groupId}`)
+    }
+
+    // Milestone 11, Task 6 — a target with a real DirectoryGroupConnector
+    // (today: active_directory only — see ConnectorRegistry.
+    // resolveGroupConnector's own doc comment) asserts this group's own
+    // identity and DIRECT membership edges natively/flattened per this
+    // connector's own nesting rule, and returns here WITHOUT falling
+    // through to the per-member fan-out below: AD's membership is a
+    // GROUP-level assert (reconcileAdStyleGroup), never a per-user one, and
+    // a rename needs no member re-assertion at all — AD maintains every
+    // `member`/`memberOf` DN reference itself across a `modifyDN` (verified
+    // empirically — see ActiveDirectoryConnector's own "THE NESTING
+    // DECISION" doc comment).
+    const groupConnector = await this.connectorRegistry.resolveGroupConnector(target, tx)
+    if (groupConnector !== null) {
+      await this.reconcileAdStyleGroup(tx, group, target, groupConnector)
+      return
     }
 
     if (target === 'keycloak') {
@@ -604,6 +690,26 @@ export class SyncWorker implements OnApplicationShutdown {
    * which would no longer reach the very users who just lost membership).
    */
   private async reconcileMembership(tx: DbHandle, event: ClaimedOutboxEvent): Promise<void> {
+    // Milestone 11, Task 6 — same early-return shape as `reconcileGroup`
+    // immediately above, for the identical reason: a `membership_changed`
+    // event is always anchored on the PARENT group's id (see
+    // GroupsController's own doc comment on why every membership mutation
+    // handler anchors its outbox write there), so re-resolving and
+    // re-asserting THAT group's own full desired membership — direct users
+    // AND direct child groups alike, native-nested or flattened per this
+    // connector's own rule — is exactly what both a user-edge change AND a
+    // child-group-edge change need, without needing to distinguish which
+    // one `payload` describes.
+    const groupConnector = await this.connectorRegistry.resolveGroupConnector(event.target, tx)
+    if (groupConnector !== null) {
+      const group = await this.groupsRepository.findById(event.aggregateId, tx)
+      if (group === null) {
+        throw new Error(`sync worker: no group found for id ${event.aggregateId}`)
+      }
+      await this.reconcileAdStyleGroup(tx, group, event.target, groupConnector)
+      return
+    }
+
     const payload = event.payload as { userId?: unknown; childGroupId?: unknown }
     const affected = new Set<string>()
 
@@ -620,6 +726,166 @@ export class SyncWorker implements OnApplicationShutdown {
     for (const userId of affected) {
       await this.reconcileUser(tx, userId, event.target)
     }
+  }
+
+  // -------------------------------------------------------------------
+  // Group-shaped sync (Milestone 11, Task 6) — for any target with a real
+  // DirectoryGroupConnector (today: active_directory only). Mirrors
+  // `reconcileUser`/`buildDesiredUser`'s own split (assert vs. compute) for
+  // the identical reason: `TargetReconciliationJob`'s own dry-run/plan path
+  // does not walk groups this milestone (see this task's own report,
+  // "Concerns" — a deliberate scope boundary, not an oversight), so unlike
+  // `buildDesiredUser` this is not YET reused by a second caller, but is
+  // still split the same way on the same principle: one computation, no
+  // future risk of a plan/apply divergence if a group-aware dry run is ever
+  // added.
+  // -------------------------------------------------------------------
+
+  /**
+   * Asserts one group's own desired identity + direct membership into
+   * `target` via `connector.applyGroup`, then records the correlation in
+   * `external_group_identities` — the group-shaped mirror of `reconcileUser`
+   * recording `external_identities`. Always re-reads fresh from Postgres
+   * (via `buildDesiredGroup`) and reasserts the WHOLE desired state, never a
+   * delta — calling this twice in a row for an already-converged group is a
+   * no-op the second time, the same idempotence guarantee every other
+   * reconcile method in this class already holds.
+   *
+   * Deliberately does NOT take `reconcileUser`'s own per-USER advisory lock
+   * (`SYNC_USER_LOCK_NAMESPACE`) — that lock exists because a `user`, a
+   * `group` and a `membership` event can all fan into `reconcileUser` for
+   * the SAME user concurrently (finding H2). A group's own AD identity and
+   * membership, by contrast, is asserted from EXACTLY ONE place
+   * (`reconcileGroup`/`reconcileMembership`, both gated to this same
+   * method), and `OutboxRepository.claimNext`'s existing per-(aggregate,
+   * target) ordering already serializes every event for the SAME group
+   * against itself — there is no cross-aggregate race analogous to H2 here
+   * to close.
+   */
+  private async reconcileAdStyleGroup(
+    tx: DbHandle,
+    group: Group,
+    target: OutboxTarget,
+    connector: DirectoryGroupConnector,
+  ): Promise<void> {
+    const desired = await this.buildDesiredGroup(tx, group, target)
+    const { externalId } = await connector.applyGroup(desired)
+
+    await tx
+      .insert(externalGroupIdentities)
+      .values({
+        groupId: group.id,
+        system: target,
+        externalId,
+        lastSyncedAt: new Date(),
+        syncState: 'synced',
+      })
+      .onConflictDoUpdate({
+        target: [externalGroupIdentities.groupId, externalGroupIdentities.system],
+        set: {
+          externalId,
+          lastSyncedAt: new Date(),
+          syncState: 'synced',
+          updatedAt: new Date(),
+        },
+      })
+  }
+
+  /** Computes one group's `DesiredGroup` — its name, its previously-correlated id (if any), and its direct membership resolved per `DesiredGroup.memberExternalIds`'s own doc comment (connector.ts) — WITHOUT asserting it anywhere. Pure read, same "compute vs. assert" split `buildDesiredUser` already establishes. */
+  private async buildDesiredGroup(tx: DbHandle, group: Group, target: OutboxTarget): Promise<DesiredGroup> {
+    const existingExternalId = await this.findExistingGroupExternalId(tx, group.id, target)
+    const memberExternalIds = await this.buildDesiredGroupMemberExternalIds(tx, group.id, target)
+    return { name: group.name, memberExternalIds, existingExternalId }
+  }
+
+  /**
+   * The core of the nesting rule (see `ActiveDirectoryConnector`'s own "THE
+   * NESTING DECISION" doc comment for the full reasoning this implements):
+   * for each of this group's DIRECT local edges, contribute EITHER a native
+   * reference (the edge's own target's correlated id) OR a flattened
+   * stand-in (that target's current locally-effective users' correlated
+   * ids), never both, per edge:
+   *
+   *  - a direct USER edge contributes that user's own correlated id for
+   *    `target`, or nothing if they have not synced there yet.
+   *  - a direct CHILD-GROUP edge contributes that child's own correlated id
+   *    for `target` IF one exists (NATIVE nesting) — otherwise it
+   *    contributes that child's current EFFECTIVE users' correlated ids
+   *    instead (FLATTENED stand-in), via `listEffectiveUserMembers`, which
+   *    already walks the child's own full descendant closure regardless of
+   *    depth, so the flattened set is complete even for a multi-level
+   *    uncorrelated subtree.
+   *
+   * A plain `Set` de-duplicates the result — the same principal can be
+   * reachable both as a direct member AND via a flattened child (or via
+   * two different flattened children), and AD's `member` is itself a SET,
+   * not a multiset.
+   *
+   * Every read below threads `tx` — this runs from inside `reconcileAdStyleGroup`,
+   * itself always inside the worker's own open transaction (finding C1,
+   * docs/superpowers/audit-integrity.md) — never a second pool connection.
+   */
+  private async buildDesiredGroupMemberExternalIds(
+    tx: DbHandle,
+    groupId: string,
+    target: OutboxTarget,
+  ): Promise<string[]> {
+    const directUserIds = await this.groupsRepository.listDirectUserMembers(groupId, tx)
+    const directChildGroupIds = await this.groupsRepository.listDirectChildGroups(groupId, tx)
+
+    const externalIds = new Set<string>()
+
+    for (const userId of directUserIds) {
+      const id = await this.findExistingExternalId(tx, userId, target)
+      if (id !== undefined) {
+        externalIds.add(id)
+      }
+    }
+
+    for (const childGroupId of directChildGroupIds) {
+      const childExternalId = await this.findExistingGroupExternalId(tx, childGroupId, target)
+      if (childExternalId !== undefined) {
+        // NATIVE NESTING: the child already has its own AD presence — refer
+        // to IT directly, never its members.
+        externalIds.add(childExternalId)
+        continue
+      }
+      // FLATTEN: the child has no AD presence yet — stand in with its
+      // current locally-effective users so this group's OWN membership
+      // stays complete and correct in the meantime. Self-heals into a real
+      // nested edge the moment the child itself finishes syncing — no
+      // special "upgrade" step, just what this method computes fresh next
+      // time.
+      const effectiveUserIds = await this.groupsRepository.listEffectiveUserMembers(childGroupId, tx)
+      for (const userId of effectiveUserIds) {
+        const id = await this.findExistingExternalId(tx, userId, target)
+        if (id !== undefined) {
+          externalIds.add(id)
+        }
+      }
+    }
+
+    return [...externalIds]
+  }
+
+  /**
+   * The immutable id a PAST successful `applyGroup()` correlated for
+   * (groupId, target), if any — the group-shaped mirror of
+   * `findExistingExternalId` above, reading `external_group_identities`
+   * instead of `external_identities`. `undefined` on a genuine first-ever
+   * sync (no row yet).
+   */
+  private async findExistingGroupExternalId(
+    tx: DbHandle,
+    groupId: string,
+    target: OutboxTarget,
+  ): Promise<string | undefined> {
+    const [row] = await tx
+      .select({ externalId: externalGroupIdentities.externalId })
+      .from(externalGroupIdentities)
+      .where(and(eq(externalGroupIdentities.groupId, groupId), eq(externalGroupIdentities.system, target)))
+      .limit(1)
+    return row?.externalId
   }
 
   // -------------------------------------------------------------------

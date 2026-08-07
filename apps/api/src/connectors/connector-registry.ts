@@ -3,7 +3,8 @@ import { eq } from 'drizzle-orm'
 import { connectorTargets } from '../db/schema/connector-targets'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
 import type { DbHandle } from '../outbox/outbox.writer'
-import type { ConnectorTarget, DirectoryConnector } from './connector'
+import { ActiveDirectoryConnector } from './active-directory.connector'
+import type { ConnectorTarget, DirectoryConnector, DirectoryGroupConnector } from './connector'
 import { EchoConnector } from './echo.connector'
 import { KeycloakConnector } from './keycloak.connector'
 
@@ -16,8 +17,11 @@ type ConnectorFactory = (config: Record<string, unknown>) => DirectoryConnector
 // plug in `active_directory`/`entra_id`/`google_workspace` — see `resolve`'s
 // own doc comment for why a target present in the wider `ConnectorTarget`
 // union but ABSENT from this narrower one still fails safely rather than
-// silently.
-type ImplementedConnectorTarget = 'keycloak' | 'echo'
+// silently. Milestone 11, Task 5 widens this to `active_directory`, the
+// FIRST real (non-echo) target added since Task 2 — proof this "cast a
+// runtime-known-safe value, `satisfies`-check the literal" shape genuinely
+// generalises rather than being echo-specific.
+type ImplementedConnectorTarget = 'keycloak' | 'echo' | 'active_directory'
 
 /**
  * Target -> connector. This project has been bitten FOUR times by
@@ -69,6 +73,14 @@ export class ConnectorRegistry {
     // (see EchoConnector's own doc comment for the exact failure this
     // fixed).
     @Optional() @Inject(EchoConnector) private readonly echoConnector: EchoConnector = new EchoConnector(),
+    // Milestone 11, Task 5 — the SAME `@Optional()`-with-JS-default shape as
+    // `echoConnector` immediately above, for the identical reason: a raw
+    // `new ConnectorRegistry(keycloak)` (every pre-Task-5 test in this file)
+    // keeps compiling and working via the TS default, while real Nest DI
+    // (app.module.ts) hands every caller the ONE registered instance instead.
+    @Optional()
+    @Inject(ActiveDirectoryConnector)
+    private readonly activeDirectoryConnector: ActiveDirectoryConnector = new ActiveDirectoryConnector(),
   ) {
     // Keycloak's OWN config source is unchanged by this task (still the
     // env-sourced KEYCLOAK_ADMIN_CONFIG token — see keycloak.connector.ts's
@@ -89,6 +101,14 @@ export class ConnectorRegistry {
         // a caller (a test, or a future console) hold a reference and
         // observe what the echo target was asked to do.
         echo: (config: Record<string, unknown>) => this.echoConnector.configure(config),
+        // Same `configure(config)`-rebinds-the-long-lived-instance shape as
+        // `echo` above — see ActiveDirectoryConnector's own doc comment for
+        // why reusing ONE instance (and, inside it, one lazily-established
+        // LDAPS connection) across resolve() calls is deliberate, not an
+        // oversight: a fresh TLS handshake + bind per call would be
+        // needlessly slow for a batch reconcile, and the connector already
+        // detects a stale/changed config and reconnects on its own.
+        active_directory: (config: Record<string, unknown>) => this.activeDirectoryConnector.configure(config),
       } satisfies Record<ImplementedConnectorTarget, ConnectorFactory>,
     )
   }
@@ -126,14 +146,54 @@ export class ConnectorRegistry {
       )
     }
 
+    const config = await this.loadConfig(target, tx)
+    const factory = this.factories[target as ImplementedConnectorTarget]
+    return factory(config)
+  }
+
+  /**
+   * Milestone 11, Task 6 — the GROUP-shaped mirror of `resolve` above, for
+   * targets implementing the optional `DirectoryGroupConnector` capability
+   * (`connector.ts`'s own doc comment: native group nesting, not every
+   * target has one). Returns `null`, never throws, for a target with no
+   * group-shaped capability — this is a normal, expected outcome (Keycloak
+   * and echo both resolve their OWN group membership entirely through
+   * `DesiredUser.groups` inside `apply()`, unchanged by this task), not a
+   * misconfiguration the way an UNIMPLEMENTED user-facing target is
+   * (`resolve`'s own thrown error, above) — `SyncWorker` uses this `null` to
+   * fall back to that pre-existing per-user path, exactly as it did before
+   * this task for every target.
+   *
+   * A single literal `!==` comparison, not an `Object.hasOwn`-guarded
+   * catalog lookup — deliberately: the prototype-chain-bypass hazard that
+   * pattern defends against is specific to INDEXING an object by an
+   * untrusted key (`this.factories[target]`, where `target` could
+   * coincidentally name an inherited `Object.prototype` member); a plain
+   * `===`/`!==` comparison against one fixed string literal has no such
+   * hazard, so the extra machinery would add nothing here. When a second
+   * target gains this capability (Entra ID/Google Workspace, Milestones
+   * 12-13), this becomes a real multi-entry catalog and should adopt the
+   * SAME `Object.create(null)` + `Object.hasOwn` + `satisfies` shape
+   * `factories` above already uses — not before, per this project's own
+   * "generalise when there is a second real case, not before" precedent
+   * (see e.g. `ImplementedConnectorTarget`'s own doc comment on why
+   * `active_directory` was the proof this shape genuinely generalises).
+   */
+  async resolveGroupConnector(target: ConnectorTarget, tx: DbHandle): Promise<DirectoryGroupConnector | null> {
+    if (target !== 'active_directory') {
+      return null
+    }
+    const config = await this.loadConfig(target, tx)
+    return this.activeDirectoryConnector.configure(config)
+  }
+
+  /** The one Postgres read every `resolve*` method needs — `connector_targets.config` for `target`, via the CALLER's own `tx` (see `resolve`'s own doc comment on connection discipline). `undefined`/no row resolves to an empty config, same as before this was extracted. */
+  private async loadConfig(target: ConnectorTarget, tx: DbHandle): Promise<Record<string, unknown>> {
     const [row] = await tx
       .select({ config: connectorTargets.config })
       .from(connectorTargets)
       .where(eq(connectorTargets.target, target))
       .limit(1)
-    const config = row?.config ?? {}
-
-    const factory = this.factories[target as ImplementedConnectorTarget]
-    return factory(config)
+    return row?.config ?? {}
   }
 }

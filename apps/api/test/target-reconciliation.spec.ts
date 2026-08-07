@@ -411,6 +411,55 @@ describe('TargetReconciliationJob (Milestone 10, Task 4)', () => {
   })
 
   // =====================================================================
+  // Per-principal failure isolation — Milestone 10 Task 4 concern 3,
+  // explicitly in scope for Milestone 11 Task 5 to close: one principal's
+  // OWN `reconcileUser` throwing must not abort the batch, and must not
+  // leave ANOTHER principal (before or after it) unattempted or partially
+  // applied. Fast, echo-based proof using `EchoConnector.forcedFailureUsernames`
+  // (no AD container needed for the GENERIC fix) — the AD-SPECIFIC version
+  // of this same guarantee, against a REAL dropped LDAP connection mid-batch,
+  // lives in test/active-directory.connector.spec.ts ("a connection failure
+  // mid-batch leaves no partially-applied user").
+  // =====================================================================
+  describe('per-principal failure isolation (Milestone 10 Task 4 concern 3)', () => {
+    it('one principal failing does not abort the batch, and does not affect any other principal', async () => {
+      await configureEchoTarget(100, 1_000_000) // lenient — this test is about isolation, not the guard
+      const [a, b, c] = await makeActiveUsers(3)
+      echoConnector.forcedFailureUsernames.add(b!.username)
+      const applyCallsBefore = applyCallCount()
+
+      try {
+        const report = await job.reconcile('echo', {})
+
+        expect(report.halted).toBe(false)
+        expect(report.toMutate.map((p) => p.userId).sort()).toEqual([a!.id, b!.id, c!.id].sort())
+        // THE isolation claim: b's failure did not stop a (before it) or c
+        // (after it, in insertion order) from being attempted and applied.
+        expect(report.appliedCount).toBe(2)
+        expect(report.failed).toHaveLength(1)
+        expect(report.failed[0]).toEqual({
+          userId: b!.id,
+          username: b!.username,
+          error: expect.stringMatching(/forced failure/),
+        })
+        expect(appliedUsernames().has(a!.username)).toBe(true)
+        expect(appliedUsernames().has(c!.username)).toBe(true)
+        expect(appliedUsernames().has(b!.username)).toBe(false)
+        expect(applyCallCount()).toBe(applyCallsBefore + 2)
+      } finally {
+        echoConnector.forcedFailureUsernames.delete(b!.username)
+      }
+
+      // Self-heals: b converges on the VERY NEXT run once its transient
+      // error clears — the failure was recorded (report.failed), never
+      // silently dropped, and never left the user permanently stuck either.
+      const followUp = await job.reconcile('echo', {})
+      expect(followUp.failed).toHaveLength(0)
+      expect(appliedUsernames().has(b!.username)).toBe(true)
+    })
+  })
+
+  // =====================================================================
   // The floor/threshold columns are settled, structural invariants now —
   // belt-and-braces proof that an out-of-range value is rejected at the
   // database level, not merely by convention.
