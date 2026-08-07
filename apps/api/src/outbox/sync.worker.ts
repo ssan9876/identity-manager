@@ -49,6 +49,28 @@ const DEFAULT_CONFIG: SyncWorkerConfig = {
 const SYNC_USER_LOCK_NAMESPACE = 0x1d3a_0002
 
 /**
+ * Targets whose connector needs `DesiredUser.existingExternalId`/
+ * `managedAttributeRemoteNames` — see either field's own doc comment
+ * (connectors/connector.ts) for the full reasoning. Both are closed-set
+ * literal comparisons via `.includes`, never an object-keyed catalog lookup —
+ * no `Object.hasOwn`/`Object.create(null)` hazard applies here (that defence
+ * is specific to INDEXING an object by an untrusted key; this is a fixed,
+ * developer-written array checked with `.includes`, the same "no hazard, no
+ * extra machinery needed" reasoning `ConnectorRegistry.resolveGroupConnector`
+ * already gives for its own single-target `!==` check). Milestone 11, Task 5
+ * introduced this gate scoped to `active_directory` alone; Milestone 12, Task
+ * 7 widens it to a real array shared by two targets, `entra_id` gains the
+ * SAME two fields for a DIFFERENT but analogous reason: Microsoft Graph's
+ * `id` is immutable exactly like AD's `objectGUID` (`userPrincipalName`/
+ * `mail` both move — this task's own binding rule), and Graph's `PATCH` is a
+ * partial update exactly like LDAP's `modify` (a name dropped from the
+ * request body is left untouched, never cleared — confirmed directly against
+ * https://learn.microsoft.com/en-us/graph/api/user-update's own "Request
+ * body" text, not rediscovered empirically the way AD's identical gap was).
+ */
+const TARGETS_NEEDING_IMMUTABLE_ID_CORRELATION: readonly OutboxTarget[] = ['active_directory', 'entra_id']
+
+/**
  * Exponential backoff with EQUAL jitter (delay is always in
  * `[exponential/2, exponential]`, never a near-zero retry and never
  * perfectly synchronized across many failing events — the classic
@@ -464,31 +486,35 @@ export class SyncWorker implements OnApplicationShutdown {
     const orgUnit = needsOrgUnit ? await this.orgUnitsRepository.findById(user.orgUnitId, tx) : null
     const coreFieldValues = computeCoreFieldValues(user, orgUnit)
 
-    // Milestone 11, Task 5 — the SAME `target === 'active_directory'` gate as
-    // `orgUnit` immediately above, for the identical reason (one extra
-    // indexed lookup — `external_identities_user_system_unique` — paid only
-    // by the one target that structurally needs it). See
-    // `DesiredUser.existingExternalId`'s own doc comment for why AD needs
-    // this and Keycloak/echo do not: `apply(desired)` has no `externalId`
-    // parameter of its own (Milestone 10, Task 2 — settled interface), so a
-    // connector wanting to re-identify a principal by its IMMUTABLE id
-    // (never DN, sAMAccountName or mail — all three move) has nowhere else
-    // to receive its own past correlation from.
-    const existingExternalId =
-      target === 'active_directory' ? await this.findExistingExternalId(tx, user.id, target) : undefined
+    // Milestone 11, Task 5 (widened to `entra_id` in Milestone 12, Task 7) —
+    // the SAME `needsImmutableIdCorrelation` gate as `orgUnit` immediately
+    // above is NOT reused here on purpose: `orgUnitPath` stays AD-only (Graph
+    // has no OU-equivalent nested placement concept — `entra_id` never reads
+    // that field), but THIS pair of fields is needed by both real targets —
+    // see `TARGETS_NEEDING_IMMUTABLE_ID_CORRELATION`'s own doc comment, and
+    // `DesiredUser.existingExternalId`'s own doc comment for why AD/Entra
+    // need this and Keycloak/echo do not: `apply(desired)` has no
+    // `externalId` parameter of its own (Milestone 10, Task 2 — settled
+    // interface), so a connector wanting to re-identify a principal by its
+    // IMMUTABLE id (never DN/sAMAccountName/mail for AD, never
+    // userPrincipalName/mail for Entra) has nowhere else to receive its own
+    // past correlation from. One extra indexed lookup —
+    // `external_identities_user_system_unique` — paid only by a target that
+    // structurally needs it.
+    const existingExternalId = TARGETS_NEEDING_IMMUTABLE_ID_CORRELATION.includes(target)
+      ? await this.findExistingExternalId(tx, user.id, target)
+      : undefined
 
-    // Milestone 11, Task 5 — same gate again, for `DesiredUser.
-    // managedAttributeRemoteNames`'s own purpose: EVERY remote name ever
-    // configured for this target, enabled or not (see
-    // `AttributeTargetMappingsRepository.listAllRemoteNamesForTarget`'s own
-    // doc comment for why `mappings` above — enabled-only — is the WRONG
-    // source here: a mapping that just transitioned to disabled must still
-    // be found so its stale AD value can be cleared, and `mappings` no
-    // longer contains it the moment it is disabled).
-    const managedAttributeRemoteNames =
-      target === 'active_directory'
-        ? await this.attributeTargetMappingsRepository.listAllRemoteNamesForTarget(target, tx)
-        : undefined
+    // Same gate again, for `DesiredUser.managedAttributeRemoteNames`'s own
+    // purpose: EVERY remote name ever configured for this target, enabled or
+    // not (see `AttributeTargetMappingsRepository.listAllRemoteNamesForTarget`'s
+    // own doc comment for why `mappings` above — enabled-only — is the WRONG
+    // source here: a mapping that just transitioned to disabled must still be
+    // found so its stale AD/Entra value can be actively cleared, and
+    // `mappings` no longer contains it the moment it is disabled).
+    const managedAttributeRemoteNames = TARGETS_NEEDING_IMMUTABLE_ID_CORRELATION.includes(target)
+      ? await this.attributeTargetMappingsRepository.listAllRemoteNamesForTarget(target, tx)
+      : undefined
 
     // Only an 'active' user is treated as a live principal anywhere else in
     // this system (PermissionEngine.resolveActor requires it). Mirroring

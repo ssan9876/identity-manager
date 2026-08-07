@@ -66,52 +66,63 @@ export interface DesiredUser {
   orgUnitPath?: readonly string[]
 
   /**
-   * Milestone 11, Task 5 — this user's PREVIOUSLY-correlated immutable id
-   * for THIS SAME target, if `external_identities` already has a row for
-   * (user, target) — i.e. what a past successful `apply()` returned as
-   * `externalId`. `apply(desired)` deliberately takes no `externalId`
-   * parameter of its own (Milestone 10, Task 2 — settled interface), so a
-   * connector that wants to re-identify "is this a known principal" by an
-   * IMMUTABLE key rather than a mutable one (decision: "Correlate on
-   * objectGUID... never the DN, never sAMAccountName, never mail — all
-   * three move") has nowhere else to receive it from. OPTIONAL and
-   * `undefined` when no prior correlation exists (first-ever sync) or for a
-   * target that has not opted in to the extra read (see `orgUnitPath`'s own
-   * doc comment — populated under the identical `target === 'active_directory'`
-   * gate, for the identical latency reason). `ActiveDirectoryConnector` uses
-   * this to find an existing entry by `objectGUID` FIRST, falling back to
-   * `sAMAccountName` only when this is absent — so a local username change
-   * still resolves to the SAME AD object instead of minting a duplicate.
-   * Keycloak/echo ignore it; both already correlate by username, which
-   * Milestone 10 accepted as sufficient for those targets (their own ids are
-   * not subject to the "DN/sAMAccountName/mail all move" hazard AD has).
+   * Milestone 11, Task 5 (widened to `entra_id` in Milestone 12, Task 7) —
+   * this user's PREVIOUSLY-correlated immutable id for THIS SAME target, if
+   * `external_identities` already has a row for (user, target) — i.e. what a
+   * past successful `apply()` returned as `externalId`. `apply(desired)`
+   * deliberately takes no `externalId` parameter of its own (Milestone 10,
+   * Task 2 — settled interface), so a connector that wants to re-identify "is
+   * this a known principal" by an IMMUTABLE key rather than a mutable one
+   * (decision: "Correlate on objectGUID/Graph id... never the DN/UPN, never
+   * sAMAccountName, never mail — all move") has nowhere else to receive it
+   * from. OPTIONAL and `undefined` when no prior correlation exists
+   * (first-ever sync) or for a target that has not opted in to the extra read
+   * (see `sync.worker.ts`'s own `TARGETS_NEEDING_IMMUTABLE_ID_CORRELATION` —
+   * currently `active_directory` and `entra_id`, NOT `orgUnitPath`'s own
+   * narrower AD-only gate, since Graph has no OU-equivalent concept for
+   * `entra_id` to need). `ActiveDirectoryConnector` uses this to find an
+   * existing entry by `objectGUID` FIRST, falling back to `sAMAccountName`
+   * only when this is absent; `EntraIdConnector` does the identical thing
+   * with Graph's `id` and a `userPrincipalName` bootstrap fallback — so a
+   * local username change still resolves to the SAME remote object instead
+   * of minting a duplicate. Keycloak/echo ignore it; both already correlate
+   * by username, which Milestone 10 accepted as sufficient for those targets
+   * (their own ids are not subject to the "immutable-key fields all move"
+   * hazard AD/Entra have).
    */
   existingExternalId?: string
 
   /**
-   * Milestone 11, Task 5 — every REMOTE name (custom and core alike) that
-   * has an ENABLED `attribute_target_mappings` row for THIS target right
-   * now — i.e. `mappings.map(m => remoteName)`, the same `mappings` array
-   * `attributes` above was already built from (`buildTargetAttributes`).
-   * OPTIONAL, populated under the identical `target === 'active_directory'`
-   * gate as `orgUnitPath`/`existingExternalId` (see either's own doc
+   * Milestone 11, Task 5 (widened to `entra_id` in Milestone 12, Task 7) —
+   * every REMOTE name (custom and core alike) that has an ENABLED
+   * `attribute_target_mappings` row for THIS target right now — i.e.
+   * `mappings.map(m => remoteName)`, the same `mappings` array `attributes`
+   * above was already built from (`buildTargetAttributes`). OPTIONAL,
+   * populated under the SAME `TARGETS_NEEDING_IMMUTABLE_ID_CORRELATION` gate
+   * as `existingExternalId` immediately above (see that field's own doc
    * comment for the latency reasoning).
    *
    * WHY THIS EXISTS, when `attributes` already carries every value that
-   * SHOULD propagate: LDAP's `modify` operation only touches attribute
-   * NAMES explicitly named in the request — unlike Keycloak's Admin REST
-   * API, where sending the whole `attributes` map REPLACES the stored map
-   * wholesale, so simply omitting a key already clears it there. Over LDAP,
-   * omitting a key from a `modify` leaves whatever AD already has for that
-   * name COMPLETELY UNTOUCHED — so the moment an admin disables a mapping
-   * (or a value goes from set to empty), `attributes` correctly stops
-   * carrying it, but nothing tells the connector a REMOTE name that used to
-   * be managed now needs to be ACTIVELY CLEARED rather than merely not
-   * re-sent. `ActiveDirectoryConnector.apply` diffs THIS set against
-   * `attributes`' own keys to find exactly that gap and clears it — see
-   * that method's own doc comment. Keycloak/echo need no such thing (their
-   * own "send the whole map" semantics already self-clear) and ignore this
-   * field entirely.
+   * SHOULD propagate: a PARTIAL-UPDATE write operation only touches
+   * property/attribute NAMES explicitly named in the request — unlike
+   * Keycloak's Admin REST API, where sending the whole `attributes` map
+   * REPLACES the stored map wholesale, so simply omitting a key already
+   * clears it there. Both LDAP's `modify` (AD) AND Microsoft Graph's `PATCH`
+   * (Entra — confirmed directly against
+   * https://learn.microsoft.com/en-us/graph/api/user-update's own "Request
+   * body" text: "Existing properties that aren't included in the request
+   * body maintain their previous values") share this gap: omitting a key
+   * leaves whatever the target already has for that name COMPLETELY
+   * UNTOUCHED — so the moment an admin disables a mapping (or a value goes
+   * from set to empty), `attributes` correctly stops carrying it, but
+   * nothing tells the connector a REMOTE name that used to be managed now
+   * needs to be ACTIVELY CLEARED rather than merely not re-sent.
+   * `ActiveDirectoryConnector.apply`/`EntraIdConnector.apply` each diff THIS
+   * set against `attributes`' own keys to find exactly that gap and clear it
+   * (AD: an explicit empty-values `replace`; Entra: an explicit `null`, per
+   * that same Graph doc's extension-clearing note). Keycloak/echo need no
+   * such thing (their own "send the whole map" semantics already self-clear)
+   * and ignore this field entirely.
    */
   managedAttributeRemoteNames?: readonly string[]
 }

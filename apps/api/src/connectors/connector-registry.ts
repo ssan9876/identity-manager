@@ -6,6 +6,7 @@ import type { DbHandle } from '../outbox/outbox.writer'
 import { ActiveDirectoryConnector } from './active-directory.connector'
 import type { ConnectorTarget, DirectoryConnector, DirectoryGroupConnector } from './connector'
 import { EchoConnector } from './echo.connector'
+import { EntraIdConnector } from './entra-id.connector'
 import { KeycloakConnector } from './keycloak.connector'
 
 /** Builds a connector instance already bound to ITS target's current `connector_targets.config` (see `ConnectorRegistry.resolve`). */
@@ -17,11 +18,12 @@ type ConnectorFactory = (config: Record<string, unknown>) => DirectoryConnector
 // plug in `active_directory`/`entra_id`/`google_workspace` — see `resolve`'s
 // own doc comment for why a target present in the wider `ConnectorTarget`
 // union but ABSENT from this narrower one still fails safely rather than
-// silently. Milestone 11, Task 5 widens this to `active_directory`, the
+// silently. Milestone 11, Task 5 widened this to `active_directory`, the
 // FIRST real (non-echo) target added since Task 2 — proof this "cast a
 // runtime-known-safe value, `satisfies`-check the literal" shape genuinely
-// generalises rather than being echo-specific.
-type ImplementedConnectorTarget = 'keycloak' | 'echo' | 'active_directory'
+// generalises rather than being echo-specific. Milestone 12, Task 7 widens it
+// a second time to `entra_id` — proof it generalises again, not a one-off.
+type ImplementedConnectorTarget = 'keycloak' | 'echo' | 'active_directory' | 'entra_id'
 
 /**
  * Target -> connector. This project has been bitten FOUR times by
@@ -81,6 +83,15 @@ export class ConnectorRegistry {
     @Optional()
     @Inject(ActiveDirectoryConnector)
     private readonly activeDirectoryConnector: ActiveDirectoryConnector = new ActiveDirectoryConnector(),
+    // Milestone 12, Task 7 — the SAME `@Optional()`-with-JS-default shape as
+    // `activeDirectoryConnector` immediately above, for the identical reason:
+    // a raw `new ConnectorRegistry(keycloak)` (every pre-Task-7 test in this
+    // file) keeps compiling and working via the TS default, while real Nest
+    // DI (app.module.ts) hands every caller the ONE registered instance
+    // instead.
+    @Optional()
+    @Inject(EntraIdConnector)
+    private readonly entraIdConnector: EntraIdConnector = new EntraIdConnector(),
   ) {
     // Keycloak's OWN config source is unchanged by this task (still the
     // env-sourced KEYCLOAK_ADMIN_CONFIG token — see keycloak.connector.ts's
@@ -109,6 +120,15 @@ export class ConnectorRegistry {
         // needlessly slow for a batch reconcile, and the connector already
         // detects a stale/changed config and reconnects on its own.
         active_directory: (config: Record<string, unknown>) => this.activeDirectoryConnector.configure(config),
+        // Milestone 12, Task 7 — same `configure(config)`-rebinds-the-long-
+        // lived-instance shape as every other real target above: ONE
+        // `EntraIdConnector` instance (and its own in-memory token cache) is
+        // reused across `resolve()` calls, only its config snapshot changes.
+        // There is no persistent socket to invalidate/reconnect here (unlike
+        // AD's LDAPS client) — `EntraIdConnector` re-validates its cached
+        // token's identity against the freshly-bound config on every actual
+        // use instead (see that class's own `getToken` doc comment).
+        entra_id: (config: Record<string, unknown>) => this.entraIdConnector.configure(config),
       } satisfies Record<ImplementedConnectorTarget, ConnectorFactory>,
     )
   }
@@ -128,16 +148,17 @@ export class ConnectorRegistry {
    * (`EchoConnector.health`/`apply`/`plan`/`disable` -> `MissingSecretError`)
    * — never a silent misconfiguration.
    *
-   * A `target` with NO implementation yet (`active_directory`/`entra_id`/
-   * `google_workspace` — Milestones 11-13) throws a clear, immediate error
-   * rather than guessing or silently deferring to Keycloak's own connector —
-   * exactly the failure mode Task 1's own report flagged as the risk of
-   * leaving `SyncWorker.applyEvent` dispatching on `aggregateType` alone:
-   * "claimed non-Keycloak events would be silently misprocessed as Keycloak
-   * ones." `connector_targets` seeds no ENABLED row for any of those three
-   * targets yet (Task 1), so `OutboxWriter.record`'s fan-out can never
-   * actually produce a claimable event for one in practice — this is
-   * defence in depth, not a path exercised by today's real traffic.
+   * A `target` with NO implementation yet (`google_workspace` — Milestone
+   * 13; `active_directory` and `entra_id` shipped in Milestones 11 and 12
+   * respectively) throws a clear, immediate error rather than guessing or
+   * silently deferring to Keycloak's own connector — exactly the failure
+   * mode Task 1's own report flagged as the risk of leaving
+   * `SyncWorker.applyEvent` dispatching on `aggregateType` alone: "claimed
+   * non-Keycloak events would be silently misprocessed as Keycloak ones."
+   * `connector_targets` seeds no ENABLED row for `google_workspace` yet
+   * (Task 1), so `OutboxWriter.record`'s fan-out can never actually produce
+   * a claimable event for it in practice — this is defence in depth, not a
+   * path exercised by today's real traffic.
    */
   async resolve(target: ConnectorTarget, tx: DbHandle): Promise<DirectoryConnector> {
     if (!Object.hasOwn(this.factories, target)) {

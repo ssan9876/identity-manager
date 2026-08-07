@@ -40,6 +40,24 @@ from Google Workspace — without anyone maintaining a second copy of the org ch
 5. **Mapping is data, not code.** Which local attribute becomes which remote attribute is
    a table, following the precedent set by JML rules. No expression language, no scripting.
 
+5a. **Where a vendor forces a password at creation, generate it, transmit it once, and
+   retain nothing.** Both Microsoft Graph's `POST /users` and the Google Admin SDK
+   require a password to create a user; neither offers a path that omits it. The options
+   were to not provision users in those directories at all, or to satisfy the requirement
+   without ever holding the value.
+
+   We satisfy it: a high-entropy value is generated at the call site, sent once, and
+   retained nowhere — no storage, no log, no audit row, no response body, no return
+   value, no variable outliving the call. The account requires a change at next sign-in,
+   and interactive sign-in is not the intended path anyway, because Keycloak issues the
+   tokens.
+
+   This preserves the constraint's substance rather than its letter. The system still
+   stores no credential, and no generated value is ever recoverable by anyone, including
+   us. It is asserted by test at every such call site, not left to intent. This was
+   raised by the Entra implementation rather than assumed away, and is recorded here so
+   it is a decision rather than a per-connector improvisation.
+
 6. **One event row per (mutation × target).** Fan-out happens at write time. Each target
    gets independent status, attempts and backoff, so a broken AD connection cannot stall
    Keycloak delivery.

@@ -81,7 +81,7 @@ describe('ConnectorRegistry (Milestone 10, Task 2)', () => {
   // Exhaustiveness / known-implemented-targets.
   // =========================================================================
   describe('implemented vs. not-yet-implemented targets', () => {
-    it('resolves keycloak and echo', async () => {
+    it('resolves keycloak, echo, and entra_id', async () => {
       const registry = new ConnectorRegistry(unreachableKeycloak())
       await insertConnectorTarget('echo', { credentialSecretName: 'IRRELEVANT_FOR_THIS_TEST' })
 
@@ -94,22 +94,30 @@ describe('ConnectorRegistry (Milestone 10, Task 2)', () => {
           const echoConnector = await registry.resolve('echo', tx)
           expect(echoConnector).toBeDefined()
           expect(typeof echoConnector.apply).toBe('function')
+
+          // Milestone 12, Task 7 — a dedicated `EntraIdConnector`
+          // request/response proof lives in entra-id.connector.spec.ts; this
+          // only proves the REGISTRY resolves it at all, mirroring how
+          // `active_directory`'s own registration is proven here too.
+          const entraConnector = await registry.resolve('entra_id', tx)
+          expect(entraConnector).toBeDefined()
+          expect(typeof entraConnector.apply).toBe('function')
         })
       } finally {
         await deleteConnectorTarget('echo')
       }
     })
 
-    // Milestones 12-13 have not shipped an adapter yet — a claimed event for
-    // one of these must fail LOUDLY (dead-lettered, visible) rather than
-    // being silently misprocessed by whichever connector happens to be
-    // first in the map. This is exactly the failure mode Task 1's own
-    // report flagged as the risk of leaving dispatch unwired.
-    // `active_directory` moved OUT of this list in Milestone 11, Task 5 —
-    // see the sibling `resolves keycloak and echo` test's own shape; a
-    // dedicated `ActiveDirectoryConnector` resolution proof lives in
-    // active-directory.connector.spec.ts.
-    it.each(['entra_id', 'google_workspace'] as const)(
+    // Milestone 13 has not shipped an adapter yet — a claimed event for it
+    // must fail LOUDLY (dead-lettered, visible) rather than being silently
+    // misprocessed by whichever connector happens to be first in the map.
+    // This is exactly the failure mode Task 1's own report flagged as the
+    // risk of leaving dispatch unwired. `active_directory` moved OUT of this
+    // list in Milestone 11, Task 5, and `entra_id` moves out in Milestone 12,
+    // Task 7 — see the sibling `resolves keycloak, echo, and entra_id` test's
+    // own shape; dedicated per-connector resolution proofs live in
+    // active-directory.connector.spec.ts / entra-id.connector.spec.ts.
+    it.each(['google_workspace'] as const)(
       'resolve() rejects the not-yet-implemented target %s with a clear error',
       async (target) => {
         const registry = new ConnectorRegistry(unreachableKeycloak())
