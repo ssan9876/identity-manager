@@ -173,21 +173,89 @@ KEYCLOAK_URL=https://kc.example.com KC_ADMIN_USER=admin KC_ADMIN_PASS=... \
   CONSOLE_URL=https://idm.example.com bash scripts/keycloak-setup.sh
 ```
 
-## TLS
+## TLS — required, not optional
+
+> **The console cannot sign in over plain HTTP.** This is not a hardening
+> recommendation; it is a hard requirement, and getting it wrong produces a
+> login button that silently does nothing.
+
+`oidc-client-ts` computes the PKCE S256 challenge with `crypto.subtle`, and
+browsers only expose that API in a **secure context** — HTTPS, or `localhost`.
+Served over `http://` on any other host, `crypto.subtle` is `undefined`,
+`signinRedirect()` rejects, and clicking **Sign in** produces no navigation, no
+error dialog, and nothing but a console message most people never open.
+
+**Both sides need TLS**, not just the console. Once the console is HTTPS, its
+`fetch` calls to an HTTP Keycloak are blocked as mixed content, so Keycloak
+needs a certificate too.
+
+### With a real certificate
 
 ```bash
 apt-get install -y certbot python3-certbot-nginx
 certbot --nginx -d idm.example.com
 ```
 
-Then rebuild the bundle with the `https://` URL (step 1 above) — otherwise the
-console keeps calling the API over `http://` and the browser blocks it as mixed
-content.
+Then rebuild the bundle with the `https://` URLs (see "Reconfiguring" above) —
+the API base URL and issuer are compiled in, so editing `.env` alone changes
+nothing.
+
+### With a self-signed certificate (lab / LAN address)
+
+Certbot cannot issue for a bare IP, so a lab deployment needs self-signed certs
+on **both** hosts. Include the IP as a SAN — browsers ignore CN for
+IP-addressed hosts:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+  -subj "/CN=192.168.88.60" \
+  -addext "subjectAltName=IP:192.168.88.60" \
+  -keyout /etc/nginx/tls/idm.key -out /etc/nginx/tls/idm.crt
+```
+
+Three things then have to line up, and each one bites separately:
+
+1. **`keycloak-setup.sh` will refuse to talk to a self-signed Keycloak.** Pass
+   `KC_INSECURE_TLS=1`. It is deliberately not the default and warns on every
+   run: that script sends an admin password and receives a client secret.
+
+2. **The API rejects every token with 401** until it trusts the Keycloak
+   certificate — it fetches JWKS over TLS, and Node will not accept a
+   self-signed chain. The token itself is perfectly valid, which makes this
+   confusing to diagnose. Add the certificate as a trust anchor for that one
+   process:
+
+   ```
+   # /etc/systemd/system/idm-api.service.d/ca.conf
+   [Service]
+   Environment="NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/keycloak.crt"
+   ```
+
+   Use `NODE_EXTRA_CA_CERTS`, never `NODE_TLS_REJECT_UNAUTHORIZED=0` — the
+   latter disables certificate verification for every outbound connection the
+   process makes, including to the mail server.
+
+3. **Keycloak's own `redirectUris` must be the `https://` URL.** Re-run
+   `keycloak-setup.sh` with the new `CONSOLE_URL`, or logins fail with
+   "Invalid redirect_uri".
+
+Browsers will warn once per certificate. That is expected with self-signed
+certs and is not a sign anything is misconfigured.
+
+### nginx version note
+
+Do not write `http2 on;` — that is nginx 1.25+ syntax and Ubuntu 24.04 ships
+1.24, which rejects the whole config with `unknown directive "http2"`. Use
+`listen 443 ssl;` and leave HTTP/2 out.
 
 ## Troubleshooting
 
 | Symptom | Cause |
 |---|---|
+| **Clicking "Sign in" does nothing at all** — no navigation, no error | The console is being served over plain `http://` on a non-localhost host, so `crypto.subtle` is undefined and PKCE cannot run. See "TLS — required, not optional". This is the single most likely first-run problem. |
+| Login redirects, then the API returns **401** with a token that looks valid | The API cannot verify the Keycloak certificate when fetching JWKS. Set `NODE_EXTRA_CA_CERTS` — see the self-signed section. |
+| `keycloak-setup.sh` fails with `SSL certificate problem: self-signed certificate` | Pass `KC_INSECURE_TLS=1`, and only against a lab Keycloak. |
+| nginx refuses to start: `unknown directive "http2"` | nginx 1.24 (Ubuntu 24.04) does not support `http2 on;`. Remove it. |
 | Every request returns **403**, including as an admin | `bootstrap:admin` was never run. See above — this is expected, not a bug. |
 | Login works, then every API call is **401** | The `idm-api` audience mapper is missing from `idm-console`. Re-run `keycloak-setup.sh`. |
 | Keycloak shows **"Invalid redirect_uri"** | `idm-console`'s `redirectUris` do not match the URL you opened. Re-run `keycloak-setup.sh` with the right `CONSOLE_URL`. |

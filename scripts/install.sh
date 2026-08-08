@@ -11,7 +11,12 @@
 #   bash scripts/install.sh
 #
 # Optional environment variables:
-#   IDM_SCHEME          http|https for the console URL (default http)
+#   IDM_SCHEME          http|https for the console URL (default HTTPS).
+#                       http is only viable for a localhost-only install: the
+#                       console needs a secure context to sign in at all.
+#   KEYCLOAK_CA_CERT    path to a CA/self-signed cert for Keycloak. Required
+#                       when Keycloak uses a self-signed certificate, or the
+#                       API cannot fetch JWKS and every token 401s.
 #   KEYCLOAK_AUDIENCE   default idm-api
 #   KEYCLOAK_ADMIN_CLIENT_ID      default idm-sync-service
 #   KEYCLOAK_ADMIN_CLIENT_SECRET  the sync client's secret; if omitted a
@@ -45,7 +50,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 IDM_USER="${IDM_USER:-idm}"
 IDM_PORT="${IDM_PORT:-3000}"
-IDM_SCHEME="${IDM_SCHEME:-http}"
+# HTTPS by default, and that is a functional requirement rather than a
+# hardening preference: the console signs in with oidc-client-ts, which needs
+# `crypto.subtle` for the PKCE challenge, and browsers only expose that in a
+# SECURE CONTEXT (https, or localhost). Install over plain http on a LAN
+# address and the Sign in button silently does nothing at all.
+#
+# IDM_SCHEME=http is still accepted for a localhost-only install, and warns.
+IDM_SCHEME="${IDM_SCHEME:-https}"
 KEYCLOAK_AUDIENCE="${KEYCLOAK_AUDIENCE:-idm-api}"
 KEYCLOAK_ADMIN_CLIENT_ID="${KEYCLOAK_ADMIN_CLIENT_ID:-idm-sync-service}"
 DB_NAME="identity_manager"
@@ -64,6 +76,12 @@ case "$KEYCLOAK_ISSUER" in
 esac
 
 CONSOLE_URL="${IDM_SCHEME}://${IDM_HOSTNAME}"
+if [[ "$IDM_SCHEME" == "http" && "$IDM_HOSTNAME" != "localhost" && "$IDM_HOSTNAME" != "127.0.0.1" ]]; then
+  warn "IDM_SCHEME=http on a non-localhost host: the console will load, but"
+  warn "  signing in CANNOT work — crypto.subtle (needed for PKCE) is undefined"
+  warn "  outside a secure context, so the Sign in button will do nothing."
+  warn "  See docs/deployment/lxc-install.md, \"TLS — required, not optional\"."
+fi
 info "installing identity-manager"
 echo "    console : $CONSOLE_URL"
 echo "    keycloak: $KEYCLOAK_ISSUER"
@@ -175,6 +193,22 @@ ok "database migrated, runtime role provisioned"
 info "installing systemd unit"
 sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" -e "s|@IDM_USER@|$IDM_USER|g" \
   "$REPO_ROOT/deploy/systemd/idm-api.service" >/etc/systemd/system/idm-api.service
+# A self-signed Keycloak certificate makes Node refuse the JWKS fetch, and
+# every token then fails verification with 401 despite being perfectly valid.
+# NODE_EXTRA_CA_CERTS trusts THAT ONE certificate; NODE_TLS_REJECT_UNAUTHORIZED=0
+# would disable verification for every outbound connection this process makes.
+if [[ -n "${KEYCLOAK_CA_CERT:-}" ]]; then
+  [[ -f "$KEYCLOAK_CA_CERT" ]] || die "KEYCLOAK_CA_CERT does not exist: $KEYCLOAK_CA_CERT"
+  install -m 644 "$KEYCLOAK_CA_CERT" /usr/local/share/ca-certificates/keycloak.crt
+  update-ca-certificates >/dev/null 2>&1 || true
+  mkdir -p /etc/systemd/system/idm-api.service.d
+  cat >/etc/systemd/system/idm-api.service.d/ca.conf <<EOF
+[Service]
+Environment="NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/keycloak.crt"
+EOF
+  ok "trusting the supplied Keycloak certificate for JWKS verification"
+fi
+
 systemctl daemon-reload
 systemctl enable idm-api >/dev/null
 
@@ -183,9 +217,34 @@ systemctl enable idm-api >/dev/null
 # enableCors with a hardcoded http://localhost:5173 origin, so a split-origin
 # deployment would be refused by the browser. Same-origin means CORS never
 # applies at all.
+# Generate a self-signed certificate when running https and none was supplied.
+# Certbot cannot issue for a bare IP, and a lab install addressed by IP still
+# needs TLS for the console to be able to sign in at all.
+if [[ "$IDM_SCHEME" == "https" ]]; then
+  TLS_DIR=/etc/nginx/tls
+  mkdir -p "$TLS_DIR"
+  if [[ ! -f "$TLS_DIR/idm.crt" ]]; then
+    # IP in subjectAltName as well as CN — browsers ignore CN for
+    # IP-addressed hosts, so a CN-only certificate is rejected outright.
+    SAN="DNS:${IDM_HOSTNAME}"
+    [[ "$IDM_HOSTNAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && SAN="IP:${IDM_HOSTNAME}"
+    openssl req -x509 -newkey rsa:2048 -nodes -days 825       -subj "/CN=${IDM_HOSTNAME}" -addext "subjectAltName=${SAN}"       -keyout "$TLS_DIR/idm.key" -out "$TLS_DIR/idm.crt" 2>/dev/null
+    chmod 600 "$TLS_DIR/idm.key"
+    ok "generated a self-signed certificate for ${IDM_HOSTNAME}"
+    warn "self-signed: browsers will warn once. Replace with certbot for a real hostname."
+  fi
+fi
+
 info "configuring nginx"
-sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" -e "s|@IDM_HOSTNAME@|$IDM_HOSTNAME|g" -e "s|@IDM_PORT@|$IDM_PORT|g" \
-  "$REPO_ROOT/deploy/nginx/idm.conf" >/etc/nginx/sites-available/idm.conf
+if [[ "$IDM_SCHEME" == "https" ]]; then
+  sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" -e "s|@IDM_HOSTNAME@|$IDM_HOSTNAME|g" \
+      -e "s|@IDM_PORT@|$IDM_PORT|g" -e "s|@TLS_CERT@|${TLS_DIR}/idm.crt|g" \
+      -e "s|@TLS_KEY@|${TLS_DIR}/idm.key|g" \
+      "$REPO_ROOT/deploy/nginx/idm-tls.conf" >/etc/nginx/sites-available/idm.conf
+else
+  sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" -e "s|@IDM_HOSTNAME@|$IDM_HOSTNAME|g" -e "s|@IDM_PORT@|$IDM_PORT|g" \
+    "$REPO_ROOT/deploy/nginx/idm.conf" >/etc/nginx/sites-available/idm.conf
+fi
 ln -sf /etc/nginx/sites-available/idm.conf /etc/nginx/sites-enabled/idm.conf
 rm -f /etc/nginx/sites-enabled/default
 nginx -t >/dev/null || die "nginx config rejected"
@@ -198,6 +257,7 @@ ok "nginx serving $CONSOLE_URL"
 if [[ "${SKIP_UFW:-0}" != "1" ]] && command -v ufw >/dev/null; then
   ufw allow 22/tcp >/dev/null 2>&1 || true
   ufw allow 80/tcp >/dev/null 2>&1 || true
+  ufw allow 443/tcp >/dev/null 2>&1 || true
   ufw allow 443/tcp >/dev/null 2>&1 || true
   ufw deny "${IDM_PORT}/tcp" >/dev/null 2>&1 || true
   yes | ufw enable >/dev/null 2>&1 || true
