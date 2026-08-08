@@ -33,8 +33,13 @@
 set -Eeuo pipefail
 
 RED=$'\e[31m'; GRN=$'\e[32m'; YLW=$'\e[33m'; BLU=$'\e[34m'; NC=$'\e[0m'
-info() { echo "${BLU}==>${NC} $*"; }
-ok()   { echo "${GRN}✓${NC} $*"; }
+# All status output goes to STDERR, never stdout. These scripts capture
+# function results with $(...), so a human-readable line printed to stdout
+# silently becomes part of the captured value: keycloak-setup.sh's
+# `upsert_client` returned its success message AND the uuid, producing a
+# mangled Admin API URL. Only DATA belongs on stdout.
+info() { echo "${BLU}==>${NC} $*" >&2; }
+ok()   { echo "${GRN}✓${NC} $*" >&2; }
 warn() { echo "${YLW}!${NC} $*" >&2; }
 die()  { echo "${RED}✗ $*${NC}" >&2; exit 1; }
 trap 'rc=$?; echo "${RED}✗ failed (exit $rc) at line ${BASH_LINENO[0]}${NC}" >&2' ERR
