@@ -500,6 +500,26 @@ export class GroupsRepository {
    * Added for SyncWorker.reconcileGroup/reconcileMembership (finding C1,
    * docs/superpowers/audit-integrity.md), which now thread their open
    * transaction through here instead of defaulting to the pool.
+   *
+   * `ORDER BY user_id` IS A DEADLOCK GUARD, not cosmetics (security audit).
+   * `SyncWorker.reconcileGroup` walks this list calling `reconcileUser`, and
+   * each of those takes `pg_advisory_xact_lock(namespace, hashtext(userId))`
+   * — an XACT lock, so every one is held until the surrounding transaction
+   * ends. A group of N members therefore accumulates N locks.
+   *
+   * Postgres guarantees NO row order without ORDER BY, and `DISTINCT` is
+   * typically a HashAggregate whose output order can differ between
+   * executions. Two workers reconciling two groups that share members could
+   * acquire those locks in opposite orders and deadlock — and the lock key is
+   * `(SYNC_USER_LOCK_NAMESPACE, userId)`, NOT per-target, so the keycloak
+   * worker and the mail_server worker contend on the SAME keys rather than
+   * being isolated by target.
+   *
+   * Postgres would detect it and abort one side with 40P01, which the worker
+   * retries, so it self-heals — but at a `deadlock_timeout` stall (1s by
+   * default) and one attempt burned from `maxAttempts` each time. A total
+   * order over the lock keys removes the possibility instead of recovering
+   * from it.
    */
   async listEffectiveUserMembers(
     groupId: string,
@@ -516,6 +536,7 @@ export class GroupsRepository {
       SELECT DISTINCT gum.user_id
         FROM group_user_members gum
         JOIN reachable r ON gum.group_id = r.id
+       ORDER BY gum.user_id
     `)
 
     return rows.map((row) => row.user_id)

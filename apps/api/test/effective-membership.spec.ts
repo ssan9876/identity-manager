@@ -57,6 +57,31 @@ describe('effective membership', () => {
     expect(effective.sort()).toEqual([ada.id, grace.id].sort())
   })
 
+  // Security audit: SyncWorker.reconcileGroup walks this list taking one
+  // pg_advisory_XACT_lock per member, all held to the end of the surrounding
+  // transaction. Without a total order, two workers reconciling groups with
+  // overlapping membership could take those locks in opposite orders and
+  // deadlock — and the lock key is not per-target, so the keycloak and
+  // mail_server workers contend on the same keys.
+  it('returns members in a stable, sorted order — the lock-ordering guard', async () => {
+    const group = await groups.create({ name: 'Lock Order' })
+    // Insert in an order unrelated to the sorted one, so a query that merely
+    // echoed insertion order would fail this.
+    const created = []
+    for (const name of ['zoe', 'adam', 'mia', 'bob', 'yara']) {
+      const user = await makeUser(name)
+      await groups.addUser(group.id, user.id)
+      created.push(user.id)
+    }
+
+    const members = await groups.listEffectiveUserMembers(group.id)
+
+    expect(members).toEqual([...created].sort())
+    // And stable across repeated executions, which is the property the lock
+    // ordering actually depends on.
+    expect(await groups.listEffectiveUserMembers(group.id)).toEqual(members)
+  })
+
   it('de-duplicates a user reachable by two paths', async () => {
     const top = await groups.create({ name: 'Top' })
     const left = await groups.create({ name: 'Left' })

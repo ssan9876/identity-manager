@@ -153,6 +153,25 @@ jobs:
       - name: Apply migrations and provision the runtime role
         run: pnpm --filter @idm/api db:migrate
 
+      # Vite reads `.env` from its OWN project directory, never the repo root,
+      # and inlines VITE_* at build time — the job-level `env:` block above
+      # does NOT reach it. `setup:all` used to seed this file, so removing that
+      # step silently broke the E2E login: `authority` became undefined,
+      # oidc-client-ts could not load discovery, and every spec timed out on
+      # `waitForURL(/openid-connect\/auth/)` having never left the app.
+      #
+      # Written explicitly here for the same reason the API's config is: CI
+      # should state what it depends on rather than inherit it from a
+      # convenience script's side effects.
+      - name: Seed the web console's build-time config
+        run: |
+          cat > apps/web/.env <<'EOF'
+          VITE_KEYCLOAK_ISSUER=http://localhost:8080/realms/identity-manager
+          VITE_KEYCLOAK_CLIENT_ID=idm-console
+          VITE_API_BASE_URL=http://localhost:3000
+          EOF
+          cat apps/web/.env
+
       # Without this, every E2E request 403s: a fresh database has no local
       # `users` row and no role grant for the seeded Keycloak dev user, and
       # nothing in the UI can grant the first role (see README's "SECURITY
