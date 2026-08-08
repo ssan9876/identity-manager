@@ -104,6 +104,19 @@ describe('OutboxController (finding H3, docs/superpowers/audit-integrity.md)', (
     return Number(rows[0]!.id)
   }
 
+  // Security audit finding, the sibling of GET /audit's: an outbox event has
+  // no org unit of its own, and `lastError` carries raw target error text, so
+  // a scope-narrowed view is not meaningful here — reading dead letters
+  // requires a GLOBAL grant. See AuditController.list's doc comment.
+  it('rejects a SCOPED auditor with 403 — dead letters require a global grant', async () => {
+    const auditor = await makeActiveUser('auditor')
+    await rolesRepo().assign({ userId: auditor.id, roleKey: 'auditor', scopeOrgUnitId: orgUnitId })
+    currentUsername = auditor.username
+
+    const res = await request(app.getHttpServer()).get('/outbox/dead-letters').expect(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
   it('an actor holding auditor (audit:read) sees only status=failed rows, newest first', async () => {
     const auditor = await makeActiveUser('auditor')
     await rolesRepo().assign({ userId: auditor.id, roleKey: 'auditor', scopeOrgUnitId: null })

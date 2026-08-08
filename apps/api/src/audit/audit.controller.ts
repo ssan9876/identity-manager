@@ -1,9 +1,10 @@
-import { Controller, Get, Inject, Query, UseGuards } from '@nestjs/common'
+import { Controller, Get, Inject, Query, Req, UseGuards } from '@nestjs/common'
 import { z } from 'zod'
 import { JwtGuard } from '../auth/jwt.guard'
-import { PermissionGuard } from '../authz/permission.guard'
+import { PermissionEngine } from '../authz/permission.engine'
+import { PermissionGuard, type AuthorizedRequest } from '../authz/permission.guard'
 import { RequirePermission } from '../authz/require-permission.decorator'
-import { ValidationError } from '../common/errors'
+import { ForbiddenError, ValidationError } from '../common/errors'
 import { noNulChar } from '../common/http/safe-string'
 import { parseId } from '../common/http/parse-id'
 import { type Page, parsePageQuery } from '../common/pagination'
@@ -40,11 +41,58 @@ const dateOnlySchema = z
 @Controller('audit')
 @UseGuards(JwtGuard, PermissionGuard)
 export class AuditController {
-  constructor(@Inject(AuditRepository) private readonly audit: AuditRepository) {}
+  constructor(
+    @Inject(AuditRepository) private readonly audit: AuditRepository,
+    @Inject(PermissionEngine) private readonly engine: PermissionEngine,
+  ) {}
+
+  /**
+   * Reading the audit log requires a GLOBAL grant of `audit:read`, never
+   * merely a grant at SOME scope.
+   *
+   * Security audit finding: `PermissionGuard` satisfies `@RequirePermission`
+   * with `assertCanAnywhere`, so an `auditor` scoped to one org unit read
+   * every audit row in the directory — including rows about principals the
+   * same actor gets 403 on via `GET /users/:id`.
+   *
+   * The fix is a global-grant requirement rather than row filtering, for two
+   * reasons that are properties of the data, not of effort:
+   *
+   *  1. `audit_log` has no `orgUnitId`. Narrowing would mean a
+   *     `resourceType`-keyed join across seven different tables, and two of
+   *     those types (`connector_target`, `attribute_target_mapping`) are
+   *     global infrastructure carrying `resourceId: null` — there is no org
+   *     unit to compare against at all.
+   *  2. Row-level filtering would not actually contain the leak. A
+   *     `role_assignment` or group-membership row's `before`/`after` snapshot
+   *     names principals from other org units even when the resource the row
+   *     is ABOUT sits inside the actor's scope. Redacting those payloads is a
+   *     separate problem from selecting rows.
+   *
+   * So a scoped audit view would be partial in a way its reader could not
+   * see, which is worse than no view: an auditor who believes they are
+   * looking at the whole record but silently is not. If per-scope audit
+   * reading is wanted later it needs its own design — payload redaction
+   * included — not a `WHERE` clause bolted on here.
+   */
+  private async requireGlobalAuditGrant(request: AuthorizedRequest): Promise<void> {
+    const scopePaths = await this.engine.scopePathsFor(request.actor, 'audit:read')
+    if (scopePaths !== null) {
+      throw new ForbiddenError(
+        'reading the audit log requires a global grant of audit:read — ' +
+          'the log spans every org unit, and a scope-narrowed view would be ' +
+          'silently partial rather than visibly restricted',
+      )
+    }
+  }
 
   @Get()
   @RequirePermission('audit:read')
-  async list(@Query() query: Record<string, unknown>): Promise<Page<AuditRow>> {
+  async list(
+    @Query() query: Record<string, unknown>,
+    @Req() request: AuthorizedRequest,
+  ): Promise<Page<AuditRow>> {
+    await this.requireGlobalAuditGrant(request)
     const page = parsePageQuery(query)
 
     const actorParsed = actorSchema.safeParse(query.actor)
