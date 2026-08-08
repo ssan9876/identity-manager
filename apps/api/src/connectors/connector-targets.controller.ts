@@ -43,7 +43,10 @@ export interface ConnectorTargetSummary extends ConnectorTargetRow {
   lastSuccessfulSyncAt: Date | null
 }
 
-const connectorTargetParamSchema = z.enum(['keycloak', 'active_directory', 'entra_id', 'google_workspace', 'echo'])
+// Built FROM the canonical catalog, never a re-typed literal list — a stale
+// copy here silently makes a real target unaddressable through the whole
+// console API (no list, no configure, no enable, and critically no DISABLE).
+const connectorTargetParamSchema = z.enum(ALL_CONNECTOR_TARGETS)
 
 function parseTargetParam(raw: string): ConnectorTarget {
   const parsed = connectorTargetParamSchema.safeParse(raw)

@@ -1,6 +1,7 @@
 import { Controller, Get, Inject, Query, UseGuards } from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
+import { ALL_CONNECTOR_TARGETS } from '../connectors/connector'
 import { JwtGuard } from '../auth/jwt.guard'
 import { PermissionGuard } from '../authz/permission.guard'
 import { RequirePermission } from '../authz/require-permission.decorator'
@@ -11,7 +12,9 @@ import * as schema from '../db/schema/index'
 import type { OutboxTarget } from './outbox.writer'
 import { type DeadLetterEvent, OutboxRepository } from './outbox.repository'
 
-const targetQuerySchema = z.enum(['keycloak', 'active_directory', 'entra_id', 'google_workspace', 'echo'])
+// From the canonical catalog — a stale copy here rejects a real target as an
+// unknown filter in the dead-letter view, which is the operator's backstop.
+const targetQuerySchema = z.enum(ALL_CONNECTOR_TARGETS)
 
 /** `?target=` on `GET /outbox/dead-letters` (Milestone 14, Task 9 — "per-target dead letters, extending Milestone 8's view"). `undefined` (the param omitted) means every target, unchanged from before this task; any other string is a clean 400, never a silently-empty result set that could be mistaken for "no dead letters". */
 function parseOptionalTarget(raw: unknown): OutboxTarget | undefined {

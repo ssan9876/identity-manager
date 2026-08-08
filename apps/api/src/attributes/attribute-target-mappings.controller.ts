@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Inject, Param, Patch, Post, Req, UseGuards } from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
+import { ALL_CONNECTOR_TARGETS } from '../connectors/connector'
 import { JwtGuard } from '../auth/jwt.guard'
 import { AuditWriter } from '../audit/audit.writer'
 import { PermissionGuard, type AuthorizedRequest } from '../authz/permission.guard'
@@ -17,7 +18,9 @@ import {
   type MappingRecord,
 } from './attribute-target-mappings.repository'
 
-const connectorTargetSchema = z.enum(['keycloak', 'active_directory', 'entra_id', 'google_workspace', 'echo'])
+// From the canonical catalog — a stale copy here makes a target's attribute
+// mappings unconstructible, so its default-deny gate can never be opened.
+const connectorTargetSchema = z.enum(ALL_CONNECTOR_TARGETS)
 const coreFieldSchema = z.enum(['given_name', 'surname', 'title', 'department'])
 
 // noNulChar — the same JSON-escaped-NUL defence every other admin-editable

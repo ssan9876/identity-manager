@@ -1,9 +1,11 @@
 import type { UserStatus } from '../users/users.repository'
 
-// The canonical "which directory backend" literal union — hand-rolled to
-// mirror the `outbox_target` pgEnum (db/schema/outbox-events.ts), same
-// convention as `OutboxAggregateType`/`OutboxEventType` (outbox.writer.ts)
-// rather than a `(typeof outboxTarget.enumValues)[number]` derivation.
+// The canonical "which directory backend" catalog, mirroring the
+// `outbox_target` pgEnum (db/schema/outbox-events.ts). Kept as its own
+// literal — rather than a `(typeof outboxTarget.enumValues)[number]`
+// derivation — so `connectors/` does not depend on `db/schema/`; the
+// equivalence is asserted at runtime instead, in both directions, by
+// test/connector-target-catalog.spec.ts.
 // `connectors/` is the canonical HOME for this type — `outbox.writer.ts`'s
 // own `OutboxTarget` is a re-export of it (`export type OutboxTarget =
 // ConnectorTarget`), not the other way around: the outbox is a caller of
@@ -13,13 +15,34 @@ import type { UserStatus } from '../users/users.repository'
 // instead of two independently hand-rolled unions is what makes
 // `external_identities.system` assignable directly from `event.target` with
 // no mapping table (see ConnectorRegistry/sync.worker.ts).
-export type ConnectorTarget =
-  | 'keycloak'
-  | 'active_directory'
-  | 'entra_id'
-  | 'google_workspace'
-  | 'echo'
-  | 'mail_server'
+//
+// SINGLE SOURCE OF TRUTH (security audit, finding "catalog drift"). This was
+// a hand-rolled `|` union, and every place that needed the values as a
+// RUNTIME array — five of them: two `z.enum` route validators, the console's
+// `ALL_CONNECTOR_TARGETS`, the dead-letter target filter, and the reconcile
+// CLI — hand-copied the same five literals. Adding `mail_server` to the union
+// therefore left all five stale, and the type system could not see it: a
+// narrower literal list is perfectly assignable to a wider union. The
+// observable result was a real target that the console could not list,
+// configure, enable or DISABLE, that the dead-letter view rejected as an
+// unknown filter, and that the reconcile CLI refused to run — i.e. no way to
+// turn off a live outbound integration without direct database access.
+//
+// The array is now the source and the union DERIVES from it, so a new target
+// is one edit and every consumer follows. Anything needing the runtime list
+// imports `ALL_CONNECTOR_TARGETS` rather than retyping it — do not reintroduce
+// a literal list of targets anywhere; `test/connector-target-catalog.spec.ts`
+// asserts this array matches the `outbox_target` pgEnum in BOTH directions.
+export const ALL_CONNECTOR_TARGETS = [
+  'keycloak',
+  'active_directory',
+  'entra_id',
+  'google_workspace',
+  'echo',
+  'mail_server',
+] as const
+
+export type ConnectorTarget = (typeof ALL_CONNECTOR_TARGETS)[number]
 
 /**
  * A directory backend's DESIRED state for one user, already resolved to
