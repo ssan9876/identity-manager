@@ -155,6 +155,14 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
     app = moduleRef.createNestApplication()
     app.useGlobalFilters(new DomainExceptionFilter())
     await app.init()
+    // Bind ONCE. `init()` alone leaves the http server unbound, so supertest
+    // calls listen(0) itself per request — and the concurrency tests below
+    // fire 30 at once via Promise.all, creating 30 ephemeral listeners. Under
+    // CI contention one of those connections gets reset, and the test fails
+    // with `read ECONNRESET`: a transport artifact wearing the costume of the
+    // lost-update bug it exists to detect. Binding a single listener up front
+    // keeps the test measuring what it means to measure.
+    await new Promise<void>((resolve) => app.getHttpServer().listen(0, resolve))
   })
 
   afterAll(async () => {
@@ -1010,6 +1018,14 @@ describe('PATCH /self racing PATCH /users/:id (finding H4, docs/superpowers/audi
     app = moduleRef.createNestApplication()
     app.useGlobalFilters(new DomainExceptionFilter())
     await app.init()
+    // Bind ONCE. `init()` alone leaves the http server unbound, so supertest
+    // calls listen(0) itself per request — and the concurrency tests below
+    // fire 30 at once via Promise.all, creating 30 ephemeral listeners. Under
+    // CI contention one of those connections gets reset, and the test fails
+    // with `read ECONNRESET`: a transport artifact wearing the costume of the
+    // lost-update bug it exists to detect. Binding a single listener up front
+    // keeps the test measuring what it means to measure.
+    await new Promise<void>((resolve) => app.getHttpServer().listen(0, resolve))
 
     orgUnitId = (await new OrgUnitsRepository(ctx.db).createRoot(`H4 Self Vs Admin Root ${Date.now()}`)).id
 
