@@ -83,7 +83,7 @@ describe('ConnectorRegistry (Milestone 10, Task 2)', () => {
   describe('implemented vs. not-yet-implemented targets', () => {
     it('resolves keycloak, echo, entra_id, and google_workspace', async () => {
       const registry = new ConnectorRegistry(unreachableKeycloak())
-      await insertConnectorTarget('echo', { credentialSecretName: 'IRRELEVANT_FOR_THIS_TEST' })
+      await insertConnectorTarget('echo', { credentialSecretName: 'CONNECTOR_IRRELEVANT_FOR_THIS_TEST' })
 
       try {
         await ctx.db.transaction(async (tx) => {

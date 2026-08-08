@@ -737,7 +737,7 @@ import { MailServerConnector } from '../src/connectors/mail-server.connector'
 
 const CONFIG = {
   baseUrl: 'http://mail.internal/api/v1',
-  tokenSecretName: 'MAIL_SERVER_SERVICE_TOKEN',
+  tokenSecretName: 'CONNECTOR_MAIL_SERVER_TOKEN',
 }
 
 describe('MailServerConnector.health', () => {
@@ -745,7 +745,7 @@ describe('MailServerConnector.health', () => {
     const fetchStub = vi.fn(async () => new Response('{"status":"ok"}', { status: 200 }))
     const connector = new MailServerConnector(fetchStub).configure(CONFIG)
 
-    const health = await connector.health({ MAIL_SERVER_SERVICE_TOKEN: 'tok_abc' })
+    const health = await connector.health({ CONNECTOR_MAIL_SERVER_TOKEN: 'tok_abc' })
 
     expect(health.ok).toBe(true)
     const [url, init] = fetchStub.mock.calls[0]
@@ -759,14 +759,14 @@ describe('MailServerConnector.health', () => {
     const health = await connector.health({})
 
     expect(health.ok).toBe(false)
-    expect(health.detail).toContain('MAIL_SERVER_SERVICE_TOKEN')
+    expect(health.detail).toContain('CONNECTOR_MAIL_SERVER_TOKEN')
   })
 
   it('never puts the secret VALUE in its health detail', async () => {
     const fetchStub = vi.fn(async () => new Response('nope', { status: 403 }))
     const connector = new MailServerConnector(fetchStub).configure(CONFIG)
 
-    const health = await connector.health({ MAIL_SERVER_SERVICE_TOKEN: 'tok_sentinel_value' })
+    const health = await connector.health({ CONNECTOR_MAIL_SERVER_TOKEN: 'tok_sentinel_value' })
 
     expect(health.ok).toBe(false)
     expect(health.detail).not.toContain('tok_sentinel_value')
@@ -946,7 +946,7 @@ function okResponse() {
 }
 
 describe('MailServerConnector.apply', () => {
-  const ENV = { MAIL_SERVER_SERVICE_TOKEN: 'tok' }
+  const ENV = { CONNECTOR_MAIL_SERVER_TOKEN: 'tok' }
 
   it('PUTs to the identity keyed by our own user id, and returns it', async () => {
     const fetchStub = vi.fn(async () => okResponse())
@@ -1250,7 +1250,7 @@ git commit -m "feat(connectors): converge mail identities from desired state"
 
 ```ts
 describe('MailServerConnector.plan', () => {
-  const ENV = { MAIL_SERVER_SERVICE_TOKEN: 'tok' }
+  const ENV = { CONNECTOR_MAIL_SERVER_TOKEN: 'tok' }
 
   it('describes the upsert without writing anything', async () => {
     const fetchStub = vi.fn()
@@ -1271,7 +1271,7 @@ describe('MailServerConnector.plan', () => {
 })
 
 describe('MailServerConnector.disable', () => {
-  const ENV = { MAIL_SERVER_SERVICE_TOKEN: 'tok' }
+  const ENV = { CONNECTOR_MAIL_SERVER_TOKEN: 'tok' }
   const ID = '11111111-1111-1111-1111-111111111111'
 
   it('reads the current address, then deactivates', async () => {
@@ -1415,7 +1415,7 @@ Append inside the top-level `describe` in `apps/api/test/mail-server-sync.spec.t
         .values({
           target: 'mail_server',
           enabled: true,
-          config: { baseUrl: 'http://mail.internal/api/v1', tokenSecretName: 'MAIL_SERVER_SERVICE_TOKEN' },
+          config: { baseUrl: 'http://mail.internal/api/v1', tokenSecretName: 'CONNECTOR_MAIL_SERVER_TOKEN' },
         })
         .onConflictDoUpdate({ target: connectorTargets.target, set: { enabled: true } })
 
@@ -1577,7 +1577,7 @@ git commit -m "feat(attributes): seed the four mail attribute definitions"
 **Files:**
 - Create: `D:\mail-server\docker\nginx\templates\20-provisioning.conf.template`
 - Create: `docs/deployment/mail-server-transport.md`
-- Modify: `.env.example` (document `MAIL_SERVER_SERVICE_TOKEN`)
+- Modify: `.env.example` (document `CONNECTOR_MAIL_SERVER_TOKEN`)
 
 **Interfaces:**
 - Consumes: Task 6's config keys (`baseUrl`, `tokenSecretName`).
@@ -1629,11 +1629,11 @@ limit_req_zone $binary_remote_addr zone=provisioning:1m rate=30r/s;
 
 - [ ] **Step 2: Write the runbook**
 
-Create `docs/deployment/mail-server-transport.md` covering, in order: generating a WireGuard keypair on each host; the VPS as server (it holds the public IP) and this host as a peer dialing out with `PersistentKeepalive`; binding the nginx template above to the VPS's tunnel address; issuing a provisioning service token on the mail server (`POST /api/v1/idm/tokens`, superadmin JWT, raw token returned exactly once); putting that token in this repo's environment under `MAIL_SERVER_SERVICE_TOKEN`; and inserting the `connector_targets` row:
+Create `docs/deployment/mail-server-transport.md` covering, in order: generating a WireGuard keypair on each host; the VPS as server (it holds the public IP) and this host as a peer dialing out with `PersistentKeepalive`; binding the nginx template above to the VPS's tunnel address; issuing a provisioning service token on the mail server (`POST /api/v1/idm/tokens`, superadmin JWT, raw token returned exactly once); putting that token in this repo's environment under `CONNECTOR_MAIL_SERVER_TOKEN`; and inserting the `connector_targets` row:
 
 ```sql
 INSERT INTO connector_targets (target, enabled, config)
-VALUES ('mail_server', true, '{"baseUrl":"http://10.8.0.2/api/v1","tokenSecretName":"MAIL_SERVER_SERVICE_TOKEN"}'::jsonb);
+VALUES ('mail_server', true, '{"baseUrl":"http://10.8.0.2/api/v1","tokenSecretName":"CONNECTOR_MAIL_SERVER_TOKEN"}'::jsonb);
 ```
 
 State explicitly that this row cannot be created by a migration: Postgres forbids using an enum value inside the transaction that added it, and all pending migrations run in one transaction on a fresh database.
@@ -1647,7 +1647,7 @@ In `.env.example`, alongside the other connector secrets:
 # POST /api/v1/idm/tokens (superadmin), returned exactly once, stored only as
 # a SHA-256 hash on that side. Referenced BY NAME from
 # connector_targets.config.tokenSecretName — never stored in the database.
-MAIL_SERVER_SERVICE_TOKEN=
+CONNECTOR_MAIL_SERVER_TOKEN=
 ```
 
 - [ ] **Step 4: Write the contract smoke script**
@@ -1667,7 +1667,7 @@ import type { DesiredUser } from '../src/connectors/connector'
  * accepts. Neither can see a disagreement between the two. This makes exactly
  * one real round trip against a running mail server and asserts 200.
  *
- * Requires: a reachable mail server (tunnel up), MAIL_SERVER_SERVICE_TOKEN
+ * Requires: a reachable mail server (tunnel up), CONNECTOR_MAIL_SERVER_TOKEN
  * set, MAIL_SERVER_BASE_URL set, and the target domain already hosted there —
  * the mail server never auto-creates domains.
  */
@@ -1681,7 +1681,7 @@ if (baseUrl === undefined || smokeEmail === undefined) {
 
 const connector = new MailServerConnector().configure({
   baseUrl,
-  tokenSecretName: 'MAIL_SERVER_SERVICE_TOKEN',
+  tokenSecretName: 'CONNECTOR_MAIL_SERVER_TOKEN',
 })
 
 const health = await connector.health()

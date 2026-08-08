@@ -62,7 +62,7 @@ function assertNoLeak(haystack: string, sentinel: string, where: string): void {
  */
 describe('EntraIdConnector (Milestone 12, Task 7)', () => {
   const ctx = withTestDatabase()
-  const SECRET_NAME = 'ENTRA_CONNECTOR_TEST_SECRET'
+  const SECRET_NAME = 'CONNECTOR_ENTRA_TEST_SECRET'
   let fake: EntraGraphFake
 
   beforeAll(async () => {

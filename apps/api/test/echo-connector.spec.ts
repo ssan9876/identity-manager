@@ -3,7 +3,7 @@ import type { DesiredUser } from '../src/connectors/connector'
 import { EchoConnector } from '../src/connectors/echo.connector'
 import { MissingSecretError } from '../src/connectors/secrets'
 
-const SECRET_NAME = 'ECHO_CONNECTOR_TEST_SECRET'
+const SECRET_NAME = 'CONNECTOR_ECHO_TEST_SECRET_2'
 
 afterAll(() => {
   delete process.env[SECRET_NAME]

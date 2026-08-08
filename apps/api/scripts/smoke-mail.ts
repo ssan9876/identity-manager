@@ -16,7 +16,7 @@ import { MailServerConnector } from '../src/connectors/mail-server.connector'
  * docs/deployment/mail-server-transport.md), plus:
  *
  *   MAIL_SERVER_BASE_URL     e.g. http://10.8.0.2/api/v1
- *   MAIL_SERVER_SERVICE_TOKEN  issued there, returned exactly once
+ *   CONNECTOR_MAIL_SERVER_TOKEN  issued there, returned exactly once
  *   MAIL_SMOKE_EMAIL         an address in a domain ALREADY hosted there —
  *                            the mail server never auto-creates domains
  */
@@ -38,7 +38,7 @@ async function main(): Promise<void> {
 
   const connector = new MailServerConnector().configure({
     baseUrl,
-    tokenSecretName: 'MAIL_SERVER_SERVICE_TOKEN',
+    tokenSecretName: 'CONNECTOR_MAIL_SERVER_TOKEN',
   })
 
   const health = await connector.health()

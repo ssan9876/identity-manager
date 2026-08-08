@@ -59,8 +59,18 @@ export class MailServerRequestError extends Error {
   }
 }
 
-function readBoolean(attributes: Record<string, string[]>, key: string): boolean {
-  return attributes[key]?.[0]?.toLowerCase() === 'true'
+/**
+ * A misconfiguration this connector must not paper over. Carries
+ * `permanent = true` so `SyncWorker` dead-letters it on the first attempt
+ * rather than retrying a state only a human can fix.
+ */
+export class MailServerConfigurationError extends Error {
+  readonly permanent = true
+
+  constructor(detail: string) {
+    super(`mail server connector: ${detail}`)
+    this.name = 'MailServerConfigurationError'
+  }
 }
 
 function readNumber(attributes: Record<string, string[]>, key: string): number | undefined {
@@ -162,8 +172,47 @@ export class MailServerConnector implements DirectoryConnector {
     desired: DesiredUser,
     env: NodeJS.ProcessEnv = process.env,
   ): Promise<{ externalId: string }> {
-    const enabled = readBoolean(desired.attributes, 'mail_enabled')
+    // THREE states, not two. `mail_enabled` ABSENT is not the same as
+    // `mail_enabled = false`, and conflating them was a mass-deactivation
+    // hazard (security audit).
+    //
+    // `desired.attributes` only ever contains keys with an ENABLED
+    // `attribute_target_mappings` row (buildTargetAttributes iterates the
+    // mappings, not the user's attributes), so `mail_enabled` disappears
+    // entirely if an admin disables that mapping, deletes it, or deactivates
+    // the attribute definition. Read as `false`, that turned any of those
+    // three ordinary-looking configuration changes into "every provisioned
+    // user just lost their mailbox" — and worse than an outage, because the
+    // counterpart stamps `deactivated_at` on `deactivated`, which starts its
+    // retention clock and so begins the countdown to PURGING their mail.
+    const rawEnabled = desired.attributes.mail_enabled?.[0]
+    const enabled = rawEnabled?.toLowerCase() === 'true'
 
+    if (rawEnabled === undefined) {
+      if (desired.existingExternalId === undefined) {
+        // Nothing was ever created here, so there is nothing to do and
+        // nothing to correlate — the same outcome as an explicit `false`.
+        throw new NotApplicableError(
+          'mail_server',
+          'no mail_enabled attribute reached this connector and the user has no mailbox here',
+        )
+      }
+      // This user HAS a mailbox, and we have just been told nothing about
+      // whether they should. Deactivating on a guess is destructive and
+      // starts a retention clock; doing nothing silently would hide a broken
+      // integration. Fail loudly instead, permanently, so it dead-letters and
+      // an operator sees it. Retrying cannot help — the fix is configuration.
+      throw new MailServerConfigurationError(
+        'the mail_enabled attribute did not reach this connector, but this user already has a ' +
+          'mailbox. Refusing to guess: deactivating would start the retention clock on their ' +
+          'mail. Check that the mail_enabled attribute definition is active AND has an enabled ' +
+          'attribute_target_mappings row for target mail_server.',
+      )
+    }
+
+    // An EXPLICIT non-true value, for someone with no mailbox here: nothing
+    // was created, so nothing to do and nothing to correlate. (Distinct from
+    // the absent case above, which cannot know this.)
     if (!enabled && desired.existingExternalId === undefined) {
       throw new NotApplicableError('mail_server', 'user is not mail-enabled and has no mailbox here')
     }
@@ -183,7 +232,22 @@ export class MailServerConnector implements DirectoryConnector {
     desired: DesiredUser,
     _env: NodeJS.ProcessEnv = process.env,
   ): Promise<ConnectorOperation[]> {
-    const enabled = readBoolean(desired.attributes, 'mail_enabled')
+    // Mirrors `apply`'s three-state read. A plan must never claim a mutation
+    // that `apply` would refuse to make — reporting "disable" here for a
+    // merely ABSENT mail_enabled would show an operator a mass-deactivation
+    // plan that is really a misconfiguration.
+    const rawEnabled = desired.attributes.mail_enabled?.[0]
+    const enabled = rawEnabled?.toLowerCase() === 'true'
+    if (rawEnabled === undefined) {
+      return [
+        {
+          kind: 'update',
+          description:
+            `CANNOT PLAN ${desired.email}: no mail_enabled attribute reached this connector. ` +
+            `Check the attribute definition is active and mapped to mail_server.`,
+        },
+      ]
+    }
     if (!enabled && desired.existingExternalId === undefined) {
       return []
     }
@@ -282,8 +346,31 @@ export class MailServerConnector implements DirectoryConnector {
       payload.aliases = [...aliases]
     }
 
+    // Provisioning mail-admin rights is OPT-IN, per target, and off by
+    // default (security audit, high).
+    //
+    // `mail_admin_role` is an ordinary user attribute, so setting it needs
+    // only `user:update` — which `help_desk` holds (authz/actions.ts), and
+    // which is a SCOPABLE role. Without this gate, a help_desk scoped to one
+    // org unit could set `mail_admin_role = superadmin` on any user in their
+    // subtree and the next sync would mint a mail-server SUPERADMIN with
+    // authority over every hosted domain.
+    //
+    // That is a role grant wearing an attribute's clothing. This system
+    // guards real role assignment with three independent checks — hold the
+    // action, may grant THIS role at THIS scope, and the target must not
+    // outrank you (authz/privilege.guards.ts). An attribute value bypasses
+    // every one of them, because nothing marks it as privilege-bearing.
+    //
+    // Closing that properly means teaching the IdM that some attributes ARE
+    // grants, which is a larger design change. Until then this is default-
+    // deny: a deployment that wants IdM-driven mail admins sets
+    // `allowAdminProvisioning: true` in connector_targets.config, and thereby
+    // accepts that `user:update` becomes equivalent to granting mail-admin
+    // rights. A deployment that does not set it cannot be escalated through
+    // this path at all.
     const role = desired.attributes.mail_admin_role?.[0]
-    if (role === 'domain_admin' || role === 'superadmin') {
+    if ((role === 'domain_admin' || role === 'superadmin') && this.config.allowAdminProvisioning === true) {
       // The administered domain is derived from the user's own address — a
       // settled simplification (design doc): it covers someone administering
       // the domain they are in, and avoids a list-valued attribute that is

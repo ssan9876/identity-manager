@@ -281,7 +281,7 @@ describe('ConnectorTargetsController (Milestone 14, Task 9)', () => {
   it('PATCH merges config onto what already exists rather than replacing it wholesale, and null deletes a key', async () => {
     const admin = await makeActiveUser('super_admin')
     currentUsername = admin.username
-    const secretName = `MERGE_TEST_${randomUUID().replace(/-/g, '_')}`
+    const secretName = `CONNECTOR_MERGE_TEST_${randomUUID().replace(/-/g, '_')}`
 
     try {
       await deleteConnectorTarget('active_directory')
@@ -320,7 +320,7 @@ describe('ConnectorTargetsController (Milestone 14, Task 9)', () => {
   // =========================================================================
 
   describe('health states, distinctly (the task\'s own core requirement)', () => {
-    const secretName = `HEALTH_STATE_SECRET_${randomUUID().replace(/-/g, '_')}`
+    const secretName = `CONNECTOR_HEALTH_STATE_SECRET_${randomUUID().replace(/-/g, '_')}`
 
     beforeAll(() => {
       process.env[secretName] = 'health-state-test-secret'
@@ -463,7 +463,7 @@ describe('ConnectorTargetsController (Milestone 14, Task 9)', () => {
       const admin = await makeActiveUser('super_admin')
       currentUsername = admin.username
 
-      const sentinelSecretName = `SENTINEL_${randomUUID().replace(/-/g, '_')}`
+      const sentinelSecretName = `CONNECTOR_SENTINEL_${randomUUID().replace(/-/g, '_')}`
       const sentinelValue = `sentinel-${randomUUID()}`
       process.env[sentinelSecretName] = sentinelValue
 
@@ -497,7 +497,7 @@ describe('ConnectorTargetsController (Milestone 14, Task 9)', () => {
   // =========================================================================
 
   describe('reconcile: dry run writes nothing, apply genuinely converges', () => {
-    const secretName = `RECONCILE_SECRET_${randomUUID().replace(/-/g, '_')}`
+    const secretName = `CONNECTOR_RECONCILE_SECRET_${randomUUID().replace(/-/g, '_')}`
 
     beforeAll(async () => {
       process.env[secretName] = 'reconcile-test-secret'

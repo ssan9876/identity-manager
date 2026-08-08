@@ -130,7 +130,7 @@ The raw token is returned **exactly once** — that side stores only its SHA-256
 hash. Put it in this repo's environment:
 
 ```bash
-MAIL_SERVER_SERVICE_TOKEN=<the raw token>
+CONNECTOR_MAIL_SERVER_TOKEN=<the raw token>
 ```
 
 It is referenced by NAME from `connector_targets.config`, never stored in this
@@ -143,7 +143,7 @@ INSERT INTO connector_targets (target, enabled, config)
 VALUES (
   'mail_server',
   true,
-  '{"baseUrl":"http://10.8.0.1:8081/api/v1","tokenSecretName":"MAIL_SERVER_SERVICE_TOKEN"}'::jsonb
+  '{"baseUrl":"http://10.8.0.1:8081/api/v1","tokenSecretName":"CONNECTOR_MAIL_SERVER_TOKEN"}'::jsonb
 );
 ```
 
