@@ -107,8 +107,22 @@ interface **silently**. A stack that never opts in cannot make that mistake.
 rests on:
 
 ```bash
-ss -lntp | grep 8081     # must show 10.8.0.1:8081, never 0.0.0.0:8081
+ss -lntp | grep -E ':(8081|8000|5432|6379)'
 ```
+
+`8081` must show the tunnel address, never `0.0.0.0`. **Check the other three
+too, and expect them to be absent.** `docker-compose.override.yml` is a
+development file that Compose AUTO-LOADS whenever no `-f` flags are given, and
+it publishes postgres, redis, and the backend — the last one commented "hit the
+API directly, bypassing nginx". Naming `-f` files as above suppresses it, which
+is why the command above is written that way and not as a bare
+`docker compose up -d`.
+
+Verified by running both forms on a real deployment: the explicit form
+published nothing, and a bare `docker compose up -d` published `0.0.0.0:5432`
+and `0.0.0.0:6379` — the mail database, holding every mailbox, alias, and
+credential hash, on every interface. Checking only 8081 would have reported
+that arrangement as correct.
 
 The listener also carries `limit_req zone=provisioning`, declared in
 `docker/nginx/nginx.conf`. That is not decoration — it closes the gap the
@@ -155,11 +169,40 @@ configured the same way, for the same reason.
 
 Optional `config` keys: `requestTimeoutMs` (defaults to 10000).
 
+## 4b. Map the attributes
+
+Without this the connector can plan NOTHING, and step 5 below reports it as a
+per-principal failure rather than as missing setup. A fresh install seeds the
+`mail_*` attribute DEFINITIONS but zero target mappings — propagation is
+default-deny, so an attribute reaches a target only once mapped to it.
+
+```sql
+INSERT INTO attribute_target_mappings (attribute_definition_id, target, remote_name, enabled)
+SELECT id, 'mail_server', key, true
+  FROM attribute_definitions
+ WHERE key IN ('mail_enabled', 'mail_aliases', 'mail_quota_mb');
+```
+
+`mail_admin_role` is deliberately omitted: mapping it lets an attribute value
+grant mail-side admin, which the connector only honours when the target's
+config also opts in via `allowAdminProvisioning`.
+
+The mapping alone is still not enough for any individual person — they also
+need a VALUE for `mail_enabled`, set on the person record. Mapping without a
+value is the normal state for everyone who should not have a mailbox.
+
 ## 5. Verify
 
 ```bash
-pnpm --filter @idm/api target-reconcile -- --target mail_server --dry-run
+pnpm --filter @idm/api target-reconcile -- --target=mail_server
 ```
+
+Note both details — this command was WRONG here until it was actually run.
+`--target=mail_server` needs the `=`; a space-separated `--target mail_server`
+is rejected. And there is no `--dry-run` flag: a dry run is the DEFAULT, and
+`--apply` is what makes it write. Passing `--dry-run` fails the command
+outright, so an operator following the old text hit an error on the first
+verification step and would reasonably conclude their setup was broken.
 
 Expect a plan, not a connection error. `MissingSecretError` means the env var
 is unset; a `403` means the token is wrong or revoked.
