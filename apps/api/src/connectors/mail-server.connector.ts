@@ -26,6 +26,23 @@ export type FetchLike = (url: string, init: RequestInit) => Promise<Response>
  * should heal without replaying events, and `health()` is what makes it
  * legible in the meantime.
  *
+ * `429` is RETRIABLE, and that is now deliberate rather than incidental. A
+ * security audit established that the counterpart's provisioning routes ARE
+ * rate limited — 120/min per source IP, inherited from slowapi's globally
+ * applied `default_limits`, which are opt-OUT — despite BOTH systems' specs
+ * having claimed no application-level limit existed. This default-to-retriable
+ * shape happened to handle it correctly all along; the enumeration below makes
+ * that a decision instead of a lucky accident. A rate limit clears on its own,
+ * so dead-lettering one would drop a legitimate identity over a transient
+ * condition — the realistic way to hit it is a bulk reconciliation pass, i.e.
+ * exactly when losing users is least acceptable.
+ *
+ * NOTE the asymmetry: this is a DENYLIST of permanent statuses, not an
+ * allowlist of retriable ones. An unrecognised status is therefore retried
+ * rather than dropped, which is the safe direction — retrying something
+ * hopeless costs a bounded 8 attempts and leaves a visible dead letter, while
+ * dropping something recoverable loses a user silently.
+ *
  * Carries no credential: `responseBody` is the target's own error payload,
  * and the resolved token is never part of any message built here.
  */

@@ -297,9 +297,17 @@ unlikely to arise from this connector's own output.
 The counterpart's provisioning security argument is one sentence: a leaked token
 is useless from outside, because nginx blocks `/api/v1/provisioning`
 (`docker/nginx/templates/10-https.conf.template:43`) and the routes are reachable
-only on the `internal` bridge network. Its spec adds that if provisioning is ever
-exposed beyond that network, rate limiting stops being optional — there is no
-`@limiter.limit` on those routes today, and nginx's own limiter never sees them.
+only on the `internal` bridge network.
+
+**Correction (security audit).** This section previously repeated the
+counterpart spec's claim that "there is no `@limiter.limit` on those routes
+today, and nginx's own limiter never sees them", concluding no application-level
+rate limit existed. Both halves of that are true and neither is the whole
+picture: slowapi's `default_limits` are opt-OUT, applied by `SlowAPIMiddleware`
+to every route that does not carry `@limiter.exempt`, so provisioning has been
+limited to 120/min per source IP all along. Corrected on both sides. The
+practical consequence for this connector is a `429` that must be treated as
+RETRIABLE — see the failure mapping below.
 
 Separate hosts means recreating that private network or replacing the argument.
 
@@ -335,7 +343,16 @@ and closes the gap the counterpart spec flagged against itself.
 | `409` address collision | Permanent — dead-letter | Needs a human; retrying never resolves it |
 | `422` unhosted domain, invalid alias, malformed payload | Permanent — dead-letter | Same |
 | `403` unknown, revoked or expired token | Retriable | An operator fixing the token should heal it without replaying events; `health()` is what makes it legible meanwhile |
+| `429` rate limited | Retriable | The counterpart limits provisioning to 120/min per source IP (see the correction above). A limit clears on its own, and a bulk reconciliation pass is the realistic way to hit it — i.e. exactly when dropping users is least acceptable |
 | `5xx`, timeout, connection refused | Retriable | |
+
+The implementation is a DENYLIST of permanent statuses (`409`, `422`), not an
+allowlist of retriable ones, so an unrecognised status retries rather than
+dropping. That is the safe direction: retrying something hopeless costs a
+bounded 8 attempts and leaves a visible dead letter, whereas dropping something
+recoverable loses a user silently. `429` was already handled correctly by that
+default before anyone knew it could occur; it is now enumerated so the behaviour
+is a decision rather than an accident.
 
 Until shared change 5 lands, "permanent" means dead-lettered after the standard
 8 attempts rather than on the first response.

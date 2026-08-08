@@ -224,6 +224,12 @@ describe('MailServerConnector.apply', () => {
     [409, true],
     [422, true],
     [403, false],
+    // The counterpart IS rate limited (120/min per source IP, inherited from
+    // slowapi's opt-OUT default_limits) despite both systems' specs having
+    // claimed otherwise — found by security audit. A rate limit clears on its
+    // own, so dead-lettering it would drop a legitimate identity; a bulk
+    // reconciliation pass is the realistic way to hit it.
+    [429, false],
     [500, false],
     [503, false],
   ])('maps %i to permanent=%s', async (status, permanent) => {
