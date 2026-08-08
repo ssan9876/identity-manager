@@ -3,6 +3,26 @@ import { defineConfig } from '@playwright/test'
 export default defineConfig({
   testDir: './e2e',
   timeout: 60_000,
+  // Retries in CI ONLY, and deliberately NOT the `continue-on-error` pattern
+  // that was proposed and rejected earlier in this project: that makes a
+  // failing job report success and hides real breakage forever. This does
+  // the opposite — a test that fails every attempt still fails the run, and
+  // one that passes on retry is reported as FLAKY rather than as passing, so
+  // the signal survives instead of being suppressed.
+  //
+  // Justified by a specific, diagnosed contention rather than as a blanket
+  // "make CI green" measure: the suite drives Keycloak's real hosted login
+  // for every sign-in, several workers do that concurrently against ONE
+  // dev-mode Keycloak, and person-picker's scoped-operator test performs a
+  // SECOND full interactive login on top of that. Confirmed to be about
+  // load and not about this codebase: the same test failed identically on a
+  // commit that changed nothing but a shell script. It is a timeout waiting
+  // on Keycloak's redirect, never a wrong assertion.
+  //
+  // The real fix is to stop paying for one interactive login per test — a
+  // shared authenticated storageState — which this app's sessionStorage-
+  // based OIDC store does not support without a wider change.
+  retries: process.env.CI ? 2 : 0,
   // Test hygiene (H2 race-flake investigation, "Shared dev-database
   // growth") — runs once, after every worker/test file in the whole run has
   // finished, and deletes exactly what this run's own fixtures created from
