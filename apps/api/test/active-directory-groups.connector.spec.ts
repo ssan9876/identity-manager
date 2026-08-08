@@ -19,7 +19,7 @@ import { withTestDatabase } from './support/pg'
 import { startSambaAd, type TestSambaAd } from './support/samba-ad'
 
 const UNREACHABLE_ISSUER = 'http://127.0.0.1:1/realms/unreachable'
-const AD_SECRET_NAME = 'AD_GROUP_TEST_SECRET'
+const AD_SECRET_NAME = 'CONNECTOR_AD_GROUP_TEST_SECRET'
 // MS-ADTS 2.2.13 — Global Security group, signed-int32 encoding. Mirrors the
 // connector's own `GROUP_TYPE_GLOBAL_SECURITY` constant; re-derived here
 // rather than imported, matching this test suite's own established
@@ -399,7 +399,7 @@ describe('ActiveDirectoryConnector groups and membership (Milestone 11, Task 6)'
   // =========================================================================
   describe('secret resolution never leaks (extends Task 5 to planGroup/applyGroup)', () => {
     it('the bind password never appears in planGroup/applyGroup responses, thrown errors, or console output', async () => {
-      const secretName = `AD_GROUP_LEAK_TEST_${randomUUID().replace(/-/g, '_')}`
+      const secretName = `CONNECTOR_AD_GROUP_LEAK_TEST_${randomUUID().replace(/-/g, '_')}`
       process.env[secretName] = ad.adminPassword
       const sentinel = ad.adminPassword
 

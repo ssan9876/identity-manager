@@ -197,7 +197,7 @@ member of is not supported and would need a `mail_admin_domains` list attribute.
 
 ### Configuration
 
-`MAIL_SERVER_BASE_URL`, `MAIL_SERVER_SERVICE_TOKEN`, `MAIL_SERVER_SYNC_ENABLED`,
+`MAIL_SERVER_BASE_URL`, `CONNECTOR_MAIL_SERVER_TOKEN`, `MAIL_SERVER_SYNC_ENABLED`,
 loaded through `loadEnv` alongside the existing Keycloak settings. The token is
 issued by the mail server's superadmin UI and shown once.
 

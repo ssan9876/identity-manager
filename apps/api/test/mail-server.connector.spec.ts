@@ -2,14 +2,14 @@ import { describe, expect, it, vi } from 'vitest'
 import type { DesiredUser } from '../src/connectors/connector'
 import { NotApplicableError } from '../src/connectors/connector'
 import type { FetchLike } from '../src/connectors/mail-server.connector'
-import { MailServerConnector } from '../src/connectors/mail-server.connector'
+import { MailServerConfigurationError, MailServerConnector } from '../src/connectors/mail-server.connector'
 
 const CONFIG = {
   baseUrl: 'http://mail.internal/api/v1',
-  tokenSecretName: 'MAIL_SERVER_SERVICE_TOKEN',
+  tokenSecretName: 'CONNECTOR_MAIL_SERVER_TOKEN',
 }
 
-const ENV = { MAIL_SERVER_SERVICE_TOKEN: 'tok' }
+const ENV = { CONNECTOR_MAIL_SERVER_TOKEN: 'tok' }
 const USER_ID = '11111111-1111-1111-1111-111111111111'
 
 function buildDesired(overrides: Partial<DesiredUser> = {}): DesiredUser {
@@ -50,7 +50,7 @@ describe('MailServerConnector.health', () => {
     const fetchStub = vi.fn<FetchLike>(async () => new Response('{"status":"ok"}', { status: 200 }))
     const connector = new MailServerConnector().withFetch(fetchStub).configure(CONFIG)
 
-    const health = await connector.health({ MAIL_SERVER_SERVICE_TOKEN: 'tok_abc' })
+    const health = await connector.health({ CONNECTOR_MAIL_SERVER_TOKEN: 'tok_abc' })
 
     expect(health.ok).toBe(true)
     const [url, init] = fetchStub.mock.calls[0]
@@ -64,23 +64,23 @@ describe('MailServerConnector.health', () => {
     const health = await connector.health({})
 
     expect(health.ok).toBe(false)
-    expect(health.detail).toContain('MAIL_SERVER_SERVICE_TOKEN')
+    expect(health.detail).toContain('CONNECTOR_MAIL_SERVER_TOKEN')
   })
 
   it('never puts the secret VALUE in its health detail', async () => {
     const fetchStub = vi.fn<FetchLike>(async () => new Response('nope', { status: 403 }))
     const connector = new MailServerConnector().withFetch(fetchStub).configure(CONFIG)
 
-    const health = await connector.health({ MAIL_SERVER_SERVICE_TOKEN: 'tok_sentinel_value' })
+    const health = await connector.health({ CONNECTOR_MAIL_SERVER_TOKEN: 'tok_sentinel_value' })
 
     expect(health.ok).toBe(false)
     expect(health.detail).not.toContain('tok_sentinel_value')
   })
 
   it('rejects a config that never named a base url', async () => {
-    const connector = new MailServerConnector().withFetch(neverCalled()).configure({ tokenSecretName: 'X' })
+    const connector = new MailServerConnector().withFetch(neverCalled()).configure({ tokenSecretName: 'CONNECTOR_X' })
 
-    const health = await connector.health({ X: 'tok' })
+    const health = await connector.health({ CONNECTOR_X: 'tok' })
 
     expect(health.ok).toBe(false)
     expect(health.detail).toContain('baseUrl')
@@ -93,7 +93,7 @@ describe('MailServerConnector.health', () => {
       baseUrl: 'http://mail.internal/api/v1/',
     })
 
-    await connector.health({ MAIL_SERVER_SERVICE_TOKEN: 'tok' })
+    await connector.health({ CONNECTOR_MAIL_SERVER_TOKEN: 'tok' })
 
     expect(fetchStub.mock.calls[0][0]).toBe('http://mail.internal/api/v1/provisioning/health')
   })
@@ -169,7 +169,12 @@ describe('MailServerConnector.apply', () => {
 
   it('maps quota, aliases and admin role from attributes', async () => {
     const fetchStub = vi.fn<FetchLike>(async () => okResponse())
-    const connector = new MailServerConnector().withFetch(fetchStub).configure(CONFIG)
+    // allowAdminProvisioning: this test asserts the admin mapping, which is
+    // opt-in since the security audit — see the "mail_admin_role is opt-in"
+    // block below for the default-deny behaviour.
+    const connector = new MailServerConnector()
+      .withFetch(fetchStub)
+      .configure({ ...CONFIG, allowAdminProvisioning: true })
 
     await connector.apply(
       buildDesired({
@@ -317,5 +322,87 @@ describe('MailServerConnector.disable', () => {
     await new MailServerConnector().withFetch(fetchStub).configure(CONFIG).disable(USER_ID, ENV)
 
     expect(fetchStub).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('mail_enabled: absent is NOT false (security audit)', () => {
+  // `desired.attributes` only carries keys with an ENABLED
+  // attribute_target_mappings row, so mail_enabled vanishes entirely if an
+  // admin disables that mapping, deletes it, or deactivates the definition.
+  // Reading that as `false` turned any of those three ordinary configuration
+  // changes into "deactivate every provisioned user" — worse than an outage,
+  // because the counterpart stamps deactivated_at on `deactivated`, starting
+  // the clock to PURGING their mail.
+  it('refuses to deactivate an existing mailbox when mail_enabled is absent', async () => {
+    const fetchStub = neverCalled()
+    const connector = new MailServerConnector().withFetch(fetchStub).configure(CONFIG)
+
+    const error = await connector
+      .apply(buildDesired({ attributes: {}, existingExternalId: USER_ID }), ENV)
+      .catch((e: unknown) => e)
+
+    expect(error).toBeInstanceOf(MailServerConfigurationError)
+    expect(fetchStub).not.toHaveBeenCalled()
+  })
+
+  it('dead-letters immediately rather than retrying a configuration problem', async () => {
+    const connector = new MailServerConnector().withFetch(neverCalled()).configure(CONFIG)
+    const error = await connector
+      .apply(buildDesired({ attributes: {}, existingExternalId: USER_ID }), ENV)
+      .catch((e: unknown) => e)
+    expect((error as { permanent?: boolean }).permanent).toBe(true)
+  })
+
+  it('is still NotApplicable when absent AND there is no mailbox', async () => {
+    const connector = new MailServerConnector().withFetch(neverCalled()).configure(CONFIG)
+    await expect(connector.apply(buildDesired({ attributes: {} }), ENV)).rejects.toBeInstanceOf(
+      NotApplicableError,
+    )
+  })
+
+  it('still deactivates on an EXPLICIT false — entitlement removal is unaffected', async () => {
+    const fetchStub = vi.fn<FetchLike>(async () => okResponse())
+    const connector = new MailServerConnector().withFetch(fetchStub).configure(CONFIG)
+
+    await connector.apply(
+      buildDesired({ attributes: { mail_enabled: ['false'] }, existingExternalId: USER_ID }),
+      ENV,
+    )
+
+    expect(sentBody(fetchStub).status).toBe('deactivated')
+  })
+
+  it('plan() reports the misconfiguration instead of a mass-disable', async () => {
+    const connector = new MailServerConnector().withFetch(neverCalled()).configure(CONFIG)
+    const ops = await connector.plan(buildDesired({ attributes: {}, existingExternalId: USER_ID }), ENV)
+    expect(ops[0].description).toContain('CANNOT PLAN')
+  })
+})
+
+describe('mail_admin_role is opt-in (security audit)', () => {
+  const asAdmin = { mail_enabled: ['true'], mail_admin_role: ['superadmin'] }
+
+  it('does NOT send an admin block by default', async () => {
+    const fetchStub = vi.fn<FetchLike>(async () => okResponse())
+    const connector = new MailServerConnector().withFetch(fetchStub).configure(CONFIG)
+
+    await connector.apply(buildDesired({ attributes: asAdmin }), ENV)
+
+    // `user:update` is held by help_desk (authz/actions.ts), a SCOPABLE role.
+    // Without this gate a help_desk scoped to one org unit could mint a
+    // mail-server superadmin by editing an attribute — bypassing all three
+    // checks real role assignment requires.
+    expect('admin' in sentBody(fetchStub)).toBe(false)
+  })
+
+  it('sends it only when the target explicitly opts in', async () => {
+    const fetchStub = vi.fn<FetchLike>(async () => okResponse())
+    const connector = new MailServerConnector()
+      .withFetch(fetchStub)
+      .configure({ ...CONFIG, allowAdminProvisioning: true })
+
+    await connector.apply(buildDesired({ attributes: asAdmin }), ENV)
+
+    expect(sentBody(fetchStub).admin).toEqual({ role: 'superadmin', domains: [] })
   })
 })

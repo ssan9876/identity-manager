@@ -22,7 +22,7 @@ import { withTestDatabase } from './support/pg'
 import { startSambaAd, type TestSambaAd } from './support/samba-ad'
 
 const UNREACHABLE_ISSUER = 'http://127.0.0.1:1/realms/unreachable'
-const AD_SECRET_NAME = 'AD_CONNECTOR_TEST_SECRET'
+const AD_SECRET_NAME = 'CONNECTOR_AD_TEST_SECRET'
 const UAC_ACCOUNTDISABLE = 0x0002
 const UAC_PASSWD_NOTREQD = 0x0020
 
@@ -532,7 +532,7 @@ describe('ActiveDirectoryConnector (Milestone 11, Task 5)', () => {
   // =========================================================================
   describe('secret resolution never leaks (extends Milestone 10 Task 2 to active_directory)', () => {
     it('the bind password never appears in health/apply responses, thrown errors, or console output', async () => {
-      const secretName = `AD_LEAK_TEST_${randomUUID().replace(/-/g, '_')}`
+      const secretName = `CONNECTOR_AD_LEAK_TEST_${randomUUID().replace(/-/g, '_')}`
       process.env[secretName] = ad.adminPassword
       const sentinel = ad.adminPassword
 

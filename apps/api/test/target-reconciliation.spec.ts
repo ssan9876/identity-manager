@@ -73,7 +73,7 @@ describe('evaluateBlastRadius (Milestone 10, Task 4)', () => {
 // and so does ConnectorRegistry's) but is never actually called — no real
 // Keycloak Testcontainer is needed for this file, keeping it fast.
 const UNREACHABLE_ISSUER = 'http://127.0.0.1:1/realms/unreachable'
-const ECHO_SECRET_NAME = 'TARGET_RECONCILE_TEST_SECRET'
+const ECHO_SECRET_NAME = 'CONNECTOR_TARGET_RECONCILE_TEST_SECRET'
 
 /**
  * MILESTONE 10, TASK 4: per-target reconciliation, the blast-radius guard,

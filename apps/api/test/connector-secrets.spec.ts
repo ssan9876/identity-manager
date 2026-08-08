@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConnectorRegistry } from '../src/connectors/connector-registry'
-import { MissingSecretError, resolveSecret } from '../src/connectors/secrets'
+import { MissingSecretError, ForbiddenSecretNameError, resolveSecret } from '../src/connectors/secrets'
 import { KeycloakAdminClient } from '../src/keycloak/keycloak-admin.client'
 import { SyncWorker } from '../src/outbox/sync.worker'
 import { UsersRepository } from '../src/users/users.repository'
@@ -82,7 +82,7 @@ describe('secret resolution never leaks the resolved value (Milestone 10, Task 2
   // failing path, all against the REAL registry/connector/Postgres plumbing.
   // ===========================================================================
   it('the sentinel value never appears in config reads, health results, apply results, connector call logs, thrown errors, or anything logged to the console', async () => {
-    const secretName = `SENTINEL_SECRET_${randomUUID().replace(/-/g, '_')}`
+    const secretName = `CONNECTOR_SENTINEL_SECRET_${randomUUID().replace(/-/g, '_')}`
     const sentinelValue = `sentinel-${randomUUID()}`
     process.env[secretName] = sentinelValue
 
@@ -208,5 +208,48 @@ describe('secret resolution never leaks the resolved value (Milestone 10, Task 2
       const sentinel = `sentinel-${randomUUID()}`
       expect(() => assertNoLeak('connector error: secret not set', sentinel, 'clean test string')).not.toThrow()
     })
+  })
+})
+
+describe('connector secret names are namespaced (security audit, critical)', () => {
+  // `connector_targets.config` is admin-editable and names BOTH the
+  // environment variable to read AND the destination host. With no constraint
+  // on the name, a holder of connector:manage could point a target at a host
+  // they control, set credentialSecretName to DATABASE_URL, and receive the
+  // database password in an Authorization header. `healthDetail` surfaced the
+  // response, making it a convenient oracle too.
+  it.each([
+    'DATABASE_URL',
+    'RUNTIME_DATABASE_URL',
+    'KEYCLOAK_ADMIN_CLIENT_SECRET',
+    'PATH',
+  ])('refuses to resolve %s — not connector-scoped', (name) => {
+    expect(() => resolveSecret(name, { [name]: 'sentinel-value' })).toThrow(ForbiddenSecretNameError)
+  })
+
+  it('never includes the value in the refusal, even though it has it', () => {
+    const error = (() => {
+      try {
+        resolveSecret('DATABASE_URL', { DATABASE_URL: 'postgres://u:hunter2@db/x' })
+      } catch (e) {
+        return e as Error
+      }
+    })()
+    expect(error?.message).not.toContain('hunter2')
+  })
+
+  // Prototype-chain fail-open, closed by the same rule: `env[name]` walks the
+  // chain, so these resolved to inherited FUNCTIONS — truthy, non-empty, and
+  // duly sent as a credential. This project has been bitten by prototype-chain
+  // lookups three times before.
+  it.each(['hasOwnProperty', '__proto__', 'isPrototypeOf', 'toString'])(
+    'refuses the inherited property %s',
+    (name) => {
+      expect(() => resolveSecret(name, {})).toThrow(ForbiddenSecretNameError)
+    },
+  )
+
+  it('still resolves a properly namespaced secret', () => {
+    expect(resolveSecret('CONNECTOR_THING', { CONNECTOR_THING: 'ok' })).toBe('ok')
   })
 })

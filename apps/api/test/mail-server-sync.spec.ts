@@ -167,9 +167,9 @@ describe('mail server connector (DB-backed)', () => {
     async function enableEcho(): Promise<void> {
       await ctx.db
         .insert(connectorTargets)
-        .values({ target: 'echo', enabled: true, config: { credentialSecretName: 'ECHO_SECRET' } })
+        .values({ target: 'echo', enabled: true, config: { credentialSecretName: 'CONNECTOR_ECHO_SECRET' } })
         .onConflictDoUpdate({ target: connectorTargets.target, set: { enabled: true } })
-      process.env.ECHO_SECRET = 'test-secret'
+      process.env.CONNECTOR_ECHO_SECRET = 'test-secret'
     }
 
     const identityRows = (userId: string) =>
@@ -215,9 +215,9 @@ describe('mail server connector (DB-backed)', () => {
     it('dead-letter on the first attempt instead of burning the backoff', async () => {
       await ctx.db
         .insert(connectorTargets)
-        .values({ target: 'echo', enabled: true, config: { credentialSecretName: 'ECHO_SECRET' } })
+        .values({ target: 'echo', enabled: true, config: { credentialSecretName: 'CONNECTOR_ECHO_SECRET' } })
         .onConflictDoUpdate({ target: connectorTargets.target, set: { enabled: true } })
-      process.env.ECHO_SECRET = 'test-secret'
+      process.env.CONNECTOR_ECHO_SECRET = 'test-secret'
 
       const user = await makeUserWithStatus('active')
       const echo = new EchoConnector()
@@ -259,7 +259,7 @@ describe('mail server connector (DB-backed)', () => {
           enabled: true,
           config: {
             baseUrl: 'http://mail.internal/api/v1',
-            tokenSecretName: 'MAIL_SERVER_SERVICE_TOKEN',
+            tokenSecretName: 'CONNECTOR_MAIL_SERVER_TOKEN',
           },
         })
         .onConflictDoUpdate({ target: connectorTargets.target, set: { enabled: true } })

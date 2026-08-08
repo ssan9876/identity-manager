@@ -63,7 +63,7 @@ function assertNoLeak(haystack: string, sentinel: string, where: string): void {
  */
 describe('GoogleWorkspaceConnector (Milestone 13, Task 8)', () => {
   const ctx = withTestDatabase()
-  const SECRET_NAME = 'GOOGLE_WORKSPACE_CONNECTOR_TEST_SECRET'
+  const SECRET_NAME = 'CONNECTOR_GOOGLE_WORKSPACE_TEST_SECRET'
   let fake: GoogleAdminFake
 
   beforeAll(async () => {

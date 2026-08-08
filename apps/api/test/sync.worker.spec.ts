@@ -520,7 +520,7 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
   // two INDEPENDENT, correctly-routed applications.
   // =====================================================================
   describe('connector registry dispatch (Milestone 10, Task 2)', () => {
-    const ECHO_SECRET_NAME = 'SYNC_WORKER_ECHO_TEST_SECRET'
+    const ECHO_SECRET_NAME = 'CONNECTOR_SYNC_WORKER_ECHO_TEST_SECRET'
 
     async function enableEchoTarget(): Promise<void> {
       process.env[ECHO_SECRET_NAME] = 'echo-dispatch-test-secret'
@@ -681,7 +681,7 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
   // reused below alongside fixtures created per-test.
   // =====================================================================
   describe('default-deny per target (Milestone 10, Task 3)', () => {
-    const ECHO_SECRET_NAME = 'SYNC_WORKER_DEFAULT_DENY_ECHO_SECRET'
+    const ECHO_SECRET_NAME = 'CONNECTOR_SYNC_WORKER_DEFAULT_DENY_ECHO_SECRET'
 
     async function enableEchoTarget(): Promise<void> {
       process.env[ECHO_SECRET_NAME] = 'default-deny-test-secret'
