@@ -1,0 +1,55 @@
+[Unit]
+Description=Identity Manager API and outbox sync worker
+Documentation=file://@REPO_ROOT@/docs/deployment/lxc-install.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=@IDM_USER@
+Group=@IDM_USER@
+WorkingDirectory=@REPO_ROOT@/apps/api
+
+# Holds two database passwords and the Keycloak sync client secret; installed
+# 0640 and owned by this user. Plain KEY=value lines only — systemd does not
+# parse shell quoting.
+EnvironmentFile=@REPO_ROOT@/.env
+
+# The compiled output, not tsx. That distinction is load-bearing: tsx/esbuild
+# does not emit the `design:paramtypes` decorator metadata Nest needs for DI,
+# so a tsx-run production process boots cleanly and then 500s on every
+# authenticated request. tsc (what `pnpm build` runs) does emit it.
+ExecStart=/usr/bin/node dist/src/main.js
+
+Restart=on-failure
+RestartSec=5s
+
+# SYNC_WORKER_ENABLED (set in .env, default true) runs the outbox worker
+# in-process here, so this single unit is the whole application. For a second
+# instance behind a load balancer, set SYNC_WORKER_ENABLED=false there so only
+# one process drains the outbox.
+
+# --- Hardening --------------------------------------------------------------
+# The process needs: the repo (read), its .env (read), and a TCP connection to
+# Postgres and Keycloak. Nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=idm-api
+
+[Install]
+WantedBy=multi-user.target

@@ -108,6 +108,37 @@ Open **http://localhost:5173** and sign in with the seeded dev credentials:
 You should land on a People list showing at least the admin user you just
 bootstrapped.
 
+## Deploying
+
+The Quickstart above is a **development** setup: it runs Vite's dev server and
+starts a throwaway Keycloak in Docker. For a real install — an LXC container, a
+VM, or bare metal, running natively under systemd against **a Keycloak you
+already operate** — see **[docs/deployment/lxc-install.md](docs/deployment/lxc-install.md)**.
+
+```bash
+# On a Proxmox host: creates an unprivileged container and installs into it.
+IDM_HOSTNAME=idm.lan \
+KEYCLOAK_ISSUER=https://kc.example.com/realms/identity-manager \
+bash scripts/proxmox-create-lxc.sh
+
+# Or on any Ubuntu 24.04 machine, from a checkout:
+bash scripts/install.sh
+```
+
+Then `scripts/keycloak-setup.sh` creates the realm and the three clients the
+application needs in your existing Keycloak, grants the sync service account
+exactly four `realm-management` roles, and mints a client secret.
+
+**Do not import `keycloak/realm-import/identity-manager-realm.json` into a real
+Keycloak.** That file is the development realm: it contains a user with the
+password `dev_password_change_me`, a client secret of
+`idm_sync_dev_secret_change_me`, and a password-grant test client — all
+committed to a public repository. `keycloak-setup.sh` builds the same realm
+through the Admin API with generated secrets and no seeded human user.
+
+Read "SECURITY STATUS" at the bottom of this file before pointing any of it at
+a network you care about.
+
 ## Database roles
 
 Postgres access is split across **two roles**, not one — see
