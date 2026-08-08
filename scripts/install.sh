@@ -169,7 +169,15 @@ chmod 640 "$ENV_FILE"
 cat >"$REPO_ROOT/apps/web/.env" <<EOF
 VITE_KEYCLOAK_ISSUER=${KEYCLOAK_ISSUER}
 VITE_KEYCLOAK_CLIENT_ID=idm-console
-VITE_API_BASE_URL=${CONSOLE_URL}
+# MUST include /api: nginx proxies the API at `location /api/`, and the console
+# appends bare resource paths to this base. Without it every request goes to
+# e.g. https://host/users, which the SPA fallback answers with index.html at
+# HTTP 200 text/html — so the app parses HTML as JSON and every screen fails.
+# Worse, /self/permissions fails the same way, the permission set parses as
+# empty, and the console falsely reports that the user lacks every permission
+# and renders no navigation at all. Nothing looks wrong in the network log
+# because the status is 200; only the content type gives it away.
+VITE_API_BASE_URL=${CONSOLE_URL}/api
 EOF
 ok "wrote .env and apps/web/.env"
 
