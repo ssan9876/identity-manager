@@ -21,7 +21,9 @@
 #
 # Overrides (all optional):
 #   CTID, CT_HOSTNAME, CORES, RAM_MB, SWAP_MB, DISK_GB, STORAGE, BRIDGE,
-#   NET_IP (default dhcp), TEMPLATE_STORAGE, REPO_URL, REPO_BRANCH, DEBUG=1
+#   NET_IP (default dhcp), TEMPLATE_STORAGE, REPO_URL, REPO_BRANCH, DEBUG=1,
+#   IDM_SCHEME (default https), KEYCLOAK_CA_CERT (path ON THIS HOST to
+#   Keycloak's certificate, required when Keycloak is self-signed)
 # ============================================================================
 set -Eeuo pipefail
 
@@ -130,7 +132,20 @@ pct exec "$CTID" -- bash -lc "cd '$INSTALL_DIR' && git remote set-url origin '$R
 ok "cloned to $INSTALL_DIR"
 
 info "running the installer (several minutes: apt, pnpm install, build)"
-pct exec "$CTID" -- bash -lc "cd '$INSTALL_DIR' && IDM_HOSTNAME='$IDM_HOSTNAME' KEYCLOAK_ISSUER='$KEYCLOAK_ISSUER' ${IDM_SCHEME:+IDM_SCHEME=$IDM_SCHEME} bash scripts/install.sh"
+# Copy a Keycloak CA/self-signed certificate in BEFORE installing, so the
+# installer can wire up NODE_EXTRA_CA_CERTS in the same pass. Without it the
+# API cannot verify Keycloak's TLS when fetching JWKS and rejects every token
+# with 401 — a valid token, refused, which is a miserable thing to debug after
+# the fact.
+CA_IN_CT=""
+if [[ -n "${KEYCLOAK_CA_CERT:-}" ]]; then
+  [[ -f "$KEYCLOAK_CA_CERT" ]] || die "KEYCLOAK_CA_CERT does not exist on this host: $KEYCLOAK_CA_CERT"
+  CA_IN_CT=/tmp/keycloak-ca.crt
+  pct push "$CTID" "$KEYCLOAK_CA_CERT" "$CA_IN_CT" >/dev/null
+  ok "copied the Keycloak certificate into the container"
+fi
+
+pct exec "$CTID" -- bash -lc "cd '$INSTALL_DIR' && IDM_HOSTNAME='$IDM_HOSTNAME' KEYCLOAK_ISSUER='$KEYCLOAK_ISSUER' ${IDM_SCHEME:+IDM_SCHEME=$IDM_SCHEME} ${CA_IN_CT:+KEYCLOAK_CA_CERT=$CA_IN_CT} bash scripts/install.sh"
 
 CT_IP="$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}')"
 echo
