@@ -46,3 +46,43 @@ test('shows the signed-out state before authentication', async ({ page }) => {
   await expect(page.getByTestId('people-table')).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
 })
+
+/**
+ * Regression test for a silent failure that cost a full debugging session on
+ * real hardware. The gate's button was `onClick={() => void
+ * auth.signinRedirect()}` — `void` discarded the promise, so an unreachable
+ * issuer produced NOTHING: no console error, no message, no navigation. The
+ * button simply did not work, with nothing on screen to say why.
+ *
+ * This lives at the rendered level rather than as a unit test of the handler
+ * BECAUSE the first attempted fix — a try/catch around an awaited
+ * `signinRedirect()` — did not work either. react-oidc-context catches
+ * internally and dispatches to `auth.error`, so the call settles without
+ * throwing and the catch never runs. A handler-level test would have passed
+ * against that broken fix; only the rendered output tells the two apart, so
+ * only a rendered assertion can hold the real fix in place.
+ *
+ * Aborting the discovery request reproduces the original condition exactly:
+ * oidc-client-ts must read `.well-known/openid-configuration` from the
+ * authority before it can build an authorize URL, which is why an untrusted
+ * certificate, a down IdP, and a wrong issuer all surface at this one point.
+ */
+test('reports an unreachable issuer instead of failing silently', async ({
+  page,
+}) => {
+  await page.route('**/.well-known/openid-configuration', (route) =>
+    route.abort(),
+  )
+
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Sign in' }).click()
+
+  const failure = page.getByRole('alert')
+  await expect(failure).toBeVisible()
+  await expect(failure).toContainText('Could not reach the sign-in service')
+  // The issuer must be NAMED. "Something went wrong" would not have shortened
+  // the original investigation by a single step.
+  await expect(failure).toContainText(/realms\/identity-manager/)
+  // And the user stays on the gate rather than being navigated into a dead end.
+  await expect(page).toHaveURL(/localhost:5173\/?$/)
+})
