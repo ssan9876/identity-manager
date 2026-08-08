@@ -293,6 +293,28 @@ export class ImportsController {
     definitions: AttributeDefinition[]
   }> {
     const parsed = parseBody(importBodySchema, body)
+
+    // Cheap structural check BEFORE parsing. `parseCsv` materialises every row
+    // into an object, so checking `rows.length` afterwards means an oversized
+    // file is fully allocated and only then rejected — the row cap bounds what
+    // gets WRITTEN, but not what gets ALLOCATED to find that out.
+    //
+    // Counting line breaks is O(n) over a string that is already in memory and
+    // allocates nothing per row, so an over-cap file is refused before the
+    // expensive part. Deliberately an over-COUNT (a quoted field may contain
+    // newlines, and the header takes one line), so this never rejects a file
+    // the real check below would have accepted — it only short-circuits ones
+    // that cannot possibly fit.
+    let lineBreaks = 0
+    for (let i = 0; i < parsed.csv.length; i += 1) {
+      if (parsed.csv.charCodeAt(i) === 10) lineBreaks += 1
+    }
+    if (lineBreaks > this.config.maxRows + 1) {
+      throw new ValidationError([
+        `csv: too many rows (more than ${this.config.maxRows}); the maximum per request is ${this.config.maxRows}`,
+      ])
+    }
+
     const { headers, rows } = parseCsv(parsed.csv)
 
     const missing = missingRequiredHeaders(headers)

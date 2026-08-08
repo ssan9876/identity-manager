@@ -1535,4 +1535,26 @@ describe('bulk import row-count cap (finding M6, docs/superpowers/audit-integrit
     expect(res.body.created).toBe(3)
     expect(res.body.failed).toBe(0)
   })
+
+  // Security audit: the row cap bounded what got WRITTEN but not what got
+  // ALLOCATED to discover the file was too big — parseCsv materialised every
+  // row into an object first, and only then was `rows.length` checked. A
+  // cheap line-break count now short-circuits before that.
+  //
+  // Deliberately an over-count (quoted fields may contain newlines, and the
+  // header takes a line), so the guard can only ever reject files the real
+  // check would also reject — which is why the "exactly at the cap" test
+  // above must keep passing unchanged.
+  it('rejects a grossly oversized file without parsing every row into memory', async () => {
+    const admin = await makeActiveAdmin()
+    currentUsername = admin.username
+
+    // Far beyond the cap of 3 configured for this describe block.
+    const rows = Array.from({ length: 500 }, (_, n) => csvRow(`flood-${nextTag()}-${n}`))
+    const csv = buildCsv(rows)
+
+    const res = await request(app.getHttpServer()).post('/imports/commit').send({ csv }).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+    expect(JSON.stringify(res.body)).toMatch(/too many rows/i)
+  })
 })
