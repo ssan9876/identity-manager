@@ -326,6 +326,21 @@ export class MailServerConnector implements DirectoryConnector {
       status,
     }
     if (options.minimal === true) {
+      // Withdraw the aliases too, explicitly.
+      //
+      // `[]` and OMITTED are different instructions to the counterpart: an
+      // omitted collection means "leave untouched", `[]` means "remove every
+      // IdM-owned alias". This branch used to omit it, so a de-entitled user
+      // kept their aliases — and the counterpart's own accepted defect is
+      // that an IdM-owned alias stays ACTIVE when its identity is
+      // deactivated, which means it keeps MATCHING and so suppresses the
+      // domain catch-all. Mail to a de-entitled person's alias then bounces
+      // instead of falling through to the catch-all that exists for exactly
+      // that case.
+      //
+      // Only aliases this integration owns are removed; one an admin created
+      // by hand is never touched (see the counterpart's `_converge_aliases`).
+      payload.aliases = []
       return payload
     }
 

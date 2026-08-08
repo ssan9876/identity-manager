@@ -153,6 +153,23 @@ describe('MailServerConnector.apply', () => {
     expect(sentBody(fetchStub).status).toBe('deactivated')
   })
 
+  it('withdraws IdM-owned aliases on entitlement removal, explicitly', async () => {
+    const fetchStub = vi.fn<FetchLike>(async () => okResponse())
+    const connector = new MailServerConnector().withFetch(fetchStub).configure(CONFIG)
+
+    await connector.apply(
+      buildDesired({ attributes: { mail_enabled: ['false'] }, existingExternalId: USER_ID }),
+      ENV,
+    )
+
+    // `[]` and OMITTED mean different things to the counterpart: omitted is
+    // "leave untouched", `[]` is "remove every IdM-owned alias". Omitting it
+    // left a de-entitled user's aliases ACTIVE, and an active alias keeps
+    // MATCHING — which suppresses the domain catch-all, so their mail bounces
+    // instead of falling through to it.
+    expect(sentBody(fetchStub).aliases).toEqual([])
+  })
+
   it('omits absent optional fields rather than sending null', async () => {
     const fetchStub = vi.fn<FetchLike>(async () => okResponse())
     const connector = new MailServerConnector().withFetch(fetchStub).configure(CONFIG)
