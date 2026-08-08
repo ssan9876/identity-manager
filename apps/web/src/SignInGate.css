@@ -37,7 +37,9 @@
 .signin-gate__error {
   margin-top: 1rem;
   padding: 0.75rem;
-  border: 1px solid var(--color-danger-border, #a33);
+  border: 1px solid var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
   border-radius: 4px;
   font-size: 0.85rem;
   text-align: left;
