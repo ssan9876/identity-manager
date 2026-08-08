@@ -64,7 +64,7 @@ requestable service-catalogue product is an entitlement someone asks for.
    scan — extends to this module unchanged.
 
 6. **The engine computes into existing tables.** There is no new authoritative
-   entitlement ledger with `group_members` as its projection. A second writer on group
+   entitlement ledger with `group_user_members` as its projection. A second writer on group
    membership, or a rewrite of the existing `group:manage_members` endpoint and its three
    privilege guards, is a large disturbance to proven, audited code — and it buys only a
    query that a view over two provenance-carrying tables already answers.
@@ -171,7 +171,7 @@ Unique on `(user_id, target)`.
 
 ### Provenance
 
-`group_members` and `user_target_accounts` both gain:
+`group_user_members` and `user_target_accounts` both gain:
 
 | Column | Notes |
 |---|---|
@@ -187,7 +187,7 @@ be permanent, because Postgres can `ADD VALUE` to an enum but can never drop one
 asymmetry decides it — start with the two sources that genuinely exist, and add a third the
 day something genuinely becomes a third.
 
-The migration backfills every existing `group_members` row to `manual`. That is safe by
+The migration backfills every existing `group_user_members` row to `manual`. That is safe by
 construction rather than by luck: the reconciler never revokes a `manual` row, so a
 backfill that guesses conservatively cannot cause a revocation.
 
@@ -478,7 +478,7 @@ produce exactly one row, and it survives one of them ceasing to match. Disabling
 revokes its rows and leaves every other role's rows alone. Deactivation strips role grants
 *and* the unconditional disable path fires independently of role evaluation.
 
-**Migration tests.** Every existing `group_members` row backfills to `manual`; every
+**Migration tests.** Every existing `group_user_members` row backfills to `manual`; every
 existing `connector_targets` row lands on `all_users`; the `jml_action` migration fails
 loudly on a surviving `add_to_group` row.
 
@@ -493,7 +493,7 @@ Then edit the draft again and confirm publish is refused until the new draft is 
 
 | Milestone | Scope |
 |---|---|
-| **M15** | Schema and provenance: five new tables, provenance columns, the `group_members` backfill, `provisioning_mode` on `connector_targets` defaulting to `all_users` |
+| **M15** | Schema and provenance: five new tables, provenance columns, the `group_user_members` backfill, `provisioning_mode` on `connector_targets` defaulting to `all_users` |
 | **M16** | The evaluator, pure and fully tested, including the static source scan |
 | **M17** | The reconciler, its three trigger paths, the draft/simulate/publish gate, disable-revokes, and audit integration |
 | **M18** | Sync integration: `OutboxWriter` consulting `user_target_accounts`, `entitled_only` targets, disable-on-entitlement-loss, `TargetReconciliationJob` |
