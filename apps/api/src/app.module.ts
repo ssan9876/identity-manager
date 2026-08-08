@@ -21,6 +21,7 @@ import { ConnectorTargetsRepository } from './connectors/connector-targets.repos
 import { EchoConnector } from './connectors/echo.connector'
 import { EntraIdConnector } from './connectors/entra-id.connector'
 import { GoogleWorkspaceConnector } from './connectors/google-workspace.connector'
+import { MailServerConnector } from './connectors/mail-server.connector'
 import { loadEnv } from './config/env'
 import { createDbClient } from './db/client'
 import { GroupsController } from './groups/groups.controller'
@@ -182,6 +183,12 @@ import { UsersRepository } from './users/users.repository'
     // not (see EchoConnector's own doc comment above for the exact failure
     // this avoids).
     GoogleWorkspaceConnector,
+    // Sub-project 4 — same property and same reason as every connector
+    // above: no network I/O at construction (its `fetch` is only ever called
+    // from inside a request), and `ConnectorRegistry`'s own
+    // `MailServerConnector` parameter needs a REAL registered provider to
+    // resolve through DI, JS-level default or not.
+    MailServerConnector,
     ConnectorRegistry,
     SyncWorker,
     SyncStateRepository,

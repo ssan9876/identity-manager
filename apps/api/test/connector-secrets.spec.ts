@@ -110,6 +110,7 @@ describe('secret resolution never leaks the resolved value (Milestone 10, Task 2
       // connector's own internal call log (a real place a careless
       // implementation could stash it, e.g. "for debugging").
       const desired = {
+        userId: '00000000-0000-4000-8000-000000000001',
         username: 'sentinel-user@example.com',
         email: 'sentinel-user@example.com',
         firstName: 'Sentinel',

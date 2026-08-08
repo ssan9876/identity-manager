@@ -21,6 +21,7 @@ export const externalIdentitySystem = pgEnum('external_identity_system', [
   'entra_id',
   'google_workspace',
   'echo',
+  'mail_server',
 ])
 
 // Reflects whether THIS row's `external_id` is currently believed to match

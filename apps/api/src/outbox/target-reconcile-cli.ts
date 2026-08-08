@@ -1,6 +1,6 @@
 import { AuditWriter } from '../audit/audit.writer'
 import { loadEnv } from '../config/env'
-import type { ConnectorTarget } from '../connectors/connector'
+import { ALL_CONNECTOR_TARGETS, type ConnectorTarget } from '../connectors/connector'
 import { ConnectorRegistry } from '../connectors/connector-registry'
 import { createDbClient } from '../db/client'
 import { GroupsRepository } from '../groups/groups.repository'
@@ -10,18 +10,16 @@ import { OutboxRepository } from './outbox.repository'
 import { SyncWorker } from './sync.worker'
 import { TargetReconciliationJob, type TargetReconciliationReport } from './target-reconciliation.job'
 
-// Mirrors `ConnectorRegistry`'s own canonical `ConnectorTarget` union
-// (connectors/connector.ts) — hand-rolled here purely so an unrecognized
-// `--target` value can be rejected BEFORE opening a database connection,
+// The canonical catalog (connectors/connector.ts), used here so an
+// unrecognized `--target` is rejected BEFORE opening a database connection,
 // with a helpful message, rather than surfacing as a downstream Postgres
 // enum-cast error.
-const KNOWN_TARGETS: readonly ConnectorTarget[] = [
-  'keycloak',
-  'active_directory',
-  'entra_id',
-  'google_workspace',
-  'echo',
-]
+//
+// IMPORTED, never re-typed. This was a hand-copied literal list and drifted
+// the moment `mail_server` was added, so the CLI rejected a real target as
+// unknown — including the `--dry-run` step the deployment runbook tells an
+// operator to run first.
+const KNOWN_TARGETS: readonly ConnectorTarget[] = ALL_CONNECTOR_TARGETS
 
 interface ParsedArgs {
   target: ConnectorTarget

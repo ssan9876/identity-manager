@@ -100,6 +100,14 @@ describe('AuditController (Milestone 8, Task 5)', () => {
     return auditor
   }
 
+  /** The same, but SCOPED to one org unit — the actor shape no test in this file could previously build. */
+  async function asScopedAuditor(): Promise<User> {
+    const auditor = await makeActiveUser('auditor')
+    await rolesRepo().assign({ userId: auditor.id, roleKey: 'auditor', scopeOrgUnitId: orgUnitId })
+    currentUsername = auditor.username
+    return auditor
+  }
+
   async function recordRow(input: {
     actorUserId: string | null
     action: string
@@ -119,6 +127,32 @@ describe('AuditController (Milestone 8, Task 5)', () => {
       })
     })
   }
+
+  // =========================================================================
+  // Scope (security audit finding)
+  //
+  // `audit_log` has no orgUnitId, and 2 of its 7 resource types
+  // (connector_target, attribute_target_mapping) are global infrastructure
+  // with resourceId: null — so there is nothing to narrow a query TO. Nor
+  // would row-level filtering contain the leak: a group-membership or
+  // role-assignment row's before/after payload names principals from other
+  // org units even when the resource itself is in scope.
+  //
+  // So reading the audit log requires a GLOBAL grant of audit:read. A partial
+  // audit view is worse than none — an auditor who believes they see
+  // everything but silently does not.
+  // =========================================================================
+
+  it('rejects a SCOPED auditor with 403 — reading the audit log requires a global grant', async () => {
+    await asScopedAuditor()
+    const res = await request(app.getHttpServer()).get('/audit').expect(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  it('still allows a GLOBAL auditor', async () => {
+    await asAuditor()
+    await request(app.getHttpServer()).get('/audit').expect(200)
+  })
 
   it('an actor holding auditor (audit:read) sees rows, actor username/displayName resolved via the join', async () => {
     const auditor = await asAuditor()

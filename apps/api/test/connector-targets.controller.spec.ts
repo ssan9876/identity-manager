@@ -12,6 +12,7 @@ import { RoleAssignmentsRepository } from '../src/authz/role-assignments.reposit
 import { AuditWriter } from '../src/audit/audit.writer'
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
+import { ALL_CONNECTOR_TARGETS } from '../src/connectors/connector'
 import { ConnectorRegistry } from '../src/connectors/connector-registry'
 import { ConnectorTargetsController } from '../src/connectors/connector-targets.controller'
 import { ConnectorTargetsRepository } from '../src/connectors/connector-targets.repository'
@@ -176,16 +177,78 @@ describe('ConnectorTargetsController (Milestone 14, Task 9)', () => {
   })
 
   // =========================================================================
+  // Scope narrowing (security audit finding: connector:manage was satisfied
+  // by holding the action ANYWHERE)
+  //
+  // `connector_targets` has no orgUnitId — it is global infrastructure — so
+  // there is no containing scope to narrow a request TO. That is exactly why
+  // these routes need the OTHER half of the idiom this codebase already uses
+  // for global resources (OrgUnitsController.create for a root org unit,
+  // GroupsController for a global group): a GLOBAL grant, i.e.
+  // `scopePathsFor(actor, action) === null`, not merely a grant at SOME scope.
+  //
+  // Every actor in this file was previously built with the default
+  // `scopeOrgUnitId = null`, so no test in the tree had ever driven a
+  // connector route with a SCOPED actor — the guard's own coverage had the
+  // same shape as the bug.
+  // =========================================================================
+
+  it('rejects PATCH for a SCOPED super_admin — reconfiguring a global target needs a global grant', async () => {
+    const actor = await makeActiveUser('super_admin', orgUnitId)
+    currentUsername = actor.username
+    const res = await request(app.getHttpServer())
+      .patch('/connector-targets/echo')
+      .send({ enabled: true })
+      .expect(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  it('rejects POST /reconcile for a SCOPED super_admin — it walks the WHOLE directory, unscoped', async () => {
+    // The dangerous one. TargetReconciliationJob pages the population with
+    // `scopePaths: null`, so a departmentally-scoped admin could push every
+    // user in the directory — including principals they get 403 on when
+    // reading them one at a time — out to a target they just configured.
+    const actor = await makeActiveUser('super_admin', orgUnitId)
+    currentUsername = actor.username
+    const res = await request(app.getHttpServer())
+      .post('/connector-targets/echo/reconcile')
+      .send({ dryRun: true })
+      .expect(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  it('does NOT block a GLOBAL super_admin at the scope gate', async () => {
+    // The positive control for the two tests above: proves they fail for the
+    // right reason (the actor is SCOPED) rather than because the route is
+    // simply unreachable. Asserts only "not 403" — whether this particular
+    // reconcile then succeeds or 400s on target configuration is downstream
+    // of authorization and deliberately not this test's business.
+    const actor = await makeActiveUser('super_admin')
+    currentUsername = actor.username
+    const res = await request(app.getHttpServer())
+      .post('/connector-targets/echo/reconcile')
+      .send({ dryRun: true })
+    expect(res.status).not.toBe(403)
+  })
+
+  // =========================================================================
   // Shape and validation
   // =========================================================================
 
-  it('lists all five known targets even when none has ever been configured', async () => {
+  it('lists EVERY known target even when none has ever been configured', async () => {
     const admin = await makeActiveUser('super_admin')
     currentUsername = admin.username
 
     const res = await request(app.getHttpServer()).get('/connector-targets').expect(200)
     const targets = (res.body as { target: string }[]).map((t) => t.target).sort()
-    expect(targets).toEqual(['active_directory', 'echo', 'entra_id', 'google_workspace', 'keycloak'].sort())
+    // Derived from the catalog, never a hand-typed list: this assertion used
+    // to spell out five literals and so had the SAME drift defect as the code
+    // it covers — it went stale when `mail_server` was added and would have
+    // had to be edited for every future target. What matters is that the
+    // endpoint returns the WHOLE catalog; that the catalog itself matches the
+    // database enums is pinned separately, by connector-target-catalog.spec.ts.
+    expect(targets).toEqual([...ALL_CONNECTOR_TARGETS].sort())
+    expect(targets).toContain('mail_server')
   })
 
   it('rejects an unknown target path segment with 400 VALIDATION_FAILED', async () => {

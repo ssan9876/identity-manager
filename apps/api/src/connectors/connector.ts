@@ -1,7 +1,11 @@
-// The canonical "which directory backend" literal union — hand-rolled to
-// mirror the `outbox_target` pgEnum (db/schema/outbox-events.ts), same
-// convention as `OutboxAggregateType`/`OutboxEventType` (outbox.writer.ts)
-// rather than a `(typeof outboxTarget.enumValues)[number]` derivation.
+import type { UserStatus } from '../users/users.repository'
+
+// The canonical "which directory backend" catalog, mirroring the
+// `outbox_target` pgEnum (db/schema/outbox-events.ts). Kept as its own
+// literal — rather than a `(typeof outboxTarget.enumValues)[number]`
+// derivation — so `connectors/` does not depend on `db/schema/`; the
+// equivalence is asserted at runtime instead, in both directions, by
+// test/connector-target-catalog.spec.ts.
 // `connectors/` is the canonical HOME for this type — `outbox.writer.ts`'s
 // own `OutboxTarget` is a re-export of it (`export type OutboxTarget =
 // ConnectorTarget`), not the other way around: the outbox is a caller of
@@ -11,7 +15,34 @@
 // instead of two independently hand-rolled unions is what makes
 // `external_identities.system` assignable directly from `event.target` with
 // no mapping table (see ConnectorRegistry/sync.worker.ts).
-export type ConnectorTarget = 'keycloak' | 'active_directory' | 'entra_id' | 'google_workspace' | 'echo'
+//
+// SINGLE SOURCE OF TRUTH (security audit, finding "catalog drift"). This was
+// a hand-rolled `|` union, and every place that needed the values as a
+// RUNTIME array — five of them: two `z.enum` route validators, the console's
+// `ALL_CONNECTOR_TARGETS`, the dead-letter target filter, and the reconcile
+// CLI — hand-copied the same five literals. Adding `mail_server` to the union
+// therefore left all five stale, and the type system could not see it: a
+// narrower literal list is perfectly assignable to a wider union. The
+// observable result was a real target that the console could not list,
+// configure, enable or DISABLE, that the dead-letter view rejected as an
+// unknown filter, and that the reconcile CLI refused to run — i.e. no way to
+// turn off a live outbound integration without direct database access.
+//
+// The array is now the source and the union DERIVES from it, so a new target
+// is one edit and every consumer follows. Anything needing the runtime list
+// imports `ALL_CONNECTOR_TARGETS` rather than retyping it — do not reintroduce
+// a literal list of targets anywhere; `test/connector-target-catalog.spec.ts`
+// asserts this array matches the `outbox_target` pgEnum in BOTH directions.
+export const ALL_CONNECTOR_TARGETS = [
+  'keycloak',
+  'active_directory',
+  'entra_id',
+  'google_workspace',
+  'echo',
+  'mail_server',
+] as const
+
+export type ConnectorTarget = (typeof ALL_CONNECTOR_TARGETS)[number]
 
 /**
  * A directory backend's DESIRED state for one user, already resolved to
@@ -37,11 +68,54 @@ export type ConnectorTarget = 'keycloak' | 'active_directory' | 'entra_id' | 'go
  * (Keycloak: ensureGroup + setUserGroups; echo: recorded verbatim).
  */
 export interface DesiredUser {
+  /**
+   * THIS system's own `users.id` — not a remote id, and not correlated with
+   * anything downstream. REQUIRED and always populated, unlike the optional,
+   * target-gated fields below: it costs nothing to compute (every caller
+   * already holds the loaded user) and an optional field that is in practice
+   * always set is a lie about the shape of the data.
+   *
+   * Exists because a target may address a principal by OUR id rather than by
+   * one of its own. `mail_server` is the first: its provisioning API is
+   * `PUT /provisioning/identities/{external_id}` where that key IS this
+   * uuid, so without this field that connector cannot construct a URL at
+   * all. Keying on `username` instead is explicitly rejected by the
+   * counterpart's own spec — "keying on external_id rather than the address
+   * is what makes renames correct: a changed email becomes a rename of an
+   * existing mailbox, not an orphan plus a new empty one" — and `username`
+   * is mutable here too, so it carries the identical defect. Targets that
+   * correlate by an immutable id of their OWN (AD/Entra/Google, via
+   * `existingExternalId` below) simply ignore this.
+   */
+  userId: string
+
   username: string
   email: string
   firstName: string
   lastName: string
   enabled: boolean
+
+  /**
+   * This user's FULL lifecycle status, for a target whose own model has more
+   * than the two states `enabled` can express. OPTIONAL and target-gated,
+   * exactly like `orgUnitPath` below: populated for `'mail_server'` only (see
+   * sync.worker.ts's `TARGETS_NEEDING_FULL_STATUS`), `undefined` for every
+   * other target, and structurally invisible to the connectors that ignore
+   * it — no existing connector reads it or has to acknowledge it.
+   *
+   * `enabled` immediately above cannot stand in for this. It is
+   * `status === 'active'`, so `pending`, `suspended` and `deactivated` all
+   * collapse into one value — and for the mail target that is DATA LOSS, not
+   * merely lost fidelity: only `deactivated` stamps the counterpart's
+   * `deactivated_at`, which starts its retention clock. Map `suspended` onto
+   * `deactivated` and a suspended employee's mail is eventually purged; map
+   * `deactivated` onto `suspended` and offboarded mail never purges at all.
+   * The counterpart's spec states the rule directly: "A suspension must never
+   * stamp deactivated_at — suspension is not offboarding and must not start
+   * the retention clock."
+   */
+  status?: UserStatus
+
   attributes: Record<string, string[]>
   groups: readonly string[]
 
@@ -136,6 +210,35 @@ export interface DesiredUser {
    * semantics already self-clear) and ignore this field entirely.
    */
   managedAttributeRemoteNames?: readonly string[]
+}
+
+/**
+ * Thrown by `DirectoryConnector.apply` when this connector has NOTHING to
+ * represent for this principal — not a failure, and not something to retry.
+ *
+ * `apply()` returns `{ externalId: string }` with no null case, and
+ * `external_identities.external_id` is `NOT NULL`, so there is otherwise
+ * nowhere to express "did nothing, correlate nothing". `SyncWorker.
+ * reconcileUser` catches this, skips the correlation upsert, and lets the
+ * event complete normally.
+ *
+ * Deliberately NOT modelled as widening `apply()`'s return to `| null`: that
+ * would force every connector to acknowledge a case exactly one of them has,
+ * against the "do not casually widen a settled interface" discipline
+ * `DirectoryConnector`'s own doc comment records. And deliberately NOT
+ * modelled as a check hoisted up into `SyncWorker`: eligibility is a
+ * property of a TARGET, decided at apply time. Deciding it at EMISSION time
+ * instead is a correctness bug — a user who becomes ineligible would then
+ * emit no event at all, and their downstream account would live forever.
+ */
+export class NotApplicableError extends Error {
+  constructor(
+    readonly target: ConnectorTarget,
+    readonly reason: string,
+  ) {
+    super(`${target}: nothing to apply for this principal — ${reason}`)
+    this.name = 'NotApplicableError'
+  }
 }
 
 export type ConnectorOperationKind = 'create' | 'update' | 'disable'

@@ -9,6 +9,7 @@
     "start:e2e": "node --require @swc-node/register --env-file-if-exists=../../.env src/main.ts",
     "test": "vitest run",
     "smoke:dev": "tsx --env-file-if-exists=../../.env scripts/smoke-dev.ts",
+    "smoke:mail": "tsx --env-file-if-exists=../../.env scripts/smoke-mail.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx --env-file-if-exists=../../.env src/db/migrate-cli.ts",
     "bootstrap:admin": "tsx --env-file-if-exists=../../.env src/admin/bootstrap-admin-cli.ts",

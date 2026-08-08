@@ -9,6 +9,7 @@ import { EchoConnector } from './echo.connector'
 import { EntraIdConnector } from './entra-id.connector'
 import { GoogleWorkspaceConnector } from './google-workspace.connector'
 import { KeycloakConnector } from './keycloak.connector'
+import { MailServerConnector } from './mail-server.connector'
 
 /** Builds a connector instance already bound to ITS target's current `connector_targets.config` (see `ConnectorRegistry.resolve`). */
 type ConnectorFactory = (config: Record<string, unknown>) => DirectoryConnector
@@ -30,7 +31,17 @@ type GroupConnectorFactory = (config: Record<string, unknown>) => DirectoryGroup
 // to `google_workspace` — the last of the three real vendor targets this
 // sub-project set out to build (design doc build order M11-M13), and proof
 // this shape holds regardless of how many real targets accumulate.
-type ImplementedConnectorTarget = 'keycloak' | 'echo' | 'active_directory' | 'entra_id' | 'google_workspace'
+// Sub-project 4 widens this a FOURTH time, to `mail_server` — the first
+// target that is not a general-purpose directory backend, and the first that
+// addresses a principal by THIS system's own user id rather than by an id of
+// its own (see `DesiredUser.userId`'s doc comment in connector.ts).
+type ImplementedConnectorTarget =
+  | 'keycloak'
+  | 'echo'
+  | 'active_directory'
+  | 'entra_id'
+  | 'google_workspace'
+  | 'mail_server'
 
 // Milestone 13, Task 8 — the targets with a REAL `DirectoryGroupConnector`
 // implementation today: `active_directory` (Milestone 11, Task 6) and
@@ -129,6 +140,15 @@ export class ConnectorRegistry {
     @Optional()
     @Inject(GoogleWorkspaceConnector)
     private readonly googleWorkspaceConnector: GoogleWorkspaceConnector = new GoogleWorkspaceConnector(),
+    // Sub-project 4 — the SAME `@Optional()`-with-JS-default shape as
+    // `googleWorkspaceConnector` immediately above, for the identical
+    // reason: a raw `new ConnectorRegistry(keycloak)` (every earlier test in
+    // this file) keeps compiling and working via the TS default, while real
+    // Nest DI (app.module.ts) hands every caller the ONE registered instance
+    // instead.
+    @Optional()
+    @Inject(MailServerConnector)
+    private readonly mailServerConnector: MailServerConnector = new MailServerConnector(),
   ) {
     // Keycloak's OWN config source is unchanged by this task (still the
     // env-sourced KEYCLOAK_ADMIN_CONFIG token — see keycloak.connector.ts's
@@ -176,6 +196,7 @@ export class ConnectorRegistry {
         // freshly-bound config on every actual use, the identical pattern
         // `EntraIdConnector.getToken` already establishes.
         google_workspace: (config: Record<string, unknown>) => this.googleWorkspaceConnector.configure(config),
+        mail_server: (config: Record<string, unknown>) => this.mailServerConnector.configure(config),
       } satisfies Record<ImplementedConnectorTarget, ConnectorFactory>,
     )
 

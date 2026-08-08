@@ -8,14 +8,19 @@ import * as schema from '../db/schema/index'
 import type { DbHandle } from '../outbox/outbox.writer'
 import type { ConnectorTarget } from './connector'
 
-/** Every target this console shows, in a fixed, deliberate order — the same "static reference catalog" shape `ALL_ROLE_KEYS` (authz/actions.ts) already establishes for a small, closed set that is not itself a database table. Keycloak is included: Milestone 10, Task 2 made it a genuine `DirectoryConnector` citizen with its own `connector_targets` row, so it is configurable and inspectable through this same console, not a special case. */
-export const ALL_CONNECTOR_TARGETS: readonly ConnectorTarget[] = [
-  'keycloak',
-  'active_directory',
-  'entra_id',
-  'google_workspace',
-  'echo',
-]
+/**
+ * Every target this console shows, in a fixed, deliberate order. Keycloak is
+ * included: Milestone 10, Task 2 made it a genuine `DirectoryConnector`
+ * citizen with its own `connector_targets` row, so it is configurable and
+ * inspectable through this same console, not a special case.
+ *
+ * RE-EXPORT, not a second list. This was its own hand-copied literal array
+ * and drifted from `ConnectorTarget` the moment `mail_server` was added,
+ * hiding a live target from the console entirely — see `ALL_CONNECTOR_TARGETS`'
+ * own doc comment in connectors/connector.ts for the full finding. The name
+ * is kept so existing importers are unaffected.
+ */
+export { ALL_CONNECTOR_TARGETS } from './connector'
 
 export interface ConnectorTargetRow {
   target: ConnectorTarget
