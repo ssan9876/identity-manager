@@ -156,7 +156,7 @@ echo
 echo "  1. Configure your Keycloak (creates realm + clients, prints a secret):"
 echo "       cd $INSTALL_DIR && KEYCLOAK_URL=https://<your-keycloak> \\"
 echo "         KC_ADMIN_USER=admin KC_ADMIN_PASS=... \\"
-echo "         CONSOLE_URL=${IDM_SCHEME:-http}://$IDM_HOSTNAME \\"
+echo "         CONSOLE_URL=${IDM_SCHEME:-https}://$IDM_HOSTNAME \\"
 echo "         bash scripts/keycloak-setup.sh"
 echo
 echo "  2. Put the printed secret into KEYCLOAK_ADMIN_CLIENT_SECRET in $INSTALL_DIR/.env"
@@ -164,4 +164,5 @@ echo "  3. systemctl start idm-api"
 echo "  4. Grant yourself access (without this every request is 403):"
 echo "       cd $INSTALL_DIR && sudo -u idm bash -c 'set -a && . .env && set +a && pnpm bootstrap:admin <your-keycloak-username>'"
 echo
-echo "Point $IDM_HOSTNAME at ${CT_IP:-the container} in DNS or /etc/hosts, then open it."
+echo "Point $IDM_HOSTNAME at ${CT_IP:-the container} in DNS or /etc/hosts, then open"
+echo "  ${IDM_SCHEME:-https}://$IDM_HOSTNAME — a self-signed certificate will warn once."
