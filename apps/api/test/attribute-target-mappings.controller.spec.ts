@@ -80,7 +80,10 @@ describe('AttributeTargetMappingsController (Milestone 14, Task 9)', () => {
   const usersRepo = () => new UsersRepository(ctx.db)
   const rolesRepo = () => new RoleAssignmentsRepository(ctx.db)
 
-  async function makeActiveUser(roleKey?: RoleKey): Promise<User> {
+  // `scopeOrgUnitId` was previously hardcoded `null` with no parameter, so
+  // this helper could not construct a SCOPED actor at all — the coverage had
+  // the same shape as the bug it needed to catch.
+  async function makeActiveUser(roleKey?: RoleKey, scopeOrgUnitId: string | null = null): Promise<User> {
     const tag = nextTag()
     const created = await usersRepo().create({
       primaryEmail: `${tag}@example.com`,
@@ -91,7 +94,7 @@ describe('AttributeTargetMappingsController (Milestone 14, Task 9)', () => {
     })
     const active = await usersRepo().changeStatus(created.id, 'active')
     if (roleKey !== undefined) {
-      await rolesRepo().assign({ userId: active.id, roleKey, scopeOrgUnitId: null })
+      await rolesRepo().assign({ userId: active.id, roleKey, scopeOrgUnitId })
     }
     return active
   }
@@ -129,6 +132,42 @@ describe('AttributeTargetMappingsController (Milestone 14, Task 9)', () => {
       .post('/attribute-target-mappings')
       .send({ attributeDefinitionId: def.id, target: 'echo', remoteName: 'x' })
       .expect(403)
+  })
+
+  // Security audit finding, the same one `ConnectorTargetsController` carried:
+  // these rows are GLOBAL (no orgUnitId), and creating one is the single write
+  // that turns default-deny propagation ON for a (field, target) pair — for
+  // EVERY user in the directory, not the actor's subtree. `@RequirePermission`
+  // alone is satisfied by holding `connector:manage` anywhere, so a
+  // departmentally-scoped super_admin could open that gate organisation-wide.
+  it('rejects POST for a SCOPED super_admin — opening a propagation gate needs a global grant', async () => {
+    const actor = await makeActiveUser('super_admin', orgUnitId)
+    currentUsername = actor.username
+    const def = await makeAttributeDefinition()
+    const res = await request(app.getHttpServer())
+      .post('/attribute-target-mappings')
+      .send({ attributeDefinitionId: def.id, target: 'echo', remoteName: 'x' })
+      .expect(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  it('rejects DELETE for a SCOPED super_admin — closing one is equally directory-wide', async () => {
+    const actor = await makeActiveUser('super_admin', orgUnitId)
+    currentUsername = actor.username
+    const res = await request(app.getHttpServer())
+      .delete('/attribute-target-mappings/00000000-0000-4000-8000-000000000001')
+      .expect(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  it('does NOT block a GLOBAL super_admin at the scope gate', async () => {
+    const actor = await makeActiveUser('super_admin')
+    currentUsername = actor.username
+    const def = await makeAttributeDefinition()
+    const res = await request(app.getHttpServer())
+      .post('/attribute-target-mappings')
+      .send({ attributeDefinitionId: def.id, target: 'echo', remoteName: 'x' })
+    expect(res.status).not.toBe(403)
   })
 
   // =========================================================================

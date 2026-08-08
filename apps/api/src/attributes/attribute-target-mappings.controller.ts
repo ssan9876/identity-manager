@@ -8,6 +8,8 @@ import { PermissionGuard, type AuthorizedRequest } from '../authz/permission.gua
 import { RequirePermission } from '../authz/require-permission.decorator'
 import { DB_CLIENT } from '../common/db.token'
 import { NotFoundError } from '../common/errors'
+import { PermissionEngine } from '../authz/permission.engine'
+import { ForbiddenError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
 import { noNulChar } from '../common/http/safe-string'
@@ -73,15 +75,44 @@ function snapshotMapping(row: MappingRecord): Record<string, unknown> {
  * that field structurally cannot reach that target (db/schema/attribute-
  * target-mappings.ts's own doc comment).
  *
- * Global, unscoped, like `ConnectorTargetsController` — a mapping row is
- * organisation-wide configuration, not a per-org-unit resource, so there is
- * no scope check beyond the route-level `@RequirePermission`.
+ * Global — a mapping row is organisation-wide configuration, not a
+ * per-org-unit resource. Because there is therefore no containing scope to
+ * narrow a request TO, every MUTATING route additionally requires a GLOBAL
+ * grant of `connector:manage`; see `requireGlobalManageGrant` below. This
+ * paragraph previously said there was "no scope check beyond the route-level
+ * `@RequirePermission`", citing `ConnectorTargetsController` — which carried
+ * the identical security-audit finding, and has been fixed the same way.
  */
 @Controller('attribute-target-mappings')
 @UseGuards(JwtGuard, PermissionGuard)
 export class AttributeTargetMappingsController {
+  /**
+   * Mutating a mapping row requires a GLOBAL grant, never merely a grant of
+   * `connector:manage` at SOME scope — `PermissionGuard` satisfies
+   * `@RequirePermission` with `assertCanAnywhere`, and these rows have no
+   * `orgUnitId` to narrow against.
+   *
+   * Creating one is the single write that turns default-deny propagation ON
+   * for a (field, target) pair, for EVERY user in the directory. Without this
+   * check a super_admin scoped to one org unit — who gets 403 merely reading
+   * a user outside it — could start propagating a sensitive field
+   * organisation-wide, or DELETE a mapping another org depends on. Same
+   * `scopePathsFor(actor, action) === null` idiom as
+   * `OrgUnitsController.create` and `GroupsController`.
+   */
+  private async requireGlobalManageGrant(request: AuthorizedRequest): Promise<void> {
+    const scopePaths = await this.engine.scopePathsFor(request.actor, 'connector:manage')
+    if (scopePaths !== null) {
+      throw new ForbiddenError(
+        'managing attribute target mappings requires a global grant of connector:manage — ' +
+          'a mapping governs propagation for every principal in the directory, not one org unit',
+      )
+    }
+  }
+
   constructor(
     @Inject(AttributeTargetMappingsRepository) private readonly mappings: AttributeTargetMappingsRepository,
+    @Inject(PermissionEngine) private readonly engine: PermissionEngine,
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
   ) {}
@@ -103,6 +134,7 @@ export class AttributeTargetMappingsController {
   @Post()
   @RequirePermission('connector:manage')
   async create(@Body() body: unknown, @Req() request: AuthorizedRequest): Promise<MappingRecord> {
+    await this.requireGlobalManageGrant(request)
     const parsed = parseBody(createMappingBodySchema, body)
 
     return this.db.transaction(async (tx) => {
@@ -140,6 +172,7 @@ export class AttributeTargetMappingsController {
     @Body() body: unknown,
     @Req() request: AuthorizedRequest,
   ): Promise<MappingRecord> {
+    await this.requireGlobalManageGrant(request)
     const id = parseId(rawId)
     const parsed = parseBody(updateMappingBodySchema, body)
 
@@ -172,6 +205,7 @@ export class AttributeTargetMappingsController {
   @Delete(':id')
   @RequirePermission('connector:manage')
   async remove(@Param('id') rawId: string, @Req() request: AuthorizedRequest): Promise<{ deleted: true }> {
+    await this.requireGlobalManageGrant(request)
     const id = parseId(rawId)
 
     await this.db.transaction(async (tx) => {

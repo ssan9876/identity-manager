@@ -6,7 +6,8 @@ import { AuditWriter } from '../audit/audit.writer'
 import { PermissionGuard, type AuthorizedRequest } from '../authz/permission.guard'
 import { RequirePermission } from '../authz/require-permission.decorator'
 import { DB_CLIENT } from '../common/db.token'
-import { ValidationError } from '../common/errors'
+import { PermissionEngine } from '../authz/permission.engine'
+import { ForbiddenError, ValidationError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
 import * as schema from '../db/schema/index'
 import {
@@ -90,11 +91,15 @@ function snapshotTarget(row: ConnectorTargetRow): Record<string, unknown> {
  * Milestone 14, Task 9 — the connector admin console's API surface for
  * target configuration and health. Everything here is global,
  * organisation-wide infrastructure (`connector_targets` has no `orgUnitId`
- * column, unlike every scoped resource this app otherwise manages), so —
- * like `RoleAssignmentsController`'s own posture for an equally global
- * concern — there is no per-resource scope check beyond the route-level
- * `@RequirePermission`; holding `connector:read`/`connector:manage` at all
- * is the whole authorization question.
+ * column, unlike every scoped resource this app otherwise manages).
+ *
+ * Because there is no containing scope to narrow a request TO, every
+ * MUTATING route additionally requires a GLOBAL grant — see
+ * `requireGlobalManageGrant` below, and the security-audit finding it
+ * records. This paragraph previously claimed the opposite ("holding
+ * `connector:read`/`connector:manage` at all is the whole authorization
+ * question," citing `RoleAssignmentsController`); that was the bug, and the
+ * cited precedent did not actually say what it was claimed to say.
  *
  * SECRET DISCIPLINE (decision 4): `config` is returned to the caller
  * VERBATIM, never redacted — because nothing in this codebase ever writes a
@@ -111,8 +116,52 @@ function snapshotTarget(row: ConnectorTargetRow): Record<string, unknown> {
 @Controller('connector-targets')
 @UseGuards(JwtGuard, PermissionGuard)
 export class ConnectorTargetsController {
+  /**
+   * Every `connector:manage` route requires a GLOBAL grant, never merely a
+   * grant of the action at SOME scope.
+   *
+   * Security audit finding. `PermissionGuard` satisfies `@RequirePermission`
+   * with `assertCanAnywhere` — "does this actor hold it ANYWHERE at all?" —
+   * and `connector_targets` has no `orgUnitId`, so there is no containing
+   * scope to narrow a request TO. That combination meant an org-unit-scoped
+   * `super_admin` (a legitimate, supported configuration:
+   * `role_assignments.scope_org_unit_id` is nullable, and
+   * `PrivilegeGuards.assertCanAssignRole` explicitly supports scoped
+   * `super_admin` grants) held the SAME authority over global connector
+   * infrastructure as a global one. Concretely, an admin scoped to Sales —
+   * who gets 403 merely READING a user outside Sales — could rewrite any
+   * target's config and then `POST /reconcile`, which walks the whole
+   * directory (`TargetReconciliationJob` pages with `scopePaths: null`) and
+   * pushes every user in the organisation to that target. They could equally
+   * disable `keycloak` and stop credential sync org-wide.
+   *
+   * The fix is the OTHER half of an idiom this codebase already had for
+   * resources with no containing org unit — `OrgUnitsController.create` for
+   * a root org unit, `GroupsController.requireGroup` for a global group,
+   * both `scopePathsFor(actor, action) === null`. This controller was written
+   * citing `RoleAssignmentsController` as precedent for "holding the action
+   * at all is the whole authorization question," but that analogy was already
+   * false when it was written: that controller runs `assertCanIn` on every
+   * mutating path.
+   *
+   * READ routes are deliberately left alone. `connector:read` exposes
+   * non-secret config and a health status; reading it from a narrower scope
+   * is not the escalation, mutating global infrastructure is.
+   */
+  private async requireGlobalManageGrant(request: AuthorizedRequest): Promise<void> {
+    const scopePaths = await this.engine.scopePathsFor(request.actor, 'connector:manage')
+    if (scopePaths !== null) {
+      throw new ForbiddenError(
+        'managing connector targets requires a global grant of connector:manage — ' +
+          'connector configuration is organisation-wide infrastructure, and reconciling a ' +
+          'target pushes every principal in the directory',
+      )
+    }
+  }
+
   constructor(
     @Inject(ConnectorTargetsRepository) private readonly targets: ConnectorTargetsRepository,
+    @Inject(PermissionEngine) private readonly engine: PermissionEngine,
     @Inject(ConnectorRegistry) private readonly registry: ConnectorRegistry,
     @Inject(TargetReconciliationJob) private readonly reconciliationJob: TargetReconciliationJob,
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
@@ -144,6 +193,7 @@ export class ConnectorTargetsController {
     @Body() body: unknown,
     @Req() request: AuthorizedRequest,
   ): Promise<ConnectorTargetSummary> {
+    await this.requireGlobalManageGrant(request)
     const target = parseTargetParam(rawTarget)
     const parsed = parseBody(patchTargetBodySchema, body)
     const patch = {
@@ -191,6 +241,7 @@ export class ConnectorTargetsController {
     @Body() body: unknown,
     @Req() request: AuthorizedRequest,
   ): Promise<TargetReconciliationReport> {
+    await this.requireGlobalManageGrant(request)
     const target = parseTargetParam(rawTarget)
     const parsed = parseBody(reconcileBodySchema, body)
 
