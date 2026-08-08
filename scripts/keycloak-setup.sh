@@ -55,9 +55,23 @@ CONSOLE_URL="${CONSOLE_URL%/}"
 command -v jq >/dev/null || { info "installing jq"; apt-get update -qq && apt-get install -y -qq jq >/dev/null; }
 command -v curl >/dev/null || die "curl is required"
 
+# TLS verification is ON by default and must stay that way: this script sends
+# an admin password and receives a client secret, so a MITM here hands over
+# control of the realm. `KC_INSECURE_TLS=1` exists only for a lab Keycloak
+# behind a self-signed certificate, and says so loudly every run rather than
+# being a quiet flag someone forgets is set.
+CURL_TLS=()
+if [[ "${KC_INSECURE_TLS:-0}" == "1" ]]; then
+  CURL_TLS=(-k)
+  warn "KC_INSECURE_TLS=1 — TLS certificate verification is DISABLED."
+  warn "  Acceptable against a lab Keycloak with a self-signed certificate."
+  warn "  Never use this against one that matters: an admin password goes out"
+  warn "  over this connection and a client secret comes back."
+fi
+
 # --- Admin token ------------------------------------------------------------
 info "authenticating to $KEYCLOAK_URL"
-TOKEN="$(curl -fsS -X POST "$KEYCLOAK_URL/realms/master/protocol/openid-connect/token" \
+TOKEN="$(curl "${CURL_TLS[@]}" -fsS -X POST "$KEYCLOAK_URL/realms/master/protocol/openid-connect/token" \
   -d grant_type=password -d client_id=admin-cli \
   --data-urlencode "username=$KC_ADMIN_USER" \
   --data-urlencode "password=$KC_ADMIN_PASS" | jq -r .access_token)"
@@ -67,13 +81,13 @@ ok "authenticated"
 api() { # api <METHOD> <PATH> [body]
   local method="$1" path="$2" body="${3:-}"
   if [[ -n "$body" ]]; then
-    curl -fsS -X "$method" "$KEYCLOAK_URL/admin$path" \
+    curl "${CURL_TLS[@]}" -fsS -X "$method" "$KEYCLOAK_URL/admin$path" \
       -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$body"
   else
-    curl -fsS -X "$method" "$KEYCLOAK_URL/admin$path" -H "Authorization: Bearer $TOKEN"
+    curl "${CURL_TLS[@]}" -fsS -X "$method" "$KEYCLOAK_URL/admin$path" -H "Authorization: Bearer $TOKEN"
   fi
 }
-api_status() { curl -s -o /dev/null -w '%{http_code}' -X "$1" "$KEYCLOAK_URL/admin$2" -H "Authorization: Bearer $TOKEN"; }
+api_status() { curl "${CURL_TLS[@]}" -s -o /dev/null -w '%{http_code}' -X "$1" "$KEYCLOAK_URL/admin$2" -H "Authorization: Bearer $TOKEN"; }
 
 # --- Realm ------------------------------------------------------------------
 if [[ "$(api_status GET "/realms/$REALM")" == "200" ]]; then

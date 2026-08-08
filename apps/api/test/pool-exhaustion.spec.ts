@@ -123,6 +123,14 @@ describe('pool exhaustion (finding C1, docs/superpowers/audit-integrity.md)', ()
   beforeAll(async () => {
     const appClient = createDbClient(ctx.connectionUri, { connectionTimeoutMillis: 3_000 })
     appPool = appClient.pool
+    // This pool outlives some teardown orderings, and a pg.Pool with no
+    // 'error' listener turns the container's shutdown (57P01) into an
+    // UNHANDLED error that fails the whole run with every test green — see
+    // test/support/pg.ts's `swallowShutdownErrors`.
+    appPool.on('error', (error: NodeJS.ErrnoException & { code?: string }) => {
+      if (error?.code === '57P01' || error?.code === 'ECONNRESET' || error?.code === 'EPIPE') return
+      throw error
+    })
     appDb = appClient.db
     checkouts = instrumentPoolCheckouts(appPool)
 

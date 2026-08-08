@@ -56,6 +56,31 @@ export interface TestDatabase {
 }
 
 /**
+ * A `pg.Pool` with no `'error'` listener turns any idle-client error into an
+ * UNHANDLED error. During teardown that is guaranteed to happen: stopping the
+ * container drops every still-open connection, and Postgres reports
+ * `57P01` (admin_shutdown, "terminating connection due to administrator
+ * command") on each one.
+ *
+ * CI failed on exactly that with all 71 test files GREEN — vitest reported
+ * "Unhandled Errors" and failed the run after every test had passed, which is
+ * the most misleading way a suite can fail. It does not reproduce reliably
+ * locally because it depends on teardown ordering between this helper's
+ * module-scope `afterAll` and a spec file's own.
+ *
+ * Only SHUTDOWN-CLASS errors are swallowed. A genuine connection error during
+ * a test still surfaces, because hiding those would defeat the point of
+ * running against a real Postgres at all.
+ */
+function swallowShutdownErrors(pool: Pool): void {
+  pool.on('error', (error: NodeJS.ErrnoException & { code?: string }) => {
+    const code = error?.code
+    if (code === '57P01' || code === 'ECONNRESET' || code === 'EPIPE') return
+    throw error
+  })
+}
+
+/**
  * Starts a throwaway Postgres container for the current test file and
  * applies all migrations — including, as of finding H1, provisioning the
  * RUNTIME role and its grants exactly like a real `db:migrate` run does
@@ -81,6 +106,7 @@ export function withTestDatabase(): TestDatabase {
 
     ctx.ownerConnectionUri = container.getConnectionUri()
     ctx.ownerPool = new Pool({ connectionString: ctx.ownerConnectionUri })
+    swallowShutdownErrors(ctx.ownerPool)
     ctx.ownerDb = drizzle(ctx.ownerPool, { schema })
 
     ctx.runMigrationsAgain = () => runMigrations(ctx.ownerPool, TEST_RUNTIME_ROLE)
@@ -88,6 +114,7 @@ export function withTestDatabase(): TestDatabase {
 
     ctx.connectionUri = withCredentials(ctx.ownerConnectionUri, TEST_RUNTIME_ROLE)
     ctx.pool = new Pool({ connectionString: ctx.connectionUri })
+    swallowShutdownErrors(ctx.pool)
     ctx.db = drizzle(ctx.pool, { schema })
   })
 
