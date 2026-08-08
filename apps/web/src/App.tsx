@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useAuth } from 'react-oidc-context'
 import { Route, Routes } from 'react-router-dom'
 import AuditPage from './audit/AuditPage'
@@ -16,6 +17,7 @@ import OrgUnitsPage from './org-units/OrgUnitsPage'
 import RolesCatalogPage from './roles/RolesCatalogPage'
 import SelfServicePage from './self-service/SelfServicePage'
 import AppShell from './shell/AppShell'
+import { keycloakIssuer } from './auth/oidc-config'
 import { ToastProvider } from './shell/ToastProvider'
 import './SignInGate.css'
 
@@ -74,6 +76,32 @@ import './SignInGate.css'
  */
 export default function App() {
   const auth = useAuth()
+  const [signInError, setSignInError] = useState<string | null>(null)
+
+  /**
+   * `signinRedirect()` REJECTS rather than throwing synchronously, and the
+   * original handler was `() => void auth.signinRedirect()` — `void`
+   * discards the rejection, so every failure was silent: no console error,
+   * no UI, no navigation. The button simply did nothing, which is the least
+   * diagnosable failure a login screen can have. Observed for real against
+   * a self-hosted Keycloak whose certificate the browser did not trust.
+   *
+   * The rejection is nearly always about REACHING the issuer, not about the
+   * user: oidc-client-ts fetches `.well-known/openid-configuration` from the
+   * authority before it can build the authorize URL, so an untrusted
+   * certificate, a down IdP, or a wrong issuer all surface right here — and
+   * a browser reports all three as an opaque "Failed to fetch". Hence the
+   * message names the issuer and points at the check that resolves the
+   * common case, instead of only echoing a string that explains nothing.
+   */
+  async function startSignIn(): Promise<void> {
+    setSignInError(null)
+    try {
+      await auth.signinRedirect()
+    } catch (error) {
+      setSignInError(error instanceof Error ? error.message : String(error))
+    }
+  }
 
   if (auth.isLoading) {
     return (
@@ -89,9 +117,21 @@ export default function App() {
         <div className="signin-gate__panel">
           <h1 className="text-title">Identity Manager</h1>
           <p className="signin-gate__hint">Sign in with your organisation account to continue.</p>
-          <button type="button" className="btn btn--primary" onClick={() => void auth.signinRedirect()}>
+          <button type="button" className="btn btn--primary" onClick={() => void startSignIn()}>
             Sign in
           </button>
+          {signInError !== null && (
+            <div className="signin-gate__error" role="alert">
+              <p>
+                Could not reach the sign-in service at <code>{keycloakIssuer}</code>.
+              </p>
+              <p>
+                If it uses a self-signed certificate, open that address in this browser
+                once and accept the certificate, then try again.
+              </p>
+              <p className="signin-gate__error-detail">{signInError}</p>
+            </div>
+          )}
         </div>
       </main>
     )
