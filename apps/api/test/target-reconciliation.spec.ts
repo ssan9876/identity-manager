@@ -266,6 +266,7 @@ describe('TargetReconciliationJob (Milestone 10, Task 4)', () => {
         (call) => call.method === 'apply' && call.desired?.username === user.username,
       )
       expect(applyCall?.desired).toEqual({
+        userId: user.id,
         username: user.username,
         email: user.primaryEmail,
         firstName: user.firstName,
