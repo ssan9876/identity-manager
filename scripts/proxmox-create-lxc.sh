@@ -43,7 +43,10 @@ TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
 BRIDGE="${BRIDGE:-vmbr0}"
 NET_IP="${NET_IP:-dhcp}"
 REPO_URL="${REPO_URL:-https://github.com/ssan9876/identity-manager.git}"
-REPO_BRANCH="${REPO_BRANCH:-main}"
+# EMPTY means "whatever the remote's default branch is" — do not hardcode a
+# name. This defaulted to `main` and the repository uses `master`, so the very
+# first real run died at the clone with a message blaming authentication.
+REPO_BRANCH="${REPO_BRANCH:-}"
 INSTALL_DIR="/opt/identity-manager"
 
 command -v pct >/dev/null || die "pct not found — run this on the Proxmox host"
@@ -90,16 +93,33 @@ pct exec "$CTID" -- getent hosts deb.debian.org >/dev/null 2>&1 \
 
 # --- Clone + install --------------------------------------------------------
 info "installing git"
-pct exec "$CTID" -- bash -lc "DEBIAN_FRONTEND=noninteractive apt-get update -qq && apt-get install -y -qq git >/dev/null"
+# `</dev/null` as well as DEBIAN_FRONTEND: without a closed stdin, apt's
+# dpkg-preconfigure emits "unable to re-open stdin" on every install inside
+# `pct exec`. Harmless, but it is noise in an installer whose output an
+# operator is meant to read for real problems.
+pct exec "$CTID" -- bash -lc "DEBIAN_FRONTEND=noninteractive apt-get update -qq </dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git </dev/null >/dev/null"
 
 CLONE_URL="$REPO_URL"
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then
   CLONE_URL="https://${GITHUB_TOKEN}@${REPO_URL#https://}"
 fi
 
-info "cloning $REPO_URL (branch $REPO_BRANCH)"
-pct exec "$CTID" -- bash -lc "git clone --branch '$REPO_BRANCH' --depth 1 '$CLONE_URL' '$INSTALL_DIR' >/dev/null 2>&1" \
-  || die "clone failed — private repo? pass GITHUB_TOKEN. Wrong branch? pass REPO_BRANCH."
+if [[ -n "$REPO_BRANCH" ]]; then
+  info "cloning $REPO_URL (branch $REPO_BRANCH)"
+  BRANCH_ARG="--branch '$REPO_BRANCH'"
+else
+  info "cloning $REPO_URL (remote default branch)"
+  BRANCH_ARG=""
+fi
+
+# stderr is kept, not sent to /dev/null: the previous version discarded it and
+# then guessed at the cause in its own error message, which sent the first real
+# run chasing a non-existent authentication problem when the branch simply did
+# not exist.
+if ! CLONE_ERR="$(pct exec "$CTID" -- bash -lc "git clone $BRANCH_ARG --depth 1 '$CLONE_URL' '$INSTALL_DIR' 2>&1 >/dev/null")"; then
+  echo "$CLONE_ERR" >&2
+  die "clone failed (git's own error is above). Private repo? pass GITHUB_TOKEN. Branch missing? pass REPO_BRANCH."
+fi
 # Never leave a token embedded in the checkout's remote.
 pct exec "$CTID" -- bash -lc "cd '$INSTALL_DIR' && git remote set-url origin '$REPO_URL'"
 ok "cloned to $INSTALL_DIR"

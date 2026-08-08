@@ -100,16 +100,58 @@ jobs:
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @idm/web exec playwright install chromium
 
-      # Starts Postgres + Keycloak, waits for both to actually be ready
-      # (Keycloak takes 20-40s cold), seeds .env from .env.example at both
-      # the repo root and apps/web, and runs db:migrate — the same script a
-      # human runs on a fresh clone (README.md's Quickstart, step 1). Its own
-      # internal `pnpm install` re-confirms the frozen install above changed
-      # nothing; it does not run with --frozen-lockfile itself, but nothing
-      # upstream of it touched package.json or the lockfile, so it is a fast
-      # no-op here.
-      - name: Start the compose stack and migrate (pnpm setup:all)
-        run: pnpm setup:all
+      # Deliberately NOT `pnpm setup:all`.
+      #
+      # That script is a developer-convenience wrapper for a fresh clone: it
+      # runs preflight checks, seeds `.env` from `.env.example`, and re-runs
+      # `pnpm install`. CI needs none of that — it configures itself through
+      # the `env:` block above, and installed dependencies two steps ago.
+      #
+      # It was also the thing breaking every run: setup.mjs exited during its
+      # Keycloak readiness poll with neither a result nor an error, 55ms into
+      # a wait whose own timeout is 120 SECONDS — so this was never Keycloak
+      # being slow, and raising a timeout would not have touched it. The
+      # readiness poll below uses curl in a plain bash loop instead: fewer
+      # moving parts, and when it fails it says so and dumps the container
+      # logs rather than vanishing.
+      #
+      # setup.mjs keeps its own guard so a human gets a loud failure too, but
+      # CI should not depend on a convenience script's internals either way.
+      - name: Start Postgres + Keycloak
+        run: docker compose up -d
+
+      - name: Wait for Postgres and Keycloak to be ready
+        run: |
+          set -euo pipefail
+
+          echo "waiting for Postgres ..."
+          for i in $(seq 1 60); do
+            if docker compose exec -T postgres pg_isready -U idm >/dev/null 2>&1; then
+              echo "Postgres is ready."; break
+            fi
+            [ "$i" -eq 60 ] && { echo "::error::Postgres never became ready"; docker compose logs postgres; exit 1; }
+            sleep 2
+          done
+
+          # Keycloak is cold-starting a realm import here, so this is the slow
+          # one. 120 attempts x 2s = 4 minutes, well beyond the 20-40s it
+          # normally takes, because a CI runner under load is not a laptop.
+          echo "waiting for Keycloak realm discovery ..."
+          URL=http://localhost:8080/realms/identity-manager/.well-known/openid-configuration
+          for i in $(seq 1 120); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$URL" || echo 000)
+            if [ "$code" = "200" ]; then echo "Keycloak is ready."; break; fi
+            if [ "$i" -eq 120 ]; then
+              echo "::error::Keycloak never answered realm discovery (last HTTP $code)"
+              docker compose logs keycloak | tail -80
+              exit 1
+            fi
+            [ $((i % 15)) -eq 0 ] && echo "  ... still waiting (HTTP $code, attempt $i/120)"
+            sleep 2
+          done
+
+      - name: Apply migrations and provision the runtime role
+        run: pnpm --filter @idm/api db:migrate
 
       # Without this, every E2E request 403s: a fresh database has no local
       # `users` row and no role grant for the seeded Keycloak dev user, and
