@@ -32,6 +32,34 @@ jobs:
     name: Verify + E2E
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    # Configuration is EXPLICIT here rather than inherited from a `.env` that
+    # `setup:all` copies as a side effect.
+    #
+    # Relying on that copy is what broke this workflow the first time it ever
+    # ran for real: `setup:all` exited early during the Keycloak wait — before
+    # the step that writes `.env` — yet reported success, so `bootstrap:admin`
+    # failed with six "Required" errors that pointed nowhere near the cause.
+    # `setup.mjs` can no longer exit silently, but CI should not depend on a
+    # file appearing as a side effect of another command in the first place.
+    #
+    # These are the DEVELOPMENT values from `.env.example`, matching the
+    # throwaway Compose stack this job starts. Nothing here is a secret: the
+    # stack is created and destroyed inside this runner, and the same values
+    # are committed in `.env.example` and in the dev realm import.
+    env:
+      DATABASE_URL: postgres://idm:idm_dev_password@localhost:5432/identity_manager
+      RUNTIME_DATABASE_URL: postgres://idm_app:idm_app_dev_password@localhost:5432/identity_manager
+      KEYCLOAK_ISSUER: http://localhost:8080/realms/identity-manager
+      KEYCLOAK_AUDIENCE: idm-api
+      KEYCLOAK_ADMIN_CLIENT_ID: idm-sync-service
+      KEYCLOAK_ADMIN_CLIENT_SECRET: idm_sync_dev_secret_change_me
+      PORT: '3000'
+      SYNC_WORKER_ENABLED: 'true'
+      DB_POOL_MAX: '10'
+      # Connector secrets must be named CONNECTOR_* — see connectors/secrets.ts.
+      CONNECTOR_ECHO_CREDENTIAL: dev_echo_secret_change_me
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4

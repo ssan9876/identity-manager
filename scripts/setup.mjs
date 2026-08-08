@@ -399,7 +399,45 @@ async function main() {
   console.log('')
 }
 
-main().catch((error) => {
-  console.error(`\n[setup] FAILED: ${error instanceof Error ? error.message : String(error)}\n`)
-  process.exitCode = 1
+// A setup that did not finish must never look like one that did.
+//
+// CI caught this the hard way: the process exited during the Keycloak wait
+// with `main()` neither resolved nor rejected — so the `.catch` below never
+// ran, nothing was printed, and the shell saw exit code 0. `.env` had not
+// been written yet (it is seeded AFTER that wait), so every later step ran
+// against a half-configured checkout and `bootstrap:admin` failed with six
+// "Required" errors that pointed nowhere near the actual cause.
+//
+// `completed` plus an `exit` hook is what makes the silent case loud: any
+// path that ends the process before `main()` returns is now a failure,
+// whatever killed it and whether or not it bothered to throw.
+let completed = false
+
+process.on('exit', (code) => {
+  if (!completed && code === 0) {
+    console.error(
+      '\n[setup] FAILED: setup exited before completing, without reporting an error.\n' +
+        '        Nothing after the last line above ran — in particular `.env` may not\n' +
+        '        exist yet. Re-run `pnpm setup:all`.\n',
+    )
+    process.exitCode = 1
+  }
 })
+
+// An unhandled rejection or a synchronous throw off the main path would
+// otherwise be reported by Node with a stack trace and, depending on version
+// and timing, an exit code that does not reflect the failure.
+process.on('unhandledRejection', (reason) => {
+  console.error(`\n[setup] FAILED: unhandled rejection: ${reason instanceof Error ? reason.message : String(reason)}\n`)
+  process.exit(1)
+})
+
+main()
+  .then(() => {
+    completed = true
+  })
+  .catch((error) => {
+    completed = true // it reported its own failure; do not double-report
+    console.error(`\n[setup] FAILED: ${error instanceof Error ? error.message : String(error)}\n`)
+    process.exit(1)
+  })
