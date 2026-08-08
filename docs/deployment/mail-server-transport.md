@@ -72,46 +72,48 @@ ping -c1 10.8.0.1
 
 Open `51820/udp` on the VPS firewall. Do **not** open any other port for this.
 
-## 2. nginx server block on the VPS
+## 2. nginx listener on the VPS
 
-Add a **second** server block bound to the tunnel address. The public block
+Shipped in the mail-server repo as `docker/nginx/templates/20-provisioning.conf.template`
+plus the `docker-compose.provisioning.yml` overlay. The public server block
 keeps its `location ^~ /api/v1/provisioning { return 404; }` untouched — this
 is a separate listener, not a hole in the first one.
 
-`docker/nginx/templates/20-provisioning.conf.template` in the mail-server repo:
+**nginx listens on a plain port, and Docker restricts the address.** nginx runs
+inside a container on the `internal` bridge, where the host's WireGuard address
+is not an interface at all — binding it in a `listen` directive could never
+work. So the listener is `listen 8081;` and the overlay publishes it bound to
+the tunnel address only:
 
-```nginx
-server {
-    listen ${WIREGUARD_ADDRESS}:80;
-    server_name _;
-
-    limit_req zone=provisioning burst=20 nodelay;
-
-    location /api/v1/provisioning {
-        proxy_pass http://backend:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    location / {
-        return 404;
-    }
-}
+```yaml
+services:
+  nginx:
+    ports:
+      - "${WIREGUARD_ADDRESS}:8081:8081"
 ```
 
-With the zone declared alongside the existing ones at http level:
+Set `WIREGUARD_ADDRESS=10.8.0.1` in the mail server's `.env`, then bring the
+stack up with the overlay:
 
-```nginx
-limit_req_zone $binary_remote_addr zone=provisioning:1m rate=30r/s;
+```bash
+docker compose -f docker-compose.yml -f docker-compose.provisioning.yml up -d
 ```
 
-The rate limit is not decoration — it closes the gap the counterpart's own spec
-flags against itself, now that provisioning is reachable from beyond its
-internal network.
+The overlay is a separate file on purpose: an unset variable inside an inline
+port mapping collapses to `":8081:8081"`, which publishes provisioning on every
+interface **silently**. A stack that never opts in cannot make that mistake.
 
-The nginx container must be able to reach the tunnel address; publish the
-proxy on the host's `10.8.0.1` rather than `0.0.0.0`.
+**Verify the binding, every time** — this is the control the whole arrangement
+rests on:
+
+```bash
+ss -lntp | grep 8081     # must show 10.8.0.1:8081, never 0.0.0.0:8081
+```
+
+The listener also carries `limit_req zone=provisioning`, declared in
+`docker/nginx/nginx.conf`. That is not decoration — it closes the gap the
+counterpart's own spec flags against itself, now that provisioning is reachable
+from beyond its internal network.
 
 ## 3. Issue a service token
 
@@ -141,7 +143,7 @@ INSERT INTO connector_targets (target, enabled, config)
 VALUES (
   'mail_server',
   true,
-  '{"baseUrl":"http://10.8.0.1/api/v1","tokenSecretName":"MAIL_SERVER_SERVICE_TOKEN"}'::jsonb
+  '{"baseUrl":"http://10.8.0.1:8081/api/v1","tokenSecretName":"MAIL_SERVER_SERVICE_TOKEN"}'::jsonb
 );
 ```
 
@@ -166,7 +168,7 @@ Then the contract check — one real round trip, proving what this connector
 builds is what the mail server accepts:
 
 ```bash
-MAIL_SERVER_BASE_URL=http://10.8.0.1/api/v1 \
+MAIL_SERVER_BASE_URL=http://10.8.0.1:8081/api/v1 \
 MAIL_SMOKE_EMAIL=idm-smoke@<a-domain-hosted-there> \
 pnpm --filter @idm/api smoke:mail
 ```
