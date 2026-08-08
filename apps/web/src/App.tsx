@@ -79,20 +79,26 @@ export default function App() {
   const [signInError, setSignInError] = useState<string | null>(null)
 
   /**
-   * `signinRedirect()` REJECTS rather than throwing synchronously, and the
-   * original handler was `() => void auth.signinRedirect()` — `void`
-   * discards the rejection, so every failure was silent: no console error,
-   * no UI, no navigation. The button simply did nothing, which is the least
-   * diagnosable failure a login screen can have. Observed for real against
-   * a self-hosted Keycloak whose certificate the browser did not trust.
+   * The original handler was `() => void auth.signinRedirect()`. `void`
+   * discards the promise, so a failed sign-in produced NOTHING: no console
+   * error, no UI, no navigation. The button just sat there — the least
+   * diagnosable failure a login screen can have, and it cost a full
+   * debugging session against real hardware to find.
    *
-   * The rejection is nearly always about REACHING the issuer, not about the
-   * user: oidc-client-ts fetches `.well-known/openid-configuration` from the
-   * authority before it can build the authorize URL, so an untrusted
-   * certificate, a down IdP, or a wrong issuer all surface right here — and
-   * a browser reports all three as an opaque "Failed to fetch". Hence the
-   * message names the issuer and points at the check that resolves the
-   * common case, instead of only echoing a string that explains nothing.
+   * The failure is nearly always about REACHING the issuer rather than about
+   * the user. oidc-client-ts fetches `.well-known/openid-configuration` from
+   * the authority before it can build the authorize URL, so an untrusted
+   * certificate, a down IdP, and a wrong issuer all surface here — and the
+   * browser reports all three as an opaque "Failed to fetch".
+   *
+   * `auth.error` is what actually carries that failure, and awaiting this
+   * call is NOT enough on its own: react-oidc-context catches internally and
+   * dispatches to its own error state, so `signinRedirect()` settles without
+   * throwing and a `try`/`catch` here never runs. Verified in a browser by
+   * forcing the metadata fetch to reject — the catch below did not fire, no
+   * unhandledrejection was raised, and the screen stayed blank. The catch is
+   * kept only for a synchronous throw before the library's own boundary;
+   * `auth.error` is the path that actually reports the common case.
    */
   async function startSignIn(): Promise<void> {
     setSignInError(null)
@@ -102,6 +108,8 @@ export default function App() {
       setSignInError(error instanceof Error ? error.message : String(error))
     }
   }
+
+  const signInFailure = signInError ?? auth.error?.message ?? null
 
   if (auth.isLoading) {
     return (
@@ -120,7 +128,7 @@ export default function App() {
           <button type="button" className="btn btn--primary" onClick={() => void startSignIn()}>
             Sign in
           </button>
-          {signInError !== null && (
+          {signInFailure !== null && (
             <div className="signin-gate__error" role="alert">
               <p>
                 Could not reach the sign-in service at <code>{keycloakIssuer}</code>.
@@ -129,7 +137,7 @@ export default function App() {
                 If it uses a self-signed certificate, open that address in this browser
                 once and accept the certificate, then try again.
               </p>
-              <p className="signin-gate__error-detail">{signInError}</p>
+              <p className="signin-gate__error-detail">{signInFailure}</p>
             </div>
           )}
         </div>
