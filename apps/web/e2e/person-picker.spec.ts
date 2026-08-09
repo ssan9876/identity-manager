@@ -10,7 +10,7 @@ const API_BASE_URL = 'http://localhost:3000'
 
 // Keycloak's own admin REST API, hit directly — see
 // provisionKeycloakPassword's own doc comment for why. Values match
-// keycloak/realm-import/identity-manager-realm.json and apps/api/.env
+// keycloak/realm-import/identity-manager-realm.dev.json and apps/api/.env
 // exactly: the `idm-sync-service` client this dev realm already grants
 // `manage-users` on `realm-management`, the SAME capability
 // KeycloakAdminClient (apps/api/src/keycloak/keycloak-admin.client.ts) uses
@@ -230,7 +230,7 @@ async function provisionKeycloakPassword(
       // "update password" required-action screen on first login, which
       // would strand signIn() before it ever reaches this app. Matches the
       // seeded admin@example.com fixture's own credential shape exactly
-      // (keycloak/realm-import/identity-manager-realm.json).
+      // (keycloak/realm-import/identity-manager-realm.dev.json).
       body: JSON.stringify({ type: 'password', value: password, temporary: false }),
     },
   )

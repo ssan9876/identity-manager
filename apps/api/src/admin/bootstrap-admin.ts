@@ -61,7 +61,7 @@ export interface BootstrapAdminResult {
 export const DEFAULT_BOOTSTRAP_USERNAME = 'admin@example.com'
 
 // Matches the seeded dev Keycloak user's own profile (see
-// keycloak/realm-import/identity-manager-realm.json's "admin@example.com"
+// keycloak/realm-import/identity-manager-realm.dev.json's "admin@example.com"
 // entry: firstName "Platform", lastName "Admin") when bootstrapping the
 // default user, and is a reasonable, obviously-a-placeholder default for any
 // other username — this script's whole job is to grant ACCESS, not to know

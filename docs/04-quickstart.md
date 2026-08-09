@@ -94,7 +94,7 @@ Starts the API and the console together with clearly labelled, interleaved outpu
 
 ## The development Keycloak realm
 
-`keycloak/realm-import/identity-manager-realm.json` is imported automatically by the
+`keycloak/realm-import/identity-manager-realm.dev.json` is imported automatically by the
 Compose stack. It contains a realm named `identity-manager` with:
 
 | Client | Type | Purpose |
@@ -102,7 +102,7 @@ Compose stack. It contains a realm named `identity-manager` with:
 | `idm-api` | confidential | The **audience**. Nobody logs into it; it exists so access tokens carry an `aud` the API matches against `KEYCLOAK_AUDIENCE`. |
 | `idm-console` | public | Browser SSO for the web UI. |
 | `idm-sync-service` | confidential, service account | What the sync worker authenticates as to write into Keycloak. |
-| `idm-test-client` | public, password grant | Used by the smoke test and E2E suite. |
+| `idm-test-client` | public, password grant — **imported disabled** | Direct grant for `smoke:dev` and the API test suite. Switched on at runtime, not by the import. |
 
 …plus one seeded human user, `admin@example.com` / `dev_password_change_me`.
 
@@ -111,6 +111,14 @@ Compose stack. It contains a realm named `identity-manager` with:
 > `idm_sync_dev_secret_change_me` and a password-grant test client. Use
 > `scripts/keycloak-setup.sh` instead, which builds the same realm through the Admin
 > API with generated secrets and no seeded human user.
+
+The `.dev.json` suffix, the realm's `sslRequired: "external"`, and `idm-test-client`
+shipping `"enabled": false` are all deliberate — finding SEC-L5. `pnpm smoke:dev` and
+the Testcontainers harness enable the test client themselves via the stack's bootstrap
+admin (`apps/api/scripts/dev-test-client.ts`) and the smoke script switches it back off
+when it finishes, so nothing you run leaves a password grant live. Nothing else in the
+dev flow touches it, and `keycloak/realm-import/README.md` explains why it could not
+simply be deleted.
 
 ## Verifying it works
 

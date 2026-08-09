@@ -4,6 +4,7 @@ import { loadEnv } from '../src/config/env'
 import { createDbClient } from '../src/db/client'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { UsersRepository } from '../src/users/users.repository'
+import { setDevTestClientEnabled } from './dev-test-client'
 
 /**
  * Boots the app exactly the way a human does — `pnpm run start:dev` — waits
@@ -32,6 +33,9 @@ import { UsersRepository } from '../src/users/users.repository'
 
 const HEALTH_TIMEOUT_MS = 30_000
 const POLL_INTERVAL_MS = 500
+// Ships DISABLED in keycloak/realm-import/identity-manager-realm.dev.json
+// (finding SEC-L5) and is switched on for the duration of this run by
+// `withDevTestClient` below. See scripts/dev-test-client.ts.
 const KEYCLOAK_CLIENT_ID = 'idm-test-client'
 const KEYCLOAK_USERNAME = 'admin@example.com'
 const KEYCLOAK_PASSWORD = 'dev_password_change_me'
@@ -318,6 +322,64 @@ async function checkAuthenticatedList(
   return items.length
 }
 
+/**
+ * Splits `http://host:8080/realms/identity-manager` into the server root and
+ * the realm name, which is what the Keycloak Admin API is addressed by. The
+ * issuer is the only Keycloak coordinate this script is configured with
+ * (`KEYCLOAK_ISSUER`), so deriving both from it keeps a single source of
+ * truth rather than adding a second env var that could disagree with it.
+ */
+function splitIssuer(issuer: string): { serverRoot: string; realm: string } {
+  const match = /^(.*)\/realms\/([^/]+)\/?$/.exec(issuer)
+  if (!match) {
+    throw new Error(
+      `KEYCLOAK_ISSUER does not look like a Keycloak realm URL: ${issuer} ` +
+        `(expected <base>/realms/<realm>)`,
+    )
+  }
+  return { serverRoot: match[1], realm: match[2] }
+}
+
+/**
+ * Runs `body` with `idm-test-client` enabled, then puts the flag back exactly
+ * as it was found.
+ *
+ * The dev realm import ships that client disabled (finding SEC-L5 —
+ * docs/archive/audits/carried-findings-verification.md, open item 8) so that
+ * the committed fixture is inert if anyone imports it into a real Keycloak.
+ * This script needs it, because its audience mapper is what puts `idm-api`
+ * into the token's `aud` and Keycloak's built-in `admin-cli` has no such
+ * mapper — a token minted through that client is correctly 401'd by the API.
+ *
+ * Unlike the Testcontainers harness (apps/api/test/support/keycloak.ts), which
+ * enables the client and leaves it, this runs against the LONG-LIVED Compose
+ * stack, so it restores the previous value: a smoke run must not quietly leave
+ * a password-grant endpoint switched on in a developer's Keycloak.
+ */
+async function withDevTestClient<T>(issuer: string, body: () => Promise<T>): Promise<T> {
+  const { serverRoot, realm } = splitIssuer(issuer)
+  log(`enabling ${KEYCLOAK_CLIENT_ID} in realm "${realm}" for this run (SEC-L5) ...`)
+  const wasEnabled = await setDevTestClientEnabled(true, { serverRoot, realm })
+
+  try {
+    return await body()
+  } finally {
+    if (!wasEnabled) {
+      log(`restoring ${KEYCLOAK_CLIENT_ID} to disabled`)
+      // Best-effort: a failure here must not mask the real smoke result, but
+      // it must be visible, because the leftover is a live password grant.
+      try {
+        await setDevTestClientEnabled(false, { serverRoot, realm })
+      } catch (error) {
+        console.error(
+          `[smoke:dev] WARNING: could not re-disable ${KEYCLOAK_CLIENT_ID}: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const env = loadEnv(process.env)
   const baseUrl = `http://localhost:${env.port}`
@@ -360,7 +422,9 @@ async function main(): Promise<void> {
       log('health check ok')
 
       log(`minting a token from ${env.keycloakIssuer} (${KEYCLOAK_USERNAME}) ...`)
-      const token = await mintToken(env.keycloakIssuer)
+      const token = await withDevTestClient(env.keycloakIssuer, () =>
+        mintToken(env.keycloakIssuer),
+      )
       log('token minted')
 
       await checkAuthenticatedList(baseUrl, token, '/users')

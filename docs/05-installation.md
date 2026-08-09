@@ -97,11 +97,17 @@ the remaining steps.
 
 ### Do not import the bundled realm file
 
-`keycloak/realm-import/identity-manager-realm.json` is the **development** realm. It
+`keycloak/realm-import/identity-manager-realm.dev.json` is the **development** realm. It
 contains a user `admin@example.com` with the password `dev_password_change_me`,
 `idm-sync-service` with the secret `idm_sync_dev_secret_change_me`, and
-`idm-test-client`, a public client with the password grant enabled. All of it is
-committed to a public repository.
+`idm-test-client`, a public client with the password grant. All of it is committed to a
+public repository.
+
+The file is hardened as far as a committed fixture can be (finding SEC-L5): the realm
+sets `sslRequired: "external"` and `idm-test-client` is imported **disabled**, so an
+accidental import does not by itself yield a live password-grant endpoint for
+`admin@example.com`. Treat that as damage control, not as permission — the seeded user
+and the `idm-sync-service` secret are still real and still public.
 
 Use the script instead. It builds the same realm through the Admin API with a generated
 secret, no seeded human user, and no test client:

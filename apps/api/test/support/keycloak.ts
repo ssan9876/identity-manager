@@ -1,5 +1,6 @@
 import path from 'node:path'
 import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers'
+import { setDevTestClientEnabled } from '../../scripts/dev-test-client'
 
 export interface TokenPair {
   accessToken: string
@@ -96,6 +97,23 @@ export async function startKeycloak(): Promise<TestKeycloak> {
   const port = container.getMappedPort(8080)
   const serverRoot = `http://${host}:${port}`
   const issuer = `${serverRoot}/realms/${REALM}`
+
+  // The realm import ships `idm-test-client` DISABLED (finding SEC-L5 —
+  // docs/archive/audits/carried-findings-verification.md, open item 8), so the
+  // committed fixture cannot become a live password-grant endpoint if anyone
+  // imports it into a real Keycloak. Every direct grant below depends on that
+  // client, so enable it here, on THIS disposable container only, via its own
+  // bootstrap admin. See apps/api/scripts/dev-test-client.ts for why the
+  // client could not simply be deleted or moved to a second import file.
+  //
+  // Deliberately not restored afterwards: the container is destroyed by
+  // `stop()` at the end of the suite, so there is nothing to leak into.
+  await setDevTestClientEnabled(true, {
+    serverRoot,
+    realm: REALM,
+    adminUsername: BOOTSTRAP_ADMIN_USERNAME,
+    adminPassword: BOOTSTRAP_ADMIN_PASSWORD,
+  })
 
   /** Shared by `tokenFor`/`tokenPairFor` — one direct-grant call, both shapes. */
   async function passwordGrant(username: string, password: string): Promise<TokenPair> {
