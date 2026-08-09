@@ -128,7 +128,16 @@ code. Treat that file's "5 of 19 fail" section as history.
       stranded rule survives, because a silently dead rule is a permission
       somebody still believes is being maintained. It can only protect a
       database on the way past, never retroactively.
-- [ ] **Tasks 17–20 — console and end-to-end.**
+- [x] **Tasks 17–20 — console and end-to-end. DONE.** 17–19 (roles list and
+      detail, the simulate/publish gate, the person Entitlements tab) merged as
+      `feat/br-console-17-19`; Task 20's end-to-end journey merged as
+      `feat/br-task20-e2e`. Task 20 found a real product bug: `enable`/`disable`
+      answered with the bare `business_roles` row while the console is typed
+      against the full detail shape, so the detail page threw
+      `Cannot read properties of undefined (reading 'length')` — blank screen,
+      no toast — on the first render after enabling. Both routes now re-read the
+      whole role after their sweep, with a shape-contract regression test.
+      Confirmed fixed by hand in a real browser.
 
 ---
 
@@ -162,10 +171,18 @@ Carry-forward findings, already diagnosed:
       already, and made the index unusable for a plain `WHERE slug = $1`.
 - [ ] Minor: `organizations.schema.spec.ts` imports `sql` unused, and uses a dot
       separator where its sibling uses a hyphen.
-- [ ] **Unverified assumption, settled only by Task 11:** that Keycloak grants a
-      realm's creating service account admin rights on that realm. Decides
-      whether `ensureRealm` needs an explicit `<realm>-realm` role grant.
-
+- [x] **SETTLED by Task 11, and it is subtler than the question asked.** A
+      realm's creator DOES keep admin rights on a realm it created, so
+      `ensureRealm` needs no explicit `<realm>-realm` grant. But the
+      `<realm>-realm` roles are granted AT creation, so the access token used to
+      make the create call PREDATES them: the client that just created a realm is
+      the one client guaranteed to be refused on it — 201, then 403. The 401
+      retry cannot cover this, because the token is valid and merely lacks a role
+      that now exists. Hence `invalidateCachedToken()` on the 201 path; removing
+      that one line turns 7 of 17 tests red. Also measured: `GET
+      /admin/realms/<realm>` answers 200 with a stub representation to a bare
+      `create-realm` holder with no rights in that realm, so it cannot be used as
+      an authorization probe — `users/count` is used instead.
 - [x] **Tasks 3–4 — per-organization uniqueness and composite FKs.** Done.
       Migrations `0028`/`0029`. Three bugs in the plan's own SQL were found and
       fixed: `ON DELETE SET NULL` on the composite manager FK would have nulled
@@ -182,98 +199,28 @@ Carry-forward findings, already diagnosed:
       asserting nothing. It now rewinds to `0027`'s own journal `when`, so the
       whole tail replays. Use `ADD COLUMN IF NOT EXISTS` and `duplicate_object`
       guards, as `0025` and `0029` do.
-- [ ] **Deferred to Task 12: teach `translateWriteError` the composite-FK
-      constraint names.** `GroupsRepository.addUser` now relies on
-      `gum_user_organization_fk` to refuse a cross-tenant membership, which
-      surfaces as a raw 23503 → 500 rather than a translated 4xx. Safe (the
-      write IS refused) and not reachable today, because there is exactly one
-      organization until the organizations API exists. Client responses stay
-      clean (SEC-L7), so nothing leaks. Do it in Task 12, when the journey that
-      makes it reachable is in hand.
+- [x] **Composite-FK constraint names are translated. DONE in Task 12.** New
+      `common/cross-tenant.ts` maps the eight `(…, organization_id)` constraints
+      from `0029` to a 409 naming the relationship. Consulted AFTER each
+      repository's single-column branches, so `manager not found` (404) still
+      beats `manager in another organization` (409).
+- [x] **`KeycloakAdminClientFactory.evict(realm)`. DONE in Task 12.** Drops the
+      memoized client and its live token; called when an organization is
+      suspended. Three unit tests.
+**Tasks 10–16 are now all done.** 10–11 (the `organization` outbox aggregate;
+the realm connector) and 12–16 (the organizations API, organization-aware
+fan-out, realm dispatch and unprovisioned deferral, the console, documentation)
+are merged. Two deviations from the plan, both deliberate: fan-out DERIVES the
+tenant inside `OutboxWriter.record` from the aggregate's own row rather than
+threading `organizationId` through ~24 call sites, so a future call site cannot
+forget it and cannot disagree with the row actually written; and master is
+EXEMPT from the realm deferral, because its realm predates this system so
+`realm_provisioned_at` is null forever and the plan's literal rule would have
+deferred every user in every existing deployment.
 
-- [x] **Tasks 5–7 — Phase 1 complete, and its GATE IS CLOSED.** Migration `0030`.
-      Business-role and JML evaluation are now organization-scoped: the plan's
-      note that "nothing reads business_roles yet" was **stale** — Milestone 17
-      landed a reconciler firing on every user write before this task ran, so
-      unscoped, the first non-master tenant would have had another tenant's
-      formulas evaluated against its people. The database is not sufficient
-      cover either: a cross-tenant *group* grant is refused by the composite FK,
-      but `user_target_accounts` carries no organization at all, so a
-      cross-tenant *target* grant had no guard. `organizationId` is now a
-      required LEADING parameter, so omitting it is a compile error rather than
-      a review miss. `business_roles_name_idx` also became
-      `(organization_id, name)` — a global unique name would let the first
-      tenant to onboard "Engineering Standard Access" deny it to every other,
-      with the 409 doubling as a cross-tenant existence oracle (the SEC-L2
-      pattern in a new place).
-
-      **Gate evidence**, both halves run serially as the plan requires:
-      full API suite **1419/1420** (the one failure is the Keycloak-dependent
-      `dev-environment` spec), and a **real boot against a real Keycloak** on
-      the lab host — not a container. Adoption worked (`realm=NULL` →
-      `realm=identity-manager`, health 200), and the fail-closed half was
-      verified by pointing `KEYCLOAK_ISSUER` at a different realm: the API
-      **refused to listen** (health `000`) with
-      *"KEYCLOAK_ISSUER names realm … but the master organization is bound to …
-      Refusing to start: changing it would re-point every existing user."*
-      Restoring the issuer recovered cleanly. That path had never run outside a
-      container.
-      **Gate item 2 — "people, groups and sync behave exactly as before" — is
-      now actually exercised**, not inferred from a health check. Driven
-      through the real console against the real deployment: created a person
-      (organization populated automatically; outbox `user/created` reached
-      `done`), created a group, added a membership through the picker. All
-      three wrote audit rows attributed to the acting human, and the membership
-      emitted `membership_changed`, drained on the first attempt
-      (`attempts=0`). The membership row landed with `organization_id` matching
-      BOTH the user's and the group's — which is the design: ONE column
-      participates in TWO composite FKs (`gum_user_organization_fk` and
-      `gum_group_organization_fk`), so a cross-tenant edge is structurally
-      unrepresentable rather than merely rejected. Fixtures were cleaned up;
-      the lab database is back to its prior state.
-
-      **What the lab CANNOT prove, stated plainly:** the cross-tenant guard
-      itself. With exactly one organization every row is same-tenant by
-      construction — forcing a foreign `organization_id` is caught by the plain
-      FK for not existing, and a "real but different" tenant does not exist to
-      try. That guard is covered by `organizations.isolation.spec.ts` (10
-      tests) against fabricated tenants, and becomes live-testable only when
-      Task 12's API can create a second organization.
-
-- [x] **Tasks 8–9 — provisioning credentials and a per-realm Keycloak admin
-      client.** No migration needed; neither touches the schema.
-
-      **The design's load-bearing unverified assumption is now SETTLED, in our
-      favour.** The plan assumed Keycloak grants a realm's *creating* service
-      account admin rights on that realm, and flagged it unverified until
-      Task 11. Proven empirically against a real Keycloak 26 container: a
-      master-realm client holding **only** `create-realm` created a realm and
-      then read *and* wrote in it with no further grant, while the realm-scoped
-      `idm-sync-service` credential could NOT reach a tenant realm.
-      **`ensureRealm` does not need an explicit `<realm>-realm` role grant.**
-      *Boundary:* this proves the creator keeps rights on a realm **it**
-      created. Adopting a realm created by someone else — a pre-existing realm,
-      or one created before a credential rotation — is still unproven.
-
-      **A real secret leak was found and fixed, which four audits had missed.**
-      `KeycloakAdminClient` held `private readonly config`; TypeScript `private`
-      is compile-time only, so `JSON.stringify(client)` printed `clientSecret`
-      verbatim — one structured logger or error reporter away from writing a
-      Keycloak admin secret to a log. Now a true ECMAScript `#config`, which is
-      invisible to `JSON.stringify`, `Object.keys` and `util.inspect`; verified
-      independently (the old shape leaks a sentinel, the new one does not).
-      Swept the rest of `apps/api/src` for the same pattern: `SyncWorkerConfig`
-      (four numbers), `ImportsConfig` (`{maxRows}`) and `JwtGuardOptions`
-      (`{issuer, audience}`) carry no credentials, so no others need changing.
-- [ ] **Deferred to Task 12: `KeycloakAdminClientFactory.evict(realm)`.**
-      `forRealm` memoizes forever with no eviction. Harmless until something
-      deletes a realm — which arrives with the organizations API — but a deleted
-      tenant's cached admin client and token would otherwise linger. Same
-      deferral reasoning as `translateWriteError` and the
-      `business_role_grants` composite FK: written now it could not be
-      exercised.
-
-Tasks 10–16 are otherwise not started; the plan specifies each.
+**Not yet verified:** `apps/web/e2e/organizations.spec.ts` has never executed —
+it needs the dev stack with `KEYCLOAK_PROVISION_*` configured — and the
+Organizations console has never been seen in a browser.
 
 ---
 
@@ -325,12 +272,46 @@ state of each.
 
 ### Open, in the carried report's own priority order
 
-- [ ] **1. Bulk import's cap is ~7x the accidental one it replaced.** 5,000 rows
-      x ~10.4 ms ≈ 50 s of blocking on-request work, reachable by any holder of
-      `user:create`. Lower `IMPORT_MAX_ROWS`, batch the per-row lookups, or move
-      commit off the request path. **The item most likely to take a real
-      deployment down, and it is currently labelled "fixed".** Left alone here
-      because choosing between those three is a product decision, not a defect fix.
+- [x] **1. Bulk import — re-characterised and largely closed.** The finding as
+      written ("5,000 rows x ~10.4 ms ≈ 50 s") describes a tree that no longer
+      exists: `b36e7ad` had already lowered `IMPORT_MAX_ROWS` from 5,000 to
+      **1,000** before this work started. The single "~10.4 ms/row" was also two
+      different costs wearing one number, and only one of them was lookups.
+
+      **Measured** (5,000-row CSV, Testcontainers Postgres, real Nest app, HTTP
+      round trip timed before and after; bench spec deleted rather than left to
+      add ~140 s of container time to every suite run):
+
+      | phase | before | after |
+      |---|---|---|
+      | preview (creates) | 14,926 ms | **257 ms** |
+      | commit (creates) | 60,915 ms | **42,251 ms** |
+      | preview (updates) | 10,047 ms | **188 ms** |
+      | commit (updates) | 46,350 ms | **41,670 ms** |
+
+      Batching the per-row lookups into one set-based query per key kind
+      (`imports/import-lookups.ts`) made **preview 58x faster** — resolution is
+      now effectively free. **Commit improved 31% and then stopped**, and the
+      residual is NOT lookups: it is one durable transaction per row (BEGIN,
+      write, audit row, outbox row, COMMIT — a WAL flush each). A trivial query
+      round trip measured 0.31 ms in the same environment, so latency is not the
+      term. One transaction per row is exactly what keeps a failing row rolled
+      back alone and row-attributed, so collapsing it is a change to the failure
+      contract, not a tuning knob — deliberately not done.
+
+      At 1,000 rows x the measured 8.45 ms/row that is ~8.5 s worst case,
+      comparable to the ~7 s the old accidental body limit enforced, so the cap
+      stays where `b36e7ad` put it. **A real bug was found on the way:**
+      `apps/web/src/imports/api.ts` still mirrored 5,000, so the console would
+      accept a file the server then 400s. Fixed, along with four stale doc
+      tables. The scope and privilege checks in the batched path call the REAL
+      `PermissionEngine`/`PrivilegeGuards` decisions, memoised — no second copy
+      of authz logic.
+
+      **Still open, deliberately:** moving commit off the request path. That is
+      a job queue, status polling and new console states, and the import flow is
+      built around a synchronous preview/commit pair.
+
 - [x] **3. The system-actor guarantee is stale.** Both halves done: the acting
       `userId` is threaded into `TargetReconciliationJob.auditOverride`, so a
       `connector:reconcile-override` row names a human when one exists (the CLI
@@ -453,15 +434,46 @@ Two traps worth knowing, both of which made a working fix look broken:
 
 ### Still unverified on real infrastructure
 
-- [ ] **The console has never been driven in a browser.** Chrome automation was
-      unavailable (extension not connected), so verification stopped at HTTP:
-      HTML, bundle and SPA routing all serve correctly, but nothing has exercised
-      sign-in, the OIDC redirect, or any React rendering path on a deployment.
+- [~] **The console HAS now been driven in a browser — locally, not on a
+      deployment.** Two independent passes on 2026-08-09 against the full dev
+      stack (Keycloak 26, Postgres, API, Vite console): the Playwright suite
+      (**45 passed**, covering sign-in, the OIDC redirect and React rendering
+      across People, Groups, Org units, Imports, Audit, Self-service and the new
+      business-roles journey), and an interactive pass driving Chrome by hand.
+      The interactive pass confirmed the landing page, the OIDC redirect
+      (PKCE `S256`, correct client and redirect URI), the People list with status
+      and sync badges, the business-roles list and detail with its
+      draft/simulate/publish gate, enable-with-toast, the person Entitlements
+      tab, and the Sync tab showing a real Keycloak UUID as external id — with
+      **zero console errors**, including across a full page load and a deep-link
+      reload that kept the session.
+
+      **This is exactly how the enable bug was caught**: `POST
+      /business-roles/:id/enable` answered with the bare row while the console is
+      typed against the full detail shape, so the detail page threw
+      `Cannot read properties of undefined (reading 'length')` — blank screen, no
+      toast — on first render after enabling. No API-level test could see it.
+      Fixed, with a shape-contract regression test.
+
+      **What remains:** nothing has driven the console against the DEPLOYED host
+      (the earlier LXC verification stopped at HTTP), and the Organizations
+      console from Tasks 12–16 has never been seen in a browser at all — its
+      `apps/web/e2e/organizations.spec.ts` has never executed, because it needs
+      the stack with `KEYCLOAK_PROVISION_*` configured.
+
 - [ ] **`idm-lifecycle.timer` / `idm-reconcile.timer` are not installed on the
       live host** — only `idm-api.service` is. They arrive with the deploy/
       re-render described above.
 
 ## Housekeeping
+
+- [ ] **`.env.example` blocks `db:migrate` out of the box.** The two
+      `KEYCLOAK_PROVISION_CLIENT_ID` / `_SECRET` lines are present-but-empty, and
+      the env schema is `z.string().min(1)`, so `db:migrate` refuses to start —
+      despite the accompanying comment saying blank is supported. Anyone
+      following `docs/04-quickstart.md` on a clean clone hits this; the
+      workaround is to comment both lines out. Either relax the schema to accept
+      empty-as-absent or ship them commented.
 
 - [ ] **`scripts/verify.mjs`'s header is out of date.** It states "This
       repository has no git remote", which is no longer true — `origin` is
