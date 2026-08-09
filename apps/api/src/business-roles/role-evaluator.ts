@@ -1,3 +1,4 @@
+import type { ConnectorTarget } from '../connectors/connector'
 import type { UserStatus } from '../users/users.repository'
 
 /**
@@ -206,4 +207,97 @@ export function matchesConditions(
   }
 
   return KNOWN(matchedAll)
+}
+
+export interface RoleGrant {
+  kind: 'group_membership' | 'target_account'
+  groupId: string | null
+  target: ConnectorTarget | null
+}
+
+export interface RoleException {
+  userId: string
+  mode: 'include' | 'exclude'
+  expiresAt: Date | null
+}
+
+export interface EvaluableRole {
+  id: string
+  name: string
+  conditions: RoleCondition[]
+  grants: RoleGrant[]
+  exceptions: RoleException[]
+}
+
+export type Evaluation =
+  | { evaluable: true; groupIds: string[]; targets: ConnectorTarget[]; matchedRoleIds: string[] }
+  | { evaluable: false; roleId: string; roleName: string; reason: string }
+
+/**
+ * An exception is live until its expiry has PASSED. `expiresAt === now` is
+ * still live — expiry is exclusive at the boundary, so an exception written
+ * "until 5pm" covers 5pm exactly.
+ */
+function isLive(exception: RoleException, now: Date): boolean {
+  return exception.expiresAt === null || exception.expiresAt.getTime() >= now.getTime()
+}
+
+/**
+ * Precedence, in order: `exclude` beats everything, then `include` grants
+ * regardless of the formula, then the formula decides. An EXPIRED exception is
+ * treated as ABSENT, never as a denial — an expired `exclude` stops excluding
+ * and an expired `include` stops including.
+ */
+function holdsRole(role: EvaluableRole, user: EvaluableUser, now: Date): ConditionMatch {
+  let included = false
+
+  for (const exception of role.exceptions) {
+    if (exception.userId !== user.id || !isLive(exception, now)) continue
+    if (exception.mode === 'exclude') return { known: true, matched: false }
+    included = true
+  }
+
+  if (included) return { known: true, matched: true }
+
+  return matchesConditions(role.conditions, user)
+}
+
+/**
+ * A person's entitlements are the UNION of every role they hold.
+ *
+ * ONE unevaluable role makes the WHOLE evaluation unevaluable, rather than
+ * being skipped. A partial desired set is worse than no answer: the reconciler
+ * would act on it as though it were complete and revoke whatever the broken
+ * role was justifying. Refusing wholesale is what keeps "nothing granted,
+ * nothing revoked, error surfaced" true.
+ */
+export function evaluateRoles(
+  user: EvaluableUser,
+  roles: readonly EvaluableRole[],
+  now: Date,
+): Evaluation {
+  const groupIds = new Set<string>()
+  const targets = new Set<ConnectorTarget>()
+  const matchedRoleIds: string[] = []
+
+  for (const role of roles) {
+    const held = holdsRole(role, user, now)
+    if (!held.known) {
+      return { evaluable: false, roleId: role.id, roleName: role.name, reason: held.reason }
+    }
+    if (!held.matched) continue
+
+    matchedRoleIds.push(role.id)
+    for (const grant of role.grants) {
+      if (grant.kind === 'group_membership' && grant.groupId !== null) groupIds.add(grant.groupId)
+      if (grant.kind === 'target_account' && grant.target !== null) targets.add(grant.target)
+    }
+  }
+
+  return {
+    evaluable: true,
+    groupIds: [...groupIds],
+    targets: [...targets],
+    matchedRoleIds,
+  }
 }
