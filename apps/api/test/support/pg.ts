@@ -72,7 +72,7 @@ export interface TestDatabase {
  * a test still surfaces, because hiding those would defeat the point of
  * running against a real Postgres at all.
  */
-function swallowShutdownErrors(pool: Pool): void {
+export function swallowShutdownErrors(pool: Pool): void {
   pool.on('error', (error: NodeJS.ErrnoException & { code?: string }) => {
     const code = error?.code
     if (code === '57P01' || code === 'ECONNRESET' || code === 'EPIPE') return

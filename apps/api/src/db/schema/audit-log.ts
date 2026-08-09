@@ -7,6 +7,7 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core'
+import { organizations } from './organizations'
 import { users } from './users'
 
 export const auditLog = pgTable(
@@ -39,6 +40,15 @@ export const auditLog = pgTable(
     // a correlation id for "every audit row one import commit produced,"
     // reviewable as a unit via `WHERE batch_id = $1`.
     batchId: uuid('batch_id'),
+    // Milestone: organizations multi-tenancy, Task 2. Deliberately nullable
+    // and never backfilled: existing rows predate organizations, and
+    // platform-level actions legitimately have none. audit_log is
+    // append-only, so this is the one and only write these rows will ever
+    // receive. ON DELETE RESTRICT: an organization can never be removed out
+    // from under audit rows that still reference it.
+    organizationId: uuid('organization_id').references(() => organizations.id, {
+      onDelete: 'restrict',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),

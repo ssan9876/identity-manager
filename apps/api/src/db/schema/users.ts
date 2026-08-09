@@ -12,6 +12,7 @@ import {
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { orgUnits } from './org-units'
+import { organizations } from './organizations'
 
 export const userStatus = pgEnum('user_status', [
   'pending',
@@ -35,6 +36,14 @@ export const users = pgTable(
     orgUnitId: uuid('org_unit_id')
       .notNull()
       .references(() => orgUnits.id, { onDelete: 'restrict' }),
+    // Milestone: organizations multi-tenancy, Task 2. Derived from the
+    // user's org unit at write time (see UsersRepository.create) — never
+    // taken from the request — and backfilled to master for every
+    // pre-existing row. ON DELETE RESTRICT: an organization can never be
+    // removed out from under users that still reference it.
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'restrict' }),
     managerId: uuid('manager_id').references((): AnyPgColumn => users.id, {
       onDelete: 'set null',
     }),
@@ -64,5 +73,6 @@ export const users = pgTable(
       .on(table.employeeId)
       .where(sql`${table.employeeId} IS NOT NULL`),
     orgUnitIdx: index('users_org_unit_idx').on(table.orgUnitId),
+    organizationIdx: index('users_organization_idx').on(table.organizationId),
   }),
 )

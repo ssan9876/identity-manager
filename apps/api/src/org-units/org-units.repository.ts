@@ -1,11 +1,33 @@
 import { createHash } from 'node:crypto'
-import { Inject, Injectable } from '@nestjs/common'
+import { Inject, Injectable, Optional } from '@nestjs/common'
 import { asc, eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { DB_CLIENT } from '../common/db.token'
 import { ConflictError, NotFoundError } from '../common/errors'
 import * as schema from '../db/schema/index'
 import { orgUnits } from '../db/schema/org-units'
+import { OrganizationsRepository } from '../organizations/organizations.repository'
+
+/**
+ * The organization a given org unit belongs to — a targeted, single-column
+ * lookup, never the full row (see UsersRepository.create's identical
+ * derivation, which this mirrors). `NotFoundError('org unit', ...)` on a
+ * missing id, exactly like every other org-unit-id reference in this
+ * codebase.
+ */
+export async function requireOrgUnitOrganization(
+  db: NodePgDatabase<typeof schema>,
+  orgUnitId: string,
+): Promise<string> {
+  const [unit] = await db
+    .select({ organizationId: orgUnits.organizationId })
+    .from(orgUnits)
+    .where(eq(orgUnits.id, orgUnitId))
+  if (unit === undefined) {
+    throw new NotFoundError('org unit', orgUnitId)
+  }
+  return unit.organizationId
+}
 
 const UNIQUE_VIOLATION = '23505'
 
@@ -76,7 +98,18 @@ export function toLabel(name: string): string {
 
 @Injectable()
 export class OrgUnitsRepository {
-  constructor(@Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>) {}
+  constructor(
+    @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
+    // OPTIONAL, defaulting to a raw instance bound to the same `db` — same
+    // pattern SyncWorker/ReconciliationJob use for their own OrgUnitsRepository
+    // dependency (see e.g. sync.worker.ts). Keeps every existing single-argument
+    // `new OrgUnitsRepository(db)` call site across the test suite compiling
+    // unchanged, while real Nest DI (AppModule) hands this the SAME managed
+    // OrganizationsRepository instance every other provider gets.
+    @Optional()
+    @Inject(OrganizationsRepository)
+    private readonly organizations: OrganizationsRepository = new OrganizationsRepository(db),
+  ) {}
 
   /**
    * `createRoot`, `createChild` and `findById` below all accept an OPTIONAL
@@ -85,12 +118,19 @@ export class OrgUnitsRepository {
    * doc comment for the full explanation). OrgUnitsController.create passes
    * its open transaction through, so the insert and its
    * AuditWriter.record(tx, …) audit row commit or roll back together.
+   *
+   * Milestone: organizations multi-tenancy, Task 2 — `organizationId` is
+   * NOT NULL and there is no API surface yet to name a target organization
+   * (that is a later task), so a fresh root falls back to master, exactly
+   * like GroupsRepository.create's global-group case: today there is only
+   * ever one organization, so every root org unit belongs to it.
    */
   async createRoot(name: string, db: NodePgDatabase<typeof schema> = this.db): Promise<OrgUnit> {
     try {
+      const master = await this.organizations.findMaster(db)
       const [row] = await db
         .insert(orgUnits)
-        .values({ name, parentId: null, path: toLabel(name) })
+        .values({ name, parentId: null, path: toLabel(name), organizationId: master.id })
         .returning()
 
       return row as OrgUnit
@@ -109,6 +149,13 @@ export class OrgUnitsRepository {
       throw new NotFoundError('parent org unit', parentId)
     }
 
+    // Derived from the parent, never a parameter: a child org unit always
+    // belongs to the SAME organization as its parent — Task 1's design
+    // ("owns exactly one root org unit") only holds if a whole subtree
+    // shares one organization, and this is what keeps it true by
+    // construction rather than by convention.
+    const organizationId = await requireOrgUnitOrganization(db, parentId)
+
     try {
       const [row] = await db
         .insert(orgUnits)
@@ -116,6 +163,7 @@ export class OrgUnitsRepository {
           name,
           parentId,
           path: `${parent.path}.${toLabel(name)}`,
+          organizationId,
         })
         .returning()
 

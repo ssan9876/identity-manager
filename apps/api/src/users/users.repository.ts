@@ -6,6 +6,7 @@ import { DB_CLIENT } from '../common/db.token'
 import { ConflictError, InvalidTransitionError, NotFoundError } from '../common/errors'
 import { attributeDefinitions } from '../db/schema/attribute-definitions'
 import * as schema from '../db/schema/index'
+import { orgUnits } from '../db/schema/org-units'
 import { users } from '../db/schema/users'
 
 export type UserStatus = 'pending' | 'active' | 'suspended' | 'deactivated'
@@ -137,10 +138,22 @@ export class UsersRepository {
    * unchanged.
    */
   async create(input: CreateUserInput, db: NodePgDatabase<typeof schema> = this.db): Promise<User> {
+    const [unit] = await db
+      .select({ organizationId: orgUnits.organizationId })
+      .from(orgUnits)
+      .where(eq(orgUnits.id, input.orgUnitId))
+    if (unit === undefined) {
+      throw new NotFoundError('org unit', input.orgUnitId)
+    }
+    // Derived, never client-supplied: a request cannot place a person in
+    // another tenant, and this is the value Task 4's composite FK checks.
+    const organizationId = unit.organizationId
+
     try {
       const [row] = await db
         .insert(users)
         .values({
+          organizationId,
           primaryEmail: input.primaryEmail,
           // LOW finding (docs/archive/audits/audit-injection.md): unnormalised
           // Unicode input (NFD, RTL overrides, ZWJ, homoglyphs) was stored

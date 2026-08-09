@@ -37,15 +37,10 @@ describe('organizations schema', () => {
   })
 
   it('a second master organization rejects with organizations_master_unique', async () => {
-    // Insert first master
-    await ctx.db.insert(organizations).values({
-      slug: 'master-1',
-      name: 'First Master',
-      realm: 'realm-1',
-      isMaster: true,
-    })
-
-    // Try to insert second master
+    // The organizations backfill migration (Task 2) already seeded exactly
+    // one master row before this test runs, so a second `isMaster: true`
+    // insert collides with THAT existing row — there is no "insert the
+    // first one ourselves" step left to do.
     await expect(
       ctx.db.insert(organizations).values({
         slug: 'master-2',
