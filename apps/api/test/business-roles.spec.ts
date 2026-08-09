@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { AuditWriter } from '../src/audit/audit.writer'
 import { BusinessRolesRepository } from '../src/business-roles/business-roles.repository'
 import { hashDefinition, parseDefinition } from '../src/business-roles/draft'
+import { RoleReconciliationJob } from '../src/business-roles/role-reconciliation.job'
 import { RoleReconciler } from '../src/business-roles/role-reconciler'
 import { auditLog } from '../src/db/schema/audit-log'
 import { businessRoleConditions } from '../src/db/schema/business-roles'
@@ -12,6 +13,7 @@ import { orgUnits } from '../src/db/schema/org-units'
 import { users } from '../src/db/schema/users'
 import { OrganizationsRepository } from '../src/organizations/organizations.repository'
 import { OutboxWriter } from '../src/outbox/outbox.writer'
+import { UsersRepository } from '../src/users/users.repository'
 import { type TestDatabase, withTestDatabase } from './support/pg'
 
 const ctx = withTestDatabase()
@@ -440,5 +442,203 @@ describe('RoleReconciler (Milestone 17, Task 8)', () => {
 
     await ctx.db.transaction((tx) => reconciler().reconcileUser(tx, userId, null, new Date()))
     expect(await auditRowsFor(ctx, userId)).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Fixtures for RoleReconciliationJob (Milestone 17, Task 10). Same local
+// convention as the Task 8 fixtures above, and the same non-negotiable rule:
+// every seeded value that a role condition can match carries a per-call
+// `seq` discriminator. `withTestDatabase()` starts ONE container per test
+// FILE and never truncates between `it`s, so a shared literal would let one
+// call's role match another call's user — the exact mistake that once
+// produced a "5 of 19 failing" reconciler.
+// ---------------------------------------------------------------------------
+
+function job(): RoleReconciliationJob {
+  return new RoleReconciliationJob(
+    reconciler(),
+    new UsersRepository(ctx.db),
+    new BusinessRolesRepository(ctx.db),
+    ctx.db,
+  )
+}
+
+/**
+ * A DEACTIVATED person who already holds a `business_role`-sourced row for a
+ * group, and an enabled role that would grant them exactly that group if only
+ * they were still active (`jobTitle = <unique>` AND `status = 'active'`).
+ *
+ * The pre-existing row is what makes the test meaningful. Asserting that a
+ * deactivated person holds nothing proves nothing on its own — they would
+ * hold nothing if the sweep had never looked at them at all. Because the row
+ * is there BEFORE the sweep runs, and only a pass that actually VISITS this
+ * user can revoke it, its absence afterwards is direct evidence the walk
+ * covered a non-active status. That is a real leaver scenario, not a
+ * contrived one: this is precisely the row a departed employee would keep
+ * forever if the sweep walked only `status = 'active'`.
+ */
+async function seedDeactivatedUserInRoleGroup(
+  ctx: TestDatabase,
+): Promise<{ deactivatedUserId: string; groupId: string; roleId: string }> {
+  reconcilerFixtureSeq += 1
+  const seq = reconcilerFixtureSeq
+  const matchingJobTitle = `Account Executive #${seq}`
+  const organizationId = await masterOrgId(ctx)
+
+  const [unit] = await ctx.db
+    .insert(orgUnits)
+    .values({ name: `Sweep Unit ${seq}`, path: `sweep_root_${seq}`, organizationId })
+    .returning()
+  const [user] = await ctx.db
+    .insert(users)
+    .values({
+      status: 'deactivated',
+      organizationId,
+      primaryEmail: `sweep-leaver-${seq}@example.com`,
+      username: `sweep-leaver-${seq}`,
+      firstName: 'Sweep',
+      lastName: `Leaver ${seq}`,
+      displayName: `Sweep Leaver ${seq}`,
+      jobTitle: matchingJobTitle,
+      orgUnitId: unit.id,
+    })
+    .returning()
+  const [group] = await ctx.db.insert(groups).values({ name: `Sweep Group ${seq}`, organizationId }).returning()
+
+  const role = await repo().create({ name: `Sweep Role ${seq}`, description: null })
+  const definition = {
+    conditions: [
+      { field: 'jobTitle', operator: 'equals', value: matchingJobTitle },
+      { field: 'status', operator: 'equals', value: 'active' },
+    ],
+    grants: [{ kind: 'group_membership', groupId: group.id, target: null }],
+  }
+  await repo().saveDraft(role.id, definition)
+  await repo().recordSimulation(role.id, hashDefinition(parseDefinition(definition)))
+  await repo().publish(role.id)
+  await repo().setEnabled(role.id, true)
+
+  // The row a sweep that skips non-active users would leave behind forever.
+  await ctx.db.insert(groupUserMembers).values({ groupId: group.id, userId: user.id, grantSource: 'business_role' })
+
+  return { deactivatedUserId: user.id, groupId: group.id, roleId: role.id }
+}
+
+/**
+ * An enabled, published role carrying a condition on a field the running
+ * binary does not know — the shape a migration newer than this build would
+ * leave behind. Inserted straight into `business_role_conditions` AFTER
+ * publish, exactly as the Task 8 refusal test does, because `parseDefinition`
+ * would (correctly) reject it on the way in through the draft.
+ *
+ * This is a LANDMINE for every later test in this file: one unevaluable
+ * enabled role makes `evaluateRoles` refuse for EVERY user, not just one. Any
+ * test using it must disable the role before it returns.
+ */
+async function seedUnevaluableRole(ctx: TestDatabase): Promise<{ roleId: string }> {
+  reconcilerFixtureSeq += 1
+  const seq = reconcilerFixtureSeq
+
+  const role = await repo().create({ name: `Unevaluable Role ${seq}`, description: null })
+  const definition = {
+    conditions: [{ field: 'jobTitle', operator: 'equals', value: `Nobody At All #${seq}` }],
+    grants: [],
+  }
+  await repo().saveDraft(role.id, definition)
+  await repo().recordSimulation(role.id, hashDefinition(parseDefinition(definition)))
+  await repo().publish(role.id)
+  await repo().setEnabled(role.id, true)
+
+  await ctx.db.insert(businessRoleConditions).values({
+    businessRoleId: role.id,
+    field: 'managerId',
+    operator: 'equals',
+    value: 'anyone',
+  })
+
+  return { roleId: role.id }
+}
+
+describe('RoleReconciliationJob (Milestone 17, Task 10)', () => {
+  it('walks EVERY user status, not only active', async () => {
+    // Mirrors ReconciliationJob and TargetReconciliationJob, which walk every
+    // status for the same reason: a suspended person's DESIRED state is still
+    // a fact the engine must be able to assert.
+    const { deactivatedUserId, groupId } = await seedDeactivatedUserInRoleGroup(ctx)
+
+    const result = await job().reconcileAll(new Date())
+
+    expect(result.scanned).toBeGreaterThan(0)
+    // The role conditions on status = 'active', so the deactivated person
+    // must have been visited AND found not to qualify — which, because the
+    // fixture pre-seeded a business_role row for them, means the row is gone.
+    expect(await membershipsFor(ctx, deactivatedUserId)).toEqual([])
+    expect(groupId).toBeDefined()
+  })
+
+  it('is idempotent — a second run changes nothing', async () => {
+    await seedRoleGrantingGroup(ctx, { jobTitle: 'Account Executive' })
+
+    const first = await job().reconcileAll(new Date())
+    const second = await job().reconcileAll(new Date())
+
+    expect(first.changed).toBeGreaterThan(0)
+    expect(second.changed).toBe(0)
+    // Nothing refused either way: a refusal would make `changed: 0` true for
+    // an entirely uninteresting reason.
+    expect(first.refused).toBe(0)
+    expect(second.refused).toBe(0)
+  })
+
+  it('counts a refusal without aborting the whole sweep', async () => {
+    const { userId, groupId } = await seedRoleGrantingGroup(ctx, { jobTitle: 'Account Executive' })
+    // Settle this user's entitlements BEFORE the landmine goes in, so the
+    // assertion below distinguishes "refused, therefore untouched" from
+    // "never had anything anyway".
+    await job().reconcileAll(new Date())
+    const { roleId } = await seedUnevaluableRole(ctx)
+
+    const result = await job().reconcileAll(new Date())
+
+    expect(result.refused).toBeGreaterThan(0)
+    expect(roleId).toBeDefined()
+
+    // The sweep RAN to completion rather than throwing: every user was still
+    // visited and counted...
+    expect(result.scanned).toBeGreaterThan(result.refused - 1)
+    expect(result.scanned).toBeGreaterThan(0)
+    // ...it refused for everybody, naming the offending role and its reason
+    // rather than silently swallowing it...
+    expect(result.refusals).toHaveLength(result.refused)
+    expect(result.refusals[0]).toEqual(
+      expect.objectContaining({ roleId, roleName: expect.stringContaining('Unevaluable Role') }),
+    )
+    expect(result.refusals[0].reason).toBeTruthy()
+    // ...and wrote NOTHING while refusing — the pre-existing grant survives,
+    // neither revoked nor re-granted.
+    expect(result.changed).toBe(0)
+    expect(await membershipsFor(ctx, userId)).toEqual([
+      expect.objectContaining({ groupId, grantSource: 'business_role' }),
+    ])
+
+    // Defuse the landmine before yielding to whatever test runs next in this
+    // FILE — see the Task 8 refusal test's identical epilogue.
+    await new BusinessRolesRepository(ctx.db).setEnabled(roleId, false)
+  })
+
+  it('reconcileRole walks every user too, and rejects an unknown role id', async () => {
+    // The narrowing is in the LABEL, not the work (see reconcileRole's own
+    // doc comment): a role-scoped sweep must scan exactly what a full sweep
+    // scans, because `reconcileUser` evaluates every enabled role at once.
+    const { roleId } = await seedRoleGrantingGroup(ctx, { jobTitle: 'Account Executive' })
+
+    const all = await job().reconcileAll(new Date())
+    const scoped = await job().reconcileRole(roleId, new Date())
+
+    expect(scoped.scanned).toBe(all.scanned)
+    expect(scoped.changed).toBe(0)
+
+    await expect(job().reconcileRole('00000000-0000-0000-0000-000000000000', new Date())).rejects.toThrow()
   })
 })
