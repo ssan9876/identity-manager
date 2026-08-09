@@ -16,6 +16,7 @@
     "reconcile": "tsx --env-file-if-exists=../../.env src/outbox/reconcile-cli.ts",
     "target-reconcile": "tsx --env-file-if-exists=../../.env src/outbox/target-reconcile-cli.ts",
     "jml:lifecycle": "tsx --env-file-if-exists=../../.env src/jml/lifecycle-cli.ts",
+    "activate": "tsx --env-file-if-exists=../../.env src/users/bulk-activate-cli.ts",
     "e2e:cleanup": "tsx --env-file-if-exists=../../.env scripts/e2e-cleanup.ts"
   },
   "dependencies": {
