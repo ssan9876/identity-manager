@@ -7,6 +7,7 @@ export type Action =
   | 'user:read'
   | 'user:create'
   | 'user:update'
+  | 'user:activate'
   | 'user:deactivate'
   | 'group:read'
   | 'group:create'

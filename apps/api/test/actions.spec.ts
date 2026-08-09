@@ -5,6 +5,7 @@ import {
   ROLE_PERMISSIONS,
   ROLE_RANK,
   type Action,
+  type RoleKey,
 } from '../src/authz/actions'
 
 describe('role catalog', () => {
@@ -46,6 +47,18 @@ describe('role catalog', () => {
   it('reserves role:assign to super_admin alone', () => {
     for (const role of ALL_ROLE_KEYS.filter((r) => r !== 'super_admin')) {
       expect(ROLE_PERMISSIONS[role]).not.toContain('role:assign')
+    }
+  })
+
+  // user:activate is the one action that turns a directory record into a
+  // principal that can actually sign in. help_desk holds user:update and
+  // must NOT be able to reach it that way — see
+  // docs/archive/specs/2026-08-08-user-activate-endpoint-design.md.
+  it('grants user:activate to super_admin and user_admin only', () => {
+    expect(ROLE_PERMISSIONS.super_admin).toContain('user:activate')
+    expect(ROLE_PERMISSIONS.user_admin).toContain('user:activate')
+    for (const role of ['help_desk', 'auditor', 'read_only'] satisfies RoleKey[]) {
+      expect(ROLE_PERMISSIONS[role]).not.toContain('user:activate')
     }
   })
 

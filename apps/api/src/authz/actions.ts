@@ -9,6 +9,7 @@ export type Action =
   | 'user:read'
   | 'user:create'
   | 'user:update'
+  | 'user:activate'
   | 'user:deactivate'
   | 'group:read'
   | 'group:create'
@@ -33,6 +34,7 @@ export const ALL_ACTIONS: readonly Action[] = [
   'user:read',
   'user:create',
   'user:update',
+  'user:activate',
   'user:deactivate',
   'group:read',
   'group:create',
@@ -102,6 +104,7 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly Action[]> = Object.assig
       'user:read',
       'user:create',
       'user:update',
+      'user:activate',
       'user:deactivate',
       'group:read',
       'group:create',
