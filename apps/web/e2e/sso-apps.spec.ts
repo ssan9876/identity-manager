@@ -71,7 +71,14 @@ test('refuses a wildcard redirect URI, showing the API reason verbatim', async (
   await page.getByLabel('Redirect URIs').fill('https://*')
   await page.getByRole('button', { name: 'Register' }).click()
 
-  await expect(page.getByText(/wildcard/i)).toBeVisible()
+  // Assert the FIELD-level error specifically. The refusal renders in two
+  // places by design — `#redirectUris-error` on the input and a form-level
+  // banner — so a bare `getByText(/wildcard/i)` matches both and fails
+  // Playwright's strict mode. Whether it failed depended on render timing,
+  // which is why this passed twice before failing; the sibling test below hit
+  // the identical defect deterministically. Asserting the field error is also
+  // the sharper claim: the reason lands on the input that caused it.
+  await expect(page.locator('#redirectUris-error')).toContainText(/wildcard/i)
   // Still on the form — nothing was created.
   await expect(page.getByRole('heading', { name: 'Register application' })).toBeVisible()
 })
