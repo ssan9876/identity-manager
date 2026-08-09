@@ -35,5 +35,17 @@ const NUL = String.fromCharCode(0)
  * driver.
  */
 export function noNulChar<T extends z.ZodString>(schema: T) {
-  return schema.refine((value) => !value.includes(NUL), 'must not contain a NUL character')
+  return schema.refine((value) => !containsNulChar(value), 'must not contain a NUL character')
+}
+
+/**
+ * The same check, for the values a `ZodString` never sees: free-form JSON
+ * bound for a `jsonb` column, where the offending string can sit at any depth
+ * and under any key. `noNulChar` above is the schema-level guard for named
+ * string fields; this is the primitive both it and those deep scans share, so
+ * the character itself is still defined in exactly one place (see the NUL
+ * constant above for why it is constructed rather than typed).
+ */
+export function containsNulChar(value: string): boolean {
+  return value.includes(NUL)
 }

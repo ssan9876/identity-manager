@@ -9,8 +9,10 @@ import { AuditController } from './audit/audit.controller'
 import { AuditRepository } from './audit/audit.repository'
 import { AuditWriter } from './audit/audit.writer'
 import { PermissionEngine } from './authz/permission.engine'
+import { BusinessRolesController } from './business-roles/business-roles.controller'
 import { BusinessRolesRepository } from './business-roles/business-roles.repository'
 import { RoleReconciler } from './business-roles/role-reconciler'
+import { RoleReconciliationJob } from './business-roles/role-reconciliation.job'
 import { PermissionGuard } from './authz/permission.guard'
 import { PrivilegeGuards } from './authz/privilege.guards'
 import { RoleAssignmentsController } from './authz/role-assignments.controller'
@@ -72,6 +74,13 @@ import { UsersRepository } from './users/users.repository'
     AttributeTargetMappingsController,
     // SSO application registration. Global-grant-only, super_admin only.
     SsoAppsController,
+    // Milestone 17, Task 11 — the business-role admin API: the catalog, the
+    // draft/simulate/publish gate, enable/disable, and per-person exceptions.
+    // Global-grant-only on every mutating route (finding AUTHZ-M-2), for the
+    // same reason as ConnectorTargetsController and SsoAppsController above:
+    // a business role belongs to no org unit, so a scoped grant has nothing
+    // to narrow to.
+    BusinessRolesController,
   ],
   providers: [
     {
@@ -229,6 +238,14 @@ import { UsersRepository } from './users/users.repository'
     // above.
     BusinessRolesRepository,
     RoleReconciler,
+    // Milestone 17, Task 11: the sweep BusinessRolesController runs after a
+    // publish, an enable or a disable — Task 10 built it CLI-only and
+    // registered it nowhere, exactly as Milestone 10 Task 4 left
+    // TargetReconciliationJob until a controller needed it. No I/O at
+    // construction (it only stores already-provided dependencies), so it is
+    // safe to register unconditionally for every boot; app.module.spec.ts is
+    // the guard that it actually resolves.
+    RoleReconciliationJob,
   ],
 })
 export class AppModule {}

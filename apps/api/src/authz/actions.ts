@@ -23,6 +23,8 @@ export type Action =
   | 'connector:manage'
   | 'sso_app:read'
   | 'sso_app:manage'
+  | 'business_role:read'
+  | 'business_role:manage'
 
 export const ALL_ROLE_KEYS: readonly RoleKey[] = [
   'super_admin',
@@ -53,6 +55,14 @@ export const ALL_ACTIONS: readonly Action[] = [
   // same rule as the audit log, dead letters and connector targets.
   'sso_app:read',
   'sso_app:manage',
+  // Milestone 17, Task 11 -- business roles. GLOBAL GRANT ONLY for
+  // `business_role:manage`, on the same terms as the audit log, dead
+  // letters, connector targets and SSO applications: a business role has no
+  // containing org unit, and its formula spans the WHOLE directory, so there
+  // is nothing for a scoped grant to narrow to. See
+  // BusinessRolesController.requireGlobalGrant.
+  'business_role:read',
+  'business_role:manage',
 ]
 
 const READ_ONLY_ACTIONS: readonly Action[] = ['user:read', 'group:read', 'org_unit:read']
@@ -118,6 +128,12 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly Action[]> = Object.assig
       'group:update',
       'group:manage_members',
       'org_unit:read',
+      // Milestone 17, Task 11 -- READ only. A business role's formula is
+      // the shape of who gets what across the whole directory, and a
+      // user_admin investigating why someone holds a group needs to be able
+      // to read it. `business_role:manage` is deliberately NOT here: see
+      // super_admin's own note below, and `role:assign`'s identical posture.
+      'business_role:read',
     ],
     help_desk: ['user:read', 'user:update', 'group:read', 'org_unit:read'],
     // Milestone 14, Task 9 — connector admin console. `connector:read` joins
@@ -132,8 +148,18 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly Action[]> = Object.assig
     // posture: both are structural, directory-wide capabilities with
     // outsized blast radius if misused, not ordinary read/write directory
     // work.
-    auditor: [...READ_ONLY_ACTIONS, 'audit:read', 'connector:read'],
-    read_only: READ_ONLY_ACTIONS,
+    // Milestone 17, Task 11 -- `business_role:read` joins the read set for
+    // both roles. Reading a formula is the same category of
+    // "what happened, what is broken" visibility `audit:read`/
+    // `connector:read` already give the auditor, and it is a pure read: a
+    // role's conditions and grants describe access, they do not confer it.
+    // `business_role:manage` is super_admin's ALONE (it is reachable only
+    // through `ALL_ACTIONS` above), on exactly the terms `role:assign` and
+    // `connector:manage` already set -- publishing a formula is a
+    // structural, directory-wide capability with outsized blast radius,
+    // not ordinary directory work.
+    auditor: [...READ_ONLY_ACTIONS, 'audit:read', 'connector:read', 'business_role:read'],
+    read_only: [...READ_ONLY_ACTIONS, 'business_role:read'],
   } satisfies Record<RoleKey, readonly Action[]>,
 )
 

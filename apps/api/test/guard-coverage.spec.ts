@@ -89,6 +89,7 @@ describe('guard coverage', () => {
         'AttributeDefinitionsController',
         'AttributeTargetMappingsController',
         'AuditController',
+        'BusinessRolesController',
         'ConnectorTargetsController',
         'GroupsController',
         'HealthController',
