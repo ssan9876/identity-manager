@@ -45,6 +45,8 @@ import {
 } from './keycloak/keycloak-admin.client'
 import { OrgUnitsController } from './org-units/org-units.controller'
 import { OrgUnitsRepository } from './org-units/org-units.repository'
+import { OrganizationConnector } from './connectors/organization.connector'
+import { OrganizationsController } from './organizations/organizations.controller'
 import { OrganizationsRepository } from './organizations/organizations.repository'
 import { OutboxController } from './outbox/outbox.controller'
 import { OutboxRepository } from './outbox/outbox.repository'
@@ -86,6 +88,12 @@ import { UsersRepository } from './users/users.repository'
     // a business role belongs to no org unit, so a scoped grant has nothing
     // to narrow to.
     BusinessRolesController,
+    // Organizations milestone, Task 12 — the tenant lifecycle. Global-grant-
+    // only, super_admin only, on every route (see the controller's own doc
+    // comment), for the same reason as ConnectorTargetsController,
+    // SsoAppsController and BusinessRolesController above: an organization
+    // belongs to no org unit, so a scoped grant has nothing to narrow to.
+    OrganizationsController,
   ],
   providers: [
     {
@@ -187,6 +195,14 @@ import { UsersRepository } from './users/users.repository'
     // the same property that makes KeycloakAdminClient above safe to
     // register unconditionally.
     KeycloakAdminClientFactory,
+    // Organizations, Task 11 built this; Task 12 is what WIRES it up. Task 11
+    // deliberately left it unregistered because nothing could reach it yet —
+    // `SyncWorker.reconcileOrganization` (Task 14) is its only caller, and
+    // that did not exist. Constructs nothing and performs no I/O at
+    // construction (it holds only the factory above), so registering it costs
+    // a boot nothing — the same property that makes KeycloakAdminClient and
+    // KeycloakAdminClientFactory safe to register unconditionally.
+    OrganizationConnector,
     OutboxRepository,
     // Milestone 10, Task 2: the connector spine. `EchoConnector` (never
     // network I/O at construction — same property as KeycloakAdminClient/

@@ -1,12 +1,14 @@
 import { createServer, type Server } from 'node:http'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { ConnectorRegistry } from '../src/connectors/connector-registry'
+import { OrganizationConnector } from '../src/connectors/organization.connector'
 import { EchoConnector } from '../src/connectors/echo.connector'
 import { GroupsRepository } from '../src/groups/groups.repository'
 import {
   KeycloakAdminClient,
   type KeycloakAdminClientConfig,
 } from '../src/keycloak/keycloak-admin.client'
+import { KeycloakAdminClientFactory } from '../src/keycloak/keycloak-admin-client.factory'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { OutboxRepository } from '../src/outbox/outbox.repository'
 import { computeBackoffDelayMs, SyncWorker, type SyncWorkerConfig } from '../src/outbox/sync.worker'
@@ -1475,6 +1477,256 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
       }
       await worker.stop()
       expect((await outboxRow(secondEventId)).status).toBe('done')
+    })
+  })
+
+  // ===================================================================
+  // ORGANIZATIONS MILESTONE, TASK 14 — realm dispatch and deferral.
+  //
+  // Reuses this file's ONE Keycloak container and ONE Postgres container
+  // rather than starting its own: every assertion here is about the same
+  // worker draining the same outbox, and a second pair of containers would
+  // double this file's already-heavy startup cost for no additional
+  // coverage. The provisioning client is created in the container's own
+  // MASTER realm (the Keycloak-administrative one, not this project's
+  // `identity-manager` realm) by the container's bootstrap admin — never by
+  // the code under test.
+  // ===================================================================
+  describe('organizations: realm dispatch and unprovisioned deferral', () => {
+    const PROVISION_CLIENT_ID = 'idm-provisioner'
+    const PROVISION_CLIENT_SECRET = 'provision_test_secret'
+    const BOOTSTRAP_PASSWORD = 'admin_dev_password'
+
+    let serverRoot: string
+    let factory: KeycloakAdminClientFactory
+    let organizationWorker: SyncWorker
+
+    /** The container's own bootstrap admin — never the code under test. */
+    async function bootstrapToken(): Promise<string> {
+      const res = await fetch(`${serverRoot}/realms/master/protocol/openid-connect/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'password',
+          client_id: 'admin-cli',
+          username: 'admin',
+          password: BOOTSTRAP_PASSWORD,
+        }),
+      })
+      if (!res.ok) throw new Error(`bootstrap token failed: ${res.status} ${await res.text()}`)
+      return ((await res.json()) as { access_token: string }).access_token
+    }
+
+    async function adminCall(method: string, path: string, body?: unknown): Promise<Response> {
+      const token = await bootstrapToken()
+      return fetch(`${serverRoot}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      })
+    }
+
+    /** Reads realm state through the BOOTSTRAP admin, never through the connector's own client. */
+    async function getRealm(realm: string): Promise<Record<string, unknown> | null> {
+      const res = await adminCall('GET', `/admin/realms/${realm}`)
+      if (res.status === 404) return null
+      if (!res.ok) throw new Error(`get realm failed: ${res.status} ${await res.text()}`)
+      return (await res.json()) as Record<string, unknown>
+    }
+
+    async function listRealmUsernames(realm: string): Promise<string[]> {
+      const res = await adminCall('GET', `/admin/realms/${realm}/users?max=500`)
+      if (!res.ok) throw new Error(`list users failed: ${res.status} ${await res.text()}`)
+      return ((await res.json()) as { username: string }[]).map((u) => u.username).sort()
+    }
+
+    /** Exactly what `.env.example` tells an operator to build: `create-realm`, and nothing else. */
+    async function createProvisioningClient(): Promise<void> {
+      const created = await adminCall('POST', '/admin/realms/master/clients', {
+        clientId: PROVISION_CLIENT_ID,
+        secret: PROVISION_CLIENT_SECRET,
+        publicClient: false,
+        standardFlowEnabled: false,
+        directAccessGrantsEnabled: false,
+        serviceAccountsEnabled: true,
+        enabled: true,
+      })
+      if (created.status !== 201) {
+        throw new Error(`provisioning client create failed: ${created.status} ${await created.text()}`)
+      }
+
+      const lookup = await adminCall('GET', `/admin/realms/master/clients?clientId=${PROVISION_CLIENT_ID}`)
+      const [client] = (await lookup.json()) as { id: string }[]
+      const saRes = await adminCall('GET', `/admin/realms/master/clients/${client!.id}/service-account-user`)
+      const serviceAccount = (await saRes.json()) as { id: string }
+      const roleRes = await adminCall('GET', '/admin/realms/master/roles/create-realm')
+      const role = (await roleRes.json()) as { id: string; name: string }
+      const grant = await adminCall(
+        'POST',
+        `/admin/realms/master/users/${serviceAccount.id}/role-mappings/realm`,
+        [{ id: role.id, name: role.name }],
+      )
+      if (!grant.ok) throw new Error(`create-realm grant failed: ${grant.status} ${await grant.text()}`)
+    }
+
+    /** A tenant organization row, plus its root org unit — the shape POST /organizations produces. */
+    async function makeTenant(): Promise<{ id: string; slug: string; rootId: string }> {
+      const slug = `t${nextTag()}-${Date.now().toString(36)}`
+      const { rows } = await ctx.pool.query<{ id: string }>(
+        `INSERT INTO organizations (slug, name, realm) VALUES ($1, $1, $1) RETURNING id`,
+        [slug],
+      )
+      const id = rows[0]!.id
+      const root = await new OrgUnitsRepository(ctx.db).createRoot(`Tenant ${slug}`, ctx.db, id)
+      return { id, slug, rootId: root.id }
+    }
+
+    async function markProvisioned(organizationId: string): Promise<void> {
+      await ctx.pool.query('UPDATE organizations SET realm_provisioned_at = now() WHERE id = $1', [
+        organizationId,
+      ])
+    }
+
+    async function makeTenantUser(rootId: string): Promise<User> {
+      const tag = nextTag()
+      const username = `tenant-${tag}@example.com`
+      return usersRepo().create({
+        primaryEmail: username,
+        username,
+        firstName: 'Tenant',
+        lastName: `Person${tag}`,
+        orgUnitId: rootId,
+      })
+    }
+
+    beforeAll(async () => {
+      serverRoot = new URL(keycloak.issuer).origin
+      await createProvisioningClient()
+
+      factory = new KeycloakAdminClientFactory({
+        issuer: keycloak.issuer,
+        clientId: SYNC_CLIENT_ID,
+        clientSecret: SYNC_CLIENT_SECRET,
+        provisionClientId: PROVISION_CLIENT_ID,
+        provisionClientSecret: PROVISION_CLIENT_SECRET,
+        requestTimeoutMs: KEYCLOAK_REQUEST_TIMEOUT_MS,
+      })
+
+      // The registry gets the factory, so a TENANT realm resolves to a
+      // client built from the provisioning credential; master still resolves
+      // to `client`, the realm-scoped one this file has always used.
+      const registry = new ConnectorRegistry(
+        client,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        factory,
+      )
+      organizationWorker = new SyncWorker(
+        ctx.db,
+        outboxRepo(),
+        usersRepo(),
+        groupsRepo(),
+        client,
+        undefined,
+        registry,
+        undefined,
+        undefined,
+        undefined,
+        new OrganizationConnector(factory),
+        factory,
+      )
+    }, 240_000)
+
+    it('creates the realm for an organization event and stamps realm_provisioned_at', async () => {
+      const tenant = await makeTenant()
+      const eventId = await insertOutboxEvent('organization', tenant.id, 'created', {
+        slug: tenant.slug,
+      })
+
+      expect(await organizationWorker.runOnce()).toBe('processed')
+
+      expect(await getRealm(tenant.slug)).toMatchObject({ realm: tenant.slug, enabled: true })
+      expect((await outboxRow(eventId)).status).toBe('done')
+
+      const { rows } = await ctx.pool.query<{ realm_provisioned_at: string | null }>(
+        'SELECT realm_provisioned_at FROM organizations WHERE id = $1',
+        [tenant.id],
+      )
+      expect(rows[0]!.realm_provisioned_at).not.toBeNull()
+    })
+
+    it('disables, never deletes, the realm of a suspended organization', async () => {
+      const tenant = await makeTenant()
+      await insertOutboxEvent('organization', tenant.id, 'created', { slug: tenant.slug })
+      await organizationWorker.runOnce()
+
+      await ctx.pool.query("UPDATE organizations SET status = 'suspended' WHERE id = $1", [tenant.id])
+      await insertOutboxEvent('organization', tenant.id, 'status_changed', { status: 'suspended' })
+      await organizationWorker.runOnce()
+
+      // Still present, and still holding every credential inside it.
+      expect(await getRealm(tenant.slug)).toMatchObject({ realm: tenant.slug, enabled: false })
+    })
+
+    it('defers a user whose organization has no realm yet, without consuming an attempt', async () => {
+      const tenant = await makeTenant()
+      const user = await makeTenantUser(tenant.rootId)
+      const eventId = await insertOutboxEvent('user', user.id, 'created', { username: user.username })
+
+      expect(await organizationWorker.runOnce()).toBe('processed')
+
+      const row = await outboxRow(eventId)
+      expect(row.status).toBe('pending')
+      expect(row.attempts).toBe(0) // deferred, not failed
+      expect(row.last_error).toMatch(/waiting on realm provisioning/)
+    })
+
+    it('converges once the realm lands', async () => {
+      const tenant = await makeTenant()
+      const user = await makeTenantUser(tenant.rootId)
+      const eventId = await insertOutboxEvent('user', user.id, 'created', { username: user.username })
+
+      await organizationWorker.runOnce()
+      expect((await outboxRow(eventId)).status).toBe('pending')
+
+      // The realm arrives, exactly as draining the organization event would
+      // have produced it.
+      await insertOutboxEvent('organization', tenant.id, 'created', { slug: tenant.slug })
+      await organizationWorker.drain()
+
+      // The deferred user event is due again after its backoff.
+      await ctx.pool.query('UPDATE outbox_events SET next_attempt_at = now() WHERE id = $1', [eventId])
+      await organizationWorker.drain()
+
+      const row = await outboxRow(eventId)
+      expect(row.status).toBe('done')
+      expect(row.attempts).toBe(0)
+    })
+
+    // The design's test 8. A tenant's people must land in the tenant's realm
+    // and nowhere else — this is the assertion that would catch a factory
+    // handing back the master client for a tenant realm.
+    it('leaves master untouched when a tenant user syncs', async () => {
+      const mastersBefore = await listRealmUsernames('identity-manager')
+
+      const tenant = await makeTenant()
+      await insertOutboxEvent('organization', tenant.id, 'created', { slug: tenant.slug })
+      await organizationWorker.drain()
+      await markProvisioned(tenant.id)
+
+      const user = await makeTenantUser(tenant.rootId)
+      await insertOutboxEvent('user', user.id, 'created', { username: user.username })
+      await organizationWorker.drain()
+
+      expect(await listRealmUsernames(tenant.slug)).toContain(user.username)
+      expect(await listRealmUsernames('identity-manager')).toEqual(mastersBefore)
     })
   })
 })

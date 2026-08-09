@@ -225,6 +225,13 @@
       "when": 1786303670986,
       "tag": "0031_outbox_organization_aggregate",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1786310227408,
+      "tag": "0032_organizations_slug_index",
+      "breakpoints": true
     }
   ]
 }

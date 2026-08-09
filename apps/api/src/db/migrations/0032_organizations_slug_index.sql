@@ -1,0 +1,29 @@
+-- Milestone: organizations multi-tenancy, Task 12 — `organizations_slug_unique`
+-- becomes a PLAIN unique index on `slug` instead of a unique index on
+-- `lower(slug)`.
+--
+-- The expression was dead weight, not a safeguard: `organizations_slug_format`
+-- (added in 0024, alongside this index) constrains the column to
+-- `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`, so no row that could exist has an
+-- uppercase character for `lower()` to fold, and the two indexes are
+-- identical over every legal value. What the expression DID cost was
+-- legibility (it read as case-insensitive uniqueness that was in fact being
+-- enforced by the CHECK) and usability (an expression index cannot serve an
+-- ordinary `WHERE slug = $1`). The CHECK is the half that survives, because
+-- it is enforcing the DNS-label shape that makes a slug a legal Keycloak
+-- realm name — much more than case.
+--
+-- The NAME is deliberately unchanged. `OrganizationsRepository.
+-- translateWriteError` maps this exact constraint name to a 409, by name and
+-- never by SQLSTATE alone, and renaming would silently turn every duplicate
+-- slug into a 500.
+--
+-- RE-RUNNABLE, like everything from 0027 onward: test/migrate.spec.ts rewinds
+-- the ledger to 0027's journal `when` and replays this whole tail against a
+-- POPULATED schema. `DROP INDEX IF EXISTS` + `CREATE UNIQUE INDEX IF NOT
+-- EXISTS` is what makes a second pass a no-op instead of an error — and it is
+-- what drizzle-kit generated unaided here, so this file is the generator's
+-- own output with only this comment added. meta/0032_snapshot.json is kept
+-- verbatim so the next `generate` sees no drift.
+DROP INDEX IF EXISTS "organizations_slug_unique";--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "organizations_slug_unique" ON "organizations" USING btree ("slug");

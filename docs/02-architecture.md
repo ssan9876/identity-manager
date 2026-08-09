@@ -84,6 +84,12 @@ cannot be reached directly.
 | `CONFLICT` | 409 |
 | `INVALID_TRANSITION` | 409 |
 | `CYCLE_DETECTED` | 409 |
+| `NOT_CONFIGURED` | 503 |
+
+`NOT_CONFIGURED` is the one 4xx-shaped refusal that is **not** the caller's fault: the
+request is well-formed and the actor entitled, but the deployment is not equipped to
+serve it. `POST /organizations` raises it when no provisioning credential is
+configured, rather than accepting a row whose realm could never be created.
 
 Every error body is `{ statusCode, code, message, issues? }`.
 
@@ -95,7 +101,8 @@ mutation itself. Either both land or neither does.
 An event carries `(aggregateType, aggregateId, eventType, payload, target, status,
 attempts, nextAttemptAt, lastError)`.
 
-- **Aggregates**: `user`, `group`, `membership`, `org_unit`, `sso_app`. `membership`
+- **Aggregates**: `user`, `group`, `membership`, `org_unit`, `sso_app`, `organization`.
+  `membership`
   is its own aggregate because a membership row is a pure edge with no id of its own —
   it is anchored on the parent group but is not the same stream as that group's own
   name/description/attributes. `sso_app` is the one aggregate that describes something
@@ -112,6 +119,26 @@ attempts, nextAttemptAt, lastError)`.
   dead-letter. The split is asserted against both pgEnums in
   `test/target-fanout.spec.ts`, so a future aggregate added and left unclassified
   fails the suite rather than defaulting to the directory branch.
+- **Fan-out is also organization-aware.** After the aggregate filter,
+  `OutboxWriter.record` derives which organization the aggregate belongs to — from the
+  aggregate's own row, never from a caller-supplied argument — and, for anything other
+  than **master**, narrows the target list to `keycloak` alone. `connector_targets` is
+  keyed by target, so there is exactly one Active Directory / Entra / Google / mail
+  configuration in the system and it belongs to the platform; fanning a tenant out to it
+  would create real accounts, with real addresses, in a different tenant's estate.
+  Keycloak is the one target that is genuinely per-organization, because a realm is.
+  Master's fan-out is unchanged bit for bit.
+- **The `organization` aggregate provisions a realm.** `SyncWorker.reconcileOrganization`
+  calls `OrganizationConnector.ensureRealm`, sets the realm enabled to match the
+  organization's status, and only then stamps `realm_provisioned_at`. Suspension
+  *disables* the realm and evicts the memoized admin client and its live token; it never
+  deletes.
+- **A user whose realm does not exist yet is DEFERRED, not failed.** `DeferredError`
+  reschedules the event with backoff but leaves `attempts` untouched, so waiting on a
+  prerequisite can never spend the dead-letter budget — the reason lands in `last_error`
+  so the wait is visible. Master is exempt: its realm predates this system, so
+  `realm_provisioned_at` is `NULL` forever and the check would otherwise defer every
+  user in every deployment that has only ever had the one organization.
 - **Ordering is per `(aggregate, target)`**, not per aggregate. A stalled Active
   Directory delivery for a user must not head-of-line block that same user's later
   Keycloak events.

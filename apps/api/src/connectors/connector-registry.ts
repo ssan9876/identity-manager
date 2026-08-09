@@ -2,6 +2,7 @@ import { Inject, Injectable, Optional } from '@nestjs/common'
 import { eq } from 'drizzle-orm'
 import { connectorTargets } from '../db/schema/connector-targets'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
+import { KeycloakAdminClientFactory } from '../keycloak/keycloak-admin-client.factory'
 import type { DbHandle } from '../outbox/outbox.writer'
 import { ActiveDirectoryConnector } from './active-directory.connector'
 import type {
@@ -168,6 +169,18 @@ export class ConnectorRegistry {
     @Optional()
     @Inject(KeycloakSsoConnectorFactory)
     private readonly keycloakSsoConnectorFactory: KeycloakSsoConnectorFactory = new KeycloakSsoConnectorFactory(),
+    // Organizations milestone, Task 14 — the per-realm admin client factory,
+    // consulted by `resolve` ONLY when a caller names a non-master realm.
+    // `@Optional()` with NO default, unlike every parameter above: there is
+    // nothing sensible to construct here (a factory needs real credentials),
+    // and a raw `new ConnectorRegistry(keycloak)` — every pre-Task-14 test
+    // in the suite — must keep meaning exactly what it meant before, which
+    // is "everything goes through the one injected client". `null` is
+    // therefore a first-class value here and is handled explicitly in
+    // `resolve`, never a missing dependency.
+    @Optional()
+    @Inject(KeycloakAdminClientFactory)
+    private readonly keycloakFactory: KeycloakAdminClientFactory | null = null,
   ) {
     // Keycloak's OWN config source is unchanged by this task (still the
     // env-sourced KEYCLOAK_ADMIN_CONFIG token — see keycloak.connector.ts's
@@ -268,11 +281,46 @@ export class ConnectorRegistry {
    * `SyncWorker.applyEvent` dispatching on `aggregateType` alone: "claimed
    * non-Keycloak events would be silently misprocessed as Keycloak ones."
    */
-  async resolve(target: ConnectorTarget, tx: DbHandle): Promise<DirectoryConnector> {
+  async resolve(
+    target: ConnectorTarget,
+    tx: DbHandle,
+    // Organizations milestone, Task 14 — OPTIONAL and TRAILING, so every
+    // pre-existing two-argument call site keeps compiling and keeps its
+    // exact previous behaviour. Meaningful for `keycloak` alone: it names
+    // the REALM this particular event's principal lives in, which for a
+    // tenant is not the realm the single injected `KeycloakAdminClient` is
+    // bound to. Every other target is realm-blind (Active Directory, Entra,
+    // Google and the mail server have no realm concept — see
+    // target-fanout.ts), and a tenant never reaches them anyway (Task 13).
+    realm: string | null = null,
+  ): Promise<DirectoryConnector> {
     if (!Object.hasOwn(this.factories, target)) {
       throw new Error(
         `no connector registered for target "${target}" — implemented targets: ${Object.keys(this.factories).join(', ')}`,
       )
+    }
+
+    // A TENANT realm gets its own connector, wrapping the admin client the
+    // factory memoizes for that realm — authenticated as the master-realm
+    // PROVISIONING service account, because a realm-scoped credential can
+    // only ever administer its own realm (see KeycloakAdminClientFactory's
+    // own doc comment).
+    //
+    // MASTER deliberately falls through to the long-lived
+    // `keycloakConnector` built in the constructor, even though
+    // `forRealm(master)` would return an equivalent client. That is what
+    // makes "master keeps today's behaviour exactly" true in the strongest
+    // sense — the same instance, the same token cache, and, decisively, the
+    // SAME client a test substituted via `new SyncWorker(..., kc)` or a
+    // `GatedKeycloakAdminClient`. Routing master through the factory would
+    // silently ignore every such substitution.
+    if (
+      target === 'keycloak' &&
+      realm !== null &&
+      this.keycloakFactory !== null &&
+      realm !== this.keycloakFactory.masterRealmName()
+    ) {
+      return new KeycloakConnector(this.keycloakFactory.forRealm(realm))
     }
 
     const config = await this.loadConfig(target, tx)

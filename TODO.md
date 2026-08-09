@@ -148,13 +148,18 @@ asks stand:
 
 Carry-forward findings, already diagnosed:
 
-- [ ] **`organization_id` leaks into `GET` responses.** No response DTOs, so
-      Drizzle returns the column regardless of the declared interface. Decide in
-      Task 12 whether to expose or suppress it.
-- [ ] **The `lower(slug)` unique index is unreachable** — the
-      `organizations_slug_format` CHECK already forces lowercase. Drop the
-      `lower()` or relax the CHECK; one of them is dead weight, and the test
-      named for case-insensitivity proves only duplicate rejection.
+- [x] **`organization_id` in `GET` responses — decided in Task 12: EXPOSED.**
+      The row types now DECLARE the column they were already returning, rather
+      than adding explicit column lists to every read in every repository. It is
+      not sensitive to its audience: every actor who can read a directory row is
+      a platform operator, and `organization:read` returns the roster and its ids
+      to exactly the same super_admin population. Revisit in the DTOs if a
+      tenant-facing API is ever added.
+- [x] **The `lower(slug)` unique index — resolved in Task 12: the `lower()` was
+      dropped** (migration `0032`), and the CHECK survives. The CHECK enforces
+      the DNS-label shape a Keycloak realm name needs, which is far more than
+      case-folding; the expression index enforced nothing the CHECK did not
+      already, and made the index unusable for a plain `WHERE slug = $1`.
 - [ ] Minor: `organizations.schema.spec.ts` imports `sql` unused, and uses a dot
       separator where its sibling uses a hyphen.
 - [ ] **Unverified assumption, settled only by Task 11:** that Keycloak grants a

@@ -41,6 +41,34 @@ describe('KeycloakAdminClientFactory (Organizations, Task 9)', () => {
     expect(factory.forRealm('identity-manager')).toBe(factory.forRealm('identity-manager'))
   })
 
+  // Organizations, Task 12 — `evict`. `forRealm` memoizes forever, and each
+  // cached client holds a live admin token; once the API could DISABLE a
+  // realm (POST/PATCH /organizations), a suspended tenant's client and token
+  // would otherwise linger in the map for the life of the process.
+  it('evicts a memoized client, and mints a fresh one afterwards', () => {
+    const evicting = factoryWith()
+    const before = evicting.forRealm('acme')
+
+    expect(evicting.evict('acme')).toBe(true)
+    expect(evicting.forRealm('acme')).not.toBe(before)
+  })
+
+  it('reports false when evicting a realm nothing has asked for', () => {
+    // A normal outcome, never an error: nothing has touched this realm since
+    // the process started, so there is no cached client to drop.
+    expect(factoryWith().evict('never-requested')).toBe(false)
+  })
+
+  it('evicts the master realm too, rather than refusing it', () => {
+    // Deliberately NOT the master-realm refusal `OrganizationConnector`
+    // applies: dropping a cached client mutates nothing, and the next
+    // `forRealm` rebuilds an identical one from the same config.
+    const evicting = factoryWith()
+    const before = evicting.forRealm('identity-manager')
+    expect(evicting.evict('identity-manager')).toBe(true)
+    expect(evicting.forRealm('identity-manager')).not.toBe(before)
+  })
+
   it('exposes the server root and the master realm parsed out of the issuer', () => {
     expect(factory.serverRoot()).toBe('http://kc:8080')
     expect(factory.masterRealmName()).toBe('identity-manager')

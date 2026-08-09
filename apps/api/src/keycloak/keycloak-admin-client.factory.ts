@@ -160,4 +160,30 @@ export class KeycloakAdminClientFactory {
     this.clients.set(realm, client)
     return client
   }
+
+  /**
+   * Forgets the memoized client for `realm`, if any. Returns whether there
+   * was one — `false` is a perfectly normal outcome (nothing has asked for
+   * that realm since this process started) and never an error.
+   *
+   * Organizations, Task 12. `forRealm` above memoizes FOREVER, and each
+   * cached client owns a live access token for its realm. That was harmless
+   * while realms only ever appeared, which was true right up until this
+   * milestone gave the API a way to disable one: a suspended tenant's client
+   * — and the token inside it, valid for the rest of its lifetime — would
+   * otherwise sit in this map for the life of the process, so a code path
+   * that reached for it after suspension would get a working admin client
+   * for a realm this system has just been told to stop administering.
+   * Evicting drops both, and the next legitimate `forRealm` simply mints a
+   * fresh client and a fresh token.
+   *
+   * Deliberately does NOT refuse the master realm the way
+   * `OrganizationConnector.refuseMasterRealm` does. There is no danger here:
+   * evicting a client is not a mutation of anything, and the very next
+   * `forRealm(master)` rebuilds an identical one from the same unchanged
+   * config. Refusing would only add a way for a caller to be surprised.
+   */
+  evict(realm: string): boolean {
+    return this.clients.delete(realm)
+  }
 }

@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common'
 import { and, asc, eq, inArray, isNotNull, lte, ne, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type { AttributeDefinition, ValidationRules } from '../attributes/attribute-validator'
+import { crossTenantConflict } from '../common/cross-tenant'
 import { DB_CLIENT } from '../common/db.token'
 import { ConflictError, InvalidTransitionError, NotFoundError } from '../common/errors'
 import { attributeDefinitions } from '../db/schema/attribute-definitions'
@@ -22,6 +23,16 @@ export interface User {
   employeeId: string | null
   jobTitle: string | null
   orgUnitId: string
+  /**
+   * DELIBERATELY EXPOSED — see `OrgUnit.organizationId`'s own doc comment
+   * (org-units.repository.ts) for the full reasoning, which is identical
+   * here. Every read in this repository is a `SELECT *` returning the row
+   * verbatim, so this column has been on the wire since Task 2 regardless of
+   * what this interface declared; Task 12 chose to own that rather than add
+   * response DTOs, and Task 14 needs it declared because
+   * `SyncWorker.reconcileUser` resolves the person's REALM from it.
+   */
+  organizationId: string
   managerId: string | null
   location: string | null
   startDate: string | null
@@ -493,6 +504,18 @@ export class UsersRepository {
       if (pgError.constraint === EMPLOYEE_ID_UNIQUE_CONSTRAINT) {
         throw new ConflictError('a user with this employee id already exists')
       }
+    }
+
+    // Organizations, Task 12 — the COMPOSITE (…, organization_id) foreign
+    // keys from migration 0029. Consulted AFTER the single-column branches
+    // above, never before: `users_manager_id_users_id_fk` (a manager who
+    // does not exist -> 404) and `users_manager_organization_fk` (a manager
+    // who exists in another tenant -> 409) share SQLSTATE 23503 and differ
+    // only by name, and the 404 answer must win where it applies. See
+    // crossTenantConflict's own doc comment.
+    const crossTenant = crossTenantConflict(cause)
+    if (crossTenant !== null) {
+      throw crossTenant
     }
 
     throw cause

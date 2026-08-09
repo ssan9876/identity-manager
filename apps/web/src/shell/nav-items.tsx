@@ -145,6 +145,18 @@ function ApplicationsIcon({ className }: { className?: string }) {
   )
 }
 
+/** A ring of separate enclosures around one centre — many tenants, one platform. Deliberately unlike OrgUnitsIcon's tree: org units are a hierarchy INSIDE one organization, organizations are peers. */
+function OrganizationsIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)}>
+      <rect x="2.5" y="2.5" width="6" height="6" rx="1.5" />
+      <rect x="11.5" y="2.5" width="6" height="6" rx="1.5" />
+      <rect x="2.5" y="11.5" width="6" height="6" rx="1.5" />
+      <rect x="11.5" y="11.5" width="6" height="6" rx="1.5" />
+    </svg>
+  )
+}
+
 export const NAV_ITEMS: NavItem[] = [
   { key: 'people', label: 'People', path: '/people', group: 'directory', action: 'user:read', icon: PeopleIcon },
   { key: 'groups', label: 'Groups', path: '/groups', group: 'directory', action: 'group:read', icon: GroupsIcon },
@@ -172,6 +184,20 @@ export const NAV_ITEMS: NavItem[] = [
   // gates visibility exactly like every other item here: super_admin and
   // auditor see it, nobody else does (authz/actions.ts).
   { key: 'connectors', label: 'Connectors', path: '/connectors', group: 'operations', action: 'connector:read', icon: ConnectorsIcon },
+  // Organizations milestone, Task 15 — the tenant roster. In `operations`
+  // rather than `directory`: an organization is not a thing you look people
+  // up in, it is a thing the platform operator provisions and suspends,
+  // which is what that group already collects. `organization:read` is
+  // super_admin's alone (authz/actions.ts), so this item is invisible to
+  // every other role — including the auditor, unlike Connectors above.
+  {
+    key: 'organizations',
+    label: 'Organizations',
+    path: '/organizations',
+    group: 'operations',
+    action: 'organization:read',
+    icon: OrganizationsIcon,
+  },
   // SSO applications. `sso_app:read` is held by super_admin ALONE — not
   // auditor, unlike connectors — so this item is invisible to everyone
   // else, matching who can actually act on it.

@@ -196,10 +196,64 @@ containment is transitive.
 { "name": "EMEA", "parentId": "…uuid…" }
 ```
 
-Omitting `parentId` creates a **root**, which requires a **global** grant. With a
-`parentId`, the grant must cover the parent.
+`parentId` is **required**. Every org unit this route creates is a child, and the grant
+must cover the parent. A **root** org unit belongs to an *organization*, which owns
+exactly one, and the only thing that creates one is creating the organization — so there
+is deliberately no route that makes one. (Before organizations landed, omitting
+`parentId` created a root under a global grant; that branch is gone, and omitting it now
+is a **400**.)
 
 > There is no update or delete route for an org unit.
+
+---
+
+## Organizations
+
+Every route requires a **global** grant of the named action — an organization belongs to
+no org unit, so a scoped grant has nothing to narrow to — and all three actions are held
+by `super_admin` alone. Creating a tenant is a platform-operator act.
+
+### `GET /organizations` — `organization:read`
+
+Paginated, ordered by `slug`, and **includes master** — an operator's first question
+about the roster is usually which of these is the platform's own.
+
+### `POST /organizations` — `organization:create`
+
+```json
+{ "slug": "acme", "name": "Acme Corp" }
+```
+
+`slug` must match `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` — a DNS label, because it
+becomes the Keycloak realm name. `realm` is not accepted: it is always the slug.
+
+→ **201** with the row. `realmProvisionedAt` is `null`: the realm is created
+asynchronously by the sync worker, usually within a second or two.
+
+In one transaction this writes the organization, its single root org unit, an audit row
+and one `organization` outbox event.
+
+| Refusal | Status |
+|---|---|
+| No provisioning credential configured | **503** `NOT_CONFIGURED`, naming the two environment variables — refused *before* the insert |
+| `master`, or this deployment's own master realm/slug | **409** — reserved |
+| Malformed slug, or any unknown key | **400** |
+| Slug already taken | **409** |
+
+### `PATCH /organizations/:id` — `organization:update`
+
+```json
+{ "status": "suspended" }
+```
+
+`status` is the **only** accepted key, and the schema is `.strict()`, so an attempt to
+change `slug` is a **400** rather than a silently ignored field — a slug is a realm name
+that every one of the tenant's people authenticates against, and there is no rename
+anywhere in this product.
+
+Suspending disables the tenant's realm; it never deletes it. Master answers **409**:
+suspending it would disable the realm every administrator, including the caller, signs
+in through.
 
 ---
 
@@ -531,3 +585,5 @@ Worth stating explicitly, because their absence is a design decision:
 | Any JML rule API | Database rows plus the `jml:lifecycle` CLI |
 | Any business-roles API | Schema only so far — see [14 — Roadmap](14-roadmap.md) |
 | Dead-letter retry | Use reconciliation |
+| `DELETE /organizations/:id` | Deleting a realm destroys every user, session, client and credential inside it. A retired tenant is `suspended` |
+| Any tenant-facing route | Every administrator is a platform operator authenticating against the master realm |

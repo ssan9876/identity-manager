@@ -14,6 +14,7 @@ import { RoleAssignmentsController } from '../src/authz/role-assignments.control
 import { RoleAssignmentsRepository } from '../src/authz/role-assignments.repository'
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
+import { organizations } from '../src/db/schema/organizations'
 import * as schema from '../src/db/schema/index'
 import { GroupsController } from '../src/groups/groups.controller'
 import { GroupsRepository } from '../src/groups/groups.repository'
@@ -1073,6 +1074,169 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
         } finally {
           await ctx.pool.query(`DELETE FROM connector_targets WHERE target = 'active_directory'`)
         }
+      })
+    })
+
+    // =====================================================================
+    // ORGANIZATIONS MILESTONE, TASK 13 — organization-aware fan-out.
+    //
+    // Every test ABOVE creates its fixtures through the repositories, which
+    // land them in the MASTER organization (the only one migration 0025
+    // creates), so all of them are already the master half of this claim and
+    // stand here UNMODIFIED. What is new below is the tenant half: an
+    // organization other than master reaches `keycloak` and nothing else,
+    // because there is exactly one Active Directory / Entra / Google / mail
+    // configuration in `connector_targets` for the whole system and it
+    // belongs to the platform, not to any tenant.
+    // =====================================================================
+    describe('organization-aware fan-out (Task 13)', () => {
+      /** A second organization, with its own root org unit — the shape POST /organizations produces. */
+      async function makeTenant(label: string): Promise<{ id: string; rootId: string }> {
+        const tag = nextTag().toLowerCase()
+        const [org] = await ctx.db
+          .insert(organizations)
+          .values({ slug: `${label}-${tag}`, name: `${label} ${tag}`, realm: `${label}-${tag}` })
+          .returning()
+        const root = await orgUnitsRepo().createRoot(`${label} ${tag} Root`, ctx.db, org!.id)
+        return { id: org!.id, rootId: root.id }
+      }
+
+      /** Enables a SECOND target alongside the seeded `keycloak`, and removes it again. */
+      async function withActiveDirectoryEnabled(body: () => Promise<void>): Promise<void> {
+        await ctx.pool.query(
+          `INSERT INTO connector_targets (target, enabled) VALUES ('active_directory', true)
+           ON CONFLICT (target) DO UPDATE SET enabled = true`,
+        )
+        try {
+          await body()
+        } finally {
+          await ctx.pool.query(`DELETE FROM connector_targets WHERE target = 'active_directory'`)
+        }
+      }
+
+      it('emits every enabled target for a master user', async () => {
+        await withActiveDirectoryEnabled(async () => {
+          const writer = new OutboxWriter()
+          const unit = await makeOrgUnit('Master Fanout Root')
+          const user = await makeActiveUser('master-fanout', unit.id)
+
+          await ctx.db.transaction(async (tx) => {
+            await writer.record(tx, {
+              aggregateType: 'user',
+              aggregateId: user.id,
+              eventType: 'updated',
+              payload: { action: 'user:update' },
+            })
+          })
+
+          const events = await outboxEventsFor(ctx, 'user', user.id)
+          expect(events.map((e) => e.target).sort()).toEqual(['active_directory', 'keycloak'])
+        })
+      })
+
+      it('emits keycloak only for a tenant user', async () => {
+        await withActiveDirectoryEnabled(async () => {
+          const writer = new OutboxWriter()
+          const tenant = await makeTenant('acme')
+          const user = await usersRepo().create({
+            primaryEmail: `tenant-${nextTag()}@example.com`,
+            username: `tenant-${nextTag()}`,
+            firstName: 'Tenant',
+            lastName: 'Person',
+            orgUnitId: tenant.rootId,
+          })
+
+          await ctx.db.transaction(async (tx) => {
+            await writer.record(tx, {
+              aggregateType: 'user',
+              aggregateId: user.id,
+              eventType: 'created',
+              payload: { action: 'user:create' },
+            })
+          })
+
+          const events = await outboxEventsFor(ctx, 'user', user.id)
+          expect(events.map((e) => e.target)).toEqual(['keycloak'])
+        })
+      })
+
+      it('emits keycloak only for a tenant group, and for its membership edges', async () => {
+        await withActiveDirectoryEnabled(async () => {
+          const writer = new OutboxWriter()
+          const tenant = await makeTenant('globex')
+          const group = await groupsRepo().create({
+            name: `Tenant Group ${nextTag()}`,
+            orgUnitId: tenant.rootId,
+          })
+
+          await ctx.db.transaction(async (tx) => {
+            await writer.record(tx, {
+              aggregateType: 'group',
+              aggregateId: group.id,
+              eventType: 'created',
+              payload: { action: 'group:create' },
+            })
+            // A membership edge has no id of its own — it is anchored on the
+            // PARENT GROUP's id, which is what makes it resolvable to a
+            // tenant at all.
+            await writer.record(tx, {
+              aggregateType: 'membership',
+              aggregateId: group.id,
+              eventType: 'membership_changed',
+              payload: { action: 'group:add_member' },
+            })
+          })
+
+          expect((await outboxEventsFor(ctx, 'group', group.id)).map((e) => e.target)).toEqual([
+            'keycloak',
+          ])
+          expect((await outboxEventsFor(ctx, 'membership', group.id)).map((e) => e.target)).toEqual(
+            ['keycloak'],
+          )
+        })
+      })
+
+      it('emits keycloak only for a tenant org unit', async () => {
+        await withActiveDirectoryEnabled(async () => {
+          const writer = new OutboxWriter()
+          const tenant = await makeTenant('initech')
+
+          await ctx.db.transaction(async (tx) => {
+            await writer.record(tx, {
+              aggregateType: 'org_unit',
+              aggregateId: tenant.rootId,
+              eventType: 'created',
+              payload: { action: 'org_unit:create' },
+            })
+          })
+
+          expect((await outboxEventsFor(ctx, 'org_unit', tenant.rootId)).map((e) => e.target)).toEqual(
+            ['keycloak'],
+          )
+        })
+      })
+
+      it('emits keycloak only for the organization aggregate itself', async () => {
+        await withActiveDirectoryEnabled(async () => {
+          const writer = new OutboxWriter()
+          const tenant = await makeTenant('umbrella')
+
+          await ctx.db.transaction(async (tx) => {
+            await writer.record(tx, {
+              aggregateType: 'organization',
+              aggregateId: tenant.id,
+              eventType: 'created',
+              payload: { action: 'organization:create' },
+            })
+          })
+
+          // An organization is its own tenant, so it resolves through itself
+          // rather than through a join — and a realm is the one thing only
+          // Keycloak can create.
+          expect((await outboxEventsFor(ctx, 'organization', tenant.id)).map((e) => e.target)).toEqual(
+            ['keycloak'],
+          )
+        })
       })
     })
   })

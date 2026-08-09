@@ -19,6 +19,7 @@ import EditUserPage from './people/EditUserPage'
 import PeopleListPage from './people/PeopleListPage'
 import PersonDetailPage from './people/PersonDetailPage'
 import OrgUnitsPage from './org-units/OrgUnitsPage'
+import OrganizationsPage from './organizations/OrganizationsPage'
 import RolesCatalogPage from './roles/RolesCatalogPage'
 import SelfServicePage from './self-service/SelfServicePage'
 import AppShell from './shell/AppShell'
@@ -213,6 +214,7 @@ export default function App() {
           <Route path="/applications" element={<SsoAppsListPage />} />
           <Route path="/applications/new" element={<CreateSsoAppPage />} />
           <Route path="/applications/:id" element={<SsoAppDetailPage />} />
+          <Route path="/organizations" element={<OrganizationsPage />} />
           <Route path="/connectors" element={<ConnectorsListPage />} />
           <Route path="/connectors/:target" element={<TargetDetailPage />} />
           <Route path="/self" element={<SelfServicePage />} />

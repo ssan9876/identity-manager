@@ -30,6 +30,19 @@ export type Action =
   // still decides, and explains the refusal on its own terms.
   | 'business_role:read'
   | 'business_role:manage'
+  // Organizations milestone, Task 12. All three are super_admin's ALONE —
+  // including the READ, which is the only read action in this catalog not
+  // granted to the auditor or read_only roles: the tenant roster is the list
+  // of every customer of the deployment, which is platform-operator
+  // information rather than directory work. The API additionally requires
+  // each grant to be GLOBAL (`requireGlobalGrant` — an organization belongs
+  // to no org unit), and `GET /self/permissions` reports the ACTION and not
+  // its scope, so holding one of these in the set is not a promise that a
+  // write will succeed. The API still decides, and explains its refusal on
+  // its own terms.
+  | 'organization:read'
+  | 'organization:create'
+  | 'organization:update'
 
 /** Mirrors SelfPermissionsResponse from apps/api/src/self-service/self-service.controller.ts. */
 export interface SelfPermissionsResponse {

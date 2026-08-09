@@ -44,6 +44,10 @@ function makeUser(overrides: Partial<User> = {}): User {
     employeeId: null,
     jobTitle: 'Engineer',
     orgUnitId: 'org-1',
+    // Organizations, Task 14 — `User` now declares the tenant column it has
+    // always carried on the wire. A synthetic id is fine here: this file is
+    // a pure unit test of the rule engine and never touches Postgres.
+    organizationId: 'organization-1',
     managerId: null,
     location: null,
     startDate: null,

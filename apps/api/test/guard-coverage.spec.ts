@@ -96,6 +96,7 @@ describe('guard coverage', () => {
         'ImportsController',
         'MeController',
         'OrgUnitsController',
+        'OrganizationsController',
         'OutboxController',
         'RoleAssignmentsController',
         'SelfServiceController',

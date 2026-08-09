@@ -1,7 +1,9 @@
 # Identity Manager
 
-A single-tenant identity provider for one real organisation: the system of record for
-people, org structure, groups, entitlements and lifecycle state.
+A self-hosted identity provider, run by one operator for one or more real
+organisations: the system of record for people, org structure, groups, entitlements and
+lifecycle state. Each organisation gets its own Keycloak realm; every administrator is a
+platform operator authenticating against the master realm.
 
 Postgres holds all identity data. Keycloak owns credentials, MFA, sessions and SSO.
 Connectors push mastered identity outward into Active Directory, Entra ID, Google

@@ -31,7 +31,22 @@ export const organizations = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    slugUnique: uniqueIndex('organizations_slug_unique').on(sql`lower(${table.slug})`),
+    // A PLAIN unique index, not `lower(slug)`. Organizations, Task 12
+    // resolved the redundancy the project TODO flagged: with
+    // `organizations_slug_format` below forbidding any uppercase character
+    // in the column at all, `lower(slug)` and `slug` are the same value for
+    // every row that can exist, so the expression never did anything — it
+    // only made the index unusable for an ordinary `WHERE slug = $1` lookup
+    // and made its purpose read as case-insensitivity that was in fact being
+    // enforced somewhere else entirely.
+    //
+    // The CHECK is what survives, and the index is what changed, because the
+    // CHECK is doing far more than case-folding: it enforces the DNS-label
+    // shape that makes a slug a legal KEYCLOAK REALM NAME (and so a legal
+    // path segment in every issuer URL the tenant's people authenticate
+    // against). Dropping it to justify the expression index would have
+    // traded a real constraint for a redundant one.
+    slugUnique: uniqueIndex('organizations_slug_unique').on(table.slug),
     // Exactly one master. A plain unique index on a boolean would forbid a
     // second NON-master row too, so this is partial.
     masterUnique: uniqueIndex('organizations_master_unique')

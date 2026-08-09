@@ -145,12 +145,25 @@ Deliberate absences, not oversights:
 | Suspend / activate over HTTP | Status is owned by lifecycle automation and deactivation |
 | Dead-letter retry over HTTP | Reconciliation is the retry path; a retry endpoint would be an un-audited way to re-trigger arbitrary outbound calls |
 | An in-process scheduler | Both recurring jobs are on-demand scripts, so the operator owns the cadence |
-| Multi-tenancy | Single tenant, by design — no `tenant_id` anywhere |
 | Multi-forest / multi-domain AD | Explicitly out of scope; one domain per configured target |
 | SCIM inbound | Nothing writes into this system except its own API |
 | SAML applications | OIDC only. This is why Google Workspace SSO is still manual — Workspace federates over SAML |
 | Identity brokering | External IdPs federating *into* Keycloak is out of scope |
 | Segregation of duties, recertification campaigns, a request catalogue | All depend on business roles landing first — entitlements are what they operate on |
+
+## Multi-tenancy — landed, with four deliberate deferrals
+
+Organizations shipped: an `organizations` table, `organization_id` on every directory
+row, composite foreign keys that make a cross-tenant reference impossible, a realm per
+tenant provisioned by the sync worker, and `POST/GET/PATCH /organizations` with a
+console page. Four things were deliberately left out of it.
+
+| Deferred | Why, and what it would take |
+|---|---|
+| **Per-organization connector targets** | `connector_targets` is keyed by target alone, so there is one AD / Entra / Google / mail configuration for the whole system. Until that key includes an organization, a tenant reaches Keycloak only. This is the single largest remaining piece. |
+| **A tenant-facing API** | Every administrator authenticates against the master realm as a platform operator; there is no route a tenant's own admin could call, and no scoping that would make one safe. Adding one means response DTOs and a second, tenant-scoped authorization model. |
+| **Realm deletion** | There is none, on purpose: deleting a realm destroys every user, session, client and credential inside it irreversibly. A retired tenant is `suspended` — its realm disabled and still present — exactly as a terminated person is `deactivated`. |
+| **Cross-tenant reporting** | Nothing aggregates across organizations. The audit log carries `organization_id` but nothing groups by it, and `GET /organizations` is a roster, not a dashboard. |
 
 ## Known limitations to plan around
 

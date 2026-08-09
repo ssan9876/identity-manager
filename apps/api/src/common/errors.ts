@@ -86,3 +86,29 @@ export class ForbiddenError extends DomainError {
 export class DataIntegrityError extends DomainError {
   readonly code = 'DATA_INTEGRITY_FAULT'
 }
+
+/**
+ * A required piece of DEPLOYMENT CONFIGURATION is absent — not the caller's
+ * fault, and not retryable by them. Organizations milestone, Task 12.
+ *
+ * The motivating case is `POST /organizations` on a deployment with no
+ * `KEYCLOAK_PROVISION_CLIENT_ID`/`_SECRET`: the request is perfectly
+ * well-formed, the actor is perfectly entitled, and the row would insert
+ * cleanly — but the realm it names could never be provisioned, so the
+ * organization would sit "provisioning" forever while its outbox event
+ * retried and dead-lettered. Refusing up front turns that into one
+ * actionable answer at the moment of the request.
+ *
+ * 503, not 500 and not a 4xx. Not a 4xx because nothing the caller sent
+ * caused it and nothing they can send fixes it; not a 500 because it is not
+ * a bug — the service is functioning correctly and is simply not equipped
+ * for this operation yet. 503 is also the honest "try again once the
+ * operator has configured it" signal, which is exactly the remedy.
+ *
+ * The message must name the ENVIRONMENT VARIABLES and never their values —
+ * the same split `MissingSecretError` (connectors/secrets.ts) and
+ * `KeycloakFactoryConfig.provisionClientId` already make.
+ */
+export class NotConfiguredError extends DomainError {
+  readonly code = 'NOT_CONFIGURED'
+}

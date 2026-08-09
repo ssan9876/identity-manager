@@ -1,0 +1,36 @@
+/*
+ * Organizations — screen-specific styles only.
+ *
+ * Deliberately tiny. The roster is a plain `.table`, the badge is the shared
+ * `.badge` the people list already uses, and every button is a shared
+ * `.btn` — so the only things that need saying here are the create form's
+ * own layout and one inline annotation. No colour of any kind is declared
+ * in this file; the two rules that reference ink/space use existing tokens,
+ * per the check-css-tokens gate.
+ */
+
+/* The create form sits INLINE above the roster rather than on its own
+   route: an organization has exactly two fields, and a whole page
+   navigation for two fields is more ceremony than the act deserves. */
+.org-form {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 32rem;
+  margin: var(--space-6) 0;
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.org-form__actions {
+  display: flex;
+  gap: var(--space-3);
+}
+
+/* "· platform" beside the master organization's name. Set in muted ink at
+   the small step, so it reads as an annotation on the name rather than as a
+   second column that happens to be inside the first. */
+.org-table__master {
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}

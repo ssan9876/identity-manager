@@ -4,6 +4,78 @@ Every table lives in its own file under `apps/api/src/db/schema/`, re-exported f
 `index.ts` (which is what drizzle-kit reads to discover the schema). Migrations are
 generated with `db:generate` and applied with `db:migrate`.
 
+## Tenancy
+
+### `organizations` — tenants
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `slug` | varchar(63) | Unique. A **DNS label** (`organizations_slug_format` CHECK), because it becomes the Keycloak realm name |
+| `name` | varchar(255) | |
+| `realm` | varchar(63) | The Keycloak realm. Always equal to `slug`. Nullable for **master alone** (`organizations_realm_present` CHECK) |
+| `status` | enum | `active` \| `suspended` |
+| `is_master` | boolean | Exactly one row may be true (`organizations_master_unique`, a partial unique index) |
+| `realm_provisioned_at` | timestamptz | Stamped by the sync worker once the realm genuinely exists. `NULL` means "provisioning" |
+| `created_at` / `updated_at` | timestamptz | |
+
+`organizations_slug_unique` is a **plain** unique index on `slug`, not on `lower(slug)`:
+the format CHECK already forbids any uppercase character, so folding the case did
+nothing except make the index unusable for an ordinary equality lookup.
+
+**Master** is the platform's own organization, created by migration 0025 and pinned at
+startup: `adoptMasterRealm` records which realm `KEYCLOAK_ISSUER` names and refuses to
+start if that ever disagrees with what is already stored — re-pointing it would strand
+every existing user in a realm where none of their accounts exist. Master's realm
+already exists, so nothing provisions it and `realm_provisioned_at` stays `NULL`
+forever. Master cannot be suspended: doing so would disable the realm every
+administrator, including whoever asked, signs in through.
+
+There is **no delete**, and there is no `root_org_unit_id` column — that would form a
+foreign-key cycle with `org_units.organization_id`, and "non-null unless master" cannot
+be a CHECK because checks are immediate and the intermediate state inside the creating
+transaction would violate it. The root is derived: `parent_id IS NULL AND
+organization_id = $1`.
+
+### `organization_id` and the composite foreign keys
+
+`org_units`, `users`, `groups`, `group_user_members`, `group_group_members` and
+`audit_log` all carry `organization_id`. On the directory tables it is `NOT NULL`; on
+`audit_log` it is nullable, because rows predating organizations have none and
+platform-level actions legitimately have none.
+
+The column alone would not stop a cross-tenant reference — a user in Acme could still
+name a manager in Globex, and every id involved would be perfectly valid. What stops it
+is that **every such reference is a composite foreign key including `organization_id`**:
+
+| Constraint | Refuses |
+|---|---|
+| `users_org_unit_organization_fk` | A user whose org unit is in another organization |
+| `users_manager_organization_fk` | A manager in another organization |
+| `groups_org_unit_organization_fk` | A group whose org unit is in another organization |
+| `org_units_parent_organization_fk` | An org unit parented under another organization's subtree |
+| `gum_group_organization_fk` / `gum_user_organization_fk` | A membership edge joining one tenant's group to another's person |
+| `ggm_parent_organization_fk` / `ggm_child_organization_fk` | A nesting edge bridging two tenants — which would be a silent privilege bridge, since a nested group grants its parent's members everything the child grants |
+
+`MATCH SIMPLE` semantics mean a NULL in either column satisfies the constraint outright,
+which is exactly right for a root org unit (no parent), a global group (no org unit) and
+most users (no manager recorded): none of those can be cross-tenant, because they point
+at nothing at all.
+
+Each of these reaches an API caller as a **409** naming the relationship
+(`common/cross-tenant.ts`), never as an untranslated SQLSTATE 23503 — which would be an
+indistinguishable-from-a-crash 500 on a request that was refused for a perfectly
+comprehensible reason.
+
+`organization_id` is **exposed on GET responses**, deliberately. The API has no response
+DTOs, so Drizzle returns the column regardless; rather than adding explicit column lists
+to every read in every repository, the field is owned and declared on the row types. It
+is neither sensitive nor secret to its audience: every actor who can read a directory
+row at all is a platform operator holding master-realm credentials, and
+`organization:read` — which returns the roster and its ids — is held by exactly the same
+population. If a tenant-facing API is ever added, this decision has to be revisited
+*there*, with real DTOs.
+
 ## Core directory
 
 ### `org_units` — the org tree

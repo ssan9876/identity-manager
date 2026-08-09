@@ -42,6 +42,31 @@ export interface OrgUnit {
   name: string
   parentId: string | null
   path: string
+  /**
+   * DELIBERATELY EXPOSED (organizations milestone, Task 12), not merely
+   * leaked. Every method here `SELECT *`s and returns the row verbatim, so
+   * Drizzle has been returning this column since Task 2 regardless of what
+   * this interface declared — there are no response DTOs anywhere in this
+   * API, so the declared type was simply a lie about the wire format rather
+   * than a filter on it. Task 12 had to choose between suppressing it
+   * (explicit column lists on every read, in every repository) and owning
+   * it; this is the "own it" half, written down.
+   *
+   * Owning it is right because the value is neither sensitive nor
+   * inferable-from-nothing: every actor who can read an org unit at all
+   * authenticates against the MASTER realm as a platform operator (design
+   * decision 3), and `organization:read` — which returns the full roster and
+   * its ids — is held by exactly the same super_admin population. There is
+   * no tenant-facing API surface for this to leak ACROSS. What it buys is
+   * the console being able to say which tenant a directory row belongs to
+   * without a second round trip per row, which is the whole point of a
+   * multi-tenant console.
+   *
+   * If a tenant-facing (non-master) API is ever added, this decision must be
+   * revisited THERE, by adding response DTOs — not by quietly deleting the
+   * field here and hoping every `SELECT *` was found.
+   */
+  organizationId: string
   createdAt: Date
   updatedAt: Date
 }
@@ -120,17 +145,34 @@ export class OrgUnitsRepository {
    * AuditWriter.record(tx, …) audit row commit or roll back together.
    *
    * Milestone: organizations multi-tenancy, Task 2 — `organizationId` is
-   * NOT NULL and there is no API surface yet to name a target organization
-   * (that is a later task), so a fresh root falls back to master, exactly
-   * like GroupsRepository.create's global-group case: today there is only
-   * ever one organization, so every root org unit belongs to it.
+   * NOT NULL and there was no API surface yet to name a target organization,
+   * so a fresh root fell back to master, exactly like
+   * GroupsRepository.create's global-group case.
+   *
+   * Task 12 adds `organizationId` as an OPTIONAL THIRD parameter rather than
+   * making it required: `OrganizationsController.create` is the one caller
+   * that knows which tenant it is building a root for, and every other call
+   * site (bootstrap-admin, the whole test suite) still means "master" and
+   * keeps compiling unchanged. Omitting it therefore preserves the exact
+   * pre-Task-12 behaviour — the master lookup below still happens, and still
+   * costs the same one query — instead of silently changing what an
+   * unqualified `createRoot` means.
+   *
+   * It is third, AFTER `db`, because `db` is the parameter that already had
+   * to be passable on its own; putting the organization before it would have
+   * forced every existing two-argument call site to be rewritten to keep the
+   * same meaning.
    */
-  async createRoot(name: string, db: NodePgDatabase<typeof schema> = this.db): Promise<OrgUnit> {
+  async createRoot(
+    name: string,
+    db: NodePgDatabase<typeof schema> = this.db,
+    organizationId?: string,
+  ): Promise<OrgUnit> {
     try {
-      const master = await this.organizations.findMaster(db)
+      const resolvedOrganizationId = organizationId ?? (await this.organizations.findMaster(db)).id
       const [row] = await db
         .insert(orgUnits)
-        .values({ name, parentId: null, path: toLabel(name), organizationId: master.id })
+        .values({ name, parentId: null, path: toLabel(name), organizationId: resolvedOrganizationId })
         .returning()
 
       return row as OrgUnit
