@@ -9,6 +9,8 @@ import { AuditController } from './audit/audit.controller'
 import { AuditRepository } from './audit/audit.repository'
 import { AuditWriter } from './audit/audit.writer'
 import { PermissionEngine } from './authz/permission.engine'
+import { BusinessRolesRepository } from './business-roles/business-roles.repository'
+import { RoleReconciler } from './business-roles/role-reconciler'
 import { PermissionGuard } from './authz/permission.guard'
 import { PrivilegeGuards } from './authz/privilege.guards'
 import { RoleAssignmentsController } from './authz/role-assignments.controller'
@@ -215,6 +217,18 @@ import { UsersRepository } from './users/users.repository'
     // dependencies), so — like SyncWorker/EchoConnector/every connector
     // above — it is safe to register unconditionally for every app boot.
     TargetReconciliationJob,
+    // Milestone 17, Task 9: the business-role spine. Until this task both
+    // classes existed and were fully tested but were registered NOWHERE, so
+    // nothing in the running application ever called them. `UsersController`
+    // now injects `RoleReconciler` (not `@Optional()` — see its constructor)
+    // and re-evaluates inside its own create/update transactions, so these
+    // two must resolve for the app to boot at all; app.module.spec.ts is the
+    // guard on that. Neither performs I/O at construction — both only store
+    // already-provided dependencies — so registering them unconditionally is
+    // safe for every boot, exactly as for SyncWorker/TargetReconciliationJob
+    // above.
+    BusinessRolesRepository,
+    RoleReconciler,
   ],
 })
 export class AppModule {}
