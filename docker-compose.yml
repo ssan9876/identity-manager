@@ -27,6 +27,21 @@ services:
       timeout: 3s
       retries: 10
 
+  # THIS STACK IS FOR LOOPBACK ONLY. Both port mappings below bind every
+  # interface on the host, and everything this container is configured with is
+  # committed to a public repository: the bootstrap admin password on the next
+  # line, and — via the realm import mounted at the bottom — a working
+  # `admin@example.com` / `dev_password_change_me` account and the
+  # `idm_sync_dev_secret_change_me` client secret. Exposing this to a LAN, let
+  # alone the internet, hands over the identity provider the whole system
+  # trusts. `start-dev` is also an ephemeral-storage, no-TLS mode that Keycloak
+  # itself refuses to support in production.
+  #
+  # A real Keycloak is a separate, TLS-terminated instance wired up by
+  # `scripts/keycloak-setup.sh`, which builds the same realm through the Admin
+  # API with generated secrets and no seeded human user. See
+  # keycloak/realm-import/README.md and docs/12-security.md's hardening
+  # checklist. Nothing in this file should ever be pointed at one.
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
     command: ["start-dev", "--import-realm"]
@@ -38,6 +53,9 @@ services:
       - "8080:8080"
       - "9000:9000"
     volumes:
+      # The whole directory, deliberately: `--import-realm` picks up any
+      # *.json inside it, so the fixture's `.dev.json` name (finding SEC-L5)
+      # costs nothing here. See keycloak/realm-import/README.md.
       - ./keycloak/realm-import:/opt/keycloak/data/import:ro
 
 volumes:

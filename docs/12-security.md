@@ -249,8 +249,14 @@ It grants global `super_admin` while bypassing all four privilege checks, delibe
 ## Hardening checklist for a real deployment
 
 - [ ] TLS on **both** the console and Keycloak. Without it, sign-in silently fails.
-- [ ] Do **not** import `keycloak/realm-import/identity-manager-realm.json`. Use
-      `keycloak-setup.sh`.
+- [ ] Do **not** import `keycloak/realm-import/identity-manager-realm.dev.json`. Use
+      `keycloak-setup.sh`. That file is hardened against the accident — `.dev.json`
+      suffix, `sslRequired: "external"`, `idm-test-client` imported disabled (SEC-L5) —
+      but it still carries a real, published password for `admin@example.com` and a
+      published `idm-sync-service` secret, which no rename can fix.
+- [ ] If a realm was ever created from that file, confirm `idm-test-client` is absent or
+      disabled: `pnpm smoke:dev` and the test harness enable it deliberately and the
+      smoke script restores it, but a crashed run can leave it on.
 - [ ] Confirm `idm-sync-service` holds exactly four `realm-management` roles.
 - [ ] Confirm `RUNTIME_DATABASE_URL` is set and is a *different* role from
       `DATABASE_URL`. Verify `idm_app` has only `SELECT`/`INSERT` on `audit_log`.

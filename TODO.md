@@ -184,9 +184,27 @@ state of each.
       it.** `deploy/systemd/` has no reconciliation timer.
 - [ ] **7. `syncState` derivation degrades linearly** with unsettled aggregates, on
       the directory's main list page.
-- [ ] **8. Committed dev fixtures are real, working, `sslRequired: "none"`
-      secrets.** Rename to `.dev.json`, set `sslRequired: "external"`, ship
-      `idm-test-client` disabled.
+- [x] **8. Committed dev fixtures are real, working, `sslRequired: "none"`
+      secrets.** Done: renamed to `identity-manager-realm.dev.json`,
+      `sslRequired: "external"`, `idm-test-client` imported disabled, plus
+      `keycloak/realm-import/README.md`. The test client stays load-bearing
+      (its `idm-api` audience mapper is what makes a direct-grant token
+      acceptable), so the Testcontainers harness and `smoke:dev` enable it at
+      runtime via `apps/api/scripts/dev-test-client.ts`. **Residual:** the
+      seeded `admin@example.com` / `dev_password_change_me` and the
+      `idm_sync_dev_secret_change_me` client secret are still real and still
+      committed. Three deliberate, reasoned NON-fixes, not oversights:
+      (a) `.env.example`'s `KEYCLOAK_ADMIN_CLIENT_SECRET` is a copy of the
+      fixture's value, so it authenticates against nothing but a realm built
+      from that fixture; changing the literal breaks `setup:all`, local
+      onboarding and CI's hardcoded `env:` block, which is a bad trade for a
+      value already inert outside dev. (b) `docker-compose.yml`'s
+      `KC_BOOTSTRAP_ADMIN_PASSWORD` stays — it configures a laptop/CI-only
+      container and both the test harness and `smoke:dev` now depend on it;
+      the file instead carries a loud loopback-only warning. (c) Stripping the
+      seeded `admin@example.com` credential would break `smoke:dev`, the E2E
+      login and CI's `bootstrap:admin`, which is far beyond what a LOW finding
+      on a dev fixture justifies.
 - [ ] **CS-H1 (HIGH).** Dependency lifecycle scripts run unsandboxed as the service
       user at every install and upgrade, and `corepack prepare pnpm@9` is unpinned
       and integrity-unverified. The CI half is closed; the installer half is not.

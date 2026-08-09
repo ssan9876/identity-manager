@@ -14,7 +14,7 @@
 # Optional: REALM (default identity-manager)
 #
 # ---------------------------------------------------------------------------
-# WHY THIS DOES NOT IMPORT keycloak/realm-import/identity-manager-realm.json
+# WHY THIS DOES NOT IMPORT keycloak/realm-import/identity-manager-realm.dev.json
 #
 # That file is the DEVELOPMENT realm. It contains a user `admin@example.com`
 # with the password `dev_password_change_me`, and `idm-sync-service` with the
