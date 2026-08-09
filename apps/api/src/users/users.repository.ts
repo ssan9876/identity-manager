@@ -23,6 +23,16 @@ export interface User {
   employeeId: string | null
   jobTitle: string | null
   orgUnitId: string
+  /**
+   * DELIBERATELY EXPOSED — see `OrgUnit.organizationId`'s own doc comment
+   * (org-units.repository.ts) for the full reasoning, which is identical
+   * here. Every read in this repository is a `SELECT *` returning the row
+   * verbatim, so this column has been on the wire since Task 2 regardless of
+   * what this interface declared; Task 12 chose to own that rather than add
+   * response DTOs, and Task 14 needs it declared because
+   * `SyncWorker.reconcileUser` resolves the person's REALM from it.
+   */
+  organizationId: string
   managerId: string | null
   location: string | null
   startDate: string | null

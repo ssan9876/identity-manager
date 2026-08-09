@@ -5,19 +5,24 @@ import { AttributeTargetMappingsRepository } from '../attributes/attribute-targe
 import { DB_CLIENT } from '../common/db.token'
 import { buildTargetAttributes, computeCoreFieldValues } from '../connectors/attribute-mapping'
 import { ConnectorRegistry } from '../connectors/connector-registry'
+import { OrganizationConnector } from '../connectors/organization.connector'
 import type { DesiredGroup, DesiredUser, DirectoryGroupConnector } from '../connectors/connector'
 import { NotApplicableError } from '../connectors/connector'
 import { connectorTargets } from '../db/schema/connector-targets'
 import * as schema from '../db/schema/index'
 import { externalGroupIdentities } from '../db/schema/external-group-identities'
 import { externalIdentities } from '../db/schema/external-identities'
+import { organizations } from '../db/schema/organizations'
 import { externalSsoAppIdentities } from '../db/schema/external-sso-app-identities'
 import { userTargetAccounts } from '../db/schema/user-target-accounts'
 import { type Group, GroupsRepository } from '../groups/groups.repository'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
+import { KeycloakAdminClientFactory } from '../keycloak/keycloak-admin-client.factory'
 import { OrgUnitsRepository } from '../org-units/org-units.repository'
 import { SsoAppsRepository } from '../sso-apps/sso-apps.repository'
 import { type User, UsersRepository } from '../users/users.repository'
+import { DeferredError } from './deferred.error'
+import { NotFoundError } from '../common/errors'
 import { type ClaimedOutboxEvent, OutboxRepository } from './outbox.repository'
 import type { DbHandle, OutboxTarget } from './outbox.writer'
 
@@ -239,6 +244,19 @@ export class SyncWorker implements OnApplicationShutdown {
     attributeTargetMappingsRepository?: AttributeTargetMappingsRepository,
     @Optional() @Inject(OrgUnitsRepository) orgUnitsRepository?: OrgUnitsRepository,
     @Optional() @Inject(SsoAppsRepository) ssoAppsRepository?: SsoAppsRepository,
+    // Organizations milestone, Task 14 — same trailing-optional shape as
+    // every parameter above, and for the same reason: every raw
+    // `new SyncWorker(...)` call site in the suite keeps compiling. Both
+    // default to NULL rather than to a constructed instance, because neither
+    // can be built without real provisioning credentials — a worker without
+    // them simply cannot process an `organization` event, and says so
+    // (`reconcileOrganization` below) instead of pretending it can.
+    @Optional()
+    @Inject(OrganizationConnector)
+    private readonly organizationConnector: OrganizationConnector | null = null,
+    @Optional()
+    @Inject(KeycloakAdminClientFactory)
+    private readonly keycloakFactory: KeycloakAdminClientFactory | null = null,
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config }
     this.connectorRegistry = connectorRegistry ?? new ConnectorRegistry(keycloak)
@@ -286,11 +304,55 @@ export class SyncWorker implements OnApplicationShutdown {
         })
         await this.outboxRepository.markDone(tx, claimed.id)
       } catch (error) {
-        await this.recordFailure(tx, claimed, error)
+        // Organizations, Task 14. A DEFERRAL is not a failure — see
+        // DeferredError's own doc comment. It takes the same backoff as a
+        // retry but leaves `attempts` exactly as it was, so waiting on a
+        // prerequisite can never exhaust the dead-letter budget. Branched
+        // BEFORE `recordFailure` so nothing else about the failure path
+        // changes.
+        if (error instanceof DeferredError) {
+          await this.recordDeferral(tx, claimed, error)
+        } else {
+          await this.recordFailure(tx, claimed, error)
+        }
       }
     })
 
     return didWork ? 'processed' : 'idle'
+  }
+
+  /**
+   * Reschedules a DEFERRED event: still `pending`, backed off, with the
+   * reason recorded in `last_error` so an operator can see WHY it is
+   * waiting — and with `attempts` untouched, which is the whole difference
+   * from `recordFailure` below.
+   *
+   * The backoff is computed from `attempts + 1` rather than `attempts`
+   * purely so a first deferral (attempts = 0) waits `baseDelayMs` rather
+   * than nothing. Because `attempts` never grows, that delay never grows
+   * either: a deferred event polls at a steady ~`baseDelayMs`, which is the
+   * right shape for "waiting on something that is actively being created a
+   * few rows earlier in this same outbox" and converges within a second or
+   * two of the realm landing.
+   *
+   * `last_error` is a slightly awkward home for a non-error, and it is
+   * deliberate: it is the column `/outbox/dead-letters` and every operator
+   * runbook already look at, and inventing a `last_deferral` beside it would
+   * split one question ("why is this event not done?") across two places.
+   * The message always begins with what it is waiting ON, so the two cases
+   * read differently at a glance.
+   */
+  private async recordDeferral(
+    tx: DbHandle,
+    claimed: ClaimedOutboxEvent,
+    error: DeferredError,
+  ): Promise<void> {
+    const nextAttemptAt = new Date(Date.now() + computeBackoffDelayMs(claimed.attempts + 1, this.config))
+    await this.outboxRepository.markForRetry(tx, claimed.id, {
+      attempts: claimed.attempts,
+      nextAttemptAt,
+      lastError: error.message,
+    })
   }
 
   /**
@@ -392,6 +454,9 @@ export class SyncWorker implements OnApplicationShutdown {
       case 'sso_app':
         await this.reconcileSsoApp(tx, event.aggregateId, event.target)
         return
+      case 'organization':
+        await this.reconcileOrganization(tx, event.aggregateId)
+        return
       case 'org_unit':
         // Org units have no representation in ANY target in this milestone
         // — no connector's DesiredUser carries anything derived from
@@ -491,7 +556,12 @@ export class SyncWorker implements OnApplicationShutdown {
 
     const desired = await this.buildDesiredUser(tx, user, target)
 
-    const connector = await this.connectorRegistry.resolve(target, tx)
+    // Organizations milestone, Task 14 — WHICH REALM does this person live
+    // in? Only `keycloak` has an answer: every other target is realm-blind,
+    // and a tenant never reaches one anyway (Task 13's fan-out narrowing).
+    const realm = target === 'keycloak' ? await this.requireProvisionedRealm(tx, user) : null
+
+    const connector = await this.connectorRegistry.resolve(target, tx, realm)
 
     let externalId: string
     try {
@@ -526,6 +596,148 @@ export class SyncWorker implements OnApplicationShutdown {
           updatedAt: new Date(),
         },
       })
+  }
+
+  /**
+   * The Keycloak realm `user` belongs in — `null` for master, or a DEFERRAL
+   * if a tenant's realm does not exist yet.
+   *
+   * MASTER RETURNS `null`, NOT ITS REALM NAME, and is exempt from the
+   * deferral. Both halves are deliberate deviations from the milestone plan,
+   * which deferred on `realmProvisionedAt === null` alone and routed every
+   * user by realm name.
+   *
+   *  - EXEMPT, because master's `realm_provisioned_at` is null and always
+   *    will be. Master's realm ALREADY EXISTS — it is the one named by
+   *    `KEYCLOAK_ISSUER` that this API authenticates against — so nothing
+   *    ever provisions it and nothing ever stamps that column (see
+   *    master-organization.ts's `adoptMasterRealm`, which makes no Keycloak
+   *    call at all). Applying the plan's rule literally would defer EVERY
+   *    user in every single-tenant deployment, forever, on a realm that has
+   *    been there the whole time. The column means "this system created a
+   *    realm for this organization"; for master the honest answer is "it did
+   *    not have to".
+   *  - `null`, because `ConnectorRegistry.resolve` deliberately routes
+   *    master through the ONE injected `KeycloakAdminClient` rather than
+   *    through the factory (see its own doc comment), so master has no use
+   *    for a realm name here. Returning one would be an argument that is
+   *    always ignored — and, worse, would make this method depend on
+   *    `organizations.realm` having been resolved by startup, which is not
+   *    true in any test that never boots `main.ts`.
+   *
+   * A tenant's `realm` is NOT NULL by construction — the
+   * `organizations_realm_present` CHECK permits null for master alone — so
+   * the non-null assertion below is a schema guarantee, not an assumption.
+   */
+  private async requireProvisionedRealm(tx: DbHandle, user: User): Promise<string | null> {
+    const [organization] = await tx
+      .select()
+      .from(organizations)
+      .where(eq(organizations.id, user.organizationId))
+
+    if (organization === undefined) {
+      // `users.organization_id` is NOT NULL with a foreign key, so this is
+      // unreachable short of a corrupt database — a genuine failure, not a
+      // deferral, and it must be visible rather than retried silently.
+      throw new NotFoundError('organization', user.organizationId)
+    }
+
+    if (organization.isMaster) {
+      return null
+    }
+
+    if (organization.realmProvisionedAt === null) {
+      throw new DeferredError(
+        `waiting on realm provisioning for organization ${organization.slug}`,
+      )
+    }
+
+    return organization.realm
+  }
+
+  /**
+   * Desired state for the REALM itself — the `organization` aggregate's
+   * reconcile branch (organizations milestone, Task 14).
+   *
+   * Re-reads the row rather than replaying the payload, exactly as every
+   * other reconcile method here does, so a replayed or out-of-order event
+   * converges on what the database currently says rather than on what was
+   * true when the event was written.
+   *
+   * MASTER IS NEVER RECONCILED HERE. `POST /organizations` cannot create
+   * master, `PATCH` refuses to change it, and `OrganizationConnector` throws
+   * for the master realm on both of its methods — so an `organization` event
+   * for master could only come from a hand-written row, and the connector's
+   * own refusal is the right answer to that.
+   *
+   * `realmProvisionedAt` is stamped LAST, after both connector calls have
+   * returned. That ordering is what makes the deferral above correct: the
+   * column flips to non-null only once the realm genuinely exists and is in
+   * the right enabled state, so a user event that reads it can trust it. If
+   * either call throws, the whole nested transaction rolls back, the column
+   * stays null, and the users of that organization keep deferring — which is
+   * exactly right, because their realm still is not there.
+   *
+   * Re-stamped on EVERY pass, not only the first: `ensureRealm` is
+   * idempotent, and a status change (suspend, then reactivate) re-runs this
+   * whole method. Treating the column as "when we last confirmed the realm"
+   * rather than "when we first made it" is both more useful to an operator
+   * and cheaper to reason about than a conditional write.
+   */
+  async reconcileOrganization(tx: DbHandle, organizationId: string): Promise<void> {
+    const [organization] = await tx
+      .select()
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+
+    if (organization === undefined) {
+      throw new NotFoundError('organization', organizationId)
+    }
+    if (organization.realm === null) {
+      // Only master may have a null realm (`organizations_realm_present`),
+      // and an `organization` event for master is already a hand-written
+      // anomaly — see this method's own doc comment. A genuine failure, so
+      // it is visible rather than retried forever as a deferral.
+      throw new Error(
+        `organization ${organization.slug} has no realm to provision — only the master ` +
+          'organization may have a null realm, and it is never provisioned through this path',
+      )
+    }
+    if (this.organizationConnector === null) {
+      // A worker built without provisioning credentials cannot create a
+      // realm. A real, retryable failure rather than a deferral: no amount
+      // of waiting fixes an unconfigured deployment, and dead-lettering it
+      // is how the operator finds out. `POST /organizations` refuses up
+      // front with NOT_CONFIGURED (Task 12) precisely so this is normally
+      // unreachable.
+      throw new Error(
+        'cannot provision a realm: this worker has no OrganizationConnector — set ' +
+          'KEYCLOAK_PROVISION_CLIENT_ID and KEYCLOAK_PROVISION_CLIENT_SECRET',
+      )
+    }
+
+    await this.organizationConnector.ensureRealm({
+      realm: organization.realm,
+      displayName: organization.name,
+    })
+
+    const enabled = organization.status === 'active'
+    await this.organizationConnector.setRealmEnabled(organization.realm, enabled)
+
+    if (!enabled) {
+      // Drop the memoized admin client — and the live access token inside
+      // it — for a realm this system has just been told to stop
+      // administering. `KeycloakAdminClientFactory.forRealm` memoizes
+      // forever, so without this a suspended tenant's working admin client
+      // would sit in that map for the life of the process. Deliberately
+      // AFTER the disable call, which needs that very client.
+      this.keycloakFactory?.evict(organization.realm)
+    }
+
+    await tx
+      .update(organizations)
+      .set({ realmProvisionedAt: new Date(), updatedAt: new Date() })
+      .where(eq(organizations.id, organizationId))
   }
 
   /**
