@@ -476,20 +476,34 @@ Two traps worth knowing, both of which made a working fix look broken:
       `apps/web/src/styles/tokens.css`, whose header records the computation
       method, the ratios it corrected inline, and the full
       `.superpowers/...` path onward to the complete table.
-- [ ] **Four more bare report citations survive** — the "two" above was an
-      undercount. Grepping `task-2-report` also hits
-      `apps/web/src/attributes/AttributeField.tsx:100`,
-      `apps/web/src/self-service/SelfServicePage.tsx:58` and `:110` (the
-      latter also cites a bare `task-3-report.md`), and
-      `apps/web/src/styles/components.css:8` — all bare filenames, the same
-      defect. NOT fixed here: `.superpowers/sdd/` holds several milestone
-      directories and the ledger is absent from the worktree, so which
-      report each one means cannot be checked from the repository, and
-      guessing a path is the exact failure being removed. The self-service
-      and components.css ones read as Milestone 9 Task 2
-      (`.superpowers/sdd/2026-08-06-idp-milestone-9-ci-and-polish/`, the
-      directory tokens.css and docs/design-system.md both name);
-      AttributeField's is genuinely ambiguous. Needs someone with the ledger.
+- [x] **The bare-citation item rested on an inverted premise; closed without
+      code changes.** It claimed two (then four) bare citations "remain",
+      against a convention where the rest were `.superpowers/`-qualified.
+      Measured on the merged tree, tracked files only, excluding this file:
+      **103 bare citations across 67 files** — `task-1-brief.md` through
+      `task-9-report.md`, of which **30 are in `apps/api/src`** including
+      `permission.engine.ts`, `privilege.guards.ts`,
+      `sync-state.repository.ts` and migration `0014_known_photon.sql` —
+      against **5** path-qualified ones. The bare form IS the convention.
+      The two that were rewritten were not stragglers; they were among the
+      handful ever written the other way.
+
+      **The ledger is not missing.** It lives at `.superpowers/sdd/`, which
+      `.gitignore:7` excludes, so it is present in the original clone and
+      absent from every fresh worktree — which is why it reads as
+      unresolvable when checked from one. It holds five milestone
+      directories, so a bare `task-3-report.md` IS ambiguous on its face
+      and resolvable only by matching content.
+
+      **Decided: leave the 103 alone.** Path-qualifying them is a
+      comment-only diff across 67 files, touching production code for no
+      behavioural gain, and it would encode a path that only a ledger holder
+      can follow anyway. A reader without `.superpowers/` cannot use either
+      form; a reader with it can find a bare name by grep. What was actually
+      worth fixing — a citation whose claim could not be checked at all —
+      was fixed in the two files above by resting each comment on something
+      that lives in this repository.
+
 - [ ] **`stash@{0}` is superseded** — "WIP on feat/user-activate…". Its four
       files became `c3524c6` and `a734538`, which are 66 lines further along.
       Droppable.
