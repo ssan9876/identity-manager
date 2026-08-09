@@ -128,6 +128,18 @@ type Matcher = (fieldValue: unknown, conditionValue: unknown, user: EvaluableUse
 
 const KNOWN: (matched: boolean) => ConditionMatch = (matched) => ({ known: true, matched })
 
+/**
+ * ltree ancestry, done on labels rather than characters.
+ *
+ * A plain `path.startsWith(ancestor)` is WRONG and dangerously so:
+ * `'acme.salesops.emea'.startsWith('acme.sales')` is true, which would hand
+ * every Sales entitlement to an unrelated department. Ancestry requires the
+ * next character after the prefix to be a label separator.
+ */
+function isAtOrBelow(path: string, ancestor: string): boolean {
+  return path === ancestor || path.startsWith(`${ancestor}.`)
+}
+
 const OPERATOR_MATCHERS: Record<string, Matcher> = nullPrototypeMap<Matcher>([
   ['equals', (fieldValue, conditionValue) => KNOWN(scalarEquals(fieldValue, conditionValue))],
   ['not_equals', (fieldValue, conditionValue) => KNOWN(!scalarEquals(fieldValue, conditionValue))],
@@ -138,6 +150,21 @@ const OPERATOR_MATCHERS: Record<string, Matcher> = nullPrototypeMap<Matcher>([
         return { known: false, reason: `operator "in" requires an array value` }
       }
       return KNOWN(conditionValue.some((candidate) => scalarEquals(fieldValue, candidate)))
+    },
+  ],
+  [
+    'in_org_subtree',
+    (fieldValue, conditionValue, user) => {
+      // The operator implies the comparison: it is only meaningful against
+      // the org hierarchy, so naming any other field is a formula that does
+      // not mean what its author thought it did. Refuse rather than guess.
+      if (fieldValue !== user.orgUnitId) {
+        return { known: false, reason: 'operator "in_org_subtree" applies only to orgUnitId' }
+      }
+      if (typeof conditionValue !== 'string' || conditionValue.length === 0) {
+        return { known: false, reason: 'operator "in_org_subtree" requires a non-empty ltree path' }
+      }
+      return KNOWN(isAtOrBelow(user.orgUnitPath, conditionValue))
     },
   ],
 ])
