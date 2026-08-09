@@ -63,14 +63,38 @@ export const users = pgTable(
     deactivatedAt: timestamp('deactivated_at', { withTimezone: true }),
   },
   (table) => ({
+    // Milestone: organizations multi-tenancy, Task 3. Uniqueness is
+    // PER-ORGANIZATION, not global: two tenants may each employ a `jsmith`
+    // with the same corporate-looking address, and a global index would let
+    // whichever tenant onboarded first permanently deny the name to every
+    // other one. Within a single organization the old case-insensitive
+    // behaviour is unchanged — the key is (organization_id, lower(...)), so
+    // `jsmith` and `JSmith` still collide inside one tenant.
+    //
+    // The index NAMES are deliberately unchanged. `translateWriteError` in
+    // the users and groups repositories matches on exactly these strings to
+    // turn a 23505 into a ConflictError; renaming one would silently turn a
+    // 409 into a 500.
+    //
+    // Security note (finding SEC-L2, docs/archive/audits/carried-findings-
+    // verification.md): POST /users' 409 is an existence oracle. It is
+    // already scrubbed of the submitted value there; scoping these indexes
+    // per organization additionally narrows the oracle to WITHIN one tenant,
+    // where the caller is already authorised to look.
     emailUnique: uniqueIndex('users_primary_email_unique').on(
+      table.organizationId,
       sql`lower(${table.primaryEmail})`,
     ),
     usernameUnique: uniqueIndex('users_username_unique').on(
+      table.organizationId,
       sql`lower(${table.username})`,
     ),
+    // Still PARTIAL: employee_id is nullable and most rows have none. A
+    // plain unique index would be fine for NULLs under Postgres' default
+    // NULLS DISTINCT, but the partial index keeps the index small and keeps
+    // the intent explicit.
     employeeIdUnique: uniqueIndex('users_employee_id_unique')
-      .on(table.employeeId)
+      .on(table.organizationId, table.employeeId)
       .where(sql`${table.employeeId} IS NOT NULL`),
     orgUnitIdx: index('users_org_unit_idx').on(table.orgUnitId),
     organizationIdx: index('users_organization_idx').on(table.organizationId),
