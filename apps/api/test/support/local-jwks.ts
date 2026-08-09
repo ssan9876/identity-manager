@@ -3,7 +3,7 @@ import { exportJWK, generateKeyPair, SignJWT, type JWTPayload, type KeyLike } fr
 
 export interface LocalJwks {
   issuer: string
-  signToken: (claims: JWTPayload) => Promise<string>
+  signToken: (claims: JWTPayload, options?: { omitExpiry?: boolean }) => Promise<string>
   stop: () => Promise<void>
 }
 
