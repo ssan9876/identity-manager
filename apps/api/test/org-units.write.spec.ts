@@ -149,27 +149,31 @@ describe('org unit write endpoints (Milestone 3b, Task 3)', () => {
   // POST /org-units
   // =======================================================================
   describe('POST /org-units', () => {
-    it('creates a ROOT for a GLOBAL actor and writes exactly one audit row', async () => {
+    /**
+     * Organizations multi-tenancy, Task 7. This used to be the happy path
+     * for a GLOBAL actor. A root org unit is now the thing an ORGANIZATION
+     * owns — exactly one, created by creating the organization — so there
+     * is no route that makes one, not even for a super admin. The actor
+     * here holds an UNRESTRICTED grant precisely so the 400 cannot be
+     * mistaken for an authorization outcome.
+     */
+    it('rejects a root org unit — roots come only from creating an organization', async () => {
       const bootstrap = await makeOrgUnit('Bootstrap')
       const actor = await makeActiveUser('global-creator', bootstrap.id)
       await grant(actor.id, 'super_admin', null)
       currentUsername = actor.username
 
-      const tag = nextTag()
+      const before = await totalAuditCount(ctx)
+
       const res = await request(app.getHttpServer())
         .post('/org-units')
-        .send({ name: `Root ${tag}` })
-        .expect(201)
+        .send({ name: `Root ${nextTag()}` })
+        .expect(400)
 
-      expect(res.body.parentId).toBeNull()
-      expect(res.body.path).not.toContain('.')
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+      expect(res.body.issues.join(' ')).toContain('parentId')
 
-      const rows = await auditRowsFor(ctx, res.body.id)
-      expect(rows).toHaveLength(1)
-      expect(rows[0].action).toBe('org_unit:create')
-      expect(rows[0].actor_user_id).toBe(actor.id)
-      expect(rows[0].before).toBeNull()
-      expect(rows[0].after?.parentId).toBeNull()
+      expect(await totalAuditCount(ctx)).toBe(before)
     })
 
     it('creates a CHILD for an actor scoped to the parent and writes exactly one audit row', async () => {
@@ -193,10 +197,17 @@ describe('org unit write endpoints (Milestone 3b, Task 3)', () => {
       expect(rows[0].after?.parentId).toBe(root.id)
     })
 
-    it('rejects creating a ROOT for a SCOPED actor with 403 and writes no audit row', async () => {
+    /**
+     * The same request from a SCOPED actor. It used to be a 403 (creating a
+     * root required a GLOBAL grant); since Task 7 it is a 400, and the
+     * change of code is the point: the request is now malformed for
+     * everybody, so nobody's grant is consulted and no oracle exists about
+     * what a wider grant would have been allowed to do.
+     */
+    it('rejects a root for a SCOPED actor too, as a 400 and not a 403, and writes no audit row', async () => {
       const root = await makeOrgUnit('No Root For Scoped')
       const actor = await makeActiveUser('scoped-creator', root.id)
-      await grant(actor.id, 'super_admin', root.id) // SCOPED — no parent to scope against
+      await grant(actor.id, 'super_admin', root.id)
       currentUsername = actor.username
 
       const before = await totalAuditCount(ctx)
@@ -205,8 +216,8 @@ describe('org unit write endpoints (Milestone 3b, Task 3)', () => {
       const res = await request(app.getHttpServer())
         .post('/org-units')
         .send({ name: `Should Not Exist ${tag}` })
-        .expect(403)
-      expect(res.body.code).toBe('FORBIDDEN')
+        .expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
 
       expect(await totalAuditCount(ctx)).toBe(before)
     })
@@ -292,7 +303,10 @@ describe('org unit write endpoints (Milestone 3b, Task 3)', () => {
 
       const res = await request(app.getHttpServer())
         .post('/org-units')
-        .send({ name: `nul${nul}test` })
+        // `parentId` supplied since Task 7 made it required, so the ONLY
+        // thing wrong with this body is the NUL in `name` — otherwise this
+        // test would pass on the strength of the missing parent instead.
+        .send({ name: `nul${nul}test`, parentId: bootstrap.id })
         .expect(400)
       expect(res.body.code).toBe('VALIDATION_FAILED')
       expect(res.body.issues.join(' ')).toContain('name')
@@ -349,7 +363,8 @@ describe('org unit write endpoints (Milestone 3b, Task 3)', () => {
       const tag = nextTag()
       const res = await request(app.getHttpServer())
         .post('/org-units')
-        .send({ name: `Redact ${tag}` })
+        // A CHILD: since Task 7 there is no route that creates a root.
+        .send({ name: `Redact ${tag}`, parentId: bootstrap.id })
         .expect(201)
 
       const rows = await auditRowsFor(ctx, res.body.id)
