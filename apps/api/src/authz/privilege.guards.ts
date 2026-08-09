@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common'
 import { eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { DB_CLIENT } from '../common/db.token'
-import { ForbiddenError } from '../common/errors'
+import { DataIntegrityError, ForbiddenError } from '../common/errors'
 import * as schema from '../db/schema/index'
 import { roleAssignments } from '../db/schema/role-assignments'
 import { ROLE_RANK, type RoleKey } from './actions'
@@ -180,11 +180,20 @@ export class PrivilegeGuards {
     // catalog (ROLE_PERMISSIONS's doc comment: the catalog is deliberately
     // static code, changed only by review). A target row referencing a key
     // this catalog doesn't recognise is a data-integrity fault, not a
-    // legitimate low-privilege principal, so this throws a plain Error
-    // (surfaces as an uncaught 500, per this file's error-taxonomy
-    // convention — see common/errors.ts: "anything that is NOT a
-    // DomainError is a genuine bug"), never a rank that could satisfy the
-    // comparison below.
+    // legitimate low-privilege principal, so this throws, never returns a
+    // rank that could satisfy the comparison below.
+    //
+    // Finding AUTHZ-L-4 (docs/archive/audits/audit-authz.md), carried as an
+    // Item-10 residual: this used to throw a PLAIN Error. That failed
+    // closed — the audit verified it live with `ALTER TYPE role_key ADD
+    // VALUE 'ghost'` — but produced a bodyless 500 indistinguishable from a
+    // genuine crash, on a principal who is by then permanently unmodifiable
+    // through the API with no actionable error anywhere. `DataIntegrityError`
+    // is still a 500 and still fails closed; it just says WHICH key and why,
+    // so the fault is a one-line fix instead of a mystery. It is the one
+    // DomainError that maps to 5xx — see its own doc comment in
+    // common/errors.ts for why that does not weaken this file's
+    // "a non-DomainError is a bug" taxonomy.
     //
     // Finding I-1, round 2 (Critical): the original `in` operator walks
     // the prototype chain, so `'constructor' in ROLE_RANK` and
@@ -203,8 +212,8 @@ export class PrivilegeGuards {
     // possibly `undefined`.
     const targetRank = targetAssignments.reduce((highest, row) => {
       if (!Object.hasOwn(ROLE_RANK, row.roleKey)) {
-        throw new Error(
-          `data integrity fault: role_assignments references unknown role_key "${row.roleKey}"`,
+        throw new DataIntegrityError(
+          `role_assignments references a role_key this build does not recognise: "${row.roleKey}"`,
         )
       }
       return Math.max(highest, ROLE_RANK[row.roleKey])

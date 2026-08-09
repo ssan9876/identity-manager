@@ -6,6 +6,7 @@ import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import {
   ConflictError,
   CycleError,
+  DataIntegrityError,
   ForbiddenError,
   InvalidTransitionError,
   NotFoundError,
@@ -37,6 +38,10 @@ class BoomController {
   @Get('forbidden')
   forbidden(): never {
     throw new ForbiddenError('not permitted')
+  }
+  @Get('data-integrity')
+  dataIntegrity(): never {
+    throw new DataIntegrityError('role_assignments references an unknown role_key: "ghost"')
   }
   @Get('unmapped')
   unmapped(): never {
@@ -93,6 +98,21 @@ describe('DomainExceptionFilter', () => {
   it('maps ForbiddenError to 403', async () => {
     const res = await request(app.getHttpServer()).get('/boom/forbidden').expect(403)
     expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  /**
+   * Finding AUTHZ-L-4. The point of the class is NOT the status — a plain
+   * Error was already a 500 and already failed closed — it is that the
+   * response now carries a `code` and a message an operator can act on,
+   * instead of being indistinguishable from a crash. So this asserts the
+   * BODY, not just the 500. It is also the one DomainError mapped to 5xx:
+   * if a future edit gives it a 4xx mapping, this fails.
+   */
+  it('maps DataIntegrityError to a 500 that still names itself', async () => {
+    const res = await request(app.getHttpServer()).get('/boom/data-integrity').expect(500)
+    expect(res.body.code).toBe('DATA_INTEGRITY_FAULT')
+    expect(res.body.statusCode).toBe(500)
+    expect(res.body.message).toContain('ghost')
   })
 
   it('does not catch non-domain errors, and never leaks their message', async () => {
