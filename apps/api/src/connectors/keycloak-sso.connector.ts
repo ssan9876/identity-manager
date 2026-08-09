@@ -186,22 +186,36 @@ function requiredString(config: Record<string, unknown>, key: string): string {
 @Injectable()
 export class KeycloakSsoConnectorFactory {
   configure(config: Record<string, unknown>): KeycloakSsoConnector {
+    // No cast anywhere: KeycloakAdminClient must structurally satisfy
+    // SsoAdminApi, so dropping or renaming one of those six methods is a
+    // compile error here rather than a runtime failure on the first sync.
+    return new KeycloakSsoConnector(this.configureAdmin(config))
+  }
+
+  /**
+   * The raw admin API for this target, for the ONE operation that is not
+   * desired-state reconciliation: minting a client secret.
+   *
+   * Deliberately not a fourth method on `SsoConnector`. That interface
+   * describes asserting desired state — plan it, apply it, report health.
+   * Minting is imperative and one-shot: it invalidates the previous secret,
+   * it is triggered by an administrator rather than by an outbox event, and
+   * its result must reach exactly one HTTP response and nothing else. Folding
+   * it into the reconciliation interface would imply the sync worker could
+   * call it, which must never happen.
+   */
+  configureAdmin(config: Record<string, unknown>): SsoAdminApi {
     const baseUrl = requiredString(config, 'baseUrl').replace(/\/+$/, '')
     const realm = requiredString(config, 'realm')
     const clientId = requiredString(config, 'clientId')
     const clientSecret = resolveSecret(requiredString(config, 'credentialSecretName'))
 
-    const admin = new KeycloakAdminClient({
+    return new KeycloakAdminClient({
       // KeycloakAdminClient derives both the token URL and the admin REST
       // base from this one value — see its constructor.
       issuer: `${baseUrl}/realms/${realm}`,
       clientId,
       clientSecret,
     })
-
-    // No cast: KeycloakAdminClient must structurally satisfy SsoAdminApi, so
-    // that dropping or renaming one of those six methods is a compile error
-    // here rather than a runtime failure on the first application sync.
-    return new KeycloakSsoConnector(admin)
   }
 }

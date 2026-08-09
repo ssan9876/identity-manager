@@ -16,6 +16,7 @@ import { RoleAssignmentsRepository } from './authz/role-assignments.repository'
 import { DB_CLIENT } from './common/db.token'
 import { ActiveDirectoryConnector } from './connectors/active-directory.connector'
 import { ConnectorRegistry } from './connectors/connector-registry'
+import { KeycloakSsoConnectorFactory } from './connectors/keycloak-sso.connector'
 import { ConnectorTargetsController } from './connectors/connector-targets.controller'
 import { ConnectorTargetsRepository } from './connectors/connector-targets.repository'
 import { EchoConnector } from './connectors/echo.connector'
@@ -42,6 +43,8 @@ import { SyncStateRepository } from './outbox/sync-state.repository'
 import { SyncWorker } from './outbox/sync.worker'
 import { TargetReconciliationJob } from './outbox/target-reconciliation.job'
 import { SelfServiceController } from './self-service/self-service.controller'
+import { SsoAppsController } from './sso-apps/sso-apps.controller'
+import { SsoAppsRepository } from './sso-apps/sso-apps.repository'
 import { UsersController } from './users/users.controller'
 import { UsersRepository } from './users/users.repository'
 
@@ -63,6 +66,8 @@ import { UsersRepository } from './users/users.repository'
     // the attribute mapping editor (AttributeTargetMappingsController).
     ConnectorTargetsController,
     AttributeTargetMappingsController,
+    // SSO application registration. Global-grant-only, super_admin only.
+    SsoAppsController,
   ],
   providers: [
     {
@@ -190,6 +195,8 @@ import { UsersRepository } from './users/users.repository'
     // resolve through DI, JS-level default or not.
     MailServerConnector,
     ConnectorRegistry,
+    KeycloakSsoConnectorFactory,
+    SsoAppsRepository,
     SyncWorker,
     SyncStateRepository,
     // Milestone 14, Task 9 — the connector console's own read/write
