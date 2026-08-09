@@ -85,7 +85,18 @@ test('refuses a reserved client id', async ({ page }) => {
   await page.getByLabel('Redirect URIs').fill('https://evil.example.com/cb')
   await page.getByRole('button', { name: 'Register' }).click()
 
-  await expect(page.getByText(/reserved/i)).toBeVisible()
+  // The refusal surfaces in TWO places by design — a field-level error on the
+  // input AND a form-level banner — so a bare getByText(/reserved/i) matches
+  // both elements and fails Playwright's strict mode. That is a defect in this
+  // assertion, not in the app: this spec had never been executed until CI began
+  // running it (docs/archive/plans/2026-08-08-sso-app-onboarding-followups.md
+  // item 1 says so explicitly), so nothing had ever caught it.
+  //
+  // Assert the field-level error, which is the sharper claim — the error lands
+  // on the input that caused it rather than only in a generic banner — and
+  // that the form was not submitted.
+  await expect(page.locator('#clientId-error')).toContainText(/reserved/i)
+  await expect(page.getByRole('heading', { name: 'Register application' })).toBeVisible()
 })
 
 test('disables an application without offering any way to delete it', async ({ page }) => {
