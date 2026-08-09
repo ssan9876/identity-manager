@@ -95,8 +95,32 @@ apt-get install -y -qq curl ca-certificates gnupg git nginx postgresql postgresq
 
 if ! command -v node >/dev/null || [[ "$(node -v | sed 's/v\([0-9]*\).*/\1/')" -lt 20 ]]; then
   info "installing Node 20"
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null
+  # NodeSource's apt repository, added EXPLICITLY rather than by piping their
+  # setup script into a root shell (finding CS-M4,
+  # docs/archive/audits/audit-client-supply-chain.md). That pipe fetched a
+  # remote script and executed it as root with no pinning, no checksum and no
+  # signature — and with output sent to /dev/null, so an operator watching the
+  # install saw nothing of what ran. A NodeSource compromise or a CA-level MITM
+  # meant root on the identity provider at install time.
+  #
+  # This is NodeSource's own documented alternative and removes remote code
+  # execution from the path entirely: the key is fetched, converted and pinned
+  # to this one source with signed-by=, and apt then verifies every package
+  # against it. Note what has NOT changed — the packages were always verified;
+  # it was the bootstrap script that was not, and it ran first and as root.
+  install -d -m 0755 /etc/apt/keyrings
+  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
+  chmod 0644 /etc/apt/keyrings/nodesource.gpg
+  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+    >/etc/apt/sources.list.d/nodesource.list
+  apt-get update -qq >/dev/null
   apt-get install -y -qq nodejs >/dev/null
+  # Fail loudly rather than continuing with whatever node happened to be present:
+  # a silent fallback here is how you end up debugging a Node 18 runtime error
+  # three steps later.
+  command -v node >/dev/null || die "Node install failed — check /etc/apt/sources.list.d/nodesource.list"
+  [[ "$(node -v | sed 's/v\([0-9]*\).*/\1/')" -ge 20 ]] || die "expected Node >= 20, got $(node -v)"
 fi
 corepack enable >/dev/null 2>&1 || npm install -g corepack >/dev/null
 # EXACT version, not the `pnpm@9` range this used to pin. A range resolves at

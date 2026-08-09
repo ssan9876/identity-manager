@@ -279,6 +279,14 @@ script rather than assuming: run `pnpm install --frozen-lockfile` and read the
 and test suite actually break. A package added on suspicion re-opens the hole
 for that package permanently.
 
+**Node is installed from a signed apt repository, not a piped script.**
+`install.sh` used to run `curl … /setup_20.x | bash -` as root, with output to
+`/dev/null` so an operator saw nothing of what ran (finding CS-M4). It now adds
+NodeSource's GPG key to `/etc/apt/keyrings/` and writes a `deb [signed-by=…]`
+source directly — NodeSource's own documented alternative — so apt verifies
+every package and no remote code executes as root. The *packages* were always
+verified; it was the bootstrap script that was not, and it ran first.
+
 **The package manager itself is pinned by digest.** `packageManager` carries
 `pnpm@9.12.0+sha512.…`, and `scripts/install.sh` runs
 `corepack prepare pnpm@9.12.0` rather than the `pnpm@9` range it used to. A
