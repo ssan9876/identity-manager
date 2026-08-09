@@ -1,13 +1,52 @@
+import { type ExecutionContext, type INestApplication } from '@nestjs/common'
+import { Reflector } from '@nestjs/core'
+import { Test } from '@nestjs/testing'
 import { eq } from 'drizzle-orm'
-import { describe, expect, it } from 'vitest'
+import request from 'supertest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { AuditWriter } from '../src/audit/audit.writer'
+import { JwtGuard } from '../src/auth/jwt.guard'
+import { PermissionEngine } from '../src/authz/permission.engine'
+import { PermissionGuard } from '../src/authz/permission.guard'
+import { PrivilegeGuards } from '../src/authz/privilege.guards'
+import { RoleAssignmentsRepository } from '../src/authz/role-assignments.repository'
+import { BusinessRolesRepository } from '../src/business-roles/business-roles.repository'
+import { hashDefinition, parseDefinition } from '../src/business-roles/draft'
+import { RoleReconciler } from '../src/business-roles/role-reconciler'
+import { DB_CLIENT } from '../src/common/db.token'
+import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import type { ConnectorTarget } from '../src/connectors/connector'
+import { businessRoleConditions } from '../src/db/schema/business-roles'
+import { groups } from '../src/db/schema/groups'
 import { orgUnits } from '../src/db/schema/org-units'
 import { userTargetAccounts } from '../src/db/schema/user-target-accounts'
 import { users } from '../src/db/schema/users'
-import { groups } from '../src/db/schema/groups'
+import { GroupsRepository } from '../src/groups/groups.repository'
+import { KeycloakAdminClient } from '../src/keycloak/keycloak-admin.client'
 import { OrganizationsRepository } from '../src/organizations/organizations.repository'
+import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
+import { OutboxRepository } from '../src/outbox/outbox.repository'
 import { OutboxWriter } from '../src/outbox/outbox.writer'
+import { SyncDetailRepository } from '../src/outbox/sync-detail.repository'
+import { SyncStateRepository } from '../src/outbox/sync-state.repository'
+import { SyncWorker } from '../src/outbox/sync.worker'
+import { UsersController } from '../src/users/users.controller'
+import { UsersRepository } from '../src/users/users.repository'
 import { type TestDatabase, withTestDatabase } from './support/pg'
+
+/**
+ * A definitely-closed local port: every Keycloak call fails fast with
+ * ECONNREFUSED rather than hanging, so no Keycloak container is needed here
+ * — the same trick target-reconciliation.spec.ts and outbox-emission.spec.ts
+ * already use. The offboarding tests below substitute the client entirely,
+ * because they need to OBSERVE the synchronous revocation, not merely
+ * survive it.
+ */
+const UNREACHABLE_KEYCLOAK = {
+  issuer: 'http://127.0.0.1:1/realms/unreachable',
+  clientId: 'irrelevant',
+  clientSecret: 'irrelevant',
+}
 
 /**
  * MILESTONE 18 — the sync half of business roles: what an ENTITLEMENT
@@ -30,6 +69,23 @@ const ctx = withTestDatabase()
 
 function writer(): OutboxWriter {
   return new OutboxWriter()
+}
+
+/**
+ * A real `SyncWorker`, purely for `buildDesiredUser` — the one method that
+ * decides whether a target should have this person enabled, and therefore
+ * the place Task 14's disable either means something or does not. No
+ * connector is resolved by that method, so the unreachable Keycloak client
+ * below is never called.
+ */
+function syncWorker(): SyncWorker {
+  return new SyncWorker(
+    ctx.db,
+    new OutboxRepository(),
+    new UsersRepository(ctx.db),
+    new GroupsRepository(ctx.db),
+    new KeycloakAdminClient(UNREACHABLE_KEYCLOAK),
+  )
 }
 
 /**
@@ -204,5 +260,354 @@ describe('entitlement-driven fan-out (Milestone 18, Task 13)', () => {
     )
 
     expect(await outboxTargetsForAggregate(groupId)).toEqual(['keycloak'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Task 14 — losing an entitlement disables the account
+// ---------------------------------------------------------------------------
+
+function roleRepo(): BusinessRolesRepository {
+  return new BusinessRolesRepository(ctx.db)
+}
+
+function reconciler(): RoleReconciler {
+  return new RoleReconciler(roleRepo(), new AuditWriter(), new OutboxWriter())
+}
+
+/**
+ * A published, enabled role whose ONLY grant is a target account on
+ * `target`, keyed on a `jobTitle` unique to this call.
+ *
+ * The unique condition value is not decoration: `withTestDatabase()` never
+ * truncates between `it` blocks, so a role left enabled by an earlier test is
+ * still enabled and still evaluated for every later test's user. A shared
+ * literal would let one test's role grant another test's user an account —
+ * the exact mistake that once produced a bogus "5 of 19 failing" run in this
+ * codebase. `options.jobTitle === 'Account Executive'` is the caller-facing
+ * sentinel for "seed a user this role matches", exactly as
+ * business-roles.spec.ts's own fixtures use it.
+ */
+async function seedRoleGrantingTargetAccount(
+  target: ConnectorTarget,
+  options: { jobTitle: string },
+): Promise<{ userId: string; roleId: string; matchingJobTitle: string }> {
+  seq += 1
+  const n = seq
+  const matchingJobTitle = `Account Executive #${n}`
+  const userId = await insertUser({
+    jobTitle: options.jobTitle === 'Account Executive' ? matchingJobTitle : options.jobTitle,
+  })
+
+  const role = await roleRepo().create({ name: `BR Sync Role ${n}`, description: null })
+  const definition = {
+    conditions: [{ field: 'jobTitle', operator: 'equals', value: matchingJobTitle }],
+    grants: [{ kind: 'target_account', groupId: null, target }],
+  }
+  await roleRepo().saveDraft(role.id, definition)
+  await roleRepo().recordSimulation(role.id, hashDefinition(parseDefinition(definition)))
+  await roleRepo().publish(role.id)
+  await roleRepo().setEnabled(role.id, true)
+
+  return { userId, roleId: role.id, matchingJobTitle }
+}
+
+/**
+ * An enabled, published role carrying a condition on a field the running
+ * binary does not know — the shape a migration newer than this build leaves
+ * behind. Inserted straight into `business_role_conditions` AFTER publish,
+ * because `parseDefinition` would (correctly) reject it on the way in.
+ *
+ * A LANDMINE for every later test in this file: ONE unevaluable enabled role
+ * makes `evaluateRoles` refuse for EVERY user, not just one. Any test using
+ * it must disable the role before it returns — which is also, in the
+ * offboarding tests below, precisely the point being proven: deactivation
+ * must not care.
+ */
+async function seedUnevaluableRole(): Promise<{ roleId: string }> {
+  seq += 1
+  const n = seq
+  const role = await roleRepo().create({ name: `BR Sync Unevaluable Role ${n}`, description: null })
+  const definition = {
+    conditions: [{ field: 'jobTitle', operator: 'equals', value: `Nobody At All #${n}` }],
+    grants: [],
+  }
+  await roleRepo().saveDraft(role.id, definition)
+  await roleRepo().recordSimulation(role.id, hashDefinition(parseDefinition(definition)))
+  await roleRepo().publish(role.id)
+  await roleRepo().setEnabled(role.id, true)
+
+  await ctx.db.insert(businessRoleConditions).values({
+    businessRoleId: role.id,
+    field: 'managerId',
+    operator: 'equals',
+    value: 'anyone',
+  })
+
+  return { roleId: role.id }
+}
+
+describe('entitlement loss disables (Milestone 18, Task 14)', () => {
+  /**
+   * Grant, then break the condition, then reconcile again — the two-pass
+   * shape every test in this block needs. Returns the user whose entitlement
+   * has just been revoked.
+   */
+  async function grantThenRevoke(target: ConnectorTarget): Promise<string> {
+    const { userId, roleId } = await seedRoleGrantingTargetAccount(target, { jobTitle: 'Account Executive' })
+    await ctx.db.transaction((tx) => reconciler().reconcileUser(tx, userId, null, new Date()))
+    expect(await ctx.db.select().from(userTargetAccounts).where(eq(userTargetAccounts.userId, userId))).toHaveLength(1)
+
+    await ctx.db.update(users).set({ jobTitle: `Manager #${seq}` }).where(eq(users.id, userId))
+    await ctx.db.transaction((tx) => reconciler().reconcileUser(tx, userId, null, new Date()))
+
+    // The role stays enabled but can no longer match anybody else's unique
+    // jobTitle, so it is not a landmine for later tests. `roleId` is returned
+    // only for symmetry with the fixture; nothing here needs to disable it.
+    void roleId
+    return userId
+  }
+
+  it('revoking a target-account entitlement enqueues a disable, not silence', async () => {
+    // An account silently dropped from management stays ENABLED in the
+    // target forever — precisely the orphaned account the governance
+    // sub-project would later have to go and find. Commit 92055ee
+    // established this for the mail connector's aliases; this generalises it.
+    await configureTargets({ keycloak: 'entitled_only' })
+    const userId = await grantThenRevoke('keycloak')
+
+    const events = await outboxEventsFor(userId)
+    expect(events.map((event) => event.eventType)).toContain('status_changed')
+    expect(events.at(-1)).toMatchObject({ target: 'keycloak' })
+    // And the entitlement really is gone — the disable is not a duplicate of
+    // some grant-time event.
+    expect(await ctx.db.select().from(userTargetAccounts).where(eq(userTargetAccounts.userId, userId))).toEqual([])
+  })
+
+  it('the disable is emitted even though the user no longer passes the fan-out filter', async () => {
+    // The ordering trap: by the time the disable is written, the
+    // `user_target_accounts` row is already gone, so a naive
+    // `OutboxWriter.record()` would emit nothing at all for that target.
+    await configureTargets({ keycloak: 'entitled_only' })
+    const userId = await grantThenRevoke('keycloak')
+
+    expect(await outboxTargetsFor(userId)).toContain('keycloak')
+
+    // The control that makes the assertion above mean something: the generic
+    // writer, asked about this same user a moment later, correctly emits
+    // NOTHING for the same target. The disable exists only because the
+    // reconciler wrote it directly.
+    const before = (await outboxTargetsFor(userId)).length
+    await ctx.db.transaction((tx) =>
+      writer().record(tx, { aggregateType: 'user', aggregateId: userId, eventType: 'updated', payload: {} }),
+    )
+    expect(await outboxTargetsFor(userId)).toHaveLength(before)
+  })
+
+  it('emits one disable per revoked target, and none when nothing was revoked', async () => {
+    await configureTargets({ keycloak: 'entitled_only' })
+    const { userId } = await seedRoleGrantingTargetAccount('keycloak', { jobTitle: 'Account Executive' })
+
+    // Pass 1 grants; pass 2 changes nothing at all.
+    await ctx.db.transaction((tx) => reconciler().reconcileUser(tx, userId, null, new Date()))
+    await ctx.db.transaction((tx) => reconciler().reconcileUser(tx, userId, null, new Date()))
+    expect(await outboxEventsFor(userId)).toEqual([])
+
+    await ctx.db.update(users).set({ jobTitle: `Manager #${seq}` }).where(eq(users.id, userId))
+    await ctx.db.transaction((tx) => reconciler().reconcileUser(tx, userId, null, new Date()))
+    await ctx.db.transaction((tx) => reconciler().reconcileUser(tx, userId, null, new Date()))
+
+    // Exactly one — the second revoke pass has nothing left to revoke, so it
+    // must not re-emit. Disables are idempotent in effect, but a reconciler
+    // that emitted one on every pass would flood the outbox forever.
+    expect(await outboxEventsFor(userId)).toEqual([{ eventType: 'status_changed', target: 'keycloak' }])
+  })
+
+  it('the disable actually DISABLES: desired state for the revoked user is enabled=false', async () => {
+    // Without this, Task 14 would be theatre — the event would land in
+    // SyncWorker, which would recompute `enabled` from status alone and
+    // cheerfully re-assert `enabled: true` for a still-active user, leaving
+    // exactly the live account the disable existed to close.
+    await configureTargets({ keycloak: 'entitled_only' })
+    const userId = await grantThenRevoke('keycloak')
+
+    const user = await new UsersRepository(ctx.db).findById(userId)
+    expect(user?.status).toBe('active')
+
+    const desired = await ctx.db.transaction((tx) => syncWorker().buildDesiredUser(tx, user!, 'keycloak'))
+    expect(desired.enabled).toBe(false)
+  })
+
+  it('an all_users target keeps an active user enabled regardless of any entitlement', async () => {
+    // The default mode never consults entitlement — this is the same
+    // property outbox-emission.spec.ts guards one layer up, asserted here
+    // against desired state itself.
+    await configureTargets({ keycloak: 'all_users' })
+    const userId = await grantThenRevoke('keycloak')
+
+    const user = await new UsersRepository(ctx.db).findById(userId)
+    const desired = await ctx.db.transaction((tx) => syncWorker().buildDesiredUser(tx, user!, 'keycloak'))
+    expect(desired.enabled).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Task 14, step 4 — offboarding is independent of role evaluation
+// ---------------------------------------------------------------------------
+
+/**
+ * SETTLED DECISION 8, asserted rather than assumed. Offboarding must never
+ * acquire a dependency on the role engine: a directory whose rules this
+ * binary cannot understand must still be able to get somebody out.
+ *
+ * `UsersController.deactivate` is driven through the real HTTP stack with the
+ * real `PermissionGuard`/`PermissionEngine`; only `JwtGuard` and
+ * `KeycloakAdminClient` are substituted (the latter so the synchronous
+ * revocation attempt is observable, and so no Keycloak container is needed).
+ */
+describe('offboarding is independent of role evaluation (settled decision 8)', () => {
+  let app: INestApplication
+  let currentUsername = ''
+  let adminUserId = ''
+  const keycloakCalls: { method: 'setEnabled' | 'revokeSessions'; username: string; enabled?: boolean }[] = []
+
+  const keycloakSpy = {
+    async setEnabled(username: string, enabled: boolean): Promise<void> {
+      keycloakCalls.push({ method: 'setEnabled', username, enabled })
+    },
+    async revokeSessions(username: string): Promise<void> {
+      keycloakCalls.push({ method: 'revokeSessions', username })
+    },
+  }
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      controllers: [UsersController],
+      providers: [
+        { provide: DB_CLIENT, useFactory: () => ctx.db },
+        BusinessRolesRepository,
+        RoleReconciler,
+        UsersRepository,
+        GroupsRepository,
+        OrgUnitsRepository,
+        RoleAssignmentsRepository,
+        PermissionEngine,
+        PermissionGuard,
+        PrivilegeGuards,
+        AuditWriter,
+        OutboxWriter,
+        Reflector,
+        { provide: KeycloakAdminClient, useValue: keycloakSpy },
+        SyncStateRepository,
+        SyncDetailRepository,
+      ],
+    })
+      .overrideGuard(JwtGuard)
+      .useValue({
+        canActivate(context: ExecutionContext): boolean {
+          context.switchToHttp().getRequest<{ principal?: unknown }>().principal = {
+            subject: 'br-sync-test',
+            username: currentUsername,
+            email: null,
+          }
+          return true
+        },
+      })
+      .compile()
+
+    app = moduleRef.createNestApplication()
+    app.useGlobalFilters(new DomainExceptionFilter())
+    await app.init()
+
+    // A global super_admin to act as — `user:deactivate` needs a real grant;
+    // the permission stack is NOT stubbed here.
+    adminUserId = await insertUser()
+    const admin = await new UsersRepository(ctx.db).findById(adminUserId)
+    currentUsername = admin!.username
+    await new RoleAssignmentsRepository(ctx.db).assign({
+      userId: adminUserId,
+      roleKey: 'super_admin',
+      scopeOrgUnitId: null,
+    })
+  })
+
+  afterAll(async () => {
+    await app?.close()
+  })
+
+  async function deactivateUserViaController(userId: string): Promise<void> {
+    await request(app.getHttpServer()).post(`/users/${userId}/deactivate`).expect(200)
+  }
+
+  it('deactivation disables every target even when NO role grants an account entitlement', async () => {
+    await configureTargets({ keycloak: 'all_users' })
+    const userId = await insertUser({ jobTitle: 'Account Executive' })
+    // Deliberately no business role, and therefore no user_target_accounts row.
+
+    await deactivateUserViaController(userId)
+
+    const events = await outboxEventsFor(userId)
+    expect(events).toContainEqual({ eventType: 'status_changed', target: 'keycloak' })
+  })
+
+  it('deactivation disables even when an enabled role is UNEVALUABLE', async () => {
+    // The role engine refuses to compute a desired set here. Offboarding must
+    // proceed anyway: rule correctness is the second belt, never the braces.
+    await configureTargets({ keycloak: 'all_users' })
+    const userId = await insertUser({ jobTitle: 'Account Executive' })
+    const { roleId } = await seedUnevaluableRole()
+
+    try {
+      // Proof the landmine is live: an ordinary user WRITE refuses while this
+      // role is enabled (Task 9 wiring), so the deactivate below is genuinely
+      // running against an engine that cannot answer.
+      await request(app.getHttpServer()).patch(`/users/${userId}`).send({ jobTitle: 'Manager' }).expect(409)
+
+      await deactivateUserViaController(userId)
+
+      const events = await outboxEventsFor(userId)
+      expect(events).toContainEqual({ eventType: 'status_changed', target: 'keycloak' })
+      const [row] = await ctx.db.select().from(users).where(eq(users.id, userId))
+      expect(row!.status).toBe('deactivated')
+    } finally {
+      // Defuse before yielding to whatever runs next in this FILE — one
+      // unevaluable enabled role makes every later reconcile refuse, for
+      // every user.
+      await roleRepo().setEnabled(roleId, false)
+    }
+  })
+
+  it('revoke-access still runs synchronously on deactivation', async () => {
+    // Guards the Friday-afternoon scene in PRODUCT.md: sessions die before
+    // the request returns, not whenever a sweep next runs.
+    await configureTargets({ keycloak: 'all_users' })
+    const userId = await insertUser()
+    const user = await new UsersRepository(ctx.db).findById(userId)
+    keycloakCalls.length = 0
+
+    await deactivateUserViaController(userId)
+
+    expect(keycloakCalls).toEqual([
+      { method: 'setEnabled', username: user!.username, enabled: false },
+      { method: 'revokeSessions', username: user!.username },
+    ])
+  })
+
+  it('deactivation still revokes synchronously with an UNEVALUABLE role enabled', async () => {
+    // The two halves of decision 8 together: the engine cannot answer, and
+    // the session still dies on the request path.
+    await configureTargets({ keycloak: 'all_users' })
+    const userId = await insertUser()
+    const user = await new UsersRepository(ctx.db).findById(userId)
+    const { roleId } = await seedUnevaluableRole()
+    keycloakCalls.length = 0
+
+    try {
+      await deactivateUserViaController(userId)
+      expect(keycloakCalls.map((call) => call.method)).toEqual(['setEnabled', 'revokeSessions'])
+      expect(keycloakCalls[0]).toMatchObject({ username: user!.username, enabled: false })
+    } finally {
+      await roleRepo().setEnabled(roleId, false)
+    }
   })
 })

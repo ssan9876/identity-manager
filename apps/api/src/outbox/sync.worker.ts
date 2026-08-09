@@ -7,10 +7,12 @@ import { buildTargetAttributes, computeCoreFieldValues } from '../connectors/att
 import { ConnectorRegistry } from '../connectors/connector-registry'
 import type { DesiredGroup, DesiredUser, DirectoryGroupConnector } from '../connectors/connector'
 import { NotApplicableError } from '../connectors/connector'
+import { connectorTargets } from '../db/schema/connector-targets'
 import * as schema from '../db/schema/index'
 import { externalGroupIdentities } from '../db/schema/external-group-identities'
 import { externalIdentities } from '../db/schema/external-identities'
 import { externalSsoAppIdentities } from '../db/schema/external-sso-app-identities'
+import { userTargetAccounts } from '../db/schema/user-target-accounts'
 import { type Group, GroupsRepository } from '../groups/groups.repository'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
 import { OrgUnitsRepository } from '../org-units/org-units.repository'
@@ -114,6 +116,29 @@ const TARGETS_NEEDING_MANAGED_ATTRIBUTE_NAMES: readonly OutboxTarget[] = [
  * answer them differently.
  */
 const TARGETS_NEEDING_FULL_STATUS: readonly OutboxTarget[] = ['mail_server']
+
+/**
+ * MILESTONE 18, TASK 14/15 - one target's provisioning mode, plus which
+ * users hold an account entitlement for it, resolved ONCE and handed to
+ * `buildDesiredUser` (which resolves it itself when given nothing).
+ *
+ * Exists so `TargetReconciliationJob` can pay for the entitlement read ONCE
+ * PER RUN rather than once per user while walking an entire directory, and
+ * so the answer it plans against is the same answer the apply phase asserts
+ * - the identical "one implementation of desired state, never two that can
+ * drift" reason `buildDesiredUser` itself was extracted for (see its own
+ * doc comment).
+ *
+ * `entitledUserIds` is meaningless - and always empty - when `mode` is
+ * `all_users`: nothing consults it, because on an `all_users` target every
+ * user's account is desired regardless of any entitlement, which is exactly
+ * what makes that mode a bit-for-bit reproduction of pre-business-roles
+ * behaviour.
+ */
+export interface TargetProvisioning {
+  mode: 'all_users' | 'entitled_only'
+  entitledUserIds: ReadonlySet<string>
+}
 
 /**
  * Exponential backoff with EQUAL jitter (delay is always in
@@ -537,7 +562,12 @@ export class SyncWorker implements OnApplicationShutdown {
    * page from `UsersRepository.list`; neither caller benefits from a
    * redundant re-read here.
    */
-  async buildDesiredUser(tx: DbHandle, user: User, target: OutboxTarget): Promise<DesiredUser> {
+  async buildDesiredUser(
+    tx: DbHandle,
+    user: User,
+    target: OutboxTarget,
+    targetProvisioning?: TargetProvisioning,
+  ): Promise<DesiredUser> {
     // Milestone 10, Task 3 — the per-target, default-deny attribute filter.
     // `mappings` is EVERY enabled `attribute_target_mappings` row for THIS
     // event's own `target`, custom attributes and core fields alike,
@@ -605,7 +635,23 @@ export class SyncWorker implements OnApplicationShutdown {
     // this eventual-consistency pass is what converges everything else,
     // including re-enabling on reactivation, and is the only path that ever
     // flips it back to true.
-    const desiredEnabled = user.status === 'active'
+    //
+    // MILESTONE 18, TASK 14 - an ACTIVE user is additionally disabled on an
+    // `entitled_only` target they hold no `user_target_accounts` row for.
+    // Without this clause the whole of Task 14 would be theatre: losing a
+    // business role deletes the entitlement row and enqueues an explicit
+    // disable event (see `RoleReconciler.reconcileUser`), and that event
+    // lands HERE - where, computing `enabled` from status alone, this
+    // method would cheerfully re-assert `enabled: true` and leave exactly
+    // the live, unmanaged account the disable existed to close. It is also
+    // what makes `TargetReconciliationJob`'s plan and its apply agree about
+    // an unentitled user, which is this method's whole reason to be shared
+    // between them. On an `all_users` target - the default, and every
+    // target until an operator opts one in - `entitled` is unconditionally
+    // true and this reduces to the single status check it always was.
+    const provisioning = targetProvisioning ?? (await this.loadTargetProvisioningForUser(tx, target, user.id))
+    const entitled = provisioning.mode === 'all_users' || provisioning.entitledUserIds.has(user.id)
+    const desiredEnabled = user.status === 'active' && entitled
 
     return {
       userId: user.id,
@@ -631,6 +677,73 @@ export class SyncWorker implements OnApplicationShutdown {
       existingExternalId,
       managedAttributeRemoteNames,
     }
+  }
+
+  /**
+   * MILESTONE 18, TASK 15 - `target`'s provisioning mode plus, when that
+   * mode is `entitled_only`, the FULL set of users holding an account
+   * entitlement for it. One read of `connector_targets` and at most one
+   * indexed read of `user_target_accounts`
+   * (`user_target_accounts_target_idx` is exactly this query), for a whole
+   * reconciliation run rather than for each of its users.
+   *
+   * Both reads go through the caller's `tx` - never a second pooled
+   * connection while a transaction is open (finding C1,
+   * docs/archive/audits/audit-integrity.md).
+   *
+   * A target with NO `connector_targets` row falls back to `all_users`.
+   * That is deliberately the opposite posture to `TargetReconciliationJob.
+   * loadBlastRadiusConfig`, which fails loudly for the same missing row:
+   * there, an absent admin-reviewed risk tolerance must never be guessed;
+   * here, the fail-safe answer is the one that provisions and enables
+   * exactly whom this system enabled before business roles existed. Guessing
+   * `entitled_only` for an unconfigured target would disable everybody in it.
+   */
+  async loadTargetProvisioning(tx: DbHandle, target: OutboxTarget): Promise<TargetProvisioning> {
+    const mode = await this.loadProvisioningMode(tx, target)
+    if (mode === 'all_users') {
+      return { mode, entitledUserIds: new Set() }
+    }
+
+    const rows = await tx
+      .select({ userId: userTargetAccounts.userId })
+      .from(userTargetAccounts)
+      .where(eq(userTargetAccounts.target, target))
+    return { mode, entitledUserIds: new Set(rows.map((row) => row.userId)) }
+  }
+
+  /**
+   * The SINGLE-user flavour of `loadTargetProvisioning` above - what
+   * `buildDesiredUser` falls back to when no caller precomputed the answer
+   * (i.e. every outbox-driven sync, which is about one user by definition).
+   * Reads at most one row instead of the whole target's entitlement set.
+   */
+  private async loadTargetProvisioningForUser(
+    tx: DbHandle,
+    target: OutboxTarget,
+    userId: string,
+  ): Promise<TargetProvisioning> {
+    const mode = await this.loadProvisioningMode(tx, target)
+    if (mode === 'all_users') {
+      return { mode, entitledUserIds: new Set() }
+    }
+
+    const rows = await tx
+      .select({ userId: userTargetAccounts.userId })
+      .from(userTargetAccounts)
+      .where(and(eq(userTargetAccounts.target, target), eq(userTargetAccounts.userId, userId)))
+      .limit(1)
+    return { mode, entitledUserIds: new Set(rows.map((row) => row.userId)) }
+  }
+
+  /** The one `connector_targets` read both flavours above share - see `loadTargetProvisioning` for why a missing row means `all_users`. */
+  private async loadProvisioningMode(tx: DbHandle, target: OutboxTarget): Promise<'all_users' | 'entitled_only'> {
+    const [row] = await tx
+      .select({ mode: connectorTargets.provisioningMode })
+      .from(connectorTargets)
+      .where(eq(connectorTargets.target, target))
+      .limit(1)
+    return row?.mode ?? 'all_users'
   }
 
   /**

@@ -7,6 +7,7 @@ import type { ConnectorTarget } from '../connectors/connector'
 import * as schema from '../db/schema/index'
 import { groupUserMembers } from '../db/schema/group-members'
 import { orgUnits } from '../db/schema/org-units'
+import { outboxEvents } from '../db/schema/outbox-events'
 import { userTargetAccounts } from '../db/schema/user-target-accounts'
 import { users } from '../db/schema/users'
 import { OutboxWriter } from '../outbox/outbox.writer'
@@ -256,6 +257,51 @@ export class RoleReconciler {
             eq(userTargetAccounts.grantSource, 'business_role'),
           ),
         )
+
+      // MILESTONE 18, TASK 14 - losing an account entitlement DISABLES the
+      // account; it never merely stops managing it. An account silently
+      // dropped from management stays ENABLED in the target forever, which
+      // is precisely the orphaned account a governance sub-project would
+      // later have to go and find. Commit 92055ee established this rule for
+      // the mail connector's aliases; this generalises it to every target.
+      //
+      // WRITTEN DIRECTLY, not through `this.outboxWriter.record`, and this
+      // is the one place in this codebase that bypasses it. `record` decides
+      // fan-out by reading `user_target_accounts` for this very user
+      // (Milestone 18, Task 13) - and the rows it would read were deleted
+      // three lines above, in this same transaction. So the generic writer
+      // would look, correctly, find no entitlement, and send nothing at all
+      // for exactly the target that most needs an event. The row shape below
+      // therefore mirrors what `record` builds, with `target` pinned to the
+      // specific revoked target instead of derived from a fan-out.
+      //
+      // SAME TRANSACTION as the delete, deliberately: a rollback must lose
+      // both or neither. An entitlement deleted without its disable is a
+      // live account nobody manages; a disable without the delete is an
+      // account disabled for a reason that no longer exists.
+      //
+      // `eventType` is 'status_changed' - the SAME type
+      // `UsersController.deactivate` already emits for a disable (there is
+      // no 'deleted'/'disabled' event type; see db/schema/outbox-events.ts's
+      // own doc comment on `outboxEventType`). Nothing downstream reads
+      // `payload` as a delta: `SyncWorker` re-derives desired state from
+      // Postgres, where this user now has no entitlement for this target and
+      // therefore - on an `entitled_only` target - a desired `enabled:
+      // false` (see `SyncWorker.buildDesiredUser`'s own Task 14 note). On an
+      // `all_users` target the same event is a harmless re-assertion of
+      // desired state, since an account there is desired for everyone
+      // regardless of what any role granted; emitting it unconditionally is
+      // what keeps this code free of a second, drifting copy of the
+      // "should this account exist" rule.
+      await tx.insert(outboxEvents).values(
+        targetsToRemove.map((target) => ({
+          aggregateType: 'user' as const,
+          aggregateId: userId,
+          eventType: 'status_changed' as const,
+          payload: { userId, target, action: 'business_role.revoke', entitled: false },
+          target,
+        })),
+      )
     }
 
     // Full before/after snapshots (every source, not just business_role) —
