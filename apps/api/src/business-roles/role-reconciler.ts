@@ -6,6 +6,7 @@ import { NotFoundError } from '../common/errors'
 import type { ConnectorTarget } from '../connectors/connector'
 import * as schema from '../db/schema/index'
 import { groupUserMembers } from '../db/schema/group-members'
+import { groups } from '../db/schema/groups'
 import { orgUnits } from '../db/schema/org-units'
 import { outboxEvents } from '../db/schema/outbox-events'
 import { userTargetAccounts } from '../db/schema/user-target-accounts'
@@ -211,13 +212,35 @@ export class RoleReconciler {
     }
 
     if (groupsToAdd.length > 0) {
-      const rows: (typeof groupUserMembers.$inferInsert)[] = groupsToAdd.map((groupId) => ({
-        groupId,
-        userId,
-        grantSource: 'business_role',
-        grantedBy: actorUserId,
-        grantedAt: now,
-      }))
+      // Task 4 of the organizations milestone: a membership edge carries its
+      // own organization_id, and it comes from the GROUP — never from the
+      // actor, who on this path is whoever triggered the re-evaluation and
+      // may be a platform operator in master, and never from the user, whose
+      // organization is what the composite FK is there to CHECK rather than
+      // to assume. Read on the caller's `tx`, like every other query in this
+      // class (finding C1).
+      const grantedGroups = await tx
+        .select({ id: groups.id, organizationId: groups.organizationId })
+        .from(groups)
+        .where(inArray(groups.id, groupsToAdd))
+      const organizationByGroupId = new Map(grantedGroups.map((g) => [g.id, g.organizationId]))
+
+      const rows: (typeof groupUserMembers.$inferInsert)[] = groupsToAdd.map((groupId) => {
+        const organizationId = organizationByGroupId.get(groupId)
+        if (organizationId === undefined) {
+          // The group vanished between evaluation and this write. Failing
+          // loudly beats inventing an organization for the edge.
+          throw new NotFoundError('group', groupId)
+        }
+        return {
+          groupId,
+          userId,
+          organizationId,
+          grantSource: 'business_role' as const,
+          grantedBy: actorUserId,
+          grantedAt: now,
+        }
+      })
       // onConflictDoNothing: belt-and-braces against a concurrent hand-grant
       // of this exact (user, group) pair landing between the read above and
       // this write — same idempotency posture as GroupsRepository.addUser.

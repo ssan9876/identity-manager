@@ -135,8 +135,15 @@ describe('effective membership', () => {
     // expansion itself is safe rather than relying on the guard upstream.
     const a = await groups.create({ name: 'A' })
     const b = await groups.create({ name: 'B' })
+    // organization_id is derived from the parent group, the way every
+    // production writer derives it (Task 4 of the organizations milestone).
+    // The composite FKs would refuse the edge otherwise — which is the
+    // point of them, and does not weaken this test: the cycle it plants is
+    // still a real one, just one inside a single tenant.
     await ctx.pool.query(
-      'INSERT INTO group_group_members (parent_group_id, child_group_id) VALUES ($1,$2),($2,$1)',
+      `INSERT INTO group_group_members (parent_group_id, child_group_id, organization_id)
+       VALUES ($1, $2, (SELECT organization_id FROM groups WHERE id = $1)),
+              ($2, $1, (SELECT organization_id FROM groups WHERE id = $2))`,
       [a.id, b.id],
     )
     const ada = await makeUser('ada')

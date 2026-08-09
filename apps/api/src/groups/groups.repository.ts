@@ -311,10 +311,31 @@ export class GroupsRepository {
     return row?.value ?? 0
   }
 
-  private async requireGroup(id: string, db: NodePgDatabase<typeof schema> = this.db): Promise<void> {
-    if ((await this.findById(id, db)) === null) {
+  /**
+   * Returns the group's organization rather than just asserting the group
+   * exists: Task 4 of the
+   * organizations milestone made every membership edge carry an
+   * `organization_id`, and it must come from the GROUP being written to —
+   * never from the actor, who may legitimately be a platform operator in
+   * master acting on another tenant's group. Callers therefore need the
+   * that value, not a bare existence check, and it is projected here
+   * rather than taken from `findById` so the `Group` response type stays
+   * as it is — organization_id's exposure on GET responses is a Task 12
+   * decision, not this task's to pre-empt.
+   */
+  private async requireGroup(
+    id: string,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<{ id: string; organizationId: string }> {
+    const [group] = await db
+      .select({ id: groups.id, organizationId: groups.organizationId })
+      .from(groups)
+      .where(eq(groups.id, id))
+      .limit(1)
+    if (group === undefined) {
       throw new NotFoundError('group', id)
     }
+    return group
   }
 
   async addUser(
@@ -322,7 +343,7 @@ export class GroupsRepository {
     userId: string,
     db: NodePgDatabase<typeof schema> = this.db,
   ): Promise<void> {
-    await this.requireGroup(groupId, db)
+    const group = await this.requireGroup(groupId, db)
 
     const [user] = await db
       .select({ id: users.id })
@@ -334,7 +355,15 @@ export class GroupsRepository {
       throw new NotFoundError('user', userId)
     }
 
-    await db.insert(groupUserMembers).values({ groupId, userId }).onConflictDoNothing()
+    // organizationId comes from the GROUP (Task 4). If the user belongs to a
+    // different organization the composite FK `gum_user_organization_fk`
+    // rejects the row outright — this method does not need to check that
+    // itself, and deliberately does not, so that the guarantee holds for
+    // every writer and not just this one.
+    await db
+      .insert(groupUserMembers)
+      .values({ groupId, userId, organizationId: group.organizationId })
+      .onConflictDoNothing()
   }
 
   async removeUser(
@@ -445,7 +474,7 @@ export class GroupsRepository {
       throw new CycleError('a group cannot contain itself')
     }
 
-    await this.requireGroup(parentGroupId, db)
+    const parent = await this.requireGroup(parentGroupId, db)
     await this.requireGroup(childGroupId, db)
 
     await db.transaction(async (tx) => {
@@ -475,9 +504,12 @@ export class GroupsRepository {
         )
       }
 
+      // From the PARENT group (Task 4): a nesting edge belongs to the tenant
+      // that owns the group doing the containing. A child in another
+      // organization is refused by `ggm_child_organization_fk`.
       await tx
         .insert(groupGroupMembers)
-        .values({ parentGroupId, childGroupId })
+        .values({ parentGroupId, childGroupId, organizationId: parent.organizationId })
         .onConflictDoNothing()
     })
   }

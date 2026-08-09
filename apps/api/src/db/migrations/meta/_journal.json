@@ -197,6 +197,20 @@
       "when": 1786286024010,
       "tag": "0027_jml_group_actions_removed",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1786299174875,
+      "tag": "0028_organizations_uniqueness",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1786299526521,
+      "tag": "0029_organizations_composite_fks",
+      "breakpoints": true
     }
   ]
 }

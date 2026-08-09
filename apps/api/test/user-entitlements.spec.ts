@@ -1,5 +1,6 @@
 import { type CanActivate, type ExecutionContext, type INestApplication } from '@nestjs/common'
 import { Reflector } from '@nestjs/core'
+import { sql } from 'drizzle-orm'
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -341,7 +342,14 @@ describe('GET /users/:id/entitlements (Milestone 17, Task 12)', () => {
     const fixture = await seedRoleGrantingGroup({ matches: false })
     await ctx.db
       .insert(groupUserMembers)
-      .values({ groupId: fixture.groupId, userId: fixture.userId, grantSource: 'manual' })
+      // organizationId derived from the GROUP, as every production writer
+      // does (Task 4 of the organizations milestone).
+      .values({
+        groupId: fixture.groupId,
+        userId: fixture.userId,
+        grantSource: 'manual',
+        organizationId: sql`(SELECT organization_id FROM groups WHERE id = ${fixture.groupId})`,
+      })
 
     const res = await getEntitlements(fixture.userId, globalAdmin)
     const body = res.body as EntitlementsBody
@@ -362,7 +370,14 @@ describe('GET /users/:id/entitlements (Milestone 17, Task 12)', () => {
     const fixture = await seedRoleGrantingGroup({ matches: true })
     await ctx.db
       .insert(groupUserMembers)
-      .values({ groupId: fixture.groupId, userId: fixture.userId, grantSource: 'manual' })
+      // organizationId derived from the GROUP, as every production writer
+      // does (Task 4 of the organizations milestone).
+      .values({
+        groupId: fixture.groupId,
+        userId: fixture.userId,
+        grantSource: 'manual',
+        organizationId: sql`(SELECT organization_id FROM groups WHERE id = ${fixture.groupId})`,
+      })
 
     const res = await getEntitlements(fixture.userId, globalAdmin)
     const body = res.body as EntitlementsBody

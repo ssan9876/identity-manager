@@ -46,13 +46,23 @@ describe('runMigrations', () => {
       // Drizzle applies only migrations whose journal `when` is greater than
       // the MAX `created_at` already recorded, so a plain re-run skips 0027
       // entirely — it is already applied, and the guard would never execute.
-      // Deleting its ledger row reproduces the state that actually matters:
-      // an existing database that has NOT yet taken this migration and still
-      // holds a stranded rule. (This is also why the guard cannot protect a
-      // database retroactively — it only ever runs once, on the way past.)
+      // Rewinding the ledger to just before it reproduces the state that
+      // actually matters: an existing database that has NOT yet taken this
+      // migration and still holds a stranded rule. (This is also why the
+      // guard cannot protect a database retroactively — it only ever runs
+      // once, on the way past.)
+      //
+      // The rewind is to 0027's own journal `when`, NOT to "the newest row".
+      // It used to be the latter, which silently stopped testing 0027 the
+      // moment a later migration landed: it would rewind to the newest
+      // migration instead and re-run that one. Because everything from 0027
+      // onwards re-runs, every migration after it must be re-runnable —
+      // 0028 and 0029 are written that way on purpose, and any new one must
+      // be too.
+      const JML_GUARD_MIGRATION_WHEN = 1786286024010
       await ctx.ownerPool.query(
-        `DELETE FROM drizzle.__drizzle_migrations
-         WHERE created_at = (SELECT max(created_at) FROM drizzle.__drizzle_migrations)`,
+        `DELETE FROM drizzle.__drizzle_migrations WHERE created_at >= $1`,
+        [JML_GUARD_MIGRATION_WHEN],
       )
 
       await expect(ctx.runMigrationsAgain()).rejects.toThrow(/1 jml_rules row\(s\)/)
