@@ -826,7 +826,24 @@ export class UsersController {
     }
 
     const updated = await this.db.transaction(async (tx) => {
-      const current = await this.users.findById(id, tx)
+      // findByIdForUpdate, NOT findById — finding INT-L2
+      // (docs/archive/audits/audit-integrity.md; carried as an Item-10
+      // residual). `current` is what this handler writes as the audit row's
+      // `before` image, and the repository re-reads the row under
+      // `SELECT ... FOR UPDATE` when it writes. With a PLAIN read here those
+      // two are separated by an unlocked window: a concurrent writer can
+      // commit in between, so `before` records a state that was never the
+      // immediate predecessor of `after` and the audit chain for this user
+      // has a silent gap in it. Taking the lock HERE, at the snapshot,
+      // closes the window — the repository's own lock is then a no-op
+      // re-acquisition on a row this transaction already holds.
+      //
+      // This is not a second connection and not a second authority: same
+      // `tx`, same row, one lock, taken earlier. Lock ORDER is unchanged
+      // (one row, acquired once per transaction), so there is no new
+      // deadlock surface. `tx` is passed explicitly, never defaulted to the
+      // pool — finding C1, guarded by test/pool-exhaustion.spec.ts.
+      const current = await this.users.findByIdForUpdate(id, tx)
       if (current === null) {
         throw new NotFoundError('user', id)
       }
@@ -936,7 +953,16 @@ export class UsersController {
     const sensitiveKeys = sensitiveAttributeKeys(await this.users.listActiveAttributeDefinitions())
 
     const updated = await this.db.transaction(async (tx) => {
-      const current = await this.users.findById(id, tx)
+      // findByIdForUpdate, NOT findById — finding INT-L2; see the identical
+      // note in `update` above for the full reasoning. `changeStatus` needs
+      // no row lock of its own (its conditional UPDATE decides and writes in
+      // one atomic step — see its doc comment), so unlike `update` this lock
+      // exists PURELY for the audit `before` image. That is reason enough:
+      // an audit row whose `before` was never the immediate predecessor of
+      // its `after` is a false record in an append-only log, and this log is
+      // the thing docs/12-security.md goes to considerable lengths to make
+      // trustworthy.
+      const current = await this.users.findByIdForUpdate(id, tx)
       if (current === null) {
         throw new NotFoundError('user', id)
       }
@@ -1005,7 +1031,11 @@ export class UsersController {
     const sensitiveKeys = sensitiveAttributeKeys(await this.users.listActiveAttributeDefinitions())
 
     const updated = await this.db.transaction(async (tx) => {
-      const current = await this.users.findById(id, tx)
+      // findByIdForUpdate, NOT findById — finding INT-L2; see `update` and
+      // `activate` above. The audit report named `update` and `deactivate`;
+      // `activate` has the identical shape and is fixed with them rather
+      // than left as the one path that still snapshots unlocked.
+      const current = await this.users.findByIdForUpdate(id, tx)
       if (current === null) {
         throw new NotFoundError('user', id)
       }
