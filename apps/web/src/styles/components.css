@@ -14,19 +14,184 @@
  */
 
 /* ---------------------------------------------------------------------
+ * Brand lockup — the mark + wordmark pairing from src/brand/index.tsx.
+ * Styled here, not in a brand-specific stylesheet, because two very
+ * different surfaces use it (the top bar and the sign-in gate) and the
+ * ONLY thing allowed to differ between them is scale. The mark inherits
+ * currentColor, so a caller re-colours the whole lockup by setting
+ * `color` on an ancestor — which is exactly how the drenched sign-in
+ * panel flips it to --brand-panel-ink without this rule knowing.
+ * ------------------------------------------------------------------- */
+
+.brand-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink);
+}
+.brand-lockup__mark {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  color: var(--primary);
+}
+.brand-lockup__name {
+  font-size: var(--text-md);
+  font-weight: 650;
+  /* Just enough negative tracking to make the wordmark read as one shape
+     rather than eight letters — well inside the -0.04em floor. */
+  letter-spacing: -0.012em;
+  color: var(--ink);
+}
+.brand-lockup--lg {
+  gap: var(--space-3);
+}
+.brand-lockup--lg .brand-lockup__mark {
+  width: 2.25rem;
+  height: 2.25rem;
+  /* On the sign-in panel the whole lockup is one ink; the mark stops
+     being a separate accent and becomes part of the word. */
+  color: inherit;
+}
+.brand-lockup--lg .brand-lockup__name {
+  font-size: var(--text-3xl);
+  letter-spacing: -0.028em;
+  color: inherit;
+}
+
+/* ---------------------------------------------------------------------
  * Typography utilities
  * ------------------------------------------------------------------- */
 
 .text-title {
   font-size: var(--text-lg);
   font-weight: 600;
+  letter-spacing: -0.011em;
   color: var(--ink);
 }
 
 .text-subject {
   font-size: var(--text-xl);
   font-weight: 600;
+  letter-spacing: -0.014em;
   color: var(--ink);
+}
+
+/* Secondary prose — used by pages that carry an explanatory line under a
+   heading, and by inline status text. Previously referenced by markup
+   with no rule behind it at all (.muted, .page__subtitle), so those
+   screens shipped body-weight ink where they meant to be quiet. */
+.muted {
+  color: var(--ink-muted);
+}
+
+/* ---------------------------------------------------------------------
+ * Page scaffold — one header shape for every screen: title, an optional
+ * explanatory line, and the screen's primary action on the right. Also
+ * previously unstyled markup (.page / .page__header / .page__subtitle
+ * appear across Applications, Connectors and Org units with no rule
+ * behind them).
+ * ------------------------------------------------------------------- */
+
+.page {
+  display: block;
+}
+
+.page__header,
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-6);
+  padding-bottom: var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+
+.page__header > div,
+.page-header__text {
+  min-width: 0;
+}
+
+.page__header h1,
+.page-header h1 {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: -0.011em;
+  color: var(--ink);
+}
+
+.page__subtitle,
+.page-header__subtitle {
+  margin-top: var(--space-2);
+  max-width: 72ch;
+  font-size: var(--text-base);
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+.page__actions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-6);
+}
+
+/* A raised content surface. --panel over the shell's --canvas ground is
+   what carries depth in this console; the border does the edge work and
+   --shadow-sm only confirms it. */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+.panel__body {
+  padding: var(--space-5);
+}
+
+/* Inline message strip — the shape several pages already reached for with
+   `.banner banner--error` and got nothing. Colour is never the only
+   signal: the strip is introduced by its own text and, for the error
+   case, carries role="alert" at the markup level. */
+.banner {
+  display: block;
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-5);
+  font-size: var(--text-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+.banner--error {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--ink);
+}
+.banner--warn {
+  border-color: var(--warn);
+  background: var(--warn-bg);
+  color: var(--ink);
+}
+
+/* A count beside a heading ("Members 12"). Pill-shaped because the
+   content is always a short number — the one place a fully round radius
+   is honest about what it contains. */
+.count-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  padding: 0 var(--space-2);
+  height: 1.375rem;
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---------------------------------------------------------------------
@@ -51,9 +216,19 @@
   border: 1px solid transparent;
   white-space: nowrap;
   transition:
-    background-color var(--motion-duration) var(--motion-ease),
-    border-color var(--motion-duration) var(--motion-ease),
-    color var(--motion-duration) var(--motion-ease);
+    background-color var(--motion-duration-fast) var(--motion-ease),
+    border-color var(--motion-duration-fast) var(--motion-ease),
+    box-shadow var(--motion-duration-fast) var(--motion-ease),
+    color var(--motion-duration-fast) var(--motion-ease);
+}
+
+/* The compact size — dense toolbars and the top bar, where a 36px control
+   makes a 56px chrome row look stuffed. Same shape, same states; only the
+   box shrinks, so the "one button vocabulary" rule holds. */
+.btn--sm {
+  height: 1.875rem;
+  padding: 0 var(--space-3);
+  font-size: var(--text-sm);
 }
 
 .btn:disabled {
@@ -64,6 +239,7 @@
   background: var(--primary);
   border-color: var(--primary);
   color: var(--primary-ink);
+  box-shadow: var(--shadow-sm);
 }
 .btn--primary:hover:not(:disabled) {
   background: var(--primary-hover);
@@ -76,6 +252,7 @@
   background: var(--border);
   border-color: var(--border);
   color: var(--ink-subtle);
+  box-shadow: none;
 }
 
 .btn--secondary {
@@ -188,11 +365,12 @@
   display: inline-flex;
   align-items: center;
   gap: 0.375rem;
-  padding: 0.1875rem var(--space-2);
+  padding: 0.1875rem var(--space-2) 0.1875rem 0.4375rem;
   font-size: var(--text-xs);
   font-weight: 600;
   line-height: 1.4;
-  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
   white-space: nowrap;
 }
 .badge__dot {
@@ -202,13 +380,22 @@
   background: currentColor;
   flex: none;
 }
+/* The norm — "active", "synced" — stays uncoloured and unfilled, so the
+   exceptions below are the only thing colour ever marks (docs/design-system.md).
+   A hairline border is what gives it a shape at all; without one an
+   uncoloured badge in a table cell is just floating text. */
 .badge--neutral {
   color: var(--ink-muted);
   background: transparent;
+  border-color: var(--border);
+}
+.badge--neutral .badge__dot {
+  color: var(--border-strong);
 }
 .badge--warn {
   color: var(--ink);
   background: var(--warn-bg);
+  border-color: var(--warn);
 }
 .badge--warn .badge__dot {
   color: var(--warn);
@@ -216,6 +403,7 @@
 .badge--danger {
   color: var(--ink);
   background: var(--danger-bg);
+  border-color: var(--danger);
 }
 .badge--danger .badge__dot {
   color: var(--danger);
@@ -232,8 +420,8 @@
 }
 .field__label {
   font-size: var(--text-sm);
-  font-weight: 500;
-  color: var(--ink-muted);
+  font-weight: 600;
+  color: var(--ink);
 }
 .input,
 .select {
@@ -246,8 +434,9 @@
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   transition:
-    border-color var(--motion-duration) var(--motion-ease),
-    background-color var(--motion-duration) var(--motion-ease);
+    border-color var(--motion-duration-fast) var(--motion-ease),
+    box-shadow var(--motion-duration-fast) var(--motion-ease),
+    background-color var(--motion-duration-fast) var(--motion-ease);
 }
 .select {
   padding-right: var(--space-2);
@@ -256,9 +445,17 @@
 .select:hover:not(:disabled) {
   border-color: var(--ink-subtle);
 }
-.input:focus-visible,
-.select:focus-visible {
+/* A soft halo behind base.css's 2px focus ring. The ring still carries
+   all of the contrast; the halo only makes the focused field read as
+   deliberately lit rather than merely outlined. `:focus`, not
+   `:focus-visible`, for the border+halo specifically: a text field that a
+   pointer user clicked into IS in an editing mode and should look it —
+   the visible-only rule exists to stop rings appearing on things a mouse
+   merely activated, which a text field is not. */
+.input:focus,
+.select:focus {
   border-color: var(--focus);
+  box-shadow: 0 0 0 3px var(--focus-halo);
 }
 .input:disabled,
 .select:disabled {
@@ -270,8 +467,14 @@
 .field--error .select {
   border-color: var(--danger);
 }
+.field--error .input:focus,
+.field--error .select:focus {
+  border-color: var(--danger);
+  box-shadow: none;
+}
 .field__error {
   font-size: var(--text-sm);
+  font-weight: 500;
   color: var(--danger);
 }
 .field__hint {
@@ -330,10 +533,10 @@
 }
 
 .combobox__listbox {
-  background: var(--bg);
+  background: var(--panel);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-lg);
   padding: var(--space-1);
   overflow-y: auto;
   z-index: var(--z-dropdown);
@@ -360,7 +563,7 @@
    keyboard-navigated row. */
 .combobox__option:hover,
 .combobox__option--active {
-  background: var(--surface-sunken);
+  background: var(--primary-soft);
 }
 .combobox__option-name {
   font-size: var(--text-base);
@@ -431,8 +634,10 @@
  * ------------------------------------------------------------------- */
 
 .table-wrap {
+  background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
   overflow: auto;
 }
 .table {
@@ -468,14 +673,17 @@
   font-weight: 600;
   font-size: var(--text-xs);
   text-transform: uppercase;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.045em;
   color: var(--ink-muted);
   padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
+/* Rows are taller than the old 12px/12px. Density is a virtue in a
+   directory, but 40px rows with 13px type read as a spreadsheet export;
+   at ~48px the same table scans as a product. */
 .table td {
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-4);
   border-bottom: 1px solid var(--border);
   color: var(--ink);
   vertical-align: middle;
@@ -483,11 +691,17 @@
 .table tbody tr:last-child td {
   border-bottom: none;
 }
-.table tbody tr:hover {
-  background: var(--surface);
+.table tbody tr {
+  transition: background-color var(--motion-duration-fast) var(--motion-ease);
 }
+.table tbody tr:hover {
+  background: var(--surface-sunken);
+}
+/* Keyboard row navigation gets the brand wash rather than the plain
+   hover tint — a keyboard user has no pointer to tell them where they
+   are, so the current row has to be unmistakable, not merely different. */
 .table tbody tr:has(a:focus-visible) {
-  background: var(--surface);
+  background: var(--primary-soft);
 }
 .table .row-link {
   color: var(--ink);
@@ -508,18 +722,40 @@
  * ------------------------------------------------------------------- */
 
 .empty-state {
-  padding: var(--space-9) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-10) var(--space-6);
   text-align: center;
   color: var(--ink-muted);
+}
+/* A quiet medallion, not an illustration: it gives the block a centre of
+   gravity so the text isn't floating in the middle of a large panel. */
+.empty-state__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  margin-bottom: var(--space-4);
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  color: var(--ink-subtle);
+}
+.empty-state__mark svg {
+  width: 1.375rem;
+  height: 1.375rem;
 }
 .empty-state h3 {
   color: var(--ink);
   font-size: var(--text-md);
   margin-bottom: var(--space-2);
+  text-wrap: balance;
 }
 .empty-state p {
-  max-width: 48ch;
-  margin: 0 auto var(--space-4);
+  max-width: 52ch;
+  margin: 0 auto var(--space-5);
+  text-wrap: pretty;
 }
 
 /* ---------------------------------------------------------------------
@@ -531,6 +767,9 @@
 .error-panel {
   padding: var(--space-8) var(--space-6);
   text-align: center;
+}
+.error-panel p:last-of-type {
+  margin-bottom: var(--space-4);
 }
 .error-panel__message {
   color: var(--danger);
@@ -568,25 +807,33 @@
   display: flex;
   gap: var(--space-1);
   border-bottom: 1px solid var(--border);
+  overflow-x: auto;
 }
 .tab {
+  flex: none;
   padding: var(--space-3) var(--space-4);
   font-size: var(--text-base);
   font-weight: 500;
   color: var(--ink-muted);
   border-bottom: 2px solid transparent;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   margin-bottom: -1px;
   transition:
-    color var(--motion-duration) var(--motion-ease),
-    border-color var(--motion-duration) var(--motion-ease);
+    color var(--motion-duration-fast) var(--motion-ease),
+    background-color var(--motion-duration-fast) var(--motion-ease),
+    border-color var(--motion-duration-fast) var(--motion-ease);
 }
 .tab:hover {
   color: var(--ink);
+  background: var(--surface-sunken);
 }
 .tab[aria-selected='true'] {
-  color: var(--ink);
+  color: var(--primary);
   border-bottom-color: var(--primary);
   font-weight: 600;
+}
+.tab[aria-selected='true']:hover {
+  background: transparent;
 }
 .tabpanel {
   padding: var(--space-6) 0;
@@ -601,9 +848,11 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
-  padding: var(--space-4) 0;
+  flex-wrap: wrap;
+  padding: var(--space-4) var(--space-1);
   font-size: var(--text-sm);
   color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
 }
 .pagination__controls {
   display: flex;
@@ -656,9 +905,14 @@
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-3);
-  padding: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
+  transition: border-color var(--motion-duration-fast) var(--motion-ease);
+}
+.group-member-list__row:hover {
+  border-color: var(--border-strong);
 }
 .group-member-list__name {
   font-weight: 500;
@@ -691,10 +945,10 @@
      mode look meaningfully while fixing dark mode. Same reasoning
      .nav-dialog (AppShell.css) already applies via its own border-right. */
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   padding: var(--space-6);
-  background: var(--bg);
-  box-shadow: var(--shadow-md);
+  background: var(--panel);
+  box-shadow: var(--shadow-lg);
 }
 .confirm-dialog::backdrop {
   background: var(--backdrop);
@@ -746,20 +1000,20 @@
   align-items: flex-start;
   gap: var(--space-3);
   padding: var(--space-4);
-  background: var(--bg);
+  background: var(--panel);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-lg);
   animation: toast-in var(--motion-duration) var(--motion-ease);
 }
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateY(0.5rem);
+    transform: translateY(0.5rem) scale(0.98);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
   }
 }
 

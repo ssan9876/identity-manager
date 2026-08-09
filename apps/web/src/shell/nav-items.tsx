@@ -1,10 +1,31 @@
 import type { ReactElement } from 'react'
 import type { Action } from './permissions'
 
+/**
+ * Nav sections. Eight flat links read as a list of features; three named
+ * groups read as a product with a shape — who exists, what they can reach,
+ * and how the machine is running. Purely presentational: the groups carry
+ * no permissions of their own, and a group whose every item is filtered
+ * out by `GET /self/permissions` renders nothing at all (AppShell's
+ * NavList drops it), so an auditor never sees an empty "Directory"
+ * heading hinting at links they cannot use.
+ */
+export type NavGroup = 'directory' | 'access' | 'operations'
+
+export const NAV_GROUP_LABELS: Record<NavGroup, string> = {
+  directory: 'Directory',
+  access: 'Access',
+  operations: 'Operations',
+}
+
+/** Render order for the groups above. */
+export const NAV_GROUP_ORDER: NavGroup[] = ['directory', 'access', 'operations']
+
 export interface NavItem {
   key: string
   label: string
   path: string
+  group: NavGroup
   /**
    * The action that gates this item's visibility. There is no dedicated
    * "read" action for roles/imports/audit in today's static catalog
@@ -114,18 +135,18 @@ function ApplicationsIcon({ className }: { className?: string }) {
 }
 
 export const NAV_ITEMS: NavItem[] = [
-  { key: 'people', label: 'People', path: '/people', action: 'user:read', icon: PeopleIcon },
-  { key: 'groups', label: 'Groups', path: '/groups', action: 'group:read', icon: GroupsIcon },
-  { key: 'org-units', label: 'Org units', path: '/org-units', action: 'org_unit:read', icon: OrgUnitsIcon },
-  { key: 'roles', label: 'Roles', path: '/roles', action: 'role:assign', icon: RolesIcon },
-  { key: 'import', label: 'Import', path: '/import', action: 'user:create', icon: ImportIcon },
-  { key: 'audit', label: 'Audit', path: '/audit', action: 'audit:read', icon: AuditIcon },
+  { key: 'people', label: 'People', path: '/people', group: 'directory', action: 'user:read', icon: PeopleIcon },
+  { key: 'groups', label: 'Groups', path: '/groups', group: 'directory', action: 'group:read', icon: GroupsIcon },
+  { key: 'org-units', label: 'Org units', path: '/org-units', group: 'directory', action: 'org_unit:read', icon: OrgUnitsIcon },
+  { key: 'roles', label: 'Roles', path: '/roles', group: 'access', action: 'role:assign', icon: RolesIcon },
+  { key: 'import', label: 'Import', path: '/import', group: 'operations', action: 'user:create', icon: ImportIcon },
+  { key: 'audit', label: 'Audit', path: '/audit', group: 'operations', action: 'audit:read', icon: AuditIcon },
   // Milestone 14, Task 9 — the connector admin console. `connector:read`
   // gates visibility exactly like every other item here: super_admin and
   // auditor see it, nobody else does (authz/actions.ts).
-  { key: 'connectors', label: 'Connectors', path: '/connectors', action: 'connector:read', icon: ConnectorsIcon },
+  { key: 'connectors', label: 'Connectors', path: '/connectors', group: 'operations', action: 'connector:read', icon: ConnectorsIcon },
   // SSO applications. `sso_app:read` is held by super_admin ALONE — not
   // auditor, unlike connectors — so this item is invisible to everyone
   // else, matching who can actually act on it.
-  { key: 'applications', label: 'Applications', path: '/applications', action: 'sso_app:read', icon: ApplicationsIcon },
+  { key: 'applications', label: 'Applications', path: '/applications', group: 'access', action: 'sso_app:read', icon: ApplicationsIcon },
 ]
