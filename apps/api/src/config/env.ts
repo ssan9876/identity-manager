@@ -63,13 +63,33 @@ const envSchema = z.object({
   BODY_LIMIT_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
   // Explicit, configurable ceiling on the number of DATA rows one
   // `POST /imports/preview`/`/commit` request may carry — the other half of
-  // finding M6. Import commit is ~10ms/row of serial, blocking work
-  // (task-2-brief.md's own measurement), so this bounds worst-case request
-  // duration and memory, independent of whatever the body-size limit above
-  // happens to be. 5,000 rows is comfortably above every legitimate import
-  // this system has been measured against (up to 700 rows) while still
-  // being a real, enforced ceiling rather than "whatever fits in the body".
-  IMPORT_MAX_ROWS: z.coerce.number().int().positive().default(5_000),
+  // finding M6. Import commit is ~10.4ms/row of SERIAL, BLOCKING, on-request
+  // work — one transaction per row, on the request path — so this number is
+  // really a request-duration budget wearing a row count's clothes:
+  //
+  //     1,000 rows x 10.4ms  ~= 10s   <- this default
+  //     5,000 rows x 10.4ms  ~= 52s   <- the previous default
+  //
+  // against a pool of 10 (DB_POOL_MAX). Five concurrent maximal imports at
+  // the old default could hold half the pool for the better part of a minute.
+  //
+  // Lowered from 5,000 after the carried-findings verification pass
+  // (docs/archive/audits/carried-findings-verification.md, its item 1) pointed
+  // out what the original choice had not reckoned with: express's ACCIDENTAL
+  // 100 KiB body default used to cap a request at ~800 rows / ~7s, so the
+  // deliberate 5,000 replaced an accident with something ~6x worse. That is
+  // the opposite of what "we now have an explicit ceiling" is supposed to buy.
+  //
+  // 1,000 is still ~40% above the largest legitimate import this system has
+  // ever been measured against (700 rows), so it should not bite in practice.
+  // It is deliberately a DEFAULT and not a constant: an operator who genuinely
+  // imports more can raise IMPORT_MAX_ROWS, and doing so is now an informed
+  // decision about how long they are willing to occupy a pool connection
+  // rather than a number they inherited without anyone reasoning about it.
+  //
+  // The real fix, if imports ever get bigger, is not a larger number here —
+  // it is batching the per-row lookups or moving commit off the request path.
+  IMPORT_MAX_ROWS: z.coerce.number().int().positive().default(1_000),
 })
 
 export interface Env {

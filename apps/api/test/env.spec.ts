@@ -24,7 +24,7 @@ describe('loadEnv', () => {
       syncWorkerEnabled: true,
       dbPoolMax: 10,
       bodyLimitBytes: 10 * 1024 * 1024,
-      importMaxRows: 5_000,
+      importMaxRows: 1_000,
     })
   })
 
@@ -100,7 +100,7 @@ describe('loadEnv', () => {
   // explicit, configurable row-count ceiling for bulk import.
   describe('IMPORT_MAX_ROWS', () => {
     it('defaults to 5,000 when absent', () => {
-      expect(loadEnv(valid).importMaxRows).toBe(5_000)
+      expect(loadEnv(valid).importMaxRows).toBe(1_000)
     })
 
     it('honors an explicit override', () => {

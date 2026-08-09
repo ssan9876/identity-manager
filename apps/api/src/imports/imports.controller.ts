@@ -43,7 +43,7 @@ export interface ImportsConfig {
 // in imports.write.spec.ts does exactly that, with no IMPORTS_CONFIG
 // provider) — same pattern SyncWorker's DEFAULT_CONFIG uses for its own
 // @Optional() config token.
-const DEFAULT_IMPORTS_CONFIG: ImportsConfig = { maxRows: 5_000 }
+const DEFAULT_IMPORTS_CONFIG: ImportsConfig = { maxRows: 1_000 }
 
 export interface ImportRowFailure {
   row: number
