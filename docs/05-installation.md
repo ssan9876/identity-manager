@@ -64,7 +64,11 @@ bash scripts/install.sh
    `apps/web/.env`.
 5. `pnpm install --frozen-lockfile` and `pnpm build`, asserting both bundles exist.
 6. Runs `db:migrate` — schema **and** runtime-role grants.
-7. Installs `idm-api.service` and enables it.
+7. Installs `idm-api.service` and enables it, plus the two scheduled jobs —
+   `idm-lifecycle.timer` (daily JML pass, 02:00) and `idm-reconcile.timer` (daily
+   Keycloak reconciliation, 03:00). It enables the **timers**; the oneshot services
+   behind them are never enabled directly. See
+   [11 — Operations](11-operations.md#scheduled-work).
 8. Generates a self-signed certificate if running HTTPS and none was supplied,
    configures nginx to serve the bundle and proxy `/api`, and reloads it.
 9. Firewalls: opens 22/80/443, **denies** the API's own port so nginx cannot be
@@ -270,9 +274,10 @@ and leave HTTP/2 out.
 | Code | `/opt/identity-manager` |
 | Config | `/opt/identity-manager/.env` (0640, owned by `idm`) |
 | Service | `idm-api.service` — API **and** outbox worker in one process |
+| Timers | `idm-lifecycle.timer` (02:00) and `idm-reconcile.timer` (03:00), each firing a oneshot service |
 | Web bundle | `/opt/identity-manager/apps/web/dist`, served by nginx |
 | Database | local PostgreSQL 16, database `identity_manager` |
-| Logs | `journalctl -u idm-api -f` |
+| Logs | `journalctl -u idm-api -f`; the timers log under `-u idm-lifecycle` / `-u idm-reconcile` |
 
 **Two database roles, deliberately.** `idm_owner` owns the schema and is what migrations
 run as; `idm_app` is what the application runs as, and is created *by* the migration
