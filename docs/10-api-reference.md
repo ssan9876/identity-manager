@@ -128,6 +128,20 @@ Accepts `firstName`, `lastName`, `jobTitle`, `employeeId`, `managerId`, `locatio
 
 Also requires that the target does not outrank you.
 
+### `POST /users/:id/activate` — `user:activate`
+
+No body. → **200** with the updated user.
+
+Accepts `pending → active` and `suspended → active`. A `deactivated` target is **409**
+`INVALID_TRANSITION` — that status is terminal. An already-`active` target is **409** too,
+not a silent no-op.
+
+Also requires that the target does not outrank you.
+
+> Unlike deactivate, this does **not** call Keycloak inline. It writes a `status_changed`
+> outbox event, and the account is enabled downstream when the sync worker drains it.
+> Expect `syncState: "pending"` in the response.
+
 ### `POST /users/:id/deactivate` — `user:deactivate`
 
 No body. → **200** with the updated user.
