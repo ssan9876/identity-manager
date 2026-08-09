@@ -23,6 +23,7 @@ Written before each sub-project, and the source of its settled decisions.
 | `2026-08-06-mail-server-connector-design.md` | The mail server integration, first pass |
 | `2026-08-07-mail-server-connector-implementation-design.md` | Its implementation design |
 | `2026-08-08-business-roles-entitlements-design.md` | Business roles — **still the live design** for in-progress work; see [14 — Roadmap](../14-roadmap.md) |
+| `2026-08-08-user-activate-endpoint-design.md` | `POST /users/:id/activate`, the `user:activate` action, and the console button — **not yet implemented** |
 
 ## `plans/` — milestone build plans
 
