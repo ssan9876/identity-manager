@@ -26,12 +26,22 @@ import {
 // outbox/target-fanout.ts), because an application means nothing to Active
 // Directory, Entra or Google, and the `keycloak_sso` target has no idea what
 // a user is.
+//
+// 'organization' (Organizations milestone, Task 10) is the second value that
+// describes something other than a principal, and it goes further than
+// 'sso_app': an organization IS a Keycloak realm — the container every other
+// aggregate lives inside — so the only target that can act on one is
+// `keycloak`, whose connector owns realm lifecycle (see
+// connectors/organization.connector.ts). Active Directory, Entra, Google, the
+// mail server and `keycloak_sso` have no realm concept at all, and
+// target-fanout.ts encodes exactly that.
 export const outboxAggregateType = pgEnum('outbox_aggregate_type', [
   'user',
   'group',
   'membership',
   'org_unit',
   'sso_app',
+  'organization',
 ])
 
 // There is deliberately NO 'deleted' value — this system has no delete for

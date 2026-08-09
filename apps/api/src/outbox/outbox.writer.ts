@@ -36,6 +36,11 @@ export const ALL_OUTBOX_AGGREGATE_TYPES = [
   'membership',
   'org_unit',
   'sso_app',
+  // Organizations milestone, Task 10. Adding it here without also
+  // classifying it in `targetsForAggregate` fails
+  // test/target-fanout.spec.ts's catalog assertion by construction — which
+  // is precisely why that assertion exists.
+  'organization',
 ] as const
 
 export type OutboxAggregateType = (typeof ALL_OUTBOX_AGGREGATE_TYPES)[number]
