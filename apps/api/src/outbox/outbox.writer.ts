@@ -4,6 +4,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type { ConnectorTarget } from '../connectors/connector'
 import { connectorTargets } from '../db/schema/connector-targets'
 import { outboxEvents } from '../db/schema/outbox-events'
+import { userTargetAccounts } from '../db/schema/user-target-accounts'
 import * as schema from '../db/schema/index'
 import { targetsForAggregate } from './target-fanout'
 
@@ -89,9 +90,13 @@ export class OutboxWriter {
    * write handler calls both from inside the SAME `tx`.
    *
    * MILESTONE 10, TASK 1 — fan-out. `record` no longer writes exactly one
-   * row: it writes one row PER currently-`enabled` row in `connector_targets`
-   * (design doc decision 6: "One event row per (mutation × target). Fan-out
-   * happens at write time."), reading that table through the SAME `tx` — see
+   * row: it writes one row per currently-`enabled` row in `connector_targets`
+   * that this particular aggregate is ENTITLED to reach (see "ENTITLEMENT"
+   * below — Milestone 18, Task 13 — for the second half of that sentence;
+   * before it, entitlement did not exist and every enabled target simply
+   * received a row) (design doc decision 6: "One event row per (mutation ×
+   * target). Fan-out happens at write time."), reading that table through
+   * the SAME `tx` — see
    * this method's own connection-discipline note below. A target that is
    * not enabled — whether because its `connector_targets` row has `enabled
    * = false`, or because no row for it exists at all yet (both mean the
@@ -124,6 +129,44 @@ export class OutboxWriter {
    * all, which is the same "not enabled means no row, full stop" rule the
    * paragraph above describes.
    *
+   * ENTITLEMENT (MILESTONE 18, TASK 13) — fan-out is now also
+   * PROVISIONING-MODE-AWARE. Each enabled target carries a
+   * `provisioning_mode` (`connector_targets.provisioning_mode`, Milestone
+   * 15 Task 3):
+   *
+   *  - `all_users` — the DEFAULT, and what every pre-business-roles row
+   *    was backfilled to. Such a target receives a row for every aggregate,
+   *    exactly as it did before this task existed. That is the whole safety
+   *    property of this change: the default reproduces the old behaviour
+   *    bit for bit, so shipping business roles cannot silently stop
+   *    provisioning anybody. test/outbox-emission.spec.ts is the regression
+   *    net for that claim and passes here UNMODIFIED — if it ever needed
+   *    editing to go green, the default would no longer be preserving the
+   *    old behaviour, and THAT would be the bug.
+   *  - `entitled_only` — the opt-in an operator moves one target onto once
+   *    the business roles feeding it have been simulated. A `user`
+   *    aggregate reaches such a target ONLY if it holds a
+   *    `user_target_accounts` row for it (the account-existence grant kind
+   *    a business role produces — see that table's own doc comment).
+   *
+   * ONLY a `user` aggregate has an account entitlement to consult. Groups,
+   * memberships, org units and sso_apps have no rows in
+   * `user_target_accounts` at all, so they fan out to every enabled target
+   * exactly as before — an `entitled_only` target must not silently stop
+   * receiving GROUP syncs just because groups can never be "entitled". The
+   * entitlement read is skipped entirely when no enabled target is in
+   * `entitled_only` mode, which is every deployment until an operator opts
+   * one in: no extra query is paid for a feature nobody has turned on.
+   *
+   * Note what this does NOT do: it never revokes. A user who loses their
+   * entitlement simply stops matching the filter here, which on its own
+   * would leave a live, unmanaged account in the target forever. Emitting
+   * the explicit `disable` for that case is `RoleReconciler.reconcileUser`'s
+   * job (Milestone 18, Task 14), which writes that row DIRECTLY rather than
+   * through this method — by then the `user_target_accounts` row it would
+   * consult here has already been deleted in the same transaction, so this
+   * method would correctly, and uselessly, decide there was nothing to send.
+   *
    * CONNECTION DISCIPLINE: both the `connector_targets` read and the
    * `outbox_events` insert(s) below run against the SAME `tx` the caller
    * already holds open — never `this.db` or any second pooled connection.
@@ -137,15 +180,53 @@ export class OutboxWriter {
    */
   async record(tx: DbHandle, event: OutboxEvent): Promise<void> {
     const enabledTargets = await tx
-      .select({ target: connectorTargets.target })
+      .select({ target: connectorTargets.target, provisioningMode: connectorTargets.provisioningMode })
       .from(connectorTargets)
       .where(eq(connectorTargets.enabled, true))
       .orderBy(connectorTargets.target)
 
-    const targets = targetsForAggregate(
+    // Aggregate-shape filter FIRST (sso_app vs everything else), then the
+    // entitlement filter below. Order matters only for cost: a
+    // `keycloak_sso`-only event never pays for a `user_target_accounts`
+    // read, because `sso_app` is not a `user` aggregate anyway.
+    const aggregateTargets = targetsForAggregate(
       event.aggregateType,
       enabledTargets.map(({ target }) => target),
     )
+
+    // Only a `user` aggregate has an account entitlement to consult, and
+    // only an `entitled_only` target consults one — see this method's own
+    // "ENTITLEMENT" note above for both halves of that sentence. Everything
+    // else short-circuits to zero extra queries.
+    const entitledOnlyTargets = new Set(
+      enabledTargets
+        .filter((row) => row.provisioningMode === 'entitled_only')
+        .map((row) => row.target),
+    )
+
+    const consultsEntitlement =
+      event.aggregateType === 'user' && aggregateTargets.some((target) => entitledOnlyTargets.has(target))
+
+    let entitled: Set<ConnectorTarget> = new Set()
+    if (consultsEntitlement) {
+      // Same `tx` as everything else here — see CONNECTION DISCIPLINE
+      // below. Deliberately unfiltered by target: a user holds at most one
+      // row per target (`user_target_accounts_unique`), so this is a single
+      // indexed read of a handful of rows, not a scan.
+      const rows = await tx
+        .select({ target: userTargetAccounts.target })
+        .from(userTargetAccounts)
+        .where(eq(userTargetAccounts.userId, event.aggregateId))
+      entitled = new Set(rows.map((row) => row.target))
+    }
+
+    // `consultsEntitlement` gates the FILTER as well as the read: for a
+    // non-`user` aggregate, `entitled` is empty because there was nothing to
+    // look up, NOT because the aggregate is unentitled, so filtering on it
+    // would drop every group/org-unit sync to an `entitled_only` target.
+    const targets = consultsEntitlement
+      ? aggregateTargets.filter((target) => !entitledOnlyTargets.has(target) || entitled.has(target))
+      : aggregateTargets
 
     if (targets.length === 0) {
       return
