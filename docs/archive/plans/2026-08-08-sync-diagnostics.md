@@ -1224,7 +1224,7 @@ Follow `docs/design-system.md` — word plus optional shape, never colour alone.
 In `apps/web/src/people/PersonDetailPage.tsx`:
 
 1. Add `'sync'` to `TabKey` (line 16) and a `{ key: 'sync', label: 'Sync' }` entry to `TABS`, positioned between `roles` and `activity`.
-2. Add `sync: null` to the `tabRefs` initializer (line 209) — a missing key there silently breaks arrow-key navigation.
+2. Add `sync: null` to the `tabRefs` initializer (line 210) — a missing key there silently breaks arrow-key navigation.
 3. Add the panel block, copying the exact shape of the neighbouring panels:
 
 ```tsx
@@ -1240,7 +1240,7 @@ In `apps/web/src/people/PersonDetailPage.tsx`:
       </div>
 ```
 
-4. Make the header `SyncBadge` (line 404) activate the tab, so a red badge is one click from its reason:
+4. Make the header `SyncBadge` (line 436) activate the tab, so a red badge is one click from its reason:
 
 ```tsx
           <button

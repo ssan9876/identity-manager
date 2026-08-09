@@ -125,7 +125,7 @@ in-process timer". Both become false and are corrected in the same commit.
 
 **Relationship to the activate-endpoint spec.** The two are complementary and
 neither supersedes the other. This timer activates joiners who *have* a
-`start_date`; `POST /users/:id/activate` covers those created *without* one, whom
+`start_date`; `POST /users/:id/activate` (implemented 2026-08-08, commit 803bcf9) covers those created *without* one, whom
 `activateDueUsers`' `start_date IS NOT NULL` predicate can never select. Shipping
 only one leaves half the population stuck.
 
