@@ -470,11 +470,25 @@ export class UsersRepository {
     }
 
     if (pgError.code === UNIQUE_VIOLATION) {
+      // "not available", NOT `... "<value>" already exists`. Both unique
+      // indexes are GLOBAL and unscoped, so echoing a confirmation back let
+      // any holder of `user:create` in ONE org unit verify, one candidate per
+      // request, that a given email or username exists somewhere in the
+      // directory — including for principals `GET /users/:id` 403s them on.
+      // The transaction rolls back, so the probing wrote no audit rows and was
+      // silent. Wave D fixed exactly this on the import path
+      // (imports.controller.ts's `primaryEmail: not available`) and missed the
+      // direct-create sibling; finding SEC-L2,
+      // docs/archive/audits/carried-findings-verification.md.
+      //
+      // The `field: message` shape is load-bearing for the console: it is what
+      // api-field-errors.ts matches to put the error on the right input rather
+      // than in a top-of-form banner.
       if (pgError.constraint === EMAIL_UNIQUE_CONSTRAINT && input.primaryEmail !== undefined) {
-        throw new ConflictError(`a user with email "${input.primaryEmail}" already exists`)
+        throw new ConflictError('primaryEmail: not available')
       }
       if (pgError.constraint === USERNAME_UNIQUE_CONSTRAINT && input.username !== undefined) {
-        throw new ConflictError(`a user with username "${input.username}" already exists`)
+        throw new ConflictError('username: not available')
       }
       if (pgError.constraint === EMPLOYEE_ID_UNIQUE_CONSTRAINT) {
         throw new ConflictError('a user with this employee id already exists')

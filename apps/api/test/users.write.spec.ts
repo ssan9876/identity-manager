@@ -240,6 +240,69 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
       expect(rows[0].after?.orgUnitId).toBe(org.id)
     })
 
+    /**
+     * Finding SEC-L2 (docs/archive/audits/carried-findings-verification.md).
+     * `users_primary_email_unique` and `users_username_unique` are GLOBAL,
+     * unscoped indexes, so a 409 that echoed the submitted value back with
+     * "already exists" confirmed — one candidate per request, and silently,
+     * because the transaction rolls back and writes no audit row — that an
+     * address exists somewhere in the directory, including for principals this
+     * actor cannot read at all. Wave D fixed this on the import path and left
+     * the direct-create sibling; these two mirror
+     * imports.write.spec.ts's pair so the rule is enforced on both paths.
+     */
+    it("a create re-using an out-of-scope user's email 409s without confirming the address exists", async () => {
+      const root = await makeOrgUnit('Oracle Email Root')
+      const mine = await makeChildOrgUnit(root.id, 'Oracle Email Mine')
+      const theirs = await makeChildOrgUnit(root.id, 'Oracle Email Theirs')
+      const victim = await makeActiveUser('oracle-email-victim', theirs.id)
+      const actor = await makeActiveUser('oracle-email-actor', mine.id)
+      await grant(actor.id, 'user_admin', mine.id)
+      currentUsername = actor.username
+
+      const tag = nextTag()
+      const res = await request(app.getHttpServer())
+        .post('/users')
+        .send({
+          primaryEmail: victim.primaryEmail,
+          username: `oracle-email-probe-${tag}`,
+          firstName: 'Probe',
+          lastName: 'Attempt',
+          orgUnitId: mine.id,
+        })
+        .expect(409)
+
+      expect(res.body.message).not.toContain(victim.primaryEmail)
+      expect(res.body.message).not.toMatch(/already exists/i)
+      expect(res.body.message).toBe('primaryEmail: not available')
+    })
+
+    it("a create re-using an out-of-scope user's username 409s without confirming the username exists", async () => {
+      const root = await makeOrgUnit('Oracle Name Root')
+      const mine = await makeChildOrgUnit(root.id, 'Oracle Name Mine')
+      const theirs = await makeChildOrgUnit(root.id, 'Oracle Name Theirs')
+      const victim = await makeActiveUser('oracle-name-victim', theirs.id)
+      const actor = await makeActiveUser('oracle-name-actor', mine.id)
+      await grant(actor.id, 'user_admin', mine.id)
+      currentUsername = actor.username
+
+      const tag = nextTag()
+      const res = await request(app.getHttpServer())
+        .post('/users')
+        .send({
+          primaryEmail: `oracle-name-probe-${tag}@example.com`,
+          username: victim.username,
+          firstName: 'Probe',
+          lastName: 'Attempt',
+          orgUnitId: mine.id,
+        })
+        .expect(409)
+
+      expect(res.body.message).not.toContain(victim.username)
+      expect(res.body.message).not.toMatch(/already exists/i)
+      expect(res.body.message).toBe('username: not available')
+    })
+
     it('rejects a create targeting an out-of-scope org unit with 403 and writes no audit row', async () => {
       const root = await makeOrgUnit('Scope Root')
       const scopeOrg = await makeChildOrgUnit(root.id, 'In Scope')

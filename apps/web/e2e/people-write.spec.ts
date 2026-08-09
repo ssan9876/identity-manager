@@ -182,7 +182,12 @@ test('edits a user and the change persists after reload; the API rejects a dupli
   await page.getByTestId('person-form-submit').click()
 
   await expect(page.locator('#person-form-primaryEmail')).toHaveAttribute('aria-invalid', 'true')
-  await expect(page.locator('#person-form-primaryEmail-error')).toContainText('already exists')
+  // Non-confirming text: the 409 must not echo the address back as
+  // "already exists" (finding SEC-L2 — the unique indexes are global, so that
+  // confirmed existence across org-unit scope). It must still land on the
+  // field, which is what this test is actually for.
+  await expect(page.locator('#person-form-primaryEmail-error')).toContainText('not available')
+  await expect(page.locator('#person-form-primaryEmail-error')).not.toContainText('already exists')
   // Never as a generic top-of-form banner instead.
   await expect(page.getByTestId('person-form-error')).toHaveCount(0)
 })
