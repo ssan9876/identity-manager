@@ -5,6 +5,7 @@ import type { ConnectorTarget } from '../connectors/connector'
 import { connectorTargets } from '../db/schema/connector-targets'
 import { outboxEvents } from '../db/schema/outbox-events'
 import * as schema from '../db/schema/index'
+import { targetsForAggregate } from './target-fanout'
 
 /**
  * The live transaction handle passed to a `db.transaction(async (tx) => ...)`
@@ -111,6 +112,18 @@ export class OutboxWriter {
    * produced it. Those fields belong to the worker (Task 3), which owns
    * every transition away from that starting state.
    *
+   * SSO APPLICATIONS — fan-out is now AGGREGATE-AWARE. The enabled-target
+   * list is filtered through `targetsForAggregate` (target-fanout.ts) before
+   * any row is written: an `sso_app` event reaches only `keycloak_sso`, and
+   * every other aggregate reaches every enabled target EXCEPT
+   * `keycloak_sso`. Without that filter an application would be handed to
+   * Active Directory, Entra and Google, none of which know what an
+   * application is, and every one of those rows would fail, retry and
+   * dead-letter. Note the early return now tests the FILTERED list: a
+   * `keycloak_sso`-only event with that target disabled writes nothing at
+   * all, which is the same "not enabled means no row, full stop" rule the
+   * paragraph above describes.
+   *
    * CONNECTION DISCIPLINE: both the `connector_targets` read and the
    * `outbox_events` insert(s) below run against the SAME `tx` the caller
    * already holds open — never `this.db` or any second pooled connection.
@@ -129,12 +142,17 @@ export class OutboxWriter {
       .where(eq(connectorTargets.enabled, true))
       .orderBy(connectorTargets.target)
 
-    if (enabledTargets.length === 0) {
+    const targets = targetsForAggregate(
+      event.aggregateType,
+      enabledTargets.map(({ target }) => target),
+    )
+
+    if (targets.length === 0) {
       return
     }
 
     await tx.insert(outboxEvents).values(
-      enabledTargets.map(({ target }) => ({
+      targets.map((target) => ({
         aggregateType: event.aggregateType,
         aggregateId: event.aggregateId,
         eventType: event.eventType,
