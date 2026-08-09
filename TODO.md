@@ -227,6 +227,8 @@ state of each.
 | CS-M5 | CI ran with the default GITHUB_TOKEN scope, mutable action tags, and the token left on disk beside dependency lifecycle scripts. All three closed. |
 | CS-L1 | A failed sign-out was silent and the session survived. Now reported, driven by `auth.error` (a try/catch cannot see it), and `removeUser()` runs on the failure path. |
 | CS-L2 | `revokeTokensOnSignout` left at its `false` default. Set. |
+| **CS-H1 (HIGH)** | Dependency lifecycle scripts ran as the service account on the host holding every secret, at every install and upgrade. Closed with `pnpm.onlyBuiltDependencies: ['esbuild']` — an allow-list, not an all-or-nothing block — plus `packageManager` pinned by sha512 and `corepack prepare pnpm@9.12.0` instead of the `pnpm@9` range. The audit assumed this needed pnpm 10; pnpm 9 supports the field, so no upgrade was required. Allow-list determined empirically: a clean install blocks exactly one package, `cpu-features`, an optional native accelerator that already failed to build without a C++ toolchain. |
+| CS-M4 | `install.sh` piped a remote script into a root shell with output to `/dev/null`. Now adds NodeSource's GPG key and a `deb [signed-by=…]` source directly, so no remote code runs as root. Plus an explicit post-install version assertion, verified empirically. |
 | CS-L3 | Search terms — people's names and emails — were written to `/var/log/nginx/access.log` in plaintext, from the console URL, from `GET /api/users?search=…`, and a third time from the same-origin `Referer`. Both vhosts now log through an `idm_noquery` format that drops the query string from the request line and the referrer; verified against nginx 1.24. Filters stay in the URL, so deep links still work — the browser-history half is documented, not fixed, and the OIDC `code`/`state` in the redirect is protocol behaviour, now merely not retained. |
 | SEC-L1 | PKCE `code_verifier`/`nonce` persisted in `localStorage`. Both stores are now sessionStorage. |
 | SEC-L2 | `POST /users`' 409 echoed the value back, confirming a cross-scope email/username against global unique indexes. Now non-confirming, with the two regression tests that were missing. |
@@ -295,15 +297,10 @@ state of each.
       seeded `admin@example.com` credential would break `smoke:dev`, the E2E
       login and CI's `bootstrap:admin`, which is far beyond what a LOW finding
       on a dev fixture justifies.
-- [ ] **CS-H1 (HIGH).** Dependency lifecycle scripts run unsandboxed as the service
-      user at every install and upgrade, and `corepack prepare pnpm@9` is unpinned
-      and integrity-unverified. The CI half is closed; the installer half is not.
 - [ ] **CS-M2.** No Content-Security-Policy. Blocked on one specific thing:
       `index.html` carries an inline pre-paint theme script that must run before any
       bundled JS exists, so a CSP needs that script's sha256 injected at build time.
       An unverifiable hash would brick the console.
-- [ ] **CS-M4.** `scripts/install.sh` pipes a remote script into `bash` as root with
-      no pinning or checksum.
 - [ ] **CS-M6.** `vite@5.4.21` + `esbuild@0.21.5` dev-server advisories, unfixed on
       the 5.x line. Developer workstations only, but this project's dev platform is
       Windows, where the path-traversal case is live.
