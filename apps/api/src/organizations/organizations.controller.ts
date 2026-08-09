@@ -173,12 +173,12 @@ export class OrganizationsController {
         aggregateType: 'organization',
         aggregateId: organization.id,
         eventType: 'created',
+        // An organization IS its own tenant, so this event takes the
+        // Keycloak-only fan-out path Task 13 installs — `OutboxWriter`
+        // derives that from the row itself, so nothing is passed here.
+        // Sending it anywhere else would ask Active Directory or Google to
+        // create a Keycloak realm, which they have no concept of.
         payload: { slug: organization.slug, realm: organization.realm },
-        // Its own id — an organization is its own tenant, so this event
-        // takes the Keycloak-only fan-out path Task 13 installs. Sending it
-        // anywhere else would ask Active Directory or Google to create a
-        // Keycloak realm, which they have no concept of.
-        organizationId: organization.id,
       })
 
       return organization
@@ -246,7 +246,6 @@ export class OrganizationsController {
         aggregateId: id,
         eventType: 'status_changed',
         payload: { status: after.status },
-        organizationId: id,
       })
 
       return after
