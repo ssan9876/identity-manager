@@ -10,9 +10,11 @@ import { NotApplicableError } from '../connectors/connector'
 import * as schema from '../db/schema/index'
 import { externalGroupIdentities } from '../db/schema/external-group-identities'
 import { externalIdentities } from '../db/schema/external-identities'
+import { externalSsoAppIdentities } from '../db/schema/external-sso-app-identities'
 import { type Group, GroupsRepository } from '../groups/groups.repository'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
 import { OrgUnitsRepository } from '../org-units/org-units.repository'
+import { SsoAppsRepository } from '../sso-apps/sso-apps.repository'
 import { type User, UsersRepository } from '../users/users.repository'
 import { type ClaimedOutboxEvent, OutboxRepository } from './outbox.repository'
 import type { DbHandle, OutboxTarget } from './outbox.writer'
@@ -170,6 +172,7 @@ export class SyncWorker implements OnApplicationShutdown {
   private readonly connectorRegistry: ConnectorRegistry
   private readonly attributeTargetMappingsRepository: AttributeTargetMappingsRepository
   private readonly orgUnitsRepository: OrgUnitsRepository
+  private readonly ssoAppsRepository: SsoAppsRepository
   private timer: ReturnType<typeof setTimeout> | null = null
   private stopped = true
   private currentRun: Promise<void> = Promise.resolve()
@@ -210,12 +213,14 @@ export class SyncWorker implements OnApplicationShutdown {
     @Optional() @Inject(AttributeTargetMappingsRepository)
     attributeTargetMappingsRepository?: AttributeTargetMappingsRepository,
     @Optional() @Inject(OrgUnitsRepository) orgUnitsRepository?: OrgUnitsRepository,
+    @Optional() @Inject(SsoAppsRepository) ssoAppsRepository?: SsoAppsRepository,
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config }
     this.connectorRegistry = connectorRegistry ?? new ConnectorRegistry(keycloak)
     this.attributeTargetMappingsRepository =
       attributeTargetMappingsRepository ?? new AttributeTargetMappingsRepository(db)
     this.orgUnitsRepository = orgUnitsRepository ?? new OrgUnitsRepository(db)
+    this.ssoAppsRepository = ssoAppsRepository ?? new SsoAppsRepository(db)
   }
 
   // -------------------------------------------------------------------
@@ -358,6 +363,9 @@ export class SyncWorker implements OnApplicationShutdown {
         return
       case 'membership':
         await this.reconcileMembership(tx, event)
+        return
+      case 'sso_app':
+        await this.reconcileSsoApp(tx, event.aggregateId, event.target)
         return
       case 'org_unit':
         // Org units have no representation in ANY target in this milestone
@@ -739,6 +747,72 @@ export class SyncWorker implements OnApplicationShutdown {
    * every scenario to round-trip through the full outbox claim/drain
    * machinery.
    */
+  /**
+   * Asserts an `sso_apps` row into whichever target implements the SSO
+   * connector family.
+   *
+   * Takes NO advisory lock, unlike `reconcileUser`. That lock exists because
+   * a user is reconciled from several aggregates at once — a `user` event and
+   * a `membership` event for the same person can be claimed concurrently by
+   * two workers and race on the same Keycloak account. An application has
+   * exactly one aggregate and one target, so two concurrent events for it are
+   * necessarily the same stream, and `claimNext`'s own row lock already
+   * serialises them.
+   *
+   * Neither missing row below is drained quietly: an event whose connector or
+   * whose aggregate cannot be loaded is a real inconsistency, and marking it
+   * `done` would hide it. Throwing puts it through the ordinary retry and
+   * dead-letter path where an operator can see it.
+   */
+  async reconcileSsoApp(tx: DbHandle, appId: string, target: OutboxTarget): Promise<void> {
+    const connector = await this.connectorRegistry.resolveSsoConnector(target, tx)
+    if (connector === null) {
+      throw new Error(`sync worker: target "${target}" implements no SSO connector`)
+    }
+
+    const app = await this.ssoAppsRepository.findById(appId, tx)
+    if (app === null) {
+      throw new Error(`sync worker: no SSO application found for id ${appId}`)
+    }
+
+    // The Keycloak client UUID from a previous sync, absent before the first
+    // one. Passing it is what makes a clientId renamed in Keycloak
+    // self-correcting rather than duplicating the client.
+    const existingExternalId = (await this.ssoAppsRepository.findExternalId(appId, tx)) ?? undefined
+
+    const { externalId } = await connector.applyApp({
+      clientId: app.clientId,
+      name: app.name,
+      description: app.description,
+      protocol: app.protocol,
+      publicClient: app.publicClient,
+      redirectUris: app.redirectUris,
+      webOrigins: app.webOrigins,
+      groupsClaim: app.groupsClaim,
+      enabled: app.enabled,
+      existingExternalId,
+    })
+
+    await tx
+      .insert(externalSsoAppIdentities)
+      .values({
+        appId: app.id,
+        system: target,
+        externalId,
+        lastSyncedAt: new Date(),
+        syncState: 'synced',
+      })
+      .onConflictDoUpdate({
+        target: [externalSsoAppIdentities.appId, externalSsoAppIdentities.system],
+        set: {
+          externalId,
+          lastSyncedAt: new Date(),
+          syncState: 'synced',
+          updatedAt: new Date(),
+        },
+      })
+  }
+
   async reconcileGroup(tx: DbHandle, groupId: string, target: OutboxTarget): Promise<void> {
     const group = await this.groupsRepository.findById(groupId, tx)
     if (group === null) {
