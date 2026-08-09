@@ -461,3 +461,46 @@ export interface DirectoryConnector {
   /** Can we reach and authenticate to this target RIGHT NOW. Never throws — a target whose secret is missing from the environment resolves to `{ ok: false, detail: <actionable, secret-VALUE-free message> }`, not a thrown error. */
   health(): Promise<ConnectorHealth>
 }
+
+/**
+ * An SSO application's DESIRED state, already resolved to plain data — same
+ * discipline as `DesiredUser`/`DesiredGroup`: no connector implementation
+ * reads Postgres itself.
+ *
+ * `existingExternalId` is the Keycloak client UUID from a previous successful
+ * sync, absent before the first one. It is what makes a clientId rename in
+ * Keycloak recoverable rather than duplicating the client — see
+ * `KeycloakSsoConnector.findExisting`.
+ */
+export interface DesiredSsoApp {
+  clientId: string
+  name: string
+  description: string
+  protocol: 'openid-connect'
+  publicClient: boolean
+  redirectUris: readonly string[]
+  webOrigins: readonly string[]
+  groupsClaim: boolean
+  enabled: boolean
+  existingExternalId?: string
+}
+
+/**
+ * The third connector interface family, alongside `DirectoryConnector`
+ * (users) and `DirectoryGroupConnector` (groups). An application is neither a
+ * user nor a group, and `DirectoryConnector`'s own doc comment calls it
+ * settled and deliberately narrow — widening it to carry applications would
+ * make four methods over `DesiredUser` mean something different per target.
+ *
+ * No `disable`. A person must be disable-able knowing only an external id,
+ * because the offboarding path works from `external_identities`; an
+ * application is always driven from its local row, so `enabled: false` in the
+ * desired state covers it. No delete at all, deliberately — removing the
+ * capability removes the class of disaster, exactly as `DirectoryConnector`
+ * records for the same decision.
+ */
+export interface SsoConnector {
+  planApp(desired: DesiredSsoApp): Promise<ConnectorOperation[]>
+  applyApp(desired: DesiredSsoApp): Promise<{ externalId: string }>
+  health(): Promise<ConnectorHealth>
+}

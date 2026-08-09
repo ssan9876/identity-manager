@@ -63,6 +63,50 @@ export interface DesiredUserProfile {
   attributes: Record<string, unknown>
 }
 
+/**
+ * Keycloak's ClientRepresentation, narrowed to the fields Identity Manager
+ * manages plus an index signature for everything it does not. The index
+ * signature is load-bearing, not laziness: client update takes a FULL
+ * representation, so `KeycloakSsoConnector` reads the current one and spreads
+ * it before overlaying its own fields. Anything this interface failed to name
+ * would be dropped from that spread and silently cleared on the next sync.
+ */
+export interface KeycloakClientRepresentation {
+  id?: string
+  clientId: string
+  name?: string
+  description?: string
+  protocol?: string
+  publicClient?: boolean
+  enabled?: boolean
+  standardFlowEnabled?: boolean
+  redirectUris?: string[]
+  webOrigins?: string[]
+  attributes?: Record<string, string>
+  defaultClientScopes?: string[]
+  [key: string]: unknown
+}
+
+/**
+ * The one protocol mapper this system asserts on an application's client.
+ * Name and claim are FIXED rather than admin-editable: an application that
+ * has to guess which claim carries its authorization data is a support call
+ * waiting to happen. `full: 'false'` emits bare group names, matching the
+ * flattened names the Keycloak user connector already writes as membership.
+ */
+export const GROUP_MEMBERSHIP_MAPPER = {
+  name: 'groups',
+  protocol: 'openid-connect',
+  protocolMapper: 'oidc-group-membership-mapper',
+  config: {
+    'claim.name': 'groups',
+    full: 'false',
+    'access.token.claim': 'true',
+    'id.token.claim': 'true',
+    'userinfo.token.claim': 'true',
+  },
+} as const
+
 export interface KeycloakGroup {
   id: string
   name: string
@@ -685,6 +729,103 @@ export class KeycloakAdminClient {
     await this.assertOk(res, { resource: 'keycloak user', id: username })
     const rows = (await res.json()) as { id: string; name: string; path: string }[]
     return rows.map((row) => ({ id: row.id, name: row.name, path: row.path }))
+  }
+
+  // ---------------------------------------------------------------------
+  // OIDC CLIENTS (SSO application onboarding).
+  //
+  // Reached only by KeycloakSsoConnector, which builds its OWN instance of
+  // this class bound to the `idm-sso-admin` credential -- a different service
+  // account from the sync worker's, holding `manage-clients` and nothing
+  // else. The user and group methods above run as `idm-sync-service`, whose
+  // exactly-four realm-management roles do not include it, so the ordinary
+  // sync path structurally cannot mint or alter a client rather than merely
+  // declining to.
+  // ---------------------------------------------------------------------
+
+  async findClientByClientId(clientId: string): Promise<KeycloakClientRepresentation | null> {
+    const res = await this.request('GET', `/clients?clientId=${encodeURIComponent(clientId)}`)
+    if (!res.ok) {
+      throw new KeycloakAdminError(res.status, `find client failed: ${res.status} ${await describeError(res)}`)
+    }
+    const rows = (await res.json()) as KeycloakClientRepresentation[]
+    return rows[0] ?? null
+  }
+
+  async getClient(uuid: string): Promise<KeycloakClientRepresentation> {
+    const res = await this.request('GET', `/clients/${uuid}`)
+    await this.assertOk(res, { resource: 'keycloak client', id: uuid })
+    return (await res.json()) as KeycloakClientRepresentation
+  }
+
+  /**
+   * Returns the UUID Keycloak assigned. Create responds 201 with a `Location`
+   * header and no body, same as `createUser`; the read-back is the fallback
+   * for a deployment that strips it.
+   */
+  async createClient(rep: KeycloakClientRepresentation): Promise<string> {
+    const res = await this.request('POST', '/clients', rep)
+    if (!res.ok) {
+      if (res.status === 409) {
+        throw new ConflictError(await describeError(res))
+      }
+      throw new KeycloakAdminError(res.status, `create client failed: ${res.status} ${await describeError(res)}`)
+    }
+    const fromLocation = idFromLocation(res)
+    if (fromLocation !== undefined && fromLocation.length > 0) {
+      return fromLocation
+    }
+    const created = await this.findClientByClientId(rep.clientId)
+    if (created?.id === undefined) {
+      throw new Error(`created client "${rep.clientId}" but could not read back its id`)
+    }
+    return created.id
+  }
+
+  async updateClient(uuid: string, rep: KeycloakClientRepresentation): Promise<void> {
+    const res = await this.request('PUT', `/clients/${uuid}`, rep)
+    await this.assertOk(res, { resource: 'keycloak client', id: uuid })
+  }
+
+  /**
+   * Keycloak accepts `protocolMappers` on client CREATE and silently drops
+   * them on UPDATE -- scripts/keycloak-setup.sh records the identical trap for
+   * the `idm-api` audience mapper and works around it the same way. So the
+   * mapper is asserted against its own endpoint every time, rather than
+   * trusted to ride along on the client body. Miss this and the failure is
+   * the confusing one: the client looks fully configured and the `groups`
+   * claim simply is not in the token.
+   */
+  async assertGroupMembershipMapper(uuid: string): Promise<void> {
+    const res = await this.request('GET', `/clients/${uuid}/protocol-mappers/models`)
+    await this.assertOk(res, { resource: 'keycloak client', id: uuid })
+    const existing = (await res.json()) as { name: string }[]
+    if (existing.some((mapper) => mapper.name === GROUP_MEMBERSHIP_MAPPER.name)) {
+      return
+    }
+    const created = await this.request(
+      'POST',
+      `/clients/${uuid}/protocol-mappers/models`,
+      GROUP_MEMBERSHIP_MAPPER,
+    )
+    await this.assertOk(created, { resource: 'keycloak client', id: uuid })
+  }
+
+  /**
+   * Mints a NEW secret, invalidating the previous one. The value is returned
+   * to exactly one caller and retained nowhere -- not in sso_apps, not in the
+   * outbox, not in the audit snapshot, not in a log line. Same rule the Google
+   * connector's one-time bootstrap password states: generate it, transmit it
+   * once, retain nothing.
+   */
+  async mintClientSecret(uuid: string): Promise<string> {
+    const res = await this.request('POST', `/clients/${uuid}/client-secret`)
+    await this.assertOk(res, { resource: 'keycloak client', id: uuid })
+    const body = (await res.json()) as { value?: string }
+    if (body.value === undefined || body.value.length === 0) {
+      throw new Error(`Keycloak returned no secret value for client ${uuid}`)
+    }
+    return body.value
   }
 }
 
