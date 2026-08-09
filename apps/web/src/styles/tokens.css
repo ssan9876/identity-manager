@@ -93,6 +93,47 @@
   --backdrop: oklch(0.205 0.01 110 / 0.4);
   --skeleton-shine: oklch(1 0 0 / 0.7);
 
+  /* ---------------------------------------------------------------------
+   * Depth & brand surfaces — added with the Keystone rebrand. Same
+   * contract as everything above: defined in ALL FOUR palette blocks in
+   * this file, and every pairing computed (for these near-achromatic
+   * values relative luminance is very close to OKLCH L cubed) rather than
+   * eyeballed.
+   *
+   * The layer story, which is what actually makes the console read as
+   * designed rather than defaulted: --canvas is the ground (page + chrome),
+   * --panel is the raised content surface that sits ON it. In light that is
+   * a faintly olive-tinted ground with true-white panels; in dark it is the
+   * same relationship inverted (a deeper ground, lighter panels). --bg is
+   * left exactly as it was so nothing that already consumed it moves.
+   * ------------------------------------------------------------------- */
+
+  --canvas: oklch(0.976 0.003 110); /* ink 16.7:1 - ink-muted 6.8:1 - ink-subtle 4.73:1 */
+  --panel: oklch(1 0 0); /* raised content surface — same as --bg in light */
+
+  /* Brand wash — current selection and selected rows. NOT decoration:
+     these mark the "current" state only, held to the same budget
+     --primary itself is. */
+  --primary-soft: oklch(0.945 0.03 110); /* ink 15.3:1 - primary 9.6:1 */
+  --primary-soft-hover: oklch(0.922 0.038 110);
+
+  /* The one Committed surface in the product: the sign-in gate's brand
+     panel. Drenched olive with its own ink pair, because --ink would be
+     invisible on it. Nowhere else may use these. */
+  --brand-panel: oklch(0.3 0.07 110);
+  --brand-panel-ink: oklch(0.985 0.012 110); /* on --brand-panel — 13.1:1 */
+  --brand-panel-ink-muted: oklch(0.86 0.03 110); /* on --brand-panel — 8.9:1 */
+  --brand-panel-line: oklch(0.42 0.06 110);
+
+  /* Elevation. --shadow-md already existed (dialogs); --shadow-sm is the
+     resting lift of a content panel and --shadow-lg the sign-in card. */
+  --shadow-sm: 0 1px 2px oklch(0.205 0.01 110 / 0.07), 0 1px 3px oklch(0.205 0.01 110 / 0.05);
+  --shadow-lg: 0 16px 48px oklch(0.205 0.01 110 / 0.14), 0 2px 8px oklch(0.205 0.01 110 / 0.06);
+
+  /* A soft halo behind the 2px focus ring on filled controls — the ring
+     still carries the contrast; this only makes it read as deliberate. */
+  --focus-halo: oklch(0.52 0.11 110 / 0.18);
+
   color-scheme: light;
 
   /* ---------------------------------------------------------------------
@@ -110,6 +151,12 @@
   --text-md: 1rem; /* 16px — section headings, prose */
   --text-lg: 1.25rem; /* 20px — page title */
   --text-xl: 1.5rem; /* 24px — detail-page subject name */
+  /* Two display steps ABOVE the UI scale, reserved for the one surface
+     that is a brand moment rather than a task: the sign-in gate. Nothing
+     inside the console proper may use them — docs/design-system.md's
+     "display type never in labels, buttons or data" still holds. */
+  --text-2xl: 1.875rem; /* 30px — sign-in gate heading */
+  --text-3xl: 2.375rem; /* 38px — sign-in gate wordmark */
 
   --line-height-tight: 1.25;
   --line-height-normal: 1.5;
@@ -134,8 +181,13 @@
    * Layout — docs/design-system.md's shell measurements
    * ------------------------------------------------------------------- */
 
-  --topbar-height: 48px;
-  --nav-width: 240px;
+  /* 56px, not the original 48px. The top bar now carries a real brand
+     lockup, a search field with its own shortcut affordance, and an
+     identity cluster; at 48px those three sat on top of each other with
+     no breathing room and the bar read as a browser toolbar rather than
+     product chrome. docs/design-system.md updated to match. */
+  --topbar-height: 56px;
+  --nav-width: 248px;
   --nav-rail-width: 64px; /* icon rail, 1100px and under */
   --content-max-width: 1440px;
   --content-gutter: var(--space-6); /* 24px */
@@ -160,8 +212,12 @@
    * to read against a dark surface, so it is not repeated here.)
    * ------------------------------------------------------------------- */
 
-  --radius-sm: 3px; /* badges, inputs, buttons */
-  --radius-md: 6px; /* cards, dialogs */
+  --radius-sm: 5px; /* badges, inputs, buttons */
+  --radius-md: 8px; /* cards, dialogs */
+  --radius-lg: 12px; /* content panels, the sign-in card */
+  --radius-pill: 999px; /* count pills, the identity chip — the only
+     genuinely round shapes in the system, and only where the content is
+     a short number or a pair of initials */
 
   /* A "pressed" inset shadow (.btn--primary:active) darkens whatever fill
      is under it regardless of that fill's own lightness, so — unlike the
@@ -174,6 +230,10 @@
    * ------------------------------------------------------------------- */
 
   --motion-duration: 180ms;
+  /* A faster step for the things a pointer touches constantly — nav links,
+     table rows, buttons. 180ms is right for a reveal and sluggish for a
+     hover; both collapse to 1ms under prefers-reduced-motion below. */
+  --motion-duration-fast: 120ms;
   --motion-ease: cubic-bezier(0.22, 1, 0.36, 1); /* ease-out quint */
 
   /* ---------------------------------------------------------------------
@@ -237,6 +297,29 @@
        would be a harsh flash over a dark base; a faint lightening reads as
        the same "sheen" without it */
 
+    /* Depth & brand surfaces — dark. Same roles as light, inverted: the
+       ground goes DEEPER than --bg and panels come UP above it, so the
+       "raised" relationship survives the theme flip instead of collapsing.
+       Ratios against dark's own values: on --canvas (L 0.145) ink 14.7:1,
+       ink-muted 8.3:1, ink-subtle 6.6:1, primary 9.9:1; on --panel
+       (L 0.205) ink 13.3:1, ink-muted 7.5:1, ink-subtle 6.0:1,
+       primary 8.95:1 — all past their floors. */
+    --canvas: oklch(0.145 0.004 110);
+    --panel: oklch(0.205 0.005 110);
+
+    --primary-soft: oklch(0.29 0.045 110); /* ink 10.5:1 - primary 7.05:1 */
+    --primary-soft-hover: oklch(0.34 0.05 110);
+
+    --brand-panel: oklch(0.235 0.045 110);
+    --brand-panel-ink: oklch(0.95 0.01 110); /* on --brand-panel — 14.4:1 */
+    --brand-panel-ink-muted: oklch(0.79 0.025 110); /* on --brand-panel — 8.6:1 */
+    --brand-panel-line: oklch(0.36 0.04 110);
+
+    --shadow-sm: 0 1px 2px oklch(0 0 0 / 0.4);
+    --shadow-lg: 0 16px 48px oklch(0 0 0 / 0.65), 0 2px 8px oklch(0 0 0 / 0.4);
+
+    --focus-halo: oklch(0.8 0.17 110 / 0.25);
+
     color-scheme: dark;
   }
 }
@@ -277,6 +360,29 @@
   --backdrop: oklch(0 0 0 / 0.6);
   --skeleton-shine: oklch(1 0 0 / 0.12);
 
+  /* Depth & brand surfaces — dark. Same roles as light, inverted: the
+     ground goes DEEPER than --bg and panels come UP above it, so the
+     "raised" relationship survives the theme flip instead of collapsing.
+     Ratios against dark's own values: on --canvas (L 0.145) ink 14.7:1,
+     ink-muted 8.3:1, ink-subtle 6.6:1, primary 9.9:1; on --panel
+     (L 0.205) ink 13.3:1, ink-muted 7.5:1, ink-subtle 6.0:1,
+     primary 8.95:1 — all past their floors. */
+  --canvas: oklch(0.145 0.004 110);
+  --panel: oklch(0.205 0.005 110);
+
+  --primary-soft: oklch(0.29 0.045 110); /* ink 10.5:1 - primary 7.05:1 */
+  --primary-soft-hover: oklch(0.34 0.05 110);
+
+  --brand-panel: oklch(0.235 0.045 110);
+  --brand-panel-ink: oklch(0.95 0.01 110); /* on --brand-panel — 14.4:1 */
+  --brand-panel-ink-muted: oklch(0.79 0.025 110); /* on --brand-panel — 8.6:1 */
+  --brand-panel-line: oklch(0.36 0.04 110);
+
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 0.4);
+  --shadow-lg: 0 16px 48px oklch(0 0 0 / 0.65), 0 2px 8px oklch(0 0 0 / 0.4);
+
+  --focus-halo: oklch(0.8 0.17 110 / 0.25);
+
   color-scheme: dark;
 }
 
@@ -315,6 +421,20 @@
   --backdrop: oklch(0.205 0.01 110 / 0.4);
   --skeleton-shine: oklch(1 0 0 / 0.7);
 
+  /* Depth & brand surfaces — light, explicit. Values identical to the
+     unconditional :root block above; see it for the reasoning. */
+  --canvas: oklch(0.976 0.003 110);
+  --panel: oklch(1 0 0);
+  --primary-soft: oklch(0.945 0.03 110);
+  --primary-soft-hover: oklch(0.922 0.038 110);
+  --brand-panel: oklch(0.3 0.07 110);
+  --brand-panel-ink: oklch(0.985 0.012 110);
+  --brand-panel-ink-muted: oklch(0.86 0.03 110);
+  --brand-panel-line: oklch(0.42 0.06 110);
+  --shadow-sm: 0 1px 2px oklch(0.205 0.01 110 / 0.07), 0 1px 3px oklch(0.205 0.01 110 / 0.05);
+  --shadow-lg: 0 16px 48px oklch(0.205 0.01 110 / 0.14), 0 2px 8px oklch(0.205 0.01 110 / 0.06);
+  --focus-halo: oklch(0.52 0.11 110 / 0.18);
+
   color-scheme: light;
 }
 
@@ -331,6 +451,7 @@
        (shell/AppShell.css's .theme-toggle__icon) — it defines no
        duration/ease of its own, reading these two tokens exclusively. */
     --motion-duration: 1ms;
+    --motion-duration-fast: 1ms;
     --motion-ease: linear;
   }
 }

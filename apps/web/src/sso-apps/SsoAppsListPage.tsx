@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useAuth } from 'react-oidc-context'
 import { Link } from 'react-router-dom'
 import { ApiError } from '../api/client'
+import { BRAND } from '../brand'
 import { EnabledBadge } from '../connectors/badges'
 import { useSelfPermissions } from '../shell/permissions'
 import { fetchSsoApps, type SsoApp } from './api'
@@ -40,7 +41,7 @@ export default function SsoAppsListPage() {
         <div>
           <h1>Applications</h1>
           <p className="page__subtitle">
-            Applications registered for single sign-on. Identity Manager masters these and
+            Applications registered for single sign-on. {BRAND.name} masters these and
             asserts them into Keycloak.
           </p>
         </div>

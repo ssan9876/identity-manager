@@ -20,6 +20,7 @@ import OrgUnitsPage from './org-units/OrgUnitsPage'
 import RolesCatalogPage from './roles/RolesCatalogPage'
 import SelfServicePage from './self-service/SelfServicePage'
 import AppShell from './shell/AppShell'
+import { BRAND } from './brand'
 import { keycloakIssuer } from './auth/oidc-config'
 import { ToastProvider } from './shell/ToastProvider'
 import './SignInGate.css'
@@ -126,7 +127,7 @@ export default function App() {
     return (
       <main className="signin-gate">
         <div className="signin-gate__panel">
-          <h1 className="text-title">Identity Manager</h1>
+          <h1 className="text-title">{BRAND.name}</h1>
           <p className="signin-gate__hint">Sign in with your organisation account to continue.</p>
           <button type="button" className="btn btn--primary" onClick={() => void startSignIn()}>
             Sign in

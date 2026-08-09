@@ -8,6 +8,7 @@ import {
 } from 'react'
 import { useAuth } from 'react-oidc-context'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { BrandLockup } from '../brand'
 import { GroupsProvider } from '../groups/GroupsContext'
 import { OrgUnitsProvider } from '../org-units/OrgUnitsContext'
 import { NAV_ITEMS } from './nav-items'
@@ -247,7 +248,7 @@ export default function AppShell() {
           )}
 
           <Link to="/people" className="topbar__brand">
-            Identity Manager
+            <BrandLockup />
           </Link>
 
           <form className="topbar__search-form" role="search" onSubmit={handleSearchSubmit}>
