@@ -166,10 +166,19 @@ chmod 640 "$ENV_FILE"
 
 # Vite reads .env from its OWN project directory, never the repo root, and
 # inlines these at build time.
+#
+# The heredoc delimiter is DELIBERATELY unquoted, because ${KEYCLOAK_ISSUER}
+# below has to expand. That also means backticks and $(...) inside this block
+# are COMMAND-SUBSTITUTED — including inside comment lines, which the shell
+# does not treat as comments at all. A backtick-quoted `location /api/` in the
+# comment below therefore ran `location` as a command, printed
+# "location: command not found", and tripped the ERR trap into announcing
+# "install failed" in the middle of an install that was actually succeeding.
+# Keep this block free of backticks and $(...) except for real expansions.
 cat >"$REPO_ROOT/apps/web/.env" <<EOF
 VITE_KEYCLOAK_ISSUER=${KEYCLOAK_ISSUER}
 VITE_KEYCLOAK_CLIENT_ID=idm-console
-# MUST include /api: nginx proxies the API at `location /api/`, and the console
+# MUST include /api: nginx proxies the API at its own /api/ location, and the console
 # appends bare resource paths to this base. Without it every request goes to
 # e.g. https://host/users, which the SPA fallback answers with index.html at
 # HTTP 200 text/html — so the app parses HTML as JSON and every screen fails.
