@@ -24,12 +24,12 @@ export interface BusinessRoleExceptionsTabProps {
  * feature: `POST /:id/exceptions` re-evaluates exactly one person, inside its
  * own transaction, and has taken effect by the time it responds.
  *
- * WHAT THIS TAB CANNOT SHOW, and does not pretend to. `reason` is REQUIRED on
- * write and is stored NOT NULL — but `BusinessRolesRepository.loadDefinition`
- * maps an exception row down to `{ userId, mode, expiresAt }`, so the reason
- * and who granted it are not in any read shape this console can reach. They
- * are in the audit log (`business_role:exception_set`), and this tab says so
- * rather than rendering an empty column that would read as "no reason given".
+ * THE REASON IS A COLUMN, not a footnote. `reason` is NOT NULL and required
+ * on every write, so the only thing that made it unshowable was the read
+ * shape narrowing it away — fixed in `BusinessRolesRepository.loadDefinition`
+ * rather than apologised for here. A justification the system insists on
+ * collecting and then cannot show is a field being collected for nobody, and
+ * this table IS the recertification queue that reads it.
  */
 export function BusinessRoleExceptionsTab({
   roleId,
@@ -52,7 +52,14 @@ export function BusinessRoleExceptionsTab({
   const [formError, setFormError] = useState<string | null>(null)
   const [removingId, setRemovingId] = useState<string | null>(null)
 
-  const ids = exceptions.map((e) => e.userId).join(',')
+  // Both the subject and the person who wrote the exception, resolved in one
+  // batch — "granted by 3f2a…" is not a fact anyone reviewing this can act on.
+  const ids = Array.from(
+    new Set([
+      ...exceptions.map((e) => e.userId),
+      ...exceptions.map((e) => e.grantedBy).filter((v): v is string => v !== null),
+    ]),
+  ).join(',')
 
   useEffect(() => {
     if (accessToken === undefined || ids.length === 0) return
@@ -141,7 +148,8 @@ export function BusinessRoleExceptionsTab({
           <p className="br-detail__section-hint">
             One person held in, or kept out, without changing the formula everyone else follows.
             These take effect immediately — they go through no draft, and the person is re-evaluated
-            before the request returns. The reason is required, and is recorded in the audit log.
+            before the request returns. The reason is required, and it is shown here — this table is
+            what a recertification campaign reads.
           </p>
         </div>
         {canManage && !adding && (
@@ -256,6 +264,8 @@ export function BusinessRoleExceptionsTab({
               <tr>
                 <th scope="col">Person</th>
                 <th scope="col">Mode</th>
+                <th scope="col">Reason</th>
+                <th scope="col">Set by</th>
                 <th scope="col">Expires</th>
                 {canManage && <th scope="col">
                   <span className="sr-only">Actions</span>
@@ -284,6 +294,20 @@ export function BusinessRoleExceptionsTab({
                         <span className="badge__dot" aria-hidden="true" />
                         {exception.mode === 'include' ? 'Held in' : 'Kept out'}
                       </span>
+                    </td>
+                    <td className="br-exceptions__reason-cell">{exception.reason}</td>
+                    <td className="cell-muted">
+                      {exception.grantedBy === null ? (
+                        /* ON DELETE SET NULL — the account that wrote this is
+                           gone. Said plainly; an empty cell would read as
+                           "nobody", which is the one thing it cannot mean. */
+                        'No longer on record'
+                      ) : (
+                        <>
+                          {people.get(exception.grantedBy)?.displayName ?? exception.grantedBy}
+                          <span className="br-exceptions__set-when">{formatDateTime(exception.createdAt)}</span>
+                        </>
+                      )}
                     </td>
                     <td className="cell-muted">
                       {exception.expiresAt === null ? 'Never' : formatDateTime(exception.expiresAt)}

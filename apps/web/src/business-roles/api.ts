@@ -50,12 +50,27 @@ export interface RoleGrant {
   target: ConnectorTarget | null
 }
 
-/** Mirrors what `loadDefinition` maps an exception row down to. NOTE: `reason` and `grantedBy` are stored and audited but are NOT part of this read shape — see BusinessRoleExceptionsTab for how that is surfaced honestly rather than invented. */
+/**
+ * Mirrors `BusinessRoleExceptionRow` — the exception row AS STORED, which is
+ * what `loadDefinition` now returns.
+ *
+ * `reason` is `NOT NULL` in Postgres and required on every write, because an
+ * unexplained exception is exactly what a later recertification campaign
+ * cannot act on. It is in this shape for the same reason: a mandatory
+ * justification that no screen can read back is a field being collected for
+ * nobody.
+ */
 export interface RoleException {
+  id: string
+  businessRoleId: string
   userId: string
   mode: 'include' | 'exclude'
+  reason: string
+  /** The person who wrote this exception, or null if that account has since been removed (`ON DELETE SET NULL`). */
+  grantedBy: string | null
   /** ISO-8601 instant, or null for "never expires". */
   expiresAt: string | null
+  createdAt: string
 }
 
 export interface RoleDefinition {

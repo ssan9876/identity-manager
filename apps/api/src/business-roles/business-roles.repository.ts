@@ -391,11 +391,27 @@ export class BusinessRolesRepository {
     return { ...role, conditions: definition.conditions, grants: definition.grants, exceptions: definition.exceptions }
   }
 
+  /**
+   * The published definition, plus the role's exceptions AS STORED.
+   *
+   * The exception rows are returned WHOLE rather than mapped down to the
+   * three fields the evaluator reads. `reason` is `NOT NULL` and required on
+   * every write precisely because an unexplained exception is what a later
+   * recertification campaign cannot act on -- and narrowing it away here made
+   * that column unreadable through any route, so the console was collecting
+   * a mandatory justification and then apologising for not being able to show
+   * it. `grantedBy` is the same story: "who decided this" is half of what
+   * makes an exception reviewable.
+   *
+   * The widened element type is still structurally a `RoleException`, so
+   * `evaluateRoles` and every other consumer of `EvaluableRole` are unchanged
+   * -- they read the three fields they always did and ignore the rest.
+   */
   private async loadDefinition(
     id: string,
     name: string,
     db: NodePgDatabase<typeof schema> = this.db,
-  ): Promise<EvaluableRole> {
+  ): Promise<EvaluableRole & { exceptions: BusinessRoleExceptionRow[] }> {
     const [conditions, grants, exceptions] = await Promise.all([
       db.select().from(businessRoleConditions).where(eq(businessRoleConditions.businessRoleId, id)),
       db.select().from(businessRoleGrants).where(eq(businessRoleGrants.businessRoleId, id)),
@@ -407,7 +423,7 @@ export class BusinessRolesRepository {
       name,
       conditions: conditions.map((c) => ({ field: c.field, operator: c.operator, value: c.value })),
       grants: grants.map((g) => ({ kind: g.kind, groupId: g.groupId, target: g.target })),
-      exceptions: exceptions.map((e) => ({ userId: e.userId, mode: e.mode, expiresAt: e.expiresAt })),
+      exceptions,
     }
   }
 }

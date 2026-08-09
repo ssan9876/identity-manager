@@ -664,4 +664,54 @@ describe('RoleReconciliationJob (Milestone 17, Task 10)', () => {
 
     await expect(job().reconcileRole('00000000-0000-0000-0000-000000000000', new Date())).rejects.toThrow()
   })
+
+  /**
+   * Regression guard for a read shape that had narrowed away a NOT NULL
+   * column. `reason` is required on every exception write precisely because
+   * an unexplained exception is what a later recertification campaign cannot
+   * act on -- and `loadDefinition` used to map the row down to
+   * `{ userId, mode, expiresAt }`, which made that mandatory justification
+   * unreadable through `GET /business-roles/:id`, the only route that
+   * returns exceptions at all. A field the system insists on collecting and
+   * then cannot show is a field collected for nobody.
+   *
+   * Asserts BOTH halves: the written justification comes back, AND the row
+   * is still structurally a `RoleException` (mode/expiresAt intact), because
+   * the evaluator reads these same objects and widening them must not have
+   * cost it anything.
+   */
+  it('an exception written with a reason reads back with it', async () => {
+    const { roleId, userId } = await seedRoleGrantingGroup(ctx, { jobTitle: 'Account Executive' })
+    const expiresAt = new Date('2027-01-01T09:00:00.000Z')
+
+    const { row } = await repo().upsertException(ctx.db, {
+      businessRoleId: roleId,
+      userId,
+      mode: 'exclude',
+      reason: 'Contractor — access handled by the vendor agreement, not this role.',
+      expiresAt,
+      grantedBy: userId,
+    })
+    expect(row.reason).toBe('Contractor — access handled by the vendor agreement, not this role.')
+
+    const role = await repo().findById(roleId)
+    expect(role).not.toBeNull()
+    expect(role?.exceptions).toEqual([
+      expect.objectContaining({
+        userId,
+        mode: 'exclude',
+        reason: 'Contractor — access handled by the vendor agreement, not this role.',
+        grantedBy: userId,
+        expiresAt,
+      }),
+    ])
+    // `createdAt` is what lets the console say WHEN somebody decided this,
+    // beside WHO — both halves of a reviewable exception.
+    expect(role?.exceptions[0].createdAt).toBeInstanceOf(Date)
+
+    // An enabled role left behind by the fixture is a landmine for whatever
+    // test runs next in this un-truncated file — same epilogue as the
+    // refusal tests above.
+    await repo().setEnabled(roleId, false)
+  })
 })

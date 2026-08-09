@@ -218,3 +218,18 @@
   gap: var(--space-3);
   margin-top: var(--space-4);
 }
+
+/* The reason is prose, not a label — it gets room to be a sentence and
+   wraps rather than truncating, because a truncated justification is the
+   same as no justification to whoever is reviewing it. */
+.br-exceptions__reason-cell {
+  max-width: 34ch;
+  color: var(--ink);
+  text-wrap: pretty;
+}
+
+.br-exceptions__set-when {
+  display: block;
+  font-size: var(--text-xs);
+  color: var(--ink-subtle);
+}
