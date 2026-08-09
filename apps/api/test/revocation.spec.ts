@@ -14,6 +14,7 @@ import { KEYCLOAK_ADMIN_CONFIG, KeycloakAdminClient } from '../src/keycloak/keyc
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { OutboxRepository } from '../src/outbox/outbox.repository'
 import { OutboxWriter } from '../src/outbox/outbox.writer'
+import { SyncDetailRepository } from '../src/outbox/sync-detail.repository'
 import { SyncStateRepository } from '../src/outbox/sync-state.repository'
 import { SyncWorker } from '../src/outbox/sync.worker'
 import { UsersController } from '../src/users/users.controller'
@@ -86,6 +87,8 @@ describe('synchronous revocation on deactivate (Milestone 4, Task 4)', () => {
         OutboxWriter,
         GroupsRepository,
         SyncStateRepository,
+      SyncDetailRepository,
+        SyncDetailRepository,
         { provide: KEYCLOAK_ADMIN_CONFIG, useValue: keycloakConfig },
         KeycloakAdminClient,
       ],

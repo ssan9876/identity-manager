@@ -62,6 +62,33 @@ function raiseWorst(
 }
 
 /**
+ * The ordered per-target rule (2026-08-08 sync-diagnostics spec): the latest
+ * outbox event for a `(user, target)` decides, and the `external_identities`
+ * row is consulted ONLY when that target has no event at all.
+ *
+ * Exported because `SyncDetailRepository` must reach the SAME verdict for the
+ * per-target rows it renders as this class reaches for the aggregate badge —
+ * a panel that contradicts the badge it explains is worse than no panel. One
+ * definition, two callers.
+ *
+ * The not-applicable case is why the ordering exists: a connector that threw
+ * `NotApplicableError` leaves a `done` event and NO identity row, and reading
+ * that missing row as `pending` would paint every mail-exempt person
+ * permanently yellow.
+ */
+export function perTargetState(
+  eventStatus: 'pending' | 'processing' | 'done' | 'failed' | undefined,
+  identityState: 'pending' | 'synced' | 'failed' | undefined,
+): SyncState {
+  if (eventStatus === 'failed') return 'failed'
+  if (eventStatus === 'pending' || eventStatus === 'processing') return 'pending'
+  if (eventStatus === 'done') return 'synced'
+  if (identityState === 'failed') return 'failed'
+  if (identityState === 'synced') return 'synced'
+  return 'pending'
+}
+
+/**
  * `external_identity_system` and `outbox_target` have identical members
  * (db/schema/external-identities.ts's own doc comment), so one key shape
  * serves both maps. `:` is an unambiguous separator because neither a uuid
@@ -222,15 +249,8 @@ export class SyncStateRepository {
     for (const userId of ids) {
       for (const target of targets) {
         const key = perTargetKey(userId, target)
-        const eventStatus = eventByUserTarget.get(key)
-        if (eventStatus !== undefined) {
-          const status = unsettledStatus(eventStatus)
-          if (status !== null) raiseWorst(troubledUsers, userId, status)
-          continue
-        }
-        const identity = identityByUserSystem.get(key)
-        if (identity === 'failed') raiseWorst(troubledUsers, userId, 'failed')
-        else if (identity !== 'synced') raiseWorst(troubledUsers, userId, 'pending')
+        const state = perTargetState(eventByUserTarget.get(key), identityByUserSystem.get(key))
+        if (state !== 'synced') raiseWorst(troubledUsers, userId, state)
       }
     }
 

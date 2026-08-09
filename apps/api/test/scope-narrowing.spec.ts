@@ -18,6 +18,7 @@ import { KEYCLOAK_ADMIN_CONFIG, KeycloakAdminClient } from '../src/keycloak/keyc
 import { OrgUnitsController } from '../src/org-units/org-units.controller'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { OutboxWriter } from '../src/outbox/outbox.writer'
+import { SyncDetailRepository } from '../src/outbox/sync-detail.repository'
 import { SyncStateRepository } from '../src/outbox/sync-state.repository'
 import { UsersController } from '../src/users/users.controller'
 import { UsersRepository } from '../src/users/users.repository'
@@ -103,6 +104,8 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
           KeycloakAdminClient,
           GroupsRepository,
           SyncStateRepository,
+      SyncDetailRepository,
+        SyncDetailRepository,
         ],
       })
         .overrideGuard(JwtGuard)
@@ -558,6 +561,8 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
           { provide: KEYCLOAK_ADMIN_CONFIG, useValue: UNREACHABLE_KEYCLOAK_CONFIG },
           KeycloakAdminClient,
           SyncStateRepository,
+      SyncDetailRepository,
+        SyncDetailRepository,
         ],
       })
         .overrideGuard(JwtGuard)

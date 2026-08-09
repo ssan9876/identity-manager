@@ -16,6 +16,7 @@ import { GroupsRepository } from '../src/groups/groups.repository'
 import { KEYCLOAK_ADMIN_CONFIG, KeycloakAdminClient } from '../src/keycloak/keycloak-admin.client'
 import { OrgUnitsRepository, type OrgUnit } from '../src/org-units/org-units.repository'
 import { OutboxWriter } from '../src/outbox/outbox.writer'
+import { SyncDetailRepository } from '../src/outbox/sync-detail.repository'
 import { SyncStateRepository } from '../src/outbox/sync-state.repository'
 import { UsersController } from '../src/users/users.controller'
 import { UsersRepository, type User } from '../src/users/users.repository'
@@ -128,6 +129,8 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
         KeycloakAdminClient,
         GroupsRepository,
         SyncStateRepository,
+      SyncDetailRepository,
+        SyncDetailRepository,
       ],
     })
       .overrideGuard(JwtGuard)

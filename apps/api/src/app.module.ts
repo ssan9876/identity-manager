@@ -39,6 +39,7 @@ import { OutboxController } from './outbox/outbox.controller'
 import { OutboxRepository } from './outbox/outbox.repository'
 import { OutboxWriter } from './outbox/outbox.writer'
 import { SyncStateRepository } from './outbox/sync-state.repository'
+import { SyncDetailRepository } from './outbox/sync-detail.repository'
 import { SyncWorker } from './outbox/sync.worker'
 import { TargetReconciliationJob } from './outbox/target-reconciliation.job'
 import { SelfServiceController } from './self-service/self-service.controller'
@@ -192,6 +193,7 @@ import { UsersRepository } from './users/users.repository'
     ConnectorRegistry,
     SyncWorker,
     SyncStateRepository,
+    SyncDetailRepository,
     // Milestone 14, Task 9 — the connector console's own read/write
     // repository for `connector_targets` (ConnectorTargetsController).
     ConnectorTargetsRepository,

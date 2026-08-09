@@ -30,6 +30,7 @@ import { type Page, parsePageQuery } from '../common/pagination'
 import * as schema from '../db/schema/index'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
 import { OutboxWriter } from '../outbox/outbox.writer'
+import { SyncDetailRepository, type UserSyncDetail } from '../outbox/sync-detail.repository'
 import { type SyncState, SyncStateRepository } from '../outbox/sync-state.repository'
 import { UsersRepository, type User, type UserStatus } from './users.repository'
 
@@ -212,6 +213,7 @@ export class UsersController {
     @Inject(OutboxWriter) private readonly outboxWriter: OutboxWriter,
     @Inject(KeycloakAdminClient) private readonly keycloak: KeycloakAdminClient,
     @Inject(SyncStateRepository) private readonly syncStates: SyncStateRepository,
+    @Inject(SyncDetailRepository) private readonly syncDetails: SyncDetailRepository,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
   ) {}
 
@@ -279,6 +281,60 @@ export class UsersController {
     await this.engine.assertCanIn(request.actor, 'user:read', user.orgUnitId)
     const syncState = await this.syncStates.resolveForUser(id)
     return this.attachSyncState(user, syncState)
+  }
+
+  /**
+   * Why is this person's badge that colour (2026-08-08 sync-diagnostics
+   * spec). Same `user:read` permission and the same org-unit scoping as
+   * `findOne` — this is the detail behind a field that route already
+   * returns, not a new category of information.
+   *
+   * EXCEPT for `lastError`. `OutboxController` gates dead letters behind a
+   * GLOBAL `audit:read` precisely because raw target error text "should not
+   * widen with a narrow grant", and that decision is NOT overturned here:
+   * every structural fact (per-target state, attempts, next retry,
+   * timestamps, external id) is visible under `user:read`, while the raw
+   * string is nulled unless the caller ALSO holds `audit:read` globally.
+   * `errorDetailRedacted` tells the console to say so explicitly rather than
+   * render a blank cell, which would read as "no error".
+   *
+   * That split is the point: a help_desk holder learns "mail_server failed,
+   * 8 attempts, no retry scheduled" and knows to escalate, without ever
+   * reading a vendor error string that may name internal hosts or
+   * directory paths.
+   */
+  @Get(':id/sync')
+  @RequirePermission('user:read')
+  async syncDetail(
+    @Param('id') rawId: string,
+    @Req() request: AuthorizedRequest,
+  ): Promise<UserSyncDetail> {
+    const id = parseId(rawId)
+    const user = await this.users.findById(id)
+    if (user === null) {
+      throw new NotFoundError('user', id)
+    }
+    // Out-of-scope existing resource -> 403, not 404 (decision 2), same as
+    // `findOne` directly above.
+    await this.engine.assertCanIn(request.actor, 'user:read', user.orgUnitId)
+
+    const detail = await this.syncDetails.describeForUser(id)
+
+    // `null` means at least one granting assignment has no org-unit scope,
+    // i.e. a GLOBAL grant. An actor with no `audit:read` at all yields `[]`,
+    // which correctly fails this check — see PermissionEngine.scopePathsFor.
+    const hasGlobalAuditRead = (await this.engine.scopePathsFor(request.actor, 'audit:read')) === null
+    if (hasGlobalAuditRead) {
+      return detail
+    }
+    return {
+      ...detail,
+      errorDetailRedacted: true,
+      targets: detail.targets.map((target) => ({
+        ...target,
+        latestEvent: target.latestEvent === null ? null : { ...target.latestEvent, lastError: null },
+      })),
+    }
   }
 
   private attachSyncState(user: User, syncState: SyncState | undefined): UserWithSyncState {
