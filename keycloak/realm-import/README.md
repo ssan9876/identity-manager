@@ -58,3 +58,19 @@ container.
 Splitting the test client into a second import file is not an option: each file
 in this directory defines a whole realm, and a second file naming an existing
 realm is skipped rather than merged.
+
+## Keep every `description` under 255 characters
+
+Keycloak stores a client's `description` in a `VARCHAR(255)` column. A longer
+one makes `--import-realm` fail, and it fails **silently**: the container comes
+up, but the realm is never created, so `startKeycloak`'s wait strategy never
+sees `/realms/identity-manager/.well-known/openid-configuration` return 200 and
+every Keycloak-backed spec dies on `Hook timed out in 180000ms` with nothing in
+the vitest output naming this file.
+
+This has already happened once: a 272-character description added here took out
+`sync.worker`, `keycloak-admin.client` and `jml-lifecycle.job` simultaneously,
+and the failure looked like Docker or disk pressure rather than a string length.
+If every Keycloak spec starts timing out at exactly the hook timeout, check the
+lengths in this file before you check anything else.
+

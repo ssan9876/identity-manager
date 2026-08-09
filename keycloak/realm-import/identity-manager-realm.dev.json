@@ -46,7 +46,7 @@
     {
       "clientId": "idm-test-client",
       "name": "DEV/TEST ONLY - direct grant for automated tests - SHIPS DISABLED (SEC-L5)",
-      "description": "Public client with the password grant. Imported DISABLED so a stray import of this file cannot mint tokens. The Testcontainers harness (apps/api/test/support/keycloak.ts) and pnpm smoke:dev enable it at runtime via apps/api/scripts/dev-test-client.ts; nothing else should.",
+      "description": "Public client with the password grant. Imported DISABLED so a stray import cannot mint tokens; the test harness and smoke:dev enable it at runtime. See keycloak/realm-import/README.md.",
       "enabled": false,
       "publicClient": true,
       "standardFlowEnabled": false,
