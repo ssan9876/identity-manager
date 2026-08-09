@@ -139,6 +139,37 @@ journalctl -u idm-api -n 200 --no-pager
 Secret values never appear in logs, errors or stack traces — a sentinel-value test
 enforces that.
 
+#### nginx's access log, and why it drops query strings
+
+nginx keeps its own log at `/var/log/nginx/access.log`, rotated by the distribution's
+`logrotate`. Both vhosts log through a custom `idm_noquery` format rather than the stock
+`combined` one — defined in `deploy/nginx/idm-log.conf`, installed to
+`/etc/nginx/conf.d/idm-log.conf`.
+
+It is `combined` with **the query string removed from the request line, and from the
+referrer**. That matters because search terms in this product are people's names,
+usernames and email addresses, and they ride in the query string on both sides of the
+edge: the console's own `/people?q=…`, and the `GET /api/users?search=…` it makes to
+render the result. Under `combined`, anyone able to read `/var/log/nginx/` — an ops role
+that needs no grant in the directory itself — would have a running record of who looked
+up whom, sitting outside the append-only, privilege-separated audit log described in
+[12 — Security](12-security.md). Finding CS-L3.
+
+Two consequences worth knowing:
+
+- **Filters are still in the URL, deliberately.** A search result stays shareable,
+  bookmarkable and reload-safe. What changed is only what gets written to disk. The terms
+  still enter the operator's *browser* history, so treat an admin's workstation profile as
+  sensitive — the console cannot control that without giving up deep links.
+- **Diagnosing from the access log loses `limit`/`offset`.** Paging and filter parameters
+  are no longer in the log line. Use the API's own logs (`journalctl -u idm-api`) or the
+  audit log for that; the access log is for status codes, latencies and traffic shape.
+
+The OIDC redirect back from Keycloak (`/?code=…&state=…`) is covered by the same
+truncation. That is the authorization-code flow behaving as specified, not a defect — the
+console already clears it from browser history on callback — and the code is single-use
+and PKCE-bound; the change here is only that it is no longer retained on disk.
+
 ## Backup and restore
 
 Everything durable is in Postgres. Keycloak has its own state (credentials, sessions,

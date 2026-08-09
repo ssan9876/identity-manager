@@ -257,6 +257,14 @@ if [[ "$IDM_SCHEME" == "https" ]]; then
 fi
 
 info "configuring nginx"
+# http-context snippet first: it defines the `idm_noquery` access-log format
+# (query strings and referrer query strings stripped, so people's names and
+# email addresses stop being written to /var/log/nginx in plaintext — finding
+# CS-L3). Both vhosts reference that format, and `log_format`/`map` are only
+# valid at http level, so it goes in conf.d, which nginx.conf includes before
+# sites-enabled. Without it `nginx -t` below fails outright rather than
+# quietly falling back to logging the query strings.
+cp "$REPO_ROOT/deploy/nginx/idm-log.conf" /etc/nginx/conf.d/idm-log.conf
 if [[ "$IDM_SCHEME" == "https" ]]; then
   sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" -e "s|@IDM_HOSTNAME@|$IDM_HOSTNAME|g" \
       -e "s|@IDM_PORT@|$IDM_PORT|g" -e "s|@TLS_CERT@|${TLS_DIR}/idm.crt|g" \
