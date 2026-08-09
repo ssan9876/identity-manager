@@ -221,6 +221,87 @@ describe('ConnectorTargetsController (Milestone 14, Task 9)', () => {
     expect(JSON.stringify(res.body)).toMatch(/NUL/i)
   })
 
+  /**
+   * Finding INT-H4's residual (docs/archive/audits/carried-findings-
+   * verification.md, "the read-merge-write pattern recurs in newer code").
+   * `ConnectorTargetsRepository.upsert` read the current row, merged
+   * `patch.config` onto it in JavaScript and wrote the result back, with no
+   * lock — the identical shape Wave D fixed on `PATCH /self`, in a path the
+   * fix never reached. Two concurrent PATCHes naming DIFFERENT config keys
+   * therefore lost one of them.
+   *
+   * TWO cases, because they fail for different reasons and a fix for one
+   * does not imply the other:
+   *
+   *  - onto an EXISTING row: the classic lost update. `SELECT ... FOR
+   *    UPDATE` would have closed this one.
+   *  - onto a target with NO row yet: the case FOR UPDATE cannot close at
+   *    all, because there is no row to lock. Both requests merge onto `{}`
+   *    and both INSERT; `ON CONFLICT DO UPDATE` then lets the loser's `set`
+   *    overwrite the winner's config wholesale. This is why the fix is an
+   *    advisory lock — see CONNECTOR_TARGET_LOCK_NAMESPACE.
+   *
+   * Repeated, because it is a race: a single pass can pass by luck.
+   */
+  it('two concurrent PATCHes setting different config keys both survive, on an existing row', async () => {
+    const actor = await makeActiveUser('super_admin')
+    currentUsername = actor.username
+
+    for (let i = 0; i < 15; i++) {
+      await deleteConnectorTarget('echo')
+      await request(app.getHttpServer())
+        .patch('/connector-targets/echo')
+        .send({ config: { seeded: 'yes' } })
+        .expect(200)
+
+      const [resA, resB] = await Promise.all([
+        request(app.getHttpServer())
+          .patch('/connector-targets/echo')
+          .send({ config: { alpha: `a${i}` } }),
+        request(app.getHttpServer())
+          .patch('/connector-targets/echo')
+          .send({ config: { beta: `b${i}` } }),
+      ])
+      expect(resA.status).toBe(200)
+      expect(resB.status).toBe(200)
+
+      // Read the row back rather than trusting either response body: the
+      // defect is what ends up STORED, and a response can be right about
+      // its own write while the row is wrong.
+      const { rows } = await ctx.pool.query<{ config: Record<string, unknown> }>(
+        'SELECT config FROM connector_targets WHERE target = $1',
+        ['echo'],
+      )
+      expect(rows[0]?.config).toEqual({ seeded: 'yes', alpha: `a${i}`, beta: `b${i}` })
+    }
+  }, 60_000)
+
+  it('two concurrent PATCHes both survive when the target has NO row yet (the case FOR UPDATE cannot cover)', async () => {
+    const actor = await makeActiveUser('super_admin')
+    currentUsername = actor.username
+
+    for (let i = 0; i < 15; i++) {
+      await deleteConnectorTarget('echo')
+
+      const [resA, resB] = await Promise.all([
+        request(app.getHttpServer())
+          .patch('/connector-targets/echo')
+          .send({ config: { alpha: `a${i}` } }),
+        request(app.getHttpServer())
+          .patch('/connector-targets/echo')
+          .send({ config: { beta: `b${i}` } }),
+      ])
+      expect(resA.status).toBe(200)
+      expect(resB.status).toBe(200)
+
+      const { rows } = await ctx.pool.query<{ config: Record<string, unknown> }>(
+        'SELECT config FROM connector_targets WHERE target = $1',
+        ['echo'],
+      )
+      expect(rows[0]?.config).toEqual({ alpha: `a${i}`, beta: `b${i}` })
+    }
+  }, 60_000)
+
   it('rejects a non-object config', async () => {
     const actor = await makeActiveUser('super_admin')
     currentUsername = actor.username
