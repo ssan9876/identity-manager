@@ -297,7 +297,18 @@ export class ConnectorTargetsController {
    * unless `force` is set. Every invocation is audited — not just an
    * overridden one (TargetReconciliationJob.auditOverride already covers
    * that narrower case on its own) — so "who ran a reconcile against this
-   * target, and what did it do" is answerable for a dry run too.
+   * target, and what did it do" is answerable for a dry run too. Both rows
+   * now carry the acting `userId`; see the `actorUserId` comment below and
+   * finding CAR-system-actor, item 3
+   * (docs/archive/audits/carried-findings-verification.md).
+   *
+   * NOTE, because it is easy to miss: a non-dry run here performs
+   * directory-wide, UNSCOPED writes — the job walks every principal with
+   * `scopePaths: null`, and no per-entity write is individually
+   * permission-checked, scope-narrowed or outboxed. `requireGlobalManageGrant`
+   * above is what keeps that safe: it is reachable only by an actor holding a
+   * GLOBAL `connector:manage` grant, which the static catalog gives to
+   * `super_admin` alone. It is not reachable by a scoped actor at all.
    */
   @Post(':target/reconcile')
   @HttpCode(HttpStatus.OK)
@@ -318,7 +329,21 @@ export class ConnectorTargetsController {
       ])
     }
 
-    const options: TargetReconciliationOptions = { dryRun: parsed.dryRun, force: parsed.force }
+    // `actorUserId` — the override row this run may write
+    // (`connector:reconcile-override`, TargetReconciliationJob.auditOverride)
+    // must name the human who asked, not the system actor. This job predates
+    // the HTTP route and defaulted its override row to `actorUserId: null` on
+    // the (then-true, now-false) grounds that it only ever ran from a CLI;
+    // finding CAR-system-actor, item 3
+    // (docs/archive/audits/carried-findings-verification.md) is exactly that
+    // lost attribution. The `connector_target:reconcile` row written below
+    // already carried the actor, but an auditor searching for the override
+    // itself found nobody on it.
+    const options: TargetReconciliationOptions = {
+      dryRun: parsed.dryRun,
+      force: parsed.force,
+      actorUserId: request.actor.userId,
+    }
     const report = await this.reconciliationJob.reconcile(target, options)
 
     await this.db.transaction(async (tx) => {

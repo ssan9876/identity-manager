@@ -204,8 +204,28 @@ Verify these still hold before looking elsewhere.
 - **The self-editable core allow-list is only `location`.** `firstName`, `lastName` and
   `jobTitle` were deliberately excluded as an impersonation surface.
 - **The JML `deactivate` action performs synchronous Keycloak revocation.**
-- **System-actor writes bypass `PermissionEngine`** — `actorUserId` is null and there is
-  no principal. Confirm this cannot be induced from a user-facing path.
+- **System-actor writes bypass `PermissionEngine`, and one such path IS user-facing.**
+  Jobs that run as the system actor (`LifecycleJob`, `RuleApplier`,
+  `ReconciliationJob.enqueueRepair`, `SyncWorker`) write with `actorUserId` null and no
+  principal, so no permission check applies to them. This was previously documented as
+  "confirm this cannot be induced from a user-facing path"; that confirmation no longer
+  holds. `POST /connector-targets/:target/reconcile` calls
+  `TargetReconciliationJob.reconcile` straight from an HTTP handler, and that job walks
+  the whole directory with `scopePaths: null`, writing `external_identities` /
+  `user_target_accounts` and pushing state to a real target for every principal — none of
+  those per-entity writes individually permission-checked, scope-narrowed or outboxed.
+  What bounds it is authorization, not unreachability: `requireGlobalManageGrant`
+  (`connectors/connector-targets.controller.ts`) requires a **global** grant of
+  `connector:manage`, which the static catalog gives to `super_admin` alone, so a scoped
+  actor cannot use it to reach outside their subtree. The invocation and any
+  blast-radius override are both audited against the calling user
+  (`connector_target:reconcile` and `connector:reconcile-override`). **Still open:** the
+  individual writes that reconcile performs are not, so constraint 7 ("every mutation is
+  permission-checked, scope-narrowed, audited and outboxed in one transaction") does not
+  hold for this route. The same is true, less dramatically, of
+  `PATCH /connector-targets/:target` and the `attribute-target-mappings` routes, which
+  audit but never outbox. (Finding CAR-system-actor,
+  `docs/archive/audits/carried-findings-verification.md`.)
 - **`user_created` / `user_attribute_changed` JML triggers exist but nothing auto-fires
   them.**
 - **Bulk import references org units and managers by UUID**, not by name.

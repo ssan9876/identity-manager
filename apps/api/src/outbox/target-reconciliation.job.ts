@@ -114,6 +114,24 @@ export interface TargetReconciliationOptions {
   dryRun?: boolean
   /** Explicit override: proceed even if the blast-radius guard trips. Ignored when `dryRun` is `true`. Every override is audited — see `reconcile`'s own doc comment. Defaults to `false`. */
   force?: boolean
+  /**
+   * The authenticated actor who asked for this run, when there IS one —
+   * threaded straight through to `auditOverride`'s `actorUserId`.
+   *
+   * Exists because this job is no longer CLI-only. `POST /connector-targets/
+   * :target/reconcile` (`connectors/connector-targets.controller.ts`) calls
+   * `reconcile()` from a JWT-guarded request, so the override row — the one
+   * an auditor searches for when asking "who deliberately overrode the
+   * blast-radius guard" — can and must name a human. Leaving it unset keeps
+   * the pre-existing `actorUserId: null` system-actor shape, which is the
+   * correct and only available answer for `target-reconcile-cli.ts`.
+   *
+   * Finding CAR-system-actor, item 3
+   * (`docs/archive/audits/carried-findings-verification.md`): "thread the
+   * acting `userId` into `TargetReconciliationJob.auditOverride` so
+   * `connector:reconcile-override` names a human when one exists".
+   */
+  actorUserId?: string | null
 }
 
 /** One principal whose OWN `reconcileUser` call threw during the APPLY phase — see `TargetReconciliationReport.failed`'s own doc comment. */
@@ -235,9 +253,26 @@ export interface TargetReconciliationReport {
  * restated for this task).
  *
  * Unscoped (`scopePaths`-free), like `ReconciliationJob`/`LifecycleJob`
- * before it: a trusted, on-demand admin/CLI operation, not a request from a
- * scoped actor — it must see every in-scope principal, not just some
- * actor's subtree.
+ * before it: it must see every in-scope principal, not just some actor's
+ * subtree.
+ *
+ * That is NOT the same as "no request can reach it" — a claim an earlier
+ * version of this comment made, and which is false. `POST /connector-
+ * targets/:target/reconcile` (`connectors/connector-targets.controller.ts`)
+ * calls `reconcile()` directly from a JWT-guarded HTTP handler, so an
+ * unscoped, directory-wide, per-entity-unaudited system write IS inducible
+ * from a user-facing path. What bounds it is authorization, not
+ * unreachability: that route's `requireGlobalManageGrant` demands a GLOBAL
+ * grant of `connector:manage` (`scopePathsFor(actor, 'connector:manage') ===
+ * null`), and `connector:manage` is `super_admin`-only in the static
+ * catalog — so a SCOPED actor cannot use this job to escape their subtree,
+ * which is the property that actually matters. A caller-supplied
+ * `options.actorUserId` records who asked, when anyone did.
+ *
+ * Finding CAR-system-actor
+ * (`docs/archive/audits/carried-findings-verification.md`): the carried
+ * claim "confirm this cannot be induced from a user-facing path" no longer
+ * holds, and this comment used to restate it.
  *
  * NEVER calls `connector.disable()` — see `DirectoryConnector`'s own doc
  * comment ("connectors never delete... disable only") and `SyncWorker.
@@ -413,7 +448,7 @@ export class TargetReconciliationJob {
       // Audited BEFORE a single principal or group is touched — the
       // override decision is what is being recorded, independent of
       // whether the apply phase below fully succeeds.
-      await this.auditOverride(target, blastRadius)
+      await this.auditOverride(target, blastRadius, options.actorUserId ?? null)
     }
 
     // PER-PRINCIPAL FAILURE ISOLATION (Milestone 10 Task 4 concern 3,
@@ -592,25 +627,48 @@ export class TargetReconciliationJob {
 
   /**
    * The ONE audit row an overridden run writes — "overriding is explicit
-   * and audited" (this task's own brief). `actorUserId: null` — the same
-   * "trusted, on-demand system/operator action with no HTTP-authenticated
-   * actor to attribute it to" convention `ReconciliationJob.enqueueRepair`,
-   * `LifecycleJob` and `RuleApplier` already use (see any of their own doc
-   * comments): this job runs from a CLI, not a JWT-guarded request, so
-   * there is no `Actor` to record here any more than those other on-demand
-   * scripts have one — WHO ran the override is answerable from server/OS
-   * process logs, same as every other script in this codebase. `resourceId`
-   * is `null`, not `target` — `audit_log.resource_id` is a `uuid` column
-   * (see db/schema/audit-log.ts) and a target name is not one; `target`
-   * itself, plus every number behind the decision, is carried in `after`
-   * instead — mirrors `ImportsController.preview`'s own
+   * and audited" (this task's own brief).
+   *
+   * `actorUserId` is the caller-supplied `options.actorUserId` when there is
+   * one, and `null` otherwise. Both cases are real:
+   *
+   * - `target-reconcile-cli.ts` passes nothing, so the row keeps the
+   *   `actorUserId: null` "trusted, on-demand system/operator action with no
+   *   HTTP-authenticated actor to attribute it to" convention
+   *   `ReconciliationJob.enqueueRepair`, `LifecycleJob` and `RuleApplier`
+   *   already use (see any of their own doc comments) — WHO ran it is
+   *   answerable from server/OS process logs, same as every other script in
+   *   this codebase.
+   * - `POST /connector-targets/:target/reconcile` passes
+   *   `request.actor.userId`, because that path DOES run under a JWT-guarded
+   *   request. An earlier version of this comment asserted the opposite
+   *   ("this job runs from a CLI, not a JWT-guarded request, so there is no
+   *   `Actor` to record here"); that stopped being true when the HTTP route
+   *   was added, and the consequence was that the single most dangerous
+   *   action this endpoint offers — deliberately overriding the blast-radius
+   *   guard — named nobody. The controller's own
+   *   `connector_target:reconcile` row already carried the actor, so an
+   *   investigator could correlate by timestamp; the override row itself,
+   *   the one an auditor would actually search for, could not.
+   *
+   * Finding CAR-system-actor, item 3
+   * (`docs/archive/audits/carried-findings-verification.md`).
+   *
+   * `resourceId` is `null`, not `target` — `audit_log.resource_id` is a
+   * `uuid` column (see db/schema/audit-log.ts) and a target name is not
+   * one; `target` itself, plus every number behind the decision, is
+   * carried in `after` instead — mirrors `ImportsController.preview`'s own
    * `resourceType: 'import', resourceId: null` shape for an invocation-level
    * row with no single row-shaped resource to point at.
    */
-  private async auditOverride(target: ConnectorTarget, blastRadius: BlastRadiusEvaluation): Promise<void> {
+  private async auditOverride(
+    target: ConnectorTarget,
+    blastRadius: BlastRadiusEvaluation,
+    actorUserId: string | null,
+  ): Promise<void> {
     await this.db.transaction(async (tx) => {
       await this.auditWriter.record(tx, {
-        actorUserId: null,
+        actorUserId,
         action: 'connector:reconcile-override',
         resourceType: 'connector_target',
         resourceId: null,
