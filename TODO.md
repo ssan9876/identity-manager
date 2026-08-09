@@ -186,7 +186,35 @@ Carry-forward findings, already diagnosed:
       clean (SEC-L7), so nothing leaks. Do it in Task 12, when the journey that
       makes it reachable is in hand.
 
-Tasks 5–16 are otherwise not started; the plan specifies each.
+- [x] **Tasks 5–7 — Phase 1 complete, and its GATE IS CLOSED.** Migration `0030`.
+      Business-role and JML evaluation are now organization-scoped: the plan's
+      note that "nothing reads business_roles yet" was **stale** — Milestone 17
+      landed a reconciler firing on every user write before this task ran, so
+      unscoped, the first non-master tenant would have had another tenant's
+      formulas evaluated against its people. The database is not sufficient
+      cover either: a cross-tenant *group* grant is refused by the composite FK,
+      but `user_target_accounts` carries no organization at all, so a
+      cross-tenant *target* grant had no guard. `organizationId` is now a
+      required LEADING parameter, so omitting it is a compile error rather than
+      a review miss. `business_roles_name_idx` also became
+      `(organization_id, name)` — a global unique name would let the first
+      tenant to onboard "Engineering Standard Access" deny it to every other,
+      with the 409 doubling as a cross-tenant existence oracle (the SEC-L2
+      pattern in a new place).
+
+      **Gate evidence**, both halves run serially as the plan requires:
+      full API suite **1419/1420** (the one failure is the Keycloak-dependent
+      `dev-environment` spec), and a **real boot against a real Keycloak** on
+      the lab host — not a container. Adoption worked (`realm=NULL` →
+      `realm=identity-manager`, health 200), and the fail-closed half was
+      verified by pointing `KEYCLOAK_ISSUER` at a different realm: the API
+      **refused to listen** (health `000`) with
+      *"KEYCLOAK_ISSUER names realm … but the master organization is bound to …
+      Refusing to start: changing it would re-point every existing user."*
+      Restoring the issuer recovered cleanly. That path had never run outside a
+      container.
+
+Tasks 8–16 are otherwise not started; the plan specifies each.
 
 ---
 
