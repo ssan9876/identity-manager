@@ -151,6 +151,7 @@ export default function AppShell() {
   const dialogRef = useRef<HTMLDialogElement>(null)
   const menuButtonRef = useRef<HTMLButtonElement>(null)
   const [signingOut, setSigningOut] = useState(false)
+  const [signOutError, setSignOutError] = useState<string | null>(null)
 
   // A dialog left open while the viewport grows past the disclosure
   // breakpoint (e.g. rotating a tablet, or a live resize during a demo)
@@ -177,16 +178,56 @@ export default function AppShell() {
     searchInputRef.current?.blur()
   }
 
+  /**
+   * The original handler discarded the failure entirely — a bare `catch {}`
+   * that reported nothing and rendered nothing. On a failed sign-out the
+   * spinner stopped, the button re-enabled, and the console sat there looking
+   * exactly as it does when signed in. Someone clicking "Sign out" on a shared
+   * machine, seeing the button return to normal, and walking away had every
+   * reason to believe they had signed out. This is the same defect App.tsx
+   * documents at length for sign-IN; the lesson had not been carried across
+   * (finding CS-L1, docs/archive/audits/audit-client-supply-chain.md).
+   *
+   * `try`/`catch` alone cannot fix it, for the reason App.tsx already records:
+   * react-oidc-context wraps every navigator method (`signoutRedirect` is in
+   * its `navigatorKeys`), catches internally, dispatches its own ERROR state
+   * and returns `null` rather than rethrowing. So the catch below never runs
+   * for the common failure. `auth.error` is the path that actually carries it,
+   * narrowed here by its `source` discriminant so an unrelated failure — a
+   * silent-renew error, say — cannot render as a sign-out failure.
+   *
+   * Nothing after the `await` runs on SUCCESS: oidc-client-ts's
+   * RedirectNavigator resolves its promise only on `pageshow`, so a successful
+   * redirect unloads the page first. Reaching the line after it means the
+   * sign-out did not happen.
+   *
+   * `removeUser()` runs on the failure path so the local session is destroyed
+   * even when the IdP round-trip cannot complete — the user asked to be signed
+   * out, and the one thing this app can always honour is dropping its own
+   * tokens. UserManager clears the store before navigating anyway, so this only
+   * covers failures that happen earlier, before that point.
+   */
   async function handleSignOut() {
+    setSignOutError(null)
     setSigningOut(true)
     try {
       await auth.signoutRedirect()
-    } catch {
-      setSigningOut(false)
+    } catch (error) {
+      setSignOutError(error instanceof Error ? error.message : String(error))
     }
+    try {
+      await auth.removeUser()
+    } catch {
+      // Best-effort: the redirect already failed, and there is nothing further
+      // this app can do about a store it cannot write.
+    }
+    setSigningOut(false)
   }
 
   const username = auth.user?.profile.preferred_username
+
+  const signOutFailure =
+    signOutError ?? (auth.error?.source === 'signoutRedirect' ? auth.error.message : null)
 
   return (
     <ShellProviders>
@@ -244,6 +285,17 @@ export default function AppShell() {
             </button>
           </div>
         </header>
+
+        {signOutFailure !== null && (
+          <div className="error-panel" role="alert" data-testid="signout-error">
+            <p className="error-panel__message">
+              Sign-out failed — <strong>your session may still be open</strong> at the
+              identity provider. This browser&rsquo;s tokens have been discarded, but close
+              the browser to be certain, especially on a shared machine.
+            </p>
+            <p className="error-panel__message">{signOutFailure}</p>
+          </div>
+        )}
 
         {!isDisclosure && (
           <nav className="nav">

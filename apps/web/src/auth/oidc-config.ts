@@ -33,5 +33,31 @@ export const oidcConfig: AuthProviderProps = {
   post_logout_redirect_uri: `${window.location.origin}/`,
   response_type: 'code',
   scope: 'openid profile email',
+  /**
+   * DO NOT move this to `localStorage` without reading this first.
+   *
+   * `sessionStorage` is scoped per-origin AND per top-level browsing context,
+   * which is currently the only thing preventing clickjacking of this console:
+   * a framed instance gets a fresh, empty store and therefore renders the
+   * sign-in gate rather than an authenticated page. `localStorage` is shared
+   * across contexts, so the framed instance would render as the signed-in
+   * administrator and every "keep me signed in" request turns clickjacking of
+   * an identity provider's admin console live in one line.
+   *
+   * The anti-framing header is now actually delivered (finding CS-M1 —
+   * deploy/nginx/*.conf were silently dropping it), so this is defence in
+   * depth rather than the sole control it used to be. It is still the reason
+   * the window between those two states was not exploitable.
+   */
   userStore: new WebStorageStateStore({ store: window.sessionStorage }),
+
+  /**
+   * Finding CS-L2. Defaults to `false`, which leaves the refresh token relying
+   * on Keycloak's session teardown rather than being explicitly revoked. This
+   * does NOT and cannot revoke an already-issued access token: that is a
+   * stateless JWT and `JwtGuard` verifies it by signature and `exp` against
+   * JWKS, so a captured one stays valid until it expires. Keep realm access
+   * token lifetime short; this closes the refresh token only.
+   */
+  revokeTokensOnSignout: true,
 }
