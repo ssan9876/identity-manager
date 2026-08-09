@@ -50,6 +50,41 @@ export const REEVALUATION_FIELDS: readonly string[] = Object.freeze([...CONDITIO
  */
 export type DbHandle = Parameters<Parameters<NodePgDatabase<typeof schema>['transaction']>[0]>[0]
 
+/**
+ * The WIDER handle: the pooled client, or an open transaction (a
+ * `PgTransaction` structurally satisfies the pooled shape — see `DbHandle`
+ * above, which deliberately narrows the other way).
+ *
+ * Only READ paths take this. `reconcileUser` and everything it writes stay
+ * on `DbHandle`, so no write can ever be handed the pool by accident while
+ * a caller's transaction sits open (finding C1,
+ * docs/archive/audits/audit-integrity.md; test/pool-exhaustion.spec.ts).
+ */
+export type ReadHandle = NodePgDatabase<typeof schema>
+
+/** One role, named — the unit `justifiedBy` is a list of. */
+export interface JustifyingRole {
+  roleId: string
+  roleName: string
+}
+
+/**
+ * Which enabled roles currently justify each entitlement a user holds —
+ * Milestone 17, Task 12's answer to "why does this person have this?".
+ *
+ * Keyed by groupId / target rather than returned as a flat list, because the
+ * caller is joining it onto rows it read from `group_user_members` and
+ * `user_target_accounts` and needs a lookup, not a scan.
+ *
+ * The refusal arm carries the SAME three fields `ReconcileOutcome`'s does,
+ * and for the same reason: `evaluateRoles` refuses wholesale on the first
+ * role it cannot understand (see its own doc comment), so there is exactly
+ * one role and one reason to name.
+ */
+export type Justification =
+  | { evaluable: true; groups: Map<string, JustifyingRole[]>; targets: Map<ConnectorTarget, JustifyingRole[]> }
+  | { evaluable: false; roleId: string; roleName: string; reason: string }
+
 export type ReconcileOutcome =
   | {
       status: 'applied'
@@ -97,6 +132,16 @@ export type ReconcileOutcome =
  * listEnabledForEvaluation` is called with `tx` explicitly rather than
  * left to default to its own injected pooled handle.
  */
+/** `map.get(key) ?? []`, appended to and written back — one line, twice used. */
+function appendJustifier<K>(map: Map<K, JustifyingRole[]>, key: K, justifier: JustifyingRole): void {
+  const existing = map.get(key)
+  if (existing === undefined) {
+    map.set(key, [justifier])
+    return
+  }
+  existing.push(justifier)
+}
+
 @Injectable()
 export class RoleReconciler {
   constructor(
@@ -261,13 +306,101 @@ export class RoleReconciler {
   }
 
   /**
+   * READ-ONLY. Which enabled roles currently hold this user, and therefore
+   * which of them justify each group membership and target account they
+   * have — Milestone 17, Task 12 (`GET /users/:id/entitlements`).
+   *
+   * Writes NOTHING and opens NO transaction, deliberately on both counts.
+   * The screen this feeds is diagnostic; an operator asking "why does this
+   * person have this?" must not cause a reconcile as a side effect of
+   * looking, and a read that took a transaction would then be holding a
+   * pooled connection across the role load as well (finding C1,
+   * docs/archive/audits/audit-integrity.md). Every query below runs on the
+   * handle the caller passed and returns its connection before the next one
+   * starts.
+   *
+   * It answers with the SAME inputs `reconcileUser` uses — the same
+   * `EvaluableUser`, the same `listEnabledForEvaluation`, the same
+   * `evaluateRoles` — because a "why" screen that disagrees with what
+   * reconciliation would actually do is worse than no screen. That
+   * includes the refusal: ONE unevaluable role makes the whole evaluation
+   * unevaluable, so this returns a refusal rather than a partial
+   * attribution, exactly as the reconciler does. The caller renders the
+   * rows anyway with the refusal attached (see `UsersController.
+   * entitlements`) — the person's memberships are a fact regardless of
+   * whether the engine can currently explain them.
+   *
+   * Attribution is exact rather than blanket: a role justifies a row only
+   * if the user holds that role AND that role grants that specific group or
+   * target. `matchedRoleIds` supplies the first half and each role's own
+   * `grants` the second, so a held role that grants some OTHER group is not
+   * listed against this one.
+   *
+   * `grantSource` is NOT consulted here at all. This method answers "which
+   * roles would want this?", and the caller — which is the thing that knows
+   * a `manual` row belongs to the human who made it — decides what to do
+   * with the answer.
+   */
+  async explainUser(db: ReadHandle, userId: string, now: Date): Promise<Justification> {
+    const user = await this.loadEvaluableUser(db, userId)
+    const roles = await this.roles.listEnabledForEvaluation(db)
+    const evaluation = evaluateRoles(user, roles, now)
+
+    if (!evaluation.evaluable) {
+      return {
+        evaluable: false,
+        roleId: evaluation.roleId,
+        roleName: evaluation.roleName,
+        reason: evaluation.reason,
+      }
+    }
+
+    const heldRoleIds = new Set(evaluation.matchedRoleIds)
+    const groups = new Map<string, JustifyingRole[]>()
+    const targets = new Map<ConnectorTarget, JustifyingRole[]>()
+
+    for (const role of roles) {
+      if (!heldRoleIds.has(role.id)) continue
+      const justifier: JustifyingRole = { roleId: role.id, roleName: role.name }
+
+      for (const grant of role.grants) {
+        if (grant.kind === 'group_membership' && grant.groupId !== null) {
+          appendJustifier(groups, grant.groupId, justifier)
+        }
+        if (grant.kind === 'target_account' && grant.target !== null) {
+          appendJustifier(targets, grant.target, justifier)
+        }
+      }
+    }
+
+    // Stable, name-first order. `listEnabledForEvaluation` selects without
+    // an ORDER BY, so Postgres is free to hand back two roles in either
+    // order on two otherwise identical requests; an operator comparing one
+    // screenshot against another should not see the justification list
+    // reshuffle for no reason. Ties broken on id so the order is TOTAL —
+    // role names are unique today (business_roles_name_idx), and this stays
+    // deterministic if that ever stops being true.
+    for (const justifiers of [...groups.values(), ...targets.values()]) {
+      justifiers.sort((a, b) => a.roleName.localeCompare(b.roleName) || a.roleId.localeCompare(b.roleId))
+    }
+
+    return { evaluable: true, groups, targets }
+  }
+
+  /**
    * `users` itself carries only the `orgUnitId` FK, never the ltree path
    * (same fact `UsersRepository.scopeFilter`'s own doc comment relies on) —
    * this joins `org_units` for `orgUnitPath` in ONE query on the caller's
-   * `tx`, rather than two separate round trips through two repositories.
+   * handle, rather than two separate round trips through two repositories.
+   *
+   * Typed `ReadHandle`, not `DbHandle`: `reconcileUser` passes its caller's
+   * open transaction (a `PgTransaction`, which structurally satisfies the
+   * pooled shape), while `explainUser` — a READ-ONLY caller that opens no
+   * transaction at all — passes the pooled handle. Widening here is what
+   * lets both share one query; nothing about the query itself differs.
    */
-  private async loadEvaluableUser(tx: DbHandle, userId: string): Promise<EvaluableUser> {
-    const [row] = await tx
+  private async loadEvaluableUser(db: ReadHandle, userId: string): Promise<EvaluableUser> {
+    const [row] = await db
       .select({
         id: users.id,
         status: users.status,

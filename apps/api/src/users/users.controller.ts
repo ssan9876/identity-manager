@@ -12,6 +12,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common'
+import { eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
 import {
@@ -20,6 +21,7 @@ import {
   validateAttributes,
 } from '../attributes/attribute-validator'
 import { JwtGuard } from '../auth/jwt.guard'
+import type { ConnectorTarget } from '../connectors/connector'
 import { AuditWriter } from '../audit/audit.writer'
 import { PermissionEngine } from '../authz/permission.engine'
 import { PermissionGuard, type AuthorizedRequest } from '../authz/permission.guard'
@@ -31,6 +33,8 @@ import {
   REEVALUATION_FIELDS,
   RoleReconciler,
   type DbHandle as ReconcilerDbHandle,
+  type Justification,
+  type JustifyingRole,
 } from '../business-roles/role-reconciler'
 import { DB_CLIENT } from '../common/db.token'
 import { ConflictError, NotFoundError, ValidationError } from '../common/errors'
@@ -39,6 +43,10 @@ import { parseId } from '../common/http/parse-id'
 import { noNulChar } from '../common/http/safe-string'
 import { type Page, parsePageQuery } from '../common/pagination'
 import * as schema from '../db/schema/index'
+import { groupUserMembers } from '../db/schema/group-members'
+import { grantSource } from '../db/schema/grant-source'
+import { groups } from '../db/schema/groups'
+import { userTargetAccounts } from '../db/schema/user-target-accounts'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
 import { OutboxWriter } from '../outbox/outbox.writer'
 import { SyncDetailRepository, type UserSyncDetail } from '../outbox/sync-detail.repository'
@@ -306,6 +314,91 @@ function touchesReevaluationField(parsed: object): boolean {
   return REEVALUATION_FIELDS.some((field) => body[field] !== undefined)
 }
 
+/**
+ * Derived from the Postgres enum rather than restated as a union literal —
+ * `grant_source` has exactly two values today and adding a third is a
+ * migration, which would then fail to compile here until this endpoint says
+ * what the new source means for `justifiedBy`. That is the desired outcome:
+ * a source nobody classified must not silently fall through to the
+ * `business_role` branch below and be presented as role-derived.
+ */
+type GrantSource = (typeof grantSource.enumValues)[number]
+
+/**
+ * One entitlement row, as `GET /users/:id/entitlements` reports it
+ * (Milestone 17, Task 12).
+ *
+ * `justifiedBy` is THREE-VALUED and every value means something different:
+ *  - a non-empty list — these enabled roles hold this user right now and
+ *    each of them grants this exact group/target;
+ *  - `[]` — nothing currently justifies this row. For a `business_role` row
+ *    that is a genuine finding (the next reconcile will revoke it); for a
+ *    `manual` row it is the normal, permanent state, and it is exactly what
+ *    a recertification queue selects on;
+ *  - `null` — UNKNOWN. The engine refused, so nobody can say. See
+ *    `UserEntitlements.unevaluable`, which is non-null in precisely this
+ *    case and names the role and reason.
+ *
+ * `[]` and `null` are kept apart on purpose. Collapsing them would let a
+ * screen that cannot currently evaluate anything render as "no role
+ * justifies any of this", which reads as an instruction to revoke the whole
+ * directory's access.
+ */
+export interface EntitlementRow {
+  grantSource: GrantSource
+  grantedBy: string | null
+  grantedAt: Date
+  justifiedBy: JustifyingRole[] | null
+}
+
+export interface GroupEntitlement extends EntitlementRow {
+  groupId: string
+  groupName: string
+}
+
+export interface TargetEntitlement extends EntitlementRow {
+  target: ConnectorTarget
+}
+
+export interface UserEntitlements {
+  groups: GroupEntitlement[]
+  targets: TargetEntitlement[]
+  /**
+   * Non-null when the role engine refused to evaluate, naming the role that
+   * cannot be understood and why. `null` on the healthy path. When it is
+   * set, every `business_role` row's `justifiedBy` is `null` — the rows are
+   * still returned, because they are facts in Postgres and this is the
+   * screen someone opens BECAUSE something is wrong.
+   */
+  unevaluable: { roleId: string; roleName: string; reason: string } | null
+}
+
+/**
+ * The one place the three-valued rule above is applied, so a group row and a
+ * target row cannot drift apart on it.
+ *
+ * THE MANUAL RULE COMES FIRST, ahead of the refusal check and ahead of any
+ * lookup: a `manual` row ALWAYS reports `justifiedBy: []`, even when a role
+ * would also happen to want it, and even when the engine has refused. A
+ * human granted that row by hand through the ordinary group/target APIs; it
+ * is theirs, the reconciler will never revoke it (`RoleReconciler`'s central
+ * rule), and naming a role beside it would misreport who owns it — an
+ * operator would then "recertify the role" and believe the access was
+ * covered, when disabling that role would change nothing at all. It is also
+ * why `null` never appears on a manual row: the engine's ability to evaluate
+ * is simply not part of that row's answer, so a refusal cannot make it
+ * unknown.
+ */
+function justifiedBy(
+  justification: Justification,
+  source: GrantSource,
+  lookup: (held: Extract<Justification, { evaluable: true }>) => JustifyingRole[] | undefined,
+): JustifyingRole[] | null {
+  if (source === 'manual') return []
+  if (!justification.evaluable) return null
+  return lookup(justification) ?? []
+}
+
 @Controller('users')
 @UseGuards(JwtGuard, PermissionGuard)
 export class UsersController {
@@ -480,6 +573,116 @@ export class UsersController {
         ...target,
         latestEvent: target.latestEvent === null ? null : { ...target.latestEvent, lastError: null },
       })),
+    }
+  }
+
+  /**
+   * Why does this person have this? (Milestone 17, Task 12.)
+   *
+   * Returns every group membership and every target account this user
+   * holds, each with where it came from (`grantSource`, `grantedBy`,
+   * `grantedAt`) and — for role-derived rows — WHICH enabled business roles
+   * justify it RIGHT NOW.
+   *
+   * `justifiedBy` IS COMPUTED LIVE ON EVERY REQUEST AND IS NEVER STORED.
+   * A stored list goes stale the instant a formula changes: the row would
+   * keep naming the role that granted it while the role no longer matches,
+   * and a recertification campaign reading that column would confirm access
+   * on the strength of a justification that has not been true for months.
+   * Recomputing is cheap (one user row, one pass over the enabled roles)
+   * and cannot lie about the present.
+   *
+   * NO TRANSACTION, deliberately, and this is the one route in this
+   * controller that says so out loud. Everything here is a read; there is
+   * nothing to make atomic, and a transaction would hold one pooled
+   * connection open across the membership reads AND the role load — the
+   * exact shape of finding C1 (docs/archive/audits/audit-integrity.md),
+   * where an open transaction that then acquired a second connection
+   * deadlocked a 10-connection pool permanently (guarded by
+   * test/pool-exhaustion.spec.ts). The queries below run sequentially on
+   * the pooled handle, each returning its connection before the next
+   * starts. The cost of not being atomic is that a reconcile committing
+   * mid-request could be half-reflected; for a diagnostic screen that is
+   * refreshed by reloading it, that is not a cost worth a connection for.
+   *
+   * SCOPING is `findOne`'s exactly: `user:read`, then `assertCanIn` against
+   * the user's own org unit, and an out-of-scope EXISTING user is 403, not
+   * 404 (decision 2, and finding SEC-L2 — a 404 here would turn this route
+   * into an existence oracle for users a scoped operator cannot see). No
+   * message echoes anything the caller submitted.
+   */
+  @Get(':id/entitlements')
+  @RequirePermission('user:read')
+  async entitlements(
+    @Param('id') rawId: string,
+    @Req() request: AuthorizedRequest,
+  ): Promise<UserEntitlements> {
+    const id = parseId(rawId)
+    const user = await this.users.findById(id)
+    if (user === null) {
+      throw new NotFoundError('user', id)
+    }
+    // Out-of-scope existing resource -> 403, not 404 (decision 2), same as
+    // `findOne` and `syncDetail` above.
+    await this.engine.assertCanIn(request.actor, 'user:read', user.orgUnitId)
+
+    const groupRows = await this.db
+      .select({
+        groupId: groupUserMembers.groupId,
+        groupName: groups.name,
+        grantSource: groupUserMembers.grantSource,
+        grantedBy: groupUserMembers.grantedBy,
+        grantedAt: groupUserMembers.grantedAt,
+      })
+      .from(groupUserMembers)
+      .innerJoin(groups, eq(groupUserMembers.groupId, groups.id))
+      .where(eq(groupUserMembers.userId, id))
+      .orderBy(groups.name)
+
+    const targetRows = await this.db
+      .select({
+        target: userTargetAccounts.target,
+        grantSource: userTargetAccounts.grantSource,
+        grantedBy: userTargetAccounts.grantedBy,
+        grantedAt: userTargetAccounts.grantedAt,
+      })
+      .from(userTargetAccounts)
+      .where(eq(userTargetAccounts.userId, id))
+      .orderBy(userTargetAccounts.target)
+
+    // THE point of this endpoint's error handling: a refusal does not fail
+    // the read. `evaluateRoles` refuses wholesale when any ONE enabled role
+    // names a field or operator this binary cannot understand — and that is
+    // precisely the state in which an operator opens this screen, because
+    // it is also the state in which every write to this user is being
+    // rejected (see `reevaluateRoles`) and nothing is reconciling. A 409
+    // here would hide the memberships from the one person trying to work
+    // out what happened. The rows are facts in Postgres and are returned
+    // either way; only the explanation is withheld, and `unevaluable` says
+    // so by name instead of leaving an empty list to be misread as "no role
+    // justifies this — revoke it".
+    const justification = await this.roleReconciler.explainUser(this.db, id, new Date())
+    const unevaluable = justification.evaluable
+      ? null
+      : { roleId: justification.roleId, roleName: justification.roleName, reason: justification.reason }
+
+    return {
+      groups: groupRows.map((row) => ({
+        groupId: row.groupId,
+        groupName: row.groupName,
+        grantSource: row.grantSource,
+        grantedBy: row.grantedBy,
+        grantedAt: row.grantedAt,
+        justifiedBy: justifiedBy(justification, row.grantSource, (held) => held.groups.get(row.groupId)),
+      })),
+      targets: targetRows.map((row) => ({
+        target: row.target,
+        grantSource: row.grantSource,
+        grantedBy: row.grantedBy,
+        grantedAt: row.grantedAt,
+        justifiedBy: justifiedBy(justification, row.grantSource, (held) => held.targets.get(row.target)),
+      })),
+      unevaluable,
     }
   }
 
