@@ -3,6 +3,7 @@ import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type { AttributeDefinition, ValidationRules } from '../attributes/attribute-validator'
 import { DB_CLIENT } from '../common/db.token'
+import { crossTenantConflict } from '../common/cross-tenant'
 import { ConflictError, CycleError, NotFoundError } from '../common/errors'
 import { attributeDefinitions } from '../db/schema/attribute-definitions'
 import * as schema from '../db/schema/index'
@@ -360,10 +361,22 @@ export class GroupsRepository {
     // rejects the row outright — this method does not need to check that
     // itself, and deliberately does not, so that the guarantee holds for
     // every writer and not just this one.
-    await db
-      .insert(groupUserMembers)
-      .values({ groupId, userId, organizationId: group.organizationId })
-      .onConflictDoNothing()
+    try {
+      await db
+        .insert(groupUserMembers)
+        .values({ groupId, userId, organizationId: group.organizationId })
+        .onConflictDoNothing()
+    } catch (cause) {
+      // Organizations, Task 12. Both endpoints exist and both were found by
+      // the checks above — what the composite FK refuses is the PAIRING, so
+      // this is a 409, not the 404 either missing-row branch produces. See
+      // crossTenantConflict's own doc comment.
+      const crossTenant = crossTenantConflict(cause)
+      if (crossTenant !== null) {
+        throw crossTenant
+      }
+      throw cause
+    }
   }
 
   async removeUser(
@@ -507,10 +520,22 @@ export class GroupsRepository {
       // From the PARENT group (Task 4): a nesting edge belongs to the tenant
       // that owns the group doing the containing. A child in another
       // organization is refused by `ggm_child_organization_fk`.
-      await tx
-        .insert(groupGroupMembers)
-        .values({ parentGroupId, childGroupId, organizationId: parent.organizationId })
-        .onConflictDoNothing()
+      try {
+        await tx
+          .insert(groupGroupMembers)
+          .values({ parentGroupId, childGroupId, organizationId: parent.organizationId })
+          .onConflictDoNothing()
+      } catch (cause) {
+        // Organizations, Task 12 — see `addUser`'s identical branch. A
+        // cross-tenant nesting edge is the one this milestone's design calls
+        // "a silent privilege bridge between two tenants" (migration 0029),
+        // so it is worth an answer an operator can read.
+        const crossTenant = crossTenantConflict(cause)
+        if (crossTenant !== null) {
+          throw crossTenant
+        }
+        throw cause
+      }
     })
   }
 

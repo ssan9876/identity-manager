@@ -25,6 +25,9 @@ export type Action =
   | 'sso_app:manage'
   | 'business_role:read'
   | 'business_role:manage'
+  | 'organization:read'
+  | 'organization:create'
+  | 'organization:update'
 
 export const ALL_ROLE_KEYS: readonly RoleKey[] = [
   'super_admin',
@@ -63,6 +66,21 @@ export const ALL_ACTIONS: readonly Action[] = [
   // BusinessRolesController.requireGlobalGrant.
   'business_role:read',
   'business_role:manage',
+  // Organizations milestone, Task 12 -- tenants. GLOBAL GRANT ONLY, for the
+  // same reason as the audit log, dead letters, connector targets, SSO
+  // applications and business roles: an organization has no CONTAINING org
+  // unit (it is what org units hang off), so there is nothing for a scoped
+  // grant to narrow to. See OrganizationsController.requireGlobalGrant.
+  //
+  // Granted to `super_admin` ALONE (reachable only through ALL_ACTIONS
+  // below), INCLUDING the read. Creating a tenant is a platform-operator
+  // act, and so is knowing the tenant roster: `organization:read` enumerates
+  // every customer of the deployment, which is not directory work an
+  // auditor, a user_admin or a read_only role needs to do theirs. This is
+  // the one read action deliberately absent from READ_ONLY_ACTIONS.
+  'organization:read',
+  'organization:create',
+  'organization:update',
 ]
 
 const READ_ONLY_ACTIONS: readonly Action[] = ['user:read', 'group:read', 'org_unit:read']

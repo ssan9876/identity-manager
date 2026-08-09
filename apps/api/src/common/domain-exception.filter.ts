@@ -20,6 +20,11 @@ const STATUS_BY_CODE: Record<string, HttpStatus> = {
   // mapping it here is what gives the response a `code` and a message an
   // operator can act on. See DataIntegrityError's doc comment (AUTHZ-L-4).
   DATA_INTEGRITY_FAULT: HttpStatus.INTERNAL_SERVER_ERROR,
+  // Organizations, Task 12. 503, not 500 and not a 4xx — see
+  // NotConfiguredError's own doc comment: the request is well-formed and the
+  // actor entitled, but the deployment is not equipped to serve it yet, and
+  // only an operator can change that.
+  NOT_CONFIGURED: HttpStatus.SERVICE_UNAVAILABLE,
 }
 
 /**

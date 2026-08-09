@@ -79,6 +79,19 @@ export interface OutboxEvent {
   aggregateId: string
   eventType: OutboxEventType
   payload: Record<string, unknown>
+  /**
+   * WHICH TENANT this mutation belongs to. Organizations milestone, Task 12
+   * introduces the field; Task 13 is what makes `record` read it, to decide
+   * fan-out. Optional here, and ignored today.
+   *
+   * Never written to `outbox_events` — there is no `organization_id` column
+   * there, and there deliberately is not one: the worker re-reads the
+   * aggregate's CURRENT row to reconcile (see `payload`'s doc comment
+   * above), so it derives the tenant from that row rather than from a
+   * snapshot taken at write time, which could be stale by the time the event
+   * is drained.
+   */
+  organizationId?: string | null
 }
 
 @Injectable()
