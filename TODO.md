@@ -192,9 +192,18 @@ state of each.
       runtime via `apps/api/scripts/dev-test-client.ts`. **Residual:** the
       seeded `admin@example.com` / `dev_password_change_me` and the
       `idm_sync_dev_secret_change_me` client secret are still real and still
-      committed — as are `.env.example`'s `KEYCLOAK_ADMIN_CLIENT_SECRET` and
-      `docker-compose.yml`'s `KC_BOOTSTRAP_ADMIN_PASSWORD`, all deliberately
-      left alone pending a decision.
+      committed. Three deliberate, reasoned NON-fixes, not oversights:
+      (a) `.env.example`'s `KEYCLOAK_ADMIN_CLIENT_SECRET` is a copy of the
+      fixture's value, so it authenticates against nothing but a realm built
+      from that fixture; changing the literal breaks `setup:all`, local
+      onboarding and CI's hardcoded `env:` block, which is a bad trade for a
+      value already inert outside dev. (b) `docker-compose.yml`'s
+      `KC_BOOTSTRAP_ADMIN_PASSWORD` stays — it configures a laptop/CI-only
+      container and both the test harness and `smoke:dev` now depend on it;
+      the file instead carries a loud loopback-only warning. (c) Stripping the
+      seeded `admin@example.com` credential would break `smoke:dev`, the E2E
+      login and CI's `bootstrap:admin`, which is far beyond what a LOW finding
+      on a dev fixture justifies.
 - [ ] **CS-H1 (HIGH).** Dependency lifecycle scripts run unsandboxed as the service
       user at every install and upgrade, and `corepack prepare pnpm@9` is unpinned
       and integrity-unverified. The CI half is closed; the installer half is not.
