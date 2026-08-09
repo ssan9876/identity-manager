@@ -536,6 +536,7 @@ export class UsersRepository {
       appliesTo: row.appliesTo,
       isActive: row.isActive,
       selfEditable: row.selfEditable,
+      sensitive: row.sensitive,
     }))
   }
 

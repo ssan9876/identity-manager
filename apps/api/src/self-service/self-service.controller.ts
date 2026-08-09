@@ -17,7 +17,7 @@ import { noNulChar } from '../common/http/safe-string'
 import * as schema from '../db/schema/index'
 import { type Group, GroupsRepository } from '../groups/groups.repository'
 import { OutboxWriter } from '../outbox/outbox.writer'
-import { snapshotUser } from '../users/users.controller'
+import { sensitiveAttributeKeys, snapshotUser, snapshotUserForAudit } from '../users/users.controller'
 import { type User, UsersRepository } from '../users/users.repository'
 
 /**
@@ -361,6 +361,12 @@ export class SelfServiceController {
     const parsed = parseBody(selfUpdateBodySchema, body)
 
     const selfEditableDefinitions = await this.selfEditableAttributeDefinitions()
+    // The FULL definition set, not `selfEditableDefinitions` — an attribute can
+    // be marked `sensitive` without being self-editable, and the audit snapshot
+    // carries the user's whole attribute bag regardless of which subset this
+    // request may write (finding SEC-M1). Deriving the redaction set from the
+    // filtered list would silently fail to redact exactly those attributes.
+    const sensitiveKeys = sensitiveAttributeKeys(await this.users.listActiveAttributeDefinitions())
 
     // Validated OUTSIDE the transaction, same ordering as
     // UsersController.update: this is pure Zod validation against an
@@ -398,8 +404,8 @@ export class SelfServiceController {
         action: 'user:self_update',
         resourceType: 'user',
         resourceId: actor.userId,
-        before: snapshotUser(current),
-        after: snapshotUser(updated),
+        before: snapshotUserForAudit(current, sensitiveKeys),
+        after: snapshotUserForAudit(updated, sensitiveKeys),
       })
 
       await this.outboxWriter.record(tx, {

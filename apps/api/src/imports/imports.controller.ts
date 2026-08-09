@@ -17,7 +17,7 @@ import { parseBody } from '../common/http/parse-body'
 import * as schema from '../db/schema/index'
 import { OrgUnitsRepository } from '../org-units/org-units.repository'
 import { OutboxWriter } from '../outbox/outbox.writer'
-import { snapshotUser } from '../users/users.controller'
+import { sensitiveAttributeKeys, snapshotUser, snapshotUserForAudit } from '../users/users.controller'
 import {
   type CreateUserInput,
   type UpdateUserInput,
@@ -445,6 +445,10 @@ export class ImportsController {
   @RequirePermission('user:create')
   async commit(@Body() body: unknown, @Req() request: AuthorizedRequest): Promise<ImportCommitResponse> {
     const { rows, fileHasExtraHeaders, definitions } = await this.parseAndPrepare(body)
+    // Audit rows withhold sensitive attribute values; the outbox payloads below
+    // deliberately still carry real ones, because connectors provision from them
+    // (finding SEC-M1 — see snapshotUserForAudit's own doc comment).
+    const sensitiveKeys = sensitiveAttributeKeys(definitions)
 
     const batchId = randomUUID()
     let created = 0
@@ -480,7 +484,7 @@ export class ImportsController {
               resourceType: 'user',
               resourceId: user.id,
               before: null,
-              after: snapshotUser(user),
+              after: snapshotUserForAudit(user, sensitiveKeys),
               batchId,
             })
 
@@ -513,8 +517,8 @@ export class ImportsController {
               action: 'user:update',
               resourceType: 'user',
               resourceId: resolution.userId,
-              before: snapshotUser(resolution.current),
-              after: snapshotUser(updatedUser),
+              before: snapshotUserForAudit(resolution.current, sensitiveKeys),
+              after: snapshotUserForAudit(updatedUser, sensitiveKeys),
               batchId,
             })
 

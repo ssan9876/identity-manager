@@ -1196,6 +1196,58 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
       expect(res.body.failed).toBe(0)
     })
 
+    /**
+     * Finding SEC-M1 (docs/archive/audits/carried-findings-verification.md).
+     * The two halves have to be asserted together, because the fix is a
+     * SPLIT, not a blanket suppression: the audit row must withhold the
+     * value, and the outbox payload must still carry it. Redacting both
+     * would look like a security fix while quietly breaking provisioning —
+     * a connector cannot set a mailbox quota it was never given.
+     */
+    it('withholds a sensitive attribute from the audit row while the outbox payload keeps the real value', async () => {
+      const org = await makeOrgUnit('Sensitive Attr Root')
+      const actor = await makeActiveUser('sensitive-attr-committer', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      await ctx.db.insert(attributeDefinitions).values({
+        key: 'salaryBand',
+        label: 'Salary Band',
+        dataType: 'string',
+        required: false,
+        appliesTo: 'user',
+        isActive: true,
+        sensitive: true,
+      })
+
+      const csv = buildCsv([row({ orgUnitId: org.id, salaryBand: 'B4-confidential' })])
+
+      const res = await request(app.getHttpServer())
+        .post('/imports/commit')
+        .send({ csv })
+        .expect(200)
+      expect(res.body.created).toBe(1)
+
+      const auditRows = await auditRowsForBatch(ctx, res.body.batchId as string)
+      expect(auditRows).toHaveLength(1)
+      const after = auditRows[0].after as Record<string, unknown>
+      const auditAttributes = after.attributes as Record<string, unknown>
+
+      expect(auditAttributes.salaryBand).toBe('[redacted]')
+      expect(after.attributesRedacted).toEqual(['salaryBand'])
+      // The value must appear nowhere in the row — audit_log's UPDATE/DELETE
+      // are blocked by privilege AND trigger, so anything written here is
+      // permanent and there is no retrofit.
+      expect(JSON.stringify(auditRows[0])).not.toContain('B4-confidential')
+
+      // ...and the connector still gets what it needs.
+      const events = await outboxEventsFor(ctx, auditRows[0].resource_id as string)
+      expect(events).toHaveLength(1)
+      const payloadAttributes = (events[0].payload.attributes ?? {}) as Record<string, unknown>
+      expect(payloadAttributes.salaryBand).toBe('B4-confidential')
+      expect(events[0].payload).not.toHaveProperty('attributesRedacted')
+    })
+
     it('reports an unrecognized attribute column by name rather than silently dropping it', async () => {
       const org = await makeOrgUnit('Commit Unknown Attribute Root')
       const actor = await makeActiveUser('unknown-attr-committer', org.id)

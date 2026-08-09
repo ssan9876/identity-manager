@@ -5,7 +5,7 @@ import { DB_CLIENT } from '../common/db.token'
 import { InvalidTransitionError, NotFoundError } from '../common/errors'
 import * as schema from '../db/schema/index'
 import { OutboxWriter } from '../outbox/outbox.writer'
-import { snapshotUser } from './users.controller'
+import { sensitiveAttributeKeys, snapshotUser, snapshotUserForAudit } from './users.controller'
 import { UsersRepository } from './users.repository'
 
 /** One candidate the run selected but could not action, and why — never silently dropped (finding M5, docs/archive/audits/audit-integrity.md, which established that a silent skip is itself the defect). */
@@ -89,6 +89,11 @@ export class BulkActivateJob {
    */
   async run(options: BulkActivateOptions): Promise<BulkActivateReport> {
     const candidates = await this.users.listPending(options.scopePath)
+    // Once per run, outside the per-candidate loop and its transactions —
+    // finding C1 for the placement, SEC-M1 for why it is needed at all.
+    const sensitiveKeys = sensitiveAttributeKeys(
+      await this.users.listActiveAttributeDefinitions(),
+    )
 
     if (!options.apply) {
       return {
@@ -121,8 +126,8 @@ export class BulkActivateJob {
             action: 'user:bulk_activate',
             resourceType: 'user',
             resourceId: candidate.id,
-            before: snapshotUser(current),
-            after: snapshotUser(updated),
+            before: snapshotUserForAudit(current, sensitiveKeys),
+            after: snapshotUserForAudit(updated, sensitiveKeys),
           })
 
           await this.outboxWriter.record(tx, {

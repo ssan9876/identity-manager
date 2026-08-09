@@ -47,6 +47,33 @@ export const attributeDefinitions = pgTable(
     // before this column was dropped.
     selfEditable: boolean('self_editable').notNull().default(false),
 
+    /**
+     * Withhold this attribute's VALUE from audit-log snapshots.
+     *
+     * Finding SEC-M1 (docs/archive/audits/carried-findings-verification.md):
+     * `snapshotUser` copied the whole attribute bag verbatim into `before`
+     * and `after` on every user:create/update/self_update/jml/import row,
+     * with no per-attribute read control anywhere — and `audit_log`'s
+     * UPDATE/DELETE/TRUNCATE are blocked by both privilege and trigger, so
+     * there is no retrofit once a value has been written. The only workable
+     * point of control is not writing it in the first place.
+     *
+     * Default `false`, matching this table's other opt-in booleans: marking
+     * an attribute sensitive is a deliberate act, and defaulting to `true`
+     * would silently blind the audit log for every existing definition.
+     *
+     * Deliberately landed while `attribute_definitions` is still READ-ONLY
+     * (attribute-definitions.controller.ts exposes only `@Get()`), which is
+     * what the audit's fix direction asked for: the control has to exist
+     * before a write path can create sensitive attributes, not after.
+     *
+     * This governs the AUDIT LOG only. Outbox payloads still carry real
+     * values — connectors cannot provision a mailbox quota they are not
+     * given — so this is not a general secrecy flag. See
+     * `snapshotUserForAudit` in users/users.controller.ts.
+     */
+    sensitive: boolean('sensitive').notNull().default(false),
+
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),

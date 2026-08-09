@@ -58,6 +58,8 @@ export interface AttributeDefinition {
   appliesTo: 'user' | 'group'
   isActive: boolean
   selfEditable: boolean
+  /** Withhold this attribute's value from audit-log snapshots — finding SEC-M1. See the column's own doc comment in db/schema/attribute-definitions.ts. */
+  sensitive: boolean
 }
 
 export class AttributeValidationError extends ValidationError {

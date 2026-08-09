@@ -183,6 +183,13 @@
       "when": 1786251227473,
       "tag": "0025_organizations_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1786286023010,
+      "tag": "0026_attribute_definitions_sensitive",
+      "breakpoints": true
     }
   ]
 }

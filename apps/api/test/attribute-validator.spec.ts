@@ -21,6 +21,7 @@ const def = (
   appliesTo: 'user',
   isActive: true,
   selfEditable: false,
+  sensitive: false,
   ...overrides,
 })
 

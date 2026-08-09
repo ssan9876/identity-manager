@@ -7,7 +7,7 @@ import * as schema from '../db/schema/index'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
 import { revokeKeycloakAccessBestEffort } from '../keycloak/revoke-access'
 import { OutboxWriter } from '../outbox/outbox.writer'
-import { snapshotUser } from '../users/users.controller'
+import { sensitiveAttributeKeys, snapshotUser, snapshotUserForAudit } from '../users/users.controller'
 import { type User, UsersRepository } from '../users/users.repository'
 import { JmlRulesRepository } from './jml-rules.repository'
 import { RuleApplier } from './rule-applier'
@@ -130,6 +130,14 @@ export class LifecycleJob {
     today: string,
   ): Promise<{ transitioned: User[]; skipped: LifecycleSkip[] }> {
     const due = await this.usersRepository.listPendingWithStartDateOnOrBefore(today)
+    // Resolved ONCE per pass, outside the per-candidate loop and outside every
+    // transaction it opens: the redaction set is the same for every user, and
+    // reading it inside a transaction would check out a second pool connection
+    // while one is held — finding C1, docs/archive/audits/audit-integrity.md
+    // (SEC-M1 is what needs the set at all).
+    const sensitiveKeys = sensitiveAttributeKeys(
+      await this.usersRepository.listActiveAttributeDefinitions(),
+    )
     const activated: User[] = []
     const skipped: LifecycleSkip[] = []
 
@@ -148,8 +156,8 @@ export class LifecycleJob {
             action: 'jml:lifecycle_activate',
             resourceType: 'user',
             resourceId: candidate.id,
-            before: snapshotUser(current),
-            after: snapshotUser(updated),
+            before: snapshotUserForAudit(current, sensitiveKeys),
+            after: snapshotUserForAudit(updated, sensitiveKeys),
           })
 
           await this.outboxWriter.record(tx, {
@@ -191,6 +199,14 @@ export class LifecycleJob {
     today: string,
   ): Promise<{ transitioned: User[]; skipped: LifecycleSkip[] }> {
     const due = await this.usersRepository.listNonDeactivatedWithEndDateOnOrBefore(today)
+    // Resolved ONCE per pass, outside the per-candidate loop and outside every
+    // transaction it opens: the redaction set is the same for every user, and
+    // reading it inside a transaction would check out a second pool connection
+    // while one is held — finding C1, docs/archive/audits/audit-integrity.md
+    // (SEC-M1 is what needs the set at all).
+    const sensitiveKeys = sensitiveAttributeKeys(
+      await this.usersRepository.listActiveAttributeDefinitions(),
+    )
     const deactivated: User[] = []
     const skipped: LifecycleSkip[] = []
 
@@ -209,8 +225,8 @@ export class LifecycleJob {
             action: 'jml:lifecycle_deactivate',
             resourceType: 'user',
             resourceId: candidate.id,
-            before: snapshotUser(current),
-            after: snapshotUser(updated),
+            before: snapshotUserForAudit(current, sensitiveKeys),
+            after: snapshotUserForAudit(updated, sensitiveKeys),
           })
 
           await this.outboxWriter.record(tx, {

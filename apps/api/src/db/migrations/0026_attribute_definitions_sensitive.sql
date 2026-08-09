@@ -1,0 +1,1 @@
+ALTER TABLE "attribute_definitions" ADD COLUMN "sensitive" boolean DEFAULT false NOT NULL;

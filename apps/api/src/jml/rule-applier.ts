@@ -10,7 +10,7 @@ import { GroupsRepository } from '../groups/groups.repository'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
 import { revokeKeycloakAccessBestEffort } from '../keycloak/revoke-access'
 import { OutboxWriter } from '../outbox/outbox.writer'
-import { snapshotUser } from '../users/users.controller'
+import { sensitiveAttributeKeys, snapshotUser, snapshotUserForAudit } from '../users/users.controller'
 import { type User, UsersRepository } from '../users/users.repository'
 import type { JmlActionType, MatchedRuleAction } from './rule-engine'
 
@@ -248,8 +248,8 @@ export class RuleApplier {
         action: 'jml:set_attribute',
         resourceType: 'user',
         resourceId: userId,
-        before: snapshotUser(current),
-        after: snapshotUser(updated),
+        before: snapshotUserForAudit(current, sensitiveAttributeKeys(definitions)),
+        after: snapshotUserForAudit(updated, sensitiveAttributeKeys(definitions)),
       })
 
       await this.outboxWriter.record(tx, {
@@ -288,6 +288,14 @@ export class RuleApplier {
     userId: string,
     _actionParams: Record<string, unknown>,
   ): Promise<ApplyResult> {
+
+    // Resolved outside the transaction below — a second pool connection taken
+    // while one is held is finding C1 (docs/archive/audits/audit-integrity.md).
+    // Needed even though this action does not touch attributes: the audit
+    // snapshot carries the user's whole attribute bag either way (SEC-M1).
+    const sensitiveKeys = sensitiveAttributeKeys(
+      await this.users.listActiveAttributeDefinitions(),
+    )
     let outcome: { updated: User | null; alreadyTerminal: boolean } = {
       updated: null,
       alreadyTerminal: false,
@@ -307,8 +315,8 @@ export class RuleApplier {
           action: 'jml:deactivate',
           resourceType: 'user',
           resourceId: userId,
-          before: snapshotUser(current),
-          after: snapshotUser(updated),
+          before: snapshotUserForAudit(current, sensitiveKeys),
+          after: snapshotUserForAudit(updated, sensitiveKeys),
         })
 
         await this.outboxWriter.record(tx, {

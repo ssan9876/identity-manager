@@ -14,7 +14,11 @@ import {
 } from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
-import { rawAttributesSchema, validateAttributes } from '../attributes/attribute-validator'
+import {
+  type AttributeDefinition,
+  rawAttributesSchema,
+  validateAttributes,
+} from '../attributes/attribute-validator'
 import { JwtGuard } from '../auth/jwt.guard'
 import { AuditWriter } from '../audit/audit.writer'
 import { PermissionEngine } from '../authz/permission.engine'
@@ -202,6 +206,77 @@ export function snapshotUser(user: User): Record<string, unknown> {
   }
 }
 
+/** The marker written in place of a sensitive attribute's value. */
+export const REDACTED_ATTRIBUTE = '[redacted]'
+
+/** The `key`s of every active definition flagged `sensitive`. */
+export function sensitiveAttributeKeys(definitions: AttributeDefinition[]): ReadonlySet<string> {
+  return new Set(definitions.filter((definition) => definition.sensitive).map((d) => d.key))
+}
+
+/**
+ * `snapshotUser`, with the values of `sensitive` attributes withheld — the
+ * shape that goes into `audit_log.before`/`after`, and ONLY there.
+ *
+ * Finding SEC-M1 (docs/archive/audits/carried-findings-verification.md): the
+ * plain snapshot copies the whole attribute bag verbatim into every
+ * user:create/update/activate/deactivate audit row, and `audit_log`'s
+ * UPDATE/DELETE/TRUNCATE are blocked by both privilege and trigger. There is
+ * no retrofit for a value once written, so the only point of control is not
+ * writing it.
+ *
+ * `attributesRedacted` names the withheld keys rather than leaving a reader to
+ * infer them from a marker string — the same "say that you withheld
+ * something" convention `UserSyncDetail.errorDetailRedacted` already uses on
+ * the sync-detail endpoint. Without it a reader cannot distinguish "withheld"
+ * from "the value genuinely was the literal string [redacted]".
+ *
+ * KNOWN LIMITATION, stated rather than hidden: with both `before` and `after`
+ * redacted, an audit row no longer shows whether a sensitive value CHANGED,
+ * only that it exists and was withheld. Recording a hash instead would restore
+ * that, but attribute values here are low-entropy (a quota, a role name, a
+ * boolean) and a hash of one is trivially reversible by enumeration — which
+ * would put the value back in the log through a side door. Losing
+ * change-detection is the deliberate trade.
+ *
+ * NOT applied to outbox payloads. Connectors have to receive real values to
+ * provision anything, so `snapshotUser` stays as-is for
+ * `OutboxWriter.record` — see this function's call sites.
+ */
+export function snapshotUserForAudit(
+  user: User,
+  sensitiveKeys: ReadonlySet<string>,
+): Record<string, unknown> {
+  const snapshot = snapshotUser(user)
+  if (sensitiveKeys.size === 0) return snapshot
+
+  const attributes = user.attributes
+  // Anything that is not a plain object carries no keys to redact, and is
+  // passed through so its existing shape errors surface unchanged.
+  if (typeof attributes !== 'object' || attributes === null || Array.isArray(attributes)) {
+    return snapshot
+  }
+
+  const source = attributes as Record<string, unknown>
+  const redactedKeys: string[] = []
+  // Null-prototype: a key named `__proto__` in a stored attribute bag must not
+  // reach Object.prototype while being copied here.
+  const result: Record<string, unknown> = Object.create(null)
+
+  for (const key of Object.keys(source)) {
+    if (sensitiveKeys.has(key)) {
+      result[key] = REDACTED_ATTRIBUTE
+      redactedKeys.push(key)
+    } else {
+      result[key] = source[key]
+    }
+  }
+
+  if (redactedKeys.length === 0) return snapshot
+
+  return { ...snapshot, attributes: result, attributesRedacted: redactedKeys.sort() }
+}
+
 @Controller('users')
 @UseGuards(JwtGuard, PermissionGuard)
 export class UsersController {
@@ -360,6 +435,7 @@ export class UsersController {
 
     const definitions = await this.users.listActiveAttributeDefinitions()
     const attributes = validateAttributes(definitions, parsed.attributes)
+    const sensitiveKeys = sensitiveAttributeKeys(definitions)
 
     const user = await this.db.transaction(async (tx) => {
       const user = await this.users.create(
@@ -386,7 +462,7 @@ export class UsersController {
         resourceType: 'user',
         resourceId: user.id,
         before: null,
-        after: snapshotUser(user),
+        after: snapshotUserForAudit(user, sensitiveKeys),
       })
 
       await this.outboxWriter.record(tx, {
@@ -443,9 +519,18 @@ export class UsersController {
     // Only fetched/validated when the request actually names `attributes` —
     // PATCH semantics must never overwrite a user's existing attributes
     // with `{}` just because a request omitted the key entirely.
+    // Hoisted out of the `if` below: the audit rows need the `sensitive` flags
+    // whether or not THIS request touches attributes, because the snapshot
+    // carries the user's whole existing attribute bag either way (SEC-M1).
+    // Loaded before `transaction()` opens, never inside it — checking out a
+    // second pool connection while a transaction is held is finding C1
+    // (docs/archive/audits/audit-integrity.md), regression-guarded by
+    // test/pool-exhaustion.spec.ts.
+    const definitions = await this.users.listActiveAttributeDefinitions()
+    const sensitiveKeys = sensitiveAttributeKeys(definitions)
+
     let attributes: Record<string, unknown> | undefined
     if (parsed.attributes !== undefined) {
-      const definitions = await this.users.listActiveAttributeDefinitions()
       attributes = validateAttributes(definitions, parsed.attributes)
     }
 
@@ -479,8 +564,8 @@ export class UsersController {
         action: 'user:update',
         resourceType: 'user',
         resourceId: id,
-        before: snapshotUser(current),
-        after: snapshotUser(updated),
+        before: snapshotUserForAudit(current, sensitiveKeys),
+        after: snapshotUserForAudit(updated, sensitiveKeys),
       })
 
       await this.outboxWriter.record(tx, {
@@ -539,6 +624,14 @@ export class UsersController {
   ): Promise<UserWithSyncState> {
     const id = parseId(rawId)
 
+    // Loaded BEFORE transaction() opens, never inside it: checking out a second
+    // pool connection while a transaction is held is finding C1
+    // (docs/archive/audits/audit-integrity.md), regression-guarded by
+    // test/pool-exhaustion.spec.ts. Needed even though this handler does not
+    // touch attributes — the snapshot carries the user's whole attribute bag,
+    // so the audit row still has values to withhold (SEC-M1).
+    const sensitiveKeys = sensitiveAttributeKeys(await this.users.listActiveAttributeDefinitions())
+
     const updated = await this.db.transaction(async (tx) => {
       const current = await this.users.findById(id, tx)
       if (current === null) {
@@ -555,8 +648,8 @@ export class UsersController {
         action: 'user:activate',
         resourceType: 'user',
         resourceId: id,
-        before: snapshotUser(current),
-        after: snapshotUser(updated),
+        before: snapshotUserForAudit(current, sensitiveKeys),
+        after: snapshotUserForAudit(updated, sensitiveKeys),
       })
 
       // Same 'status_changed' type deactivate emits — the connectors read
@@ -605,6 +698,9 @@ export class UsersController {
   ): Promise<UserWithSyncState> {
     const id = parseId(rawId)
 
+    // Loaded BEFORE transaction() opens — see the identical note in activate().
+    const sensitiveKeys = sensitiveAttributeKeys(await this.users.listActiveAttributeDefinitions())
+
     const updated = await this.db.transaction(async (tx) => {
       const current = await this.users.findById(id, tx)
       if (current === null) {
@@ -621,8 +717,8 @@ export class UsersController {
         action: 'user:deactivate',
         resourceType: 'user',
         resourceId: id,
-        before: snapshotUser(current),
-        after: snapshotUser(updated),
+        before: snapshotUserForAudit(current, sensitiveKeys),
+        after: snapshotUserForAudit(updated, sensitiveKeys),
       })
 
       // No 'deleted' event type exists (there is no delete for users, ever
