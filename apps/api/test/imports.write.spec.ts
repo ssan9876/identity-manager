@@ -566,6 +566,52 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
         expect(res.body.failures[0].reasons.join(' ')).toContain('primaryEmail: not available')
         expect(await totalUserCount(ctx)).toBe(usersBefore)
       })
+
+      // A collision with an EARLIER ROW OF THE SAME FILE must be reported
+      // per row, in the same terms as a collision with an already-stored
+      // user — never as a whole-request failure, and never silently
+      // last-one-wins. Two different employeeIds, so the duplicate-within-
+      // file check on employeeId cannot be what catches it.
+      //
+      // This is the contract the batched lookups (ImportLookups) had to keep:
+      // the maps are read once per request, so a commit folds each row it
+      // writes back into them (`noteCreated`) rather than re-querying. Note
+      // that BOTH paths satisfy this assertion by design — resolution and
+      // `translateWriteError` deliberately share the "not available" wording
+      // — so this test pins the OUTCOME, which is what callers depend on,
+      // not which of the two layers produced it.
+      it('a row colliding with an EARLIER ROW of the same commit fails on the collision, exactly as it would against a stored user', async () => {
+        const org = await makeOrgUnit('Same Batch Collision Root')
+        const actor = await makeActiveUser('same-batch-actor', org.id)
+        await grant(actor.id, 'user_admin', org.id)
+        currentUsername = actor.username
+
+        const tag = nextTag()
+        const sharedEmail = `shared-${tag}@example.com`
+        const sharedUsername = `shared-${tag}`
+        const csv = buildCsv([
+          row({ orgUnitId: org.id, primaryEmail: sharedEmail, username: `first-${tag}` }),
+          row({ orgUnitId: org.id, primaryEmail: `second-${tag}@example.com`, username: sharedUsername }),
+          // Row 4 collides with row 2's email, row 5 with row 3's username.
+          row({ orgUnitId: org.id, primaryEmail: sharedEmail }),
+          row({ orgUnitId: org.id, username: sharedUsername }),
+        ])
+
+        const res = await request(app.getHttpServer()).post('/imports/commit').send({ csv }).expect(200)
+
+        expect(res.body.created).toBe(2)
+        expect(res.body.failed).toBe(2)
+        const byRow = new Map<number, string>(
+          res.body.failures.map((failure: { row: number; reasons: string[] }) => [
+            failure.row,
+            failure.reasons.join(' '),
+          ]),
+        )
+        expect(byRow.get(4)).toContain('primaryEmail: not available')
+        expect(byRow.get(5)).toContain('username: not available')
+        // The resolution-time reason, never the write-time conflict message.
+        expect([...byRow.values()].join(' ')).not.toContain('already exists')
+      })
     })
 
     it('reports a duplicate employee_id within the same file rather than silently letting the last one win', async () => {

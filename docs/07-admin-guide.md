@@ -317,7 +317,7 @@ churn.
 
 | Limit | Default | Behaviour |
 |---|---|---|
-| Rows per request | 5,000 (`IMPORT_MAX_ROWS`) | Whole-request 400 **before any row is resolved** — never a truncated partial apply |
+| Rows per request | 1,000 (`IMPORT_MAX_ROWS`) | Whole-request 400 **before any row is resolved** — never a truncated partial apply |
 | Body size | 10 MiB (`BODY_LIMIT_BYTES`) | 413 |
 
 A missing required **column** fails the whole request too — a column that is absent can

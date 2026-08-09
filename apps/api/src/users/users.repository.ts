@@ -299,6 +299,74 @@ export class UsersRepository {
   }
 
   /**
+   * SET-BASED siblings of `findById`/`findByEmail`/`findByUsername`/
+   * `findByEmployeeId` above, each answering the SAME question for a whole
+   * list of keys in ONE round trip. Added for the bulk-import path, whose
+   * per-row `findBy*` calls cost one network round trip EACH: measured at
+   * ~3 ms/row of pure resolution for a 5,000-row file (≈15 s of blocking
+   * on-request work before a single row is written), because one row does up
+   * to six of them. See `ImportLookups` (imports/import-lookups.ts), the
+   * only caller.
+   *
+   * Each mirrors its single-key sibling's matching rule EXACTLY, because a
+   * divergence would silently change which rows an import treats as
+   * existing: `employeeId` is case-SENSITIVE (`users_employee_id_unique`
+   * carries no case-insensitive contract); email and username fold with
+   * `lower()`, the same comparison `findByEmail`/`findByUsername` and
+   * `resolveActor` use. The key list is bound as ONE array parameter via
+   * `sql.param` rather than spliced into an `IN (...)` list — same reasoning
+   * as `PermissionEngine.canIn`'s ltree array, and it keeps a 5,000-key
+   * lookup at one bound parameter instead of 5,000 (Postgres's protocol
+   * limit is 65,535).
+   *
+   * An empty key list short-circuits to `[]` without querying: `= ANY
+   * ('{}')` is never true, so that round trip is pure overhead.
+   */
+  async listByIds(ids: readonly string[]): Promise<User[]> {
+    if (ids.length === 0) return []
+    const rows = await this.db
+      .select()
+      .from(users)
+      .where(sql`${users.id} = ANY (${sql.param([...ids])}::uuid[])`)
+
+    return rows as User[]
+  }
+
+  async listByEmployeeIds(employeeIds: readonly string[]): Promise<User[]> {
+    if (employeeIds.length === 0) return []
+    const rows = await this.db
+      .select()
+      .from(users)
+      .where(sql`${users.employeeId} = ANY (${sql.param([...employeeIds])}::text[])`)
+
+    return rows as User[]
+  }
+
+  /** Case-insensitive, exactly like `findByEmail` — callers pass raw values; both sides fold here. */
+  async listByEmails(emails: readonly string[]): Promise<User[]> {
+    if (emails.length === 0) return []
+    const lowered = emails.map((email) => email.toLowerCase())
+    const rows = await this.db
+      .select()
+      .from(users)
+      .where(sql`lower(${users.primaryEmail}) = ANY (${sql.param(lowered)}::text[])`)
+
+    return rows as User[]
+  }
+
+  /** Case-insensitive, exactly like `findByUsername`. */
+  async listByUsernames(usernames: readonly string[]): Promise<User[]> {
+    if (usernames.length === 0) return []
+    const lowered = usernames.map((username) => username.toLowerCase())
+    const rows = await this.db
+      .select()
+      .from(users)
+      .where(sql`lower(${users.username}) = ANY (${sql.param(lowered)}::text[])`)
+
+    return rows as User[]
+  }
+
+  /**
    * Partial update of an existing user's profile fields. `id` must already
    * exist — 404s otherwise. This re-check is defensive: every current
    * caller (UsersController.update) has already loaded the row moments

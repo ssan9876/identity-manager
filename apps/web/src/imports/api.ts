@@ -94,7 +94,7 @@ export const REQUIRED_CSV_COLUMNS = [
 export const OPTIONAL_CSV_COLUMNS = ['jobTitle', 'managerId', 'location', 'startDate', 'endDate'] as const
 
 /**
- * Mirrors env.ts's `IMPORT_MAX_ROWS` default (5,000) — task-5-brief.md: "The
+ * Mirrors env.ts's `IMPORT_MAX_ROWS` default (1,000) — task-5-brief.md: "The
  * API caps row count and body size; surface those limits before the user
  * hits them rather than as a 400 after a long upload." A COURTESY limit
  * only: the server (ImportsController.parseAndPrepare) re-enforces its own
@@ -102,7 +102,7 @@ export const OPTIONAL_CSV_COLUMNS = ['jobTitle', 'managerId', 'location', 'start
  * and its own 400 message is shown verbatim if this estimate ever
  * undercounts (see `estimateDataRowCount` below).
  */
-export const IMPORT_MAX_ROWS = 5_000
+export const IMPORT_MAX_ROWS = 1_000
 
 /** Mirrors env.ts's `BODY_LIMIT_BYTES` default (10 MiB) — the whole JSON request body, of which the `csv` field is by far the dominant byte count for any realistically-sized file. Same courtesy-limit caveat as IMPORT_MAX_ROWS above. */
 export const MAX_CSV_FILE_BYTES = 10 * 1024 * 1024

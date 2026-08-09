@@ -252,6 +252,29 @@ export class OrgUnitsRepository {
   }
 
   /**
+   * "Which of these ids exist?" in ONE round trip — the set-based sibling of
+   * `findById` above, for a caller holding many ids at once (bulk import
+   * resolves an org unit per CSV row; see `ImportLookups`). Selects the id
+   * column alone because existence is the only question asked: a 5,000-row
+   * file typically names a handful of DISTINCT org units, so this is one
+   * small query in place of one round trip per row.
+   *
+   * Ids are bound as a single `uuid[]` parameter — every caller has already
+   * shape-validated them as UUIDs (import rows via `parseImportRowShape`),
+   * so a non-UUID string here is a caller bug and Postgres rejecting it is
+   * the correct outcome, exactly as `findById` behaves today.
+   */
+  async listExistingIds(ids: readonly string[]): Promise<Set<string>> {
+    if (ids.length === 0) return new Set()
+    const rows = await this.db
+      .select({ id: orgUnits.id })
+      .from(orgUnits)
+      .where(sql`${orgUnits.id} = ANY (${sql.param([...ids])}::uuid[])`)
+
+    return new Set(rows.map((row) => row.id))
+  }
+
+  /**
    * The first org unit in the system by `path` ordering (matching `list`'s
    * own ordering, so this is "whatever `list` would show first"), or `null`
    * if none exists yet. Deliberately not restricted to roots

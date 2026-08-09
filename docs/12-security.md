@@ -134,7 +134,7 @@ response, log line and thrown error for it.
 | Limit | Default | Why |
 |---|---|---|
 | `BODY_LIMIT_BYTES` | 10 MiB | Replaces Express's *accidental* 100 KiB default. That accidental limit capped imports at ~800 rows purely by chance and would have vanished the moment anyone set a parser limit for a legitimate reason. |
-| `IMPORT_MAX_ROWS` | 5,000 | Import commit is ~10 ms of serial work per row; this bounds request duration independently of body size. Checked before any row is resolved. |
+| `IMPORT_MAX_ROWS` | 1,000 | Import commit is ~8.5 ms of serial work per row (measured, after the per-row lookups were batched); this bounds request duration independently of body size. Checked before any row is resolved. |
 | `DB_POOL_MAX` | 10 | Pool size and timeout behaviour are load-bearing for availability, not just performance. |
 
 Both parsers are registered explicitly with `bodyParser: false` on the Nest factory —
