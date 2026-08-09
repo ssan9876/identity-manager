@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { boolean, check, integer, jsonb, pgTable, timestamp } from 'drizzle-orm/pg-core'
 import { outboxTarget } from './outbox-events'
+import { provisioningMode } from './user-target-accounts'
 
 /**
  * Milestone 10, Task 1 — the catalog `OutboxWriter.record` reads to decide
@@ -52,6 +53,15 @@ export const connectorTargets = pgTable(
     target: outboxTarget('target').primaryKey(),
 
     enabled: boolean('enabled').notNull().default(false),
+
+    /**
+     * Milestone 15, Task 3. `all_users` reproduces the pre-business-roles
+     * behaviour exactly and is the default for every existing row; a target
+     * only starts consulting `user_target_accounts` when an operator
+     * deliberately moves it to `entitled_only`. See that enum's own doc
+     * comment for why the default is not the other way round.
+     */
+    provisioningMode: provisioningMode('provisioning_mode').notNull().default('all_users'),
 
     // Non-secret only — see this table's own doc comment above. `$type` pins
     // the shape callers see through Drizzle without constraining what Task 2's

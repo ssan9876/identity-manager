@@ -1,4 +1,5 @@
 import { sql } from 'drizzle-orm'
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { describe, expect, it } from 'vitest'
 import {
   businessRoleConditionOperator,
@@ -6,10 +7,46 @@ import {
   businessRoleGrantKind,
   businessRoles,
 } from '../src/db/schema/business-roles'
+import { connectorTargets } from '../src/db/schema/connector-targets'
 import { grantSource } from '../src/db/schema/grant-source'
+import * as schema from '../src/db/schema/index'
+import { orgUnits } from '../src/db/schema/org-units'
+import { provisioningMode, userTargetAccounts } from '../src/db/schema/user-target-accounts'
+import { users } from '../src/db/schema/users'
 import { withTestDatabase } from './support/pg'
 
 const ctx = withTestDatabase()
+
+let fixtureSeq = 0
+
+async function insertUser(
+  db: NodePgDatabase<typeof schema>,
+  overrides: { username?: string; jobTitle?: string | null; location?: string | null } = {},
+): Promise<string> {
+  fixtureSeq += 1
+  const [unit] = await db
+    .insert(orgUnits)
+    .values({ name: `Unit ${fixtureSeq}`, path: `root${fixtureSeq}` })
+    .returning()
+
+  const username = overrides.username ?? `fixture${fixtureSeq}`
+  const [user] = await db
+    .insert(users)
+    .values({
+      status: 'active',
+      primaryEmail: `${username}@example.com`,
+      username,
+      firstName: 'Fixture',
+      lastName: `User ${fixtureSeq}`,
+      displayName: `Fixture User ${fixtureSeq}`,
+      jobTitle: overrides.jobTitle ?? null,
+      location: overrides.location ?? null,
+      orgUnitId: unit.id,
+    })
+    .returning()
+
+  return user.id
+}
 
 describe('grant provenance (Milestone 15, Task 1)', () => {
   it('grant_source carries exactly two values', () => {
@@ -93,5 +130,41 @@ describe('business role tables (Milestone 15, Task 2)', () => {
         VALUES (${role.id}, gen_random_uuid(), 'include', NULL)
       `),
     ).rejects.toThrow()
+  })
+})
+
+describe('target-account entitlement (Milestone 15, Task 3)', () => {
+  it('provisioning_mode carries exactly two values', () => {
+    expect([...provisioningMode.enumValues].sort()).toEqual(['all_users', 'entitled_only'])
+  })
+
+  it('every existing connector target migrates to all_users, so behaviour is unchanged on the day this ships', async () => {
+    const rows = await ctx.db.execute(sql`
+      SELECT is_nullable, column_default
+      FROM information_schema.columns
+      WHERE table_name = 'connector_targets' AND column_name = 'provisioning_mode'
+    `)
+
+    expect(rows.rows).toHaveLength(1)
+    expect(rows.rows[0]).toMatchObject({ is_nullable: 'NO' })
+    expect(String(rows.rows[0].column_default)).toContain('all_users')
+
+    // And the seeded keycloak row really did land on all_users, not merely
+    // that the column *could* default — the regression this guards is a
+    // silent directory-wide provisioning stop.
+    const seeded = await ctx.db.select().from(connectorTargets)
+    for (const row of seeded) {
+      expect(row.provisioningMode).toBe('all_users')
+    }
+  })
+
+  it('a user has at most one account entitlement per target', async () => {
+    const userId = await insertUser(ctx.db, { username: 'dupe-check' })
+
+    await ctx.db.insert(userTargetAccounts).values({ userId, target: 'keycloak', grantSource: 'business_role' })
+
+    await expect(
+      ctx.db.insert(userTargetAccounts).values({ userId, target: 'keycloak', grantSource: 'manual' }),
+    ).rejects.toThrow(/user_target_accounts_unique/)
   })
 })
