@@ -177,6 +177,61 @@ describe('ConnectorTargetsController (Milestone 14, Task 9)', () => {
   })
 
   // =========================================================================
+  // config validation — INJ-H-1 / INJ-H-2 residuals
+  // (docs/archive/audits/carried-findings-verification.md)
+  // =========================================================================
+
+  it('reports a __proto__ key in config rather than silently dropping it', async () => {
+    const actor = await makeActiveUser('super_admin')
+    currentUsername = actor.username
+
+    // JSON.parse creates `__proto__` as a genuine OWN property, unlike an
+    // object literal — so this is the real wire shape, not a synthetic one.
+    const res = await request(app.getHttpServer())
+      .patch('/connector-targets/echo')
+      .set('Content-Type', 'application/json')
+      .send('{"config":{"__proto__":"polluted","ok":"kept"}}')
+      .expect(200)
+
+    // The key must not have reached Object.prototype, and must not have been
+    // silently elided either: it is a legal 1-128 char key, so it is stored
+    // as ordinary data on a null-prototype object.
+    expect({}.constructor.name).toBe('Object')
+    expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined()
+    expect(res.body.config?.ok).toBe('kept')
+  })
+
+  it('rejects a config value containing a JSON-escaped NUL instead of 500ing at the driver', async () => {
+    const actor = await makeActiveUser('super_admin')
+    currentUsername = actor.username
+
+    // TWO backslashes in the source: the JSON TEXT has to carry the escape
+    // sequence, which JSON.parse then turns into a NUL inside the parsed
+    // string. A RAW NUL byte would be a different, already-safe case —
+    // invalid JSON syntax that JSON.parse rejects itself ("Bad control
+    // character") before any application code runs. safe-string.ts draws
+    // exactly this distinction; getting it wrong tests the wrong thing.
+    const res = await request(app.getHttpServer())
+      .patch('/connector-targets/echo')
+      .set('Content-Type', 'application/json')
+      .send('{"config":{"apiBase":"https://example.invalid/\\u0000"}}')
+      .expect(400)
+
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+    expect(JSON.stringify(res.body)).toMatch(/NUL/i)
+  })
+
+  it('rejects a non-object config', async () => {
+    const actor = await makeActiveUser('super_admin')
+    currentUsername = actor.username
+
+    await request(app.getHttpServer())
+      .patch('/connector-targets/echo')
+      .send({ config: 'not-an-object' })
+      .expect(400)
+  })
+
+  // =========================================================================
   // Scope narrowing (security audit finding: connector:manage was satisfied
   // by holding the action ANYWHERE)
   //

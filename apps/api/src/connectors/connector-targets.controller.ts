@@ -9,6 +9,7 @@ import { DB_CLIENT } from '../common/db.token'
 import { PermissionEngine } from '../authz/permission.engine'
 import { ForbiddenError, ValidationError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
+import { noNulChar } from '../common/http/safe-string'
 import * as schema from '../db/schema/index'
 import {
   type TargetReconciliationOptions,
@@ -59,12 +60,77 @@ function parseTargetParam(raw: string): ConnectorTarget {
   return parsed.data
 }
 
-const configPatchValueSchema = z.union([z.string().max(4000), z.number(), z.boolean(), z.null()])
+// noNulChar on the string branch — the same JSON-escaped-NUL defence every
+// other admin-editable free-text field carries. A config value reaches a
+// `jsonb` column, and Postgres cannot store an embedded NUL in ANY
+// text-shaped column, so without this the write fails at the `pg` driver as a
+// raw non-DomainError and Nest returns an unmapped 500 (finding INJ-H-2
+// residual, docs/archive/audits/carried-findings-verification.md).
+const configPatchValueSchema = z.union([
+  noNulChar(z.string().max(4000)),
+  z.number(),
+  z.boolean(),
+  z.null(),
+])
+
+const CONFIG_KEY_MAX = 128
+
+/**
+ * `config` is parsed as `z.unknown()` above and validated HERE, deliberately
+ * NOT by a `z.record(...)` — the same reasoning attribute-validator.ts's
+ * `rawAttributesSchema` sets out at length.
+ *
+ * `ZodRecord` funnels through `ParseStatus.mergeObjectSync`, which
+ * unconditionally refuses to assign a key literally named `__proto__`, and
+ * `z.record()` has no unknown-key pass to report that the way
+ * `ZodObject(...).strict()` does. So a PATCH body carrying `__proto__` in
+ * `config` was silently DROPPED with no error at all rather than rejected —
+ * the fifth recurrence of a defect class this project has a documented
+ * history with, in code written after the fix for it (finding INJ-H-1
+ * residual). `z.unknown()` does not inspect or rebuild the value's keys, so a
+ * genuine own `__proto__` survives intact to be reported below like any other
+ * bad key.
+ *
+ * The result is built on `Object.create(null)`, so assigning a key named
+ * `__proto__` here cannot reach `Object.prototype` either.
+ */
+function parseConfigPatch(value: unknown): Record<string, ConfigPatchValue> | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ValidationError(['config: must be an object'])
+  }
+
+  // Descriptor copy rather than a spread: a spread would trigger an inherited
+  // setter, and would not carry a non-enumerable own property across.
+  const payload: Record<string, unknown> = Object.create(null)
+  Object.defineProperties(payload, Object.getOwnPropertyDescriptors(value))
+
+  const issues: string[] = []
+  const result: Record<string, ConfigPatchValue> = Object.create(null)
+
+  for (const key of Object.keys(payload)) {
+    const keyCheck = noNulChar(z.string().min(1).max(CONFIG_KEY_MAX)).safeParse(key)
+    if (!keyCheck.success) {
+      issues.push(`config: key "${key}" ${keyCheck.error.issues[0]?.message ?? 'is invalid'}`)
+      continue
+    }
+    const valueCheck = configPatchValueSchema.safeParse(payload[key])
+    if (!valueCheck.success) {
+      issues.push(`config.${key}: ${valueCheck.error.issues[0]?.message ?? 'is invalid'}`)
+      continue
+    }
+    result[key] = valueCheck.data
+  }
+
+  if (issues.length > 0) throw new ValidationError(issues)
+  return result
+}
 
 const patchTargetBodySchema = z
   .object({
     enabled: z.boolean().optional(),
-    config: z.record(z.string().min(1).max(128), configPatchValueSchema).optional(),
+    // Validated by parseConfigPatch, not here — see its doc comment.
+    config: z.unknown().optional(),
     blastRadiusThreshold: z.number().int().min(1).max(100).optional(),
     blastRadiusFloor: z.number().int().min(0).optional(),
   })
@@ -198,7 +264,7 @@ export class ConnectorTargetsController {
     const parsed = parseBody(patchTargetBodySchema, body)
     const patch = {
       enabled: parsed.enabled,
-      config: parsed.config as Record<string, ConfigPatchValue> | undefined,
+      config: parseConfigPatch(parsed.config),
       blastRadiusThreshold: parsed.blastRadiusThreshold,
       blastRadiusFloor: parsed.blastRadiusFloor,
     }
