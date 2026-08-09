@@ -64,15 +64,24 @@ describes five failures and diagnoses them as cross-test contamination; that
 diagnosis was right and its fix (a per-seed unique `jobTitle`) is in the merged
 code. Treat that file's "5 of 19 fail" section as history.
 
-- [ ] **Task 9 — re-evaluate on every user write.** Register
-      `BusinessRolesRepository` and `RoleReconciler` in `app.module.ts` (still
-      unregistered), export `REEVALUATION_FIELDS`, call the reconciler inside the
-      existing transaction of user create/update. A refusal must roll the write
-      back. The trigger list must stay identical to the evaluator's field
-      allowlist.
-- [ ] **Task 10 — sweep job and CLI**, modelled on the `target-reconcile` pair.
+- [x] **Task 9 — re-evaluate on every user write.** Done and verified.
+      `RoleReconciler` is registered and deliberately NOT `@Optional()`, so a
+      missing provider fails boot rather than silently skipping re-evaluation.
+      `REEVALUATION_FIELDS` is DERIVED from the evaluator's own condition fields,
+      so a newly-nameable field cannot fail to trigger. A refusal throws and
+      rolls the write back. Four end-to-end HTTP tests, confirmed non-vacuous
+      (stubbing the call sites fails all four). **Confirmed live on a real
+      deployment: the app boots with the reconciler resolved** — business roles
+      now actually run in a deployed system, which they never did before.
+- [x] **Task 10 — sweep job and CLI.** Done and verified: 23/23, including
+      idempotence and tolerating a refusal without aborting the sweep. The CLI
+      constructs the job itself, mirroring `target-reconcile`.
 - [ ] **Task 11 — actions, guards, controller.** `business_role:read` /
       `business_role:manage`; mutation requires a *global* grant.
+      **Partially started** on `feat/br-task11-api` (pushed): the two actions and
+      their role assignments are added to `authz/actions.ts`, but the controller,
+      routes and guards are not written. A subagent was cut off by a session
+      limit; that branch is committed as explicitly-unverified WIP.
 - [ ] **Task 12 — `GET /api/users/:id/entitlements`.** `justifiedBy` computed
       live, never stored; an unevaluable result returns rows with a marker
       rather than failing the read.
