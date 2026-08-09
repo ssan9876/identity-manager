@@ -1,0 +1,32 @@
+[Unit]
+Description=Daily Keycloak reconciliation pass
+Documentation=file://@REPO_ROOT@/docs/11-operations.md
+
+[Timer]
+# 03:00 local time, an hour after idm-lifecycle.timer's 02:00. The order is
+# deliberate rather than merely tidy: the lifecycle pass flips statuses
+# (pending -> active, active -> deactivated) and enqueues the resulting sync
+# events, and every connector derives desiredEnabled from status. Running
+# reconciliation afterwards means a night's transitions have already settled
+# before it decides what counts as drift. An hour is far more than the pass
+# needs; it just has to be comfortably clear of it.
+OnCalendar=*-*-* 03:00:00
+
+# A host powered off at 03:00 runs the missed pass on next boot instead of
+# silently skipping a day. This job is the backstop that catches drift a
+# queue structurally cannot see — a Keycloak account disabled by hand in the
+# admin console, a group edited outside the directory — so a skipped day is
+# a day that drift stands uncorrected and unreported.
+Persistent=true
+
+# ReconciliationJob.run re-derives desired state from the database and
+# compares it against Keycloak's current representation on every run: it
+# enqueues a repair only for the users that actually differ right now, so a
+# run that finds nothing writes nothing. A jittered start is therefore free,
+# and avoids a thundering herd if several hosts ever share one database.
+RandomizedDelaySec=300
+
+Unit=idm-reconcile.service
+
+[Install]
+WantedBy=timers.target

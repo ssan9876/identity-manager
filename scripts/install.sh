@@ -207,7 +207,14 @@ sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" -e "s|@IDM_USER@|$IDM_USER|g" \
 # existed nothing on any host ever invoked it, so a joiner with a start date
 # was never activated and every connector asserted them as a disabled
 # account indefinitely.
-for unit in idm-lifecycle.service idm-lifecycle.timer; do
+#
+# Reconciliation is the backstop the lifecycle pass and the outbox worker
+# both lean on: a queue cannot see drift caused directly inside Keycloak, so
+# an account disabled by hand in the admin console stays disabled until a
+# reconcile pass notices. Several security findings park their residual risk
+# on "reconciliation will catch it", which is only true if something runs it
+# — and until this existed, nothing on any host did.
+for unit in idm-lifecycle.service idm-lifecycle.timer idm-reconcile.service idm-reconcile.timer; do
   sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" -e "s|@IDM_USER@|$IDM_USER|g" \
     "$REPO_ROOT/deploy/systemd/$unit" >"/etc/systemd/system/$unit"
 done
@@ -232,6 +239,7 @@ systemctl enable idm-api >/dev/null
 # The TIMER, not the service: `systemctl enable` on a Type=oneshot unit asks
 # systemd to run it once at boot and never again.
 systemctl enable --now idm-lifecycle.timer >/dev/null
+systemctl enable --now idm-reconcile.timer >/dev/null
 
 # --- nginx ------------------------------------------------------------------
 # Console and API are served from ONE origin. That is deliberate: the API calls
