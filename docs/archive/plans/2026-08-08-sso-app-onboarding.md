@@ -38,7 +38,7 @@ If that prints nothing, stop and rebase onto a branch that has them.
 - **No `DELETE` route and no delete method** anywhere in this feature. Disable only.
 - **The minted client secret is never persisted.** Not in `sso_apps`, not in `outbox_events.payload`, not in `audit_log.before`/`after`, not in a log line, not in an error message.
 - **New pgEnum values may not be used in the same migration transaction that adds them.** See the Migration Rule below — this is not a style preference, it is a Postgres constraint that will fail a fresh-database migrate.
-- **Run tests with at most 3 vitest forks:** `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3`. Testcontainers fills the disk otherwise and reports spurious failures.
+- **Run tests with at most 3 vitest forks:** `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3`. Testcontainers fills the disk otherwise and reports spurious failures. `minForks` must be set too: this machine has 16 cores, so vitest's default minimum exceeds a max of 3 and tinypool aborts the run with `options.minThreads and options.maxThreads must not conflict` before a single test executes. Do NOT also pass `--pool=forks`.
 
 ### Migration Rule (correction to the spec)
 
@@ -96,7 +96,7 @@ Adds the `keycloak_sso` target name and the `sso_app` aggregate name everywhere 
 - Modify: `apps/api/src/outbox/target-reconcile-cli.ts:22`
 - Modify: `apps/web/src/connectors/api.ts`
 - Modify: `apps/web/src/connectors/AttributeMappingsEditor.tsx`
-- Create: `apps/api/src/db/migrations/0019_sso_app_catalog.sql`
+- Create: `apps/api/src/db/migrations/0022_sso_app_catalog.sql`
 - Test: `apps/api/test/connector-target-catalog.spec.ts`
 
 **Interfaces:**
@@ -153,7 +153,7 @@ import { ALL_OUTBOX_AGGREGATE_TYPES } from '../src/outbox/outbox.writer'
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 connector-target-catalog`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 connector-target-catalog`
 Expected: FAIL — `DIRECTORY_TARGETS` and `ALL_OUTBOX_AGGREGATE_TYPES` are not exported.
 
 - [ ] **Step 3: Widen the TypeScript catalogs**
@@ -213,7 +213,7 @@ and add `'keycloak_sso'` as the last entry of `outboxTarget`. In `apps/api/src/d
 
 - [ ] **Step 5: Write the migration**
 
-Create `apps/api/src/db/migrations/0019_sso_app_catalog.sql`:
+Create `apps/api/src/db/migrations/0022_sso_app_catalog.sql`:
 
 ```sql
 -- Postgres forbids USING a value added by ALTER TYPE ... ADD VALUE within the
@@ -228,7 +228,7 @@ ALTER TYPE "public"."external_identity_system" ADD VALUE 'keycloak_sso';--> stat
 ALTER TYPE "public"."outbox_aggregate_type" ADD VALUE 'sso_app';
 ```
 
-Regenerate the drizzle snapshot so `meta/` stays consistent: `pnpm --filter @idm/api db:generate`. If drizzle-kit emits its own duplicate migration for the same enum change, delete the generated `.sql` and keep the hand-written one, but **keep** the regenerated `meta/0019_snapshot.json`.
+Regenerate the drizzle snapshot so `meta/` stays consistent: `pnpm --filter @idm/api db:generate`. If drizzle-kit emits its own duplicate migration for the same enum change, delete the generated `.sql` and keep the hand-written one, but **keep** the regenerated `meta/0022_snapshot.json`.
 
 - [ ] **Step 6: Narrow the directory-only consumers**
 
@@ -295,13 +295,13 @@ In `apps/web/src/connectors/AttributeMappingsEditor.tsx`, change both `ALL_CONNE
 
 - [ ] **Step 8: Run the tests to verify they pass**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 connector-target-catalog`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 connector-target-catalog`
 Expected: PASS.
 
 Then the full API suite and both typechecks:
 
 ```bash
-pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3
+pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3
 pnpm typecheck
 ```
 
@@ -326,7 +326,7 @@ git commit -m "feat(sso-apps): the keycloak_sso target and the sso_app aggregate
 - Create: `apps/api/src/db/schema/sso-apps.ts`
 - Create: `apps/api/src/db/schema/external-sso-app-identities.ts`
 - Modify: `apps/api/src/db/schema/index.ts`
-- Create: `apps/api/src/db/migrations/0020_sso_apps_tables.sql`
+- Create: `apps/api/src/db/migrations/0023_sso_apps_tables.sql`
 - Create: `apps/api/src/sso-apps/sso-apps.repository.ts`
 - Test: `apps/api/test/sso-apps.repository.spec.ts`
 
@@ -412,7 +412,7 @@ describe('SsoAppsRepository', () => {
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 sso-apps.repository`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 sso-apps.repository`
 Expected: FAIL — cannot resolve `../src/sso-apps/sso-apps.repository`.
 
 - [ ] **Step 3: Write the schema**
@@ -493,7 +493,7 @@ export * from './sso-apps'
 
 - [ ] **Step 4: Write the migration**
 
-Create `apps/api/src/db/migrations/0020_sso_apps_tables.sql`. `CREATE TYPE` carries no same-transaction restriction, so the type and the tables that use it may live in one file — unlike the `ALTER TYPE ... ADD VALUE` statements in 0019.
+Create `apps/api/src/db/migrations/0023_sso_apps_tables.sql`. `CREATE TYPE` carries no same-transaction restriction, so the type and the tables that use it may live in one file — unlike the `ALTER TYPE ... ADD VALUE` statements in 0022.
 
 ```sql
 DO $$ BEGIN
@@ -642,7 +642,7 @@ export class SsoAppsRepository {
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 sso-apps.repository`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 sso-apps.repository`
 Expected: PASS, 3 tests.
 
 - [ ] **Step 7: Commit**
@@ -756,7 +756,7 @@ describe('reserved client ids', () => {
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 sso-app-validation`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 sso-app-validation`
 Expected: FAIL — module not found.
 
 - [ ] **Step 3: Write the implementation**
@@ -873,7 +873,7 @@ export function webOriginProblem(origin: string): string | null {
 
 - [ ] **Step 4: Run to verify it passes**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 sso-app-validation`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 sso-app-validation`
 Expected: PASS. The source-scan test will fail until Task 10 adds `upsert_client idm-sso-admin` to `keycloak-setup.sh` **only if** `idm-sso-admin` were missing from `RESERVED_CLIENT_IDS` — it is already listed, so the scan passes now and keeps passing after Task 10.
 
 - [ ] **Step 5: Commit**
@@ -945,7 +945,7 @@ describe('targetsForAggregate', () => {
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 target-fanout`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 target-fanout`
 Expected: FAIL — module not found.
 
 - [ ] **Step 3: Write the implementation**
@@ -1027,7 +1027,7 @@ Add to `record`'s doc comment, directly after the MILESTONE 10, TASK 1 paragraph
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 target-fanout outbox`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 target-fanout outbox`
 Expected: PASS. `outbox-emission.spec.ts`'s existing assertions must still pass unchanged — they are the regression net proving directory fan-out is untouched.
 
 - [ ] **Step 6: Commit**
@@ -1201,7 +1201,7 @@ describe('KeycloakSsoConnector', () => {
 
 - [ ] **Step 3: Run to verify it fails**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 keycloak-sso.connector`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 keycloak-sso.connector`
 Expected: FAIL — module not found.
 
 - [ ] **Step 4: Add the interface types**
@@ -1524,7 +1524,7 @@ Then in `apps/api/src/connectors/connector-targets.controller.ts`, change `summa
 
 - [ ] **Step 8: Run the tests to verify they pass**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 keycloak-sso connector-registry connector-targets`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 keycloak-sso connector-registry connector-targets`
 Expected: PASS. Update `connector-registry.spec.ts` if it asserts on the exact set of implemented targets.
 
 - [ ] **Step 9: Commit**
@@ -1580,7 +1580,7 @@ Append to `apps/api/test/sync.worker.spec.ts`, following the existing fake-conne
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 sync.worker`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 sync.worker`
 Expected: FAIL — `applyEvent` silently does nothing for `sso_app` (the switch has no case), so no identity row appears.
 
 - [ ] **Step 3: Add the dispatch**
@@ -1644,7 +1644,7 @@ Leave `TARGETS_NEEDING_EXTERNAL_ID_CORRELATION`, `TARGETS_NEEDING_MANAGED_ATTRIB
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 sync.worker`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 sync.worker`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1685,7 +1685,7 @@ Append to `apps/api/test/actions.spec.ts`:
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 actions`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 actions`
 Expected: FAIL — `sso_app:read` is not an `Action`.
 
 - [ ] **Step 3: Add the actions**
@@ -1694,7 +1694,7 @@ In `apps/api/src/authz/actions.ts`, add `| 'sso_app:read'` and `| 'sso_app:manag
 
 - [ ] **Step 4: Run to verify it passes**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 actions && pnpm typecheck`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 actions && pnpm typecheck`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1797,7 +1797,7 @@ describe('SsoAppsController', () => {
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 sso-apps.controller`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 sso-apps.controller`
 Expected: FAIL — module not found.
 
 - [ ] **Step 3: Write the controller**
@@ -1940,7 +1940,7 @@ Register `SsoAppsController` in `apps/api/src/app.module.ts`'s `controllers` arr
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 sso-apps.controller guard-coverage`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 sso-apps.controller guard-coverage`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
@@ -2115,7 +2115,7 @@ CONNECTOR_KEYCLOAK_SSO_CLIENT_SECRET=
 
 - [ ] **Step 3: Run the source scan**
 
-Run: `pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3 sso-app-validation`
+Run: `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 sso-app-validation`
 Expected: PASS — the scan now finds `idm-sso-admin` among the created clients and confirms `RESERVED_CLIENT_IDS` already names it.
 
 - [ ] **Step 4: Update the documentation**
@@ -2135,7 +2135,7 @@ Expected: PASS — the scan now finds `idm-sso-admin` among the created clients 
 - [ ] **Step 5: Full verification**
 
 ```bash
-pnpm --filter @idm/api test -- --pool=forks --poolOptions.forks.maxForks=3
+pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3
 pnpm typecheck
 pnpm verify
 ```
