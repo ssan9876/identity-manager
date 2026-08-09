@@ -214,7 +214,40 @@ Carry-forward findings, already diagnosed:
       Restoring the issuer recovered cleanly. That path had never run outside a
       container.
 
-Tasks 8–16 are otherwise not started; the plan specifies each.
+- [x] **Tasks 8–9 — provisioning credentials and a per-realm Keycloak admin
+      client.** No migration needed; neither touches the schema.
+
+      **The design's load-bearing unverified assumption is now SETTLED, in our
+      favour.** The plan assumed Keycloak grants a realm's *creating* service
+      account admin rights on that realm, and flagged it unverified until
+      Task 11. Proven empirically against a real Keycloak 26 container: a
+      master-realm client holding **only** `create-realm` created a realm and
+      then read *and* wrote in it with no further grant, while the realm-scoped
+      `idm-sync-service` credential could NOT reach a tenant realm.
+      **`ensureRealm` does not need an explicit `<realm>-realm` role grant.**
+      *Boundary:* this proves the creator keeps rights on a realm **it**
+      created. Adopting a realm created by someone else — a pre-existing realm,
+      or one created before a credential rotation — is still unproven.
+
+      **A real secret leak was found and fixed, which four audits had missed.**
+      `KeycloakAdminClient` held `private readonly config`; TypeScript `private`
+      is compile-time only, so `JSON.stringify(client)` printed `clientSecret`
+      verbatim — one structured logger or error reporter away from writing a
+      Keycloak admin secret to a log. Now a true ECMAScript `#config`, which is
+      invisible to `JSON.stringify`, `Object.keys` and `util.inspect`; verified
+      independently (the old shape leaks a sentinel, the new one does not).
+      Swept the rest of `apps/api/src` for the same pattern: `SyncWorkerConfig`
+      (four numbers), `ImportsConfig` (`{maxRows}`) and `JwtGuardOptions`
+      (`{issuer, audience}`) carry no credentials, so no others need changing.
+- [ ] **Deferred to Task 12: `KeycloakAdminClientFactory.evict(realm)`.**
+      `forRealm` memoizes forever with no eviction. Harmless until something
+      deletes a realm — which arrives with the organizations API — but a deleted
+      tenant's cached admin client and token would otherwise linger. Same
+      deferral reasoning as `translateWriteError` and the
+      `business_role_grants` composite FK: written now it could not be
+      exercised.
+
+Tasks 10–16 are otherwise not started; the plan specifies each.
 
 ---
 
