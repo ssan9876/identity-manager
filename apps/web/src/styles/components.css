@@ -423,6 +423,38 @@
   color: var(--danger);
 }
 
+/* The brand variant — "Draft ready to publish" (business roles). NOT a
+   fourth status colour: --primary-soft is the same "current / ready" wash
+   the nav's selected pill uses, and it is here because a simulated draft
+   is the one state where the primary ACTION is available and the badge
+   should agree with the button beside it. The word still carries the
+   meaning; --ink on --primary-soft is 15.3:1 light, 10.5:1 dark. */
+.badge--brand {
+  color: var(--ink);
+  background: var(--primary-soft);
+  border-color: var(--primary);
+}
+.badge--brand .badge__dot {
+  color: var(--primary);
+}
+
+/* UNKNOWN — deliberately not a colour at all, and deliberately not the
+   same shape as the uncoloured norm either. A dashed hairline says "this
+   answer is missing" where a solid one says "this answer is ordinary";
+   the word "Unknown" is what actually carries it, and the dashes only
+   stop it reading as just another quiet neutral badge. Used by the person
+   Entitlements tab for `justifiedBy: null` (the engine refused), which
+   must never render like `justifiedBy: []` (nothing justifies this). */
+.badge--unknown {
+  color: var(--ink-muted);
+  background: transparent;
+  border-color: var(--border-strong);
+  border-style: dashed;
+}
+.badge--unknown .badge__dot {
+  color: var(--border-strong);
+}
+
 /* ---------------------------------------------------------------------
  * Form fields — labels above inputs, inline error under the field.
  * ------------------------------------------------------------------- */

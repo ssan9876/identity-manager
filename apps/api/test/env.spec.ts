@@ -25,6 +25,51 @@ describe('loadEnv', () => {
       dbPoolMax: 10,
       bodyLimitBytes: 10 * 1024 * 1024,
       importMaxRows: 1_000,
+      keycloakProvisionClientId: null,
+      keycloakProvisionClientSecret: null,
+    })
+  })
+
+  // Organizations, Task 8: the master-realm service account that creates
+  // realms. Optional by design — a deployment that never creates
+  // organizations must keep booting with an unchanged .env, so the absence
+  // of these two is a normal configuration and not a validation failure.
+  describe('KEYCLOAK_PROVISION_CLIENT_ID / _SECRET', () => {
+    it('leaves provisioning credentials null when unset, without failing', () => {
+      const env = loadEnv(valid)
+      expect(env.keycloakProvisionClientId).toBeNull()
+      expect(env.keycloakProvisionClientSecret).toBeNull()
+    })
+
+    it('reads provisioning credentials when both are set', () => {
+      const env = loadEnv({
+        ...valid,
+        KEYCLOAK_PROVISION_CLIENT_ID: 'idm-provisioner',
+        KEYCLOAK_PROVISION_CLIENT_SECRET: 'provision_secret',
+      })
+      expect(env.keycloakProvisionClientId).toBe('idm-provisioner')
+      expect(env.keycloakProvisionClientSecret).toBe('provision_secret')
+    })
+
+    // An empty value in a .env file is an accident, not a deliberately blank
+    // credential — the same judgement connectors/secrets.ts's resolveSecret
+    // makes. Rejecting it at load time beats attempting a client-credentials
+    // grant with an empty secret and reporting a confusing 401 from Keycloak.
+    it('rejects an empty value rather than treating it as configured', () => {
+      expect(() => loadEnv({ ...valid, KEYCLOAK_PROVISION_CLIENT_ID: '' })).toThrow(
+        /KEYCLOAK_PROVISION_CLIENT_ID/,
+      )
+      expect(() => loadEnv({ ...valid, KEYCLOAK_PROVISION_CLIENT_SECRET: '' })).toThrow(
+        /KEYCLOAK_PROVISION_CLIENT_SECRET/,
+      )
+    })
+
+    // Half-configured is not a third state: the factory (Task 9) treats it
+    // as unconfigured. loadEnv's job here is only to carry it faithfully.
+    it('carries a half-configured pair through as one set and one null', () => {
+      const env = loadEnv({ ...valid, KEYCLOAK_PROVISION_CLIENT_ID: 'idm-provisioner' })
+      expect(env.keycloakProvisionClientId).toBe('idm-provisioner')
+      expect(env.keycloakProvisionClientSecret).toBeNull()
     })
   })
 

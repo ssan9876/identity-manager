@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useAuth } from 'react-oidc-context'
 import { Route, Routes } from 'react-router-dom'
 import AuditPage from './audit/AuditPage'
+import BusinessRoleDetailPage from './business-roles/BusinessRoleDetailPage'
+import BusinessRolesPage from './business-roles/BusinessRolesPage'
 import ConnectorsListPage from './connectors/ConnectorsListPage'
 import CreateSsoAppPage from './sso-apps/CreateSsoAppPage'
 import SsoAppDetailPage from './sso-apps/SsoAppDetailPage'
@@ -204,6 +206,8 @@ export default function App() {
           <Route path="/groups/:id" element={<GroupDetailPage />} />
           <Route path="/groups/:id/edit" element={<EditGroupPage />} />
           <Route path="/roles" element={<RolesCatalogPage />} />
+          <Route path="/business-roles" element={<BusinessRolesPage />} />
+          <Route path="/business-roles/:id" element={<BusinessRoleDetailPage />} />
           <Route path="/import" element={<ImportPage />} />
           <Route path="/audit" element={<AuditPage />} />
           <Route path="/applications" element={<SsoAppsListPage />} />

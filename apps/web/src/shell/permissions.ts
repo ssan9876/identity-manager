@@ -21,6 +21,15 @@ export type Action =
   | 'connector:manage'
   | 'sso_app:read'
   | 'sso_app:manage'
+  // Milestone 17, Task 11. `business_role:read` is held by
+  // user_admin/auditor/read_only; `business_role:manage` is super_admin's
+  // alone AND the API additionally requires that grant to be GLOBAL
+  // (`requireGlobalManageGrant` — a business role belongs to no org unit).
+  // `GET /self/permissions` reports the ACTION, not its scope, so holding
+  // this in the set is not a promise that a write will succeed; the API
+  // still decides, and explains the refusal on its own terms.
+  | 'business_role:read'
+  | 'business_role:manage'
 
 /** Mirrors SelfPermissionsResponse from apps/api/src/self-service/self-service.controller.ts. */
 export interface SelfPermissionsResponse {

@@ -1,0 +1,42 @@
+.entitlements__intro {
+  margin-bottom: var(--space-5);
+  max-width: 78ch;
+  font-size: var(--text-base);
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+/* The refusal banner carries three separate facts (what failed, why, and
+   what it does NOT mean), so its paragraphs need real separation — the
+   shared .banner is a single strip and does not assume multiple. */
+.entitlements .banner p + p {
+  margin-top: var(--space-2);
+}
+
+.entitlements__reason {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+
+/* Source is a word, not a badge: neither "granted by hand" nor
+   "role-derived" is an exception to a norm, and giving either a pill
+   would spend the badge vocabulary on something that is never a warning. */
+.entitlements__source {
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
+
+/* `justifiedBy: []` on a manual row — the normal, permanent state. Plain
+   muted prose, deliberately NOT the warn badge its role-derived twin
+   gets, because there is nothing wrong here to mark. */
+.entitlements__manual {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+
+.entitlements__roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+}

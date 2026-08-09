@@ -30,6 +30,35 @@ const envSchema = z.object({
   // realm, used to push user/group state INTO Keycloak.
   KEYCLOAK_ADMIN_CLIENT_ID: z.string().min(1, 'KEYCLOAK_ADMIN_CLIENT_ID is required'),
   KEYCLOAK_ADMIN_CLIENT_SECRET: z.string().min(1, 'KEYCLOAK_ADMIN_CLIENT_SECRET is required'),
+  // (Organizations, Task 8) A service account in Keycloak's MASTER realm,
+  // holding `create-realm`. `POST /admin/realms` is a SERVER-level endpoint,
+  // so the realm-scoped KEYCLOAK_ADMIN_CLIENT_ID above structurally cannot
+  // call it: that credential authenticates against — and is only ever
+  // granted realm-management roles within — the `identity-manager` realm.
+  //
+  // Optional, deliberately. A deployment that never creates organizations
+  // needs no such account, and every existing path keeps working without
+  // one; making it required would break every current .env for a feature
+  // most deployments will not use. `POST /organizations` answers
+  // NOT_CONFIGURED (503) when it is absent rather than accepting a row that
+  // can never provision.
+  //
+  // Both halves are `.optional()` INDIVIDUALLY rather than as a pair: zod
+  // has no ergonomic "both or neither" here, and the pairing is enforced
+  // where it matters instead — KeycloakAdminClientFactory.
+  // hasProvisioningCredentials() requires BOTH to be non-null, so a
+  // half-configured deployment behaves exactly like an unconfigured one
+  // (refuses to provision) rather than attempting a client-credentials
+  // grant with an empty secret.
+  KEYCLOAK_PROVISION_CLIENT_ID: z.string().min(1).optional(),
+  // NEVER logged, never echoed in an API response, never written to an audit
+  // row — the same rule connectors/secrets.ts states for connector
+  // credentials, and for the same reason. It is deliberately NOT reachable
+  // through `resolveSecret`: that function admits only CONNECTOR_*-prefixed
+  // names precisely so admin-editable connector config can never name a
+  // process secret like this one (see its doc comment). This value is read
+  // once, here, and handed only to KeycloakAdminClientFactory.
+  KEYCLOAK_PROVISION_CLIENT_SECRET: z.string().min(1).optional(),
   PORT: z.coerce.number().int().positive().default(3000),
   // Milestone 4, Task 4: the on/off switch for the SyncWorker's background
   // polling loop (see main.ts's bootstrap). Defaults ON so `start:dev` (and
@@ -99,6 +128,10 @@ export interface Env {
   keycloakAudience: string
   keycloakAdminClientId: string
   keycloakAdminClientSecret: string
+  /** Null when this deployment cannot create realms — see the schema's own comment. */
+  keycloakProvisionClientId: string | null
+  /** Null when this deployment cannot create realms. Never log or serialize this. */
+  keycloakProvisionClientSecret: string | null
   port: number
   syncWorkerEnabled: boolean
   dbPoolMax: number
@@ -123,6 +156,8 @@ export function loadEnv(source: NodeJS.ProcessEnv): Env {
     keycloakAudience: parsed.data.KEYCLOAK_AUDIENCE,
     keycloakAdminClientId: parsed.data.KEYCLOAK_ADMIN_CLIENT_ID,
     keycloakAdminClientSecret: parsed.data.KEYCLOAK_ADMIN_CLIENT_SECRET,
+    keycloakProvisionClientId: parsed.data.KEYCLOAK_PROVISION_CLIENT_ID ?? null,
+    keycloakProvisionClientSecret: parsed.data.KEYCLOAK_PROVISION_CLIENT_SECRET ?? null,
     port: parsed.data.PORT,
     syncWorkerEnabled: parsed.data.SYNC_WORKER_ENABLED === 'true',
     dbPoolMax: parsed.data.DB_POOL_MAX,

@@ -186,7 +186,89 @@ Carry-forward findings, already diagnosed:
       clean (SEC-L7), so nothing leaks. Do it in Task 12, when the journey that
       makes it reachable is in hand.
 
-Tasks 5–16 are otherwise not started; the plan specifies each.
+- [x] **Tasks 5–7 — Phase 1 complete, and its GATE IS CLOSED.** Migration `0030`.
+      Business-role and JML evaluation are now organization-scoped: the plan's
+      note that "nothing reads business_roles yet" was **stale** — Milestone 17
+      landed a reconciler firing on every user write before this task ran, so
+      unscoped, the first non-master tenant would have had another tenant's
+      formulas evaluated against its people. The database is not sufficient
+      cover either: a cross-tenant *group* grant is refused by the composite FK,
+      but `user_target_accounts` carries no organization at all, so a
+      cross-tenant *target* grant had no guard. `organizationId` is now a
+      required LEADING parameter, so omitting it is a compile error rather than
+      a review miss. `business_roles_name_idx` also became
+      `(organization_id, name)` — a global unique name would let the first
+      tenant to onboard "Engineering Standard Access" deny it to every other,
+      with the 409 doubling as a cross-tenant existence oracle (the SEC-L2
+      pattern in a new place).
+
+      **Gate evidence**, both halves run serially as the plan requires:
+      full API suite **1419/1420** (the one failure is the Keycloak-dependent
+      `dev-environment` spec), and a **real boot against a real Keycloak** on
+      the lab host — not a container. Adoption worked (`realm=NULL` →
+      `realm=identity-manager`, health 200), and the fail-closed half was
+      verified by pointing `KEYCLOAK_ISSUER` at a different realm: the API
+      **refused to listen** (health `000`) with
+      *"KEYCLOAK_ISSUER names realm … but the master organization is bound to …
+      Refusing to start: changing it would re-point every existing user."*
+      Restoring the issuer recovered cleanly. That path had never run outside a
+      container.
+      **Gate item 2 — "people, groups and sync behave exactly as before" — is
+      now actually exercised**, not inferred from a health check. Driven
+      through the real console against the real deployment: created a person
+      (organization populated automatically; outbox `user/created` reached
+      `done`), created a group, added a membership through the picker. All
+      three wrote audit rows attributed to the acting human, and the membership
+      emitted `membership_changed`, drained on the first attempt
+      (`attempts=0`). The membership row landed with `organization_id` matching
+      BOTH the user's and the group's — which is the design: ONE column
+      participates in TWO composite FKs (`gum_user_organization_fk` and
+      `gum_group_organization_fk`), so a cross-tenant edge is structurally
+      unrepresentable rather than merely rejected. Fixtures were cleaned up;
+      the lab database is back to its prior state.
+
+      **What the lab CANNOT prove, stated plainly:** the cross-tenant guard
+      itself. With exactly one organization every row is same-tenant by
+      construction — forcing a foreign `organization_id` is caught by the plain
+      FK for not existing, and a "real but different" tenant does not exist to
+      try. That guard is covered by `organizations.isolation.spec.ts` (10
+      tests) against fabricated tenants, and becomes live-testable only when
+      Task 12's API can create a second organization.
+
+- [x] **Tasks 8–9 — provisioning credentials and a per-realm Keycloak admin
+      client.** No migration needed; neither touches the schema.
+
+      **The design's load-bearing unverified assumption is now SETTLED, in our
+      favour.** The plan assumed Keycloak grants a realm's *creating* service
+      account admin rights on that realm, and flagged it unverified until
+      Task 11. Proven empirically against a real Keycloak 26 container: a
+      master-realm client holding **only** `create-realm` created a realm and
+      then read *and* wrote in it with no further grant, while the realm-scoped
+      `idm-sync-service` credential could NOT reach a tenant realm.
+      **`ensureRealm` does not need an explicit `<realm>-realm` role grant.**
+      *Boundary:* this proves the creator keeps rights on a realm **it**
+      created. Adopting a realm created by someone else — a pre-existing realm,
+      or one created before a credential rotation — is still unproven.
+
+      **A real secret leak was found and fixed, which four audits had missed.**
+      `KeycloakAdminClient` held `private readonly config`; TypeScript `private`
+      is compile-time only, so `JSON.stringify(client)` printed `clientSecret`
+      verbatim — one structured logger or error reporter away from writing a
+      Keycloak admin secret to a log. Now a true ECMAScript `#config`, which is
+      invisible to `JSON.stringify`, `Object.keys` and `util.inspect`; verified
+      independently (the old shape leaks a sentinel, the new one does not).
+      Swept the rest of `apps/api/src` for the same pattern: `SyncWorkerConfig`
+      (four numbers), `ImportsConfig` (`{maxRows}`) and `JwtGuardOptions`
+      (`{issuer, audience}`) carry no credentials, so no others need changing.
+- [ ] **Deferred to Task 12: `KeycloakAdminClientFactory.evict(realm)`.**
+      `forRealm` memoizes forever with no eviction. Harmless until something
+      deletes a realm — which arrives with the organizations API — but a deleted
+      tenant's cached admin client and token would otherwise linger. Same
+      deferral reasoning as `translateWriteError` and the
+      `business_role_grants` composite FK: written now it could not be
+      exercised.
+
+Tasks 10–16 are otherwise not started; the plan specifies each.
 
 ---
 
