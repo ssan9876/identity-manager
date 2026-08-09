@@ -156,6 +156,60 @@ the guard tripped at 03:00 — `--force` after it, defeating the confirm-first d
 was given on purpose. Run it by hand, dry run first, after a connector incident or a bulk
 change made at the target.
 
+## Upgrading a deployed host
+
+There was no documented upgrade procedure, and the obvious one is incomplete in
+a way that silently leaves security fixes unapplied. Verified end to end against
+a real deployment (Proxmox LXC, Ubuntu 24.04, PostgreSQL 16.14, upgrading a host
+that was 90 commits behind).
+
+```bash
+cd /opt/identity-manager
+git pull --ff-only origin master
+sudo -u idm pnpm install --frozen-lockfile
+sudo -u idm pnpm build
+sudo -u idm pnpm --filter @idm/api run db:migrate
+sudo systemctl restart idm-api
+```
+
+**That is not sufficient on its own.** `deploy/` is a set of TEMPLATES; nothing
+copies them onto a running host except `scripts/install.sh`. A `git pull`
+therefore updates the repository and changes nothing about how the machine
+actually serves traffic. Anything below `deploy/` needs re-rendering by hand, or
+by re-running the installer:
+
+| Changed in the repo | Reaches a running host only via |
+|---|---|
+| `deploy/nginx/*.conf` | re-rendering into `/etc/nginx/sites-available/idm.conf` |
+| `deploy/nginx/idm-log.conf` | copying to `/etc/nginx/conf.d/` |
+| `deploy/systemd/*` | re-rendering into `/etc/systemd/system/` + `daemon-reload` |
+
+This matters concretely: an upgrade that pulls the CS-M1 security-header fix and
+the CS-L3 log-format fix, and then only restarts `idm-api`, leaves a console
+still serving **no** `X-Frame-Options`, `X-Content-Type-Options` or
+`Referrer-Policy`, and still writing people's names and email addresses into
+`/var/log/nginx/access.log`. Both were confirmed absent after a pull-only
+upgrade, and confirmed present after re-rendering.
+
+To re-render nginx without a full reinstall (substitute your own hostname, port
+and paths — `grep server_name /etc/nginx/sites-available/idm.conf` shows what
+this host was installed with):
+
+```bash
+cd /opt/identity-manager
+sudo cp deploy/nginx/idm-log.conf /etc/nginx/conf.d/idm-log.conf
+sudo sed -e "s|@REPO_ROOT@|/opt/identity-manager|g"          -e "s|@IDM_HOSTNAME@|<hostname>|g" -e "s|@IDM_PORT@|3000|g"          -e "s|@TLS_CERT@|/etc/nginx/tls/idm.crt|g"          -e "s|@TLS_KEY@|/etc/nginx/tls/idm.key|g"          deploy/nginx/idm-tls.conf | sudo tee /etc/nginx/sites-available/idm.conf >/dev/null
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Then confirm against the **real** hostname, not `127.0.0.1` — the vhost is
+selected by `server_name`, so a request without the right `Host` header is
+answered by a different server block and will appear to have no headers at all:
+
+```bash
+curl -sIk -H "Host: <hostname>" https://127.0.0.1/ | grep -i x-frame-options
+```
+
 ## Monitoring
 
 ### What to watch
