@@ -24,6 +24,7 @@ Written before each sub-project, and the source of its settled decisions.
 | `2026-08-07-mail-server-connector-implementation-design.md` | Its implementation design |
 | `2026-08-08-business-roles-entitlements-design.md` | Business roles — **still the live design** for in-progress work; see [14 — Roadmap](../14-roadmap.md) |
 | `2026-08-08-user-activate-endpoint-design.md` | `POST /users/:id/activate`, the `user:activate` action, and the console button — **not yet implemented** |
+| `2026-08-08-organizations-multi-tenancy-design.md` | Organizations, a Keycloak realm per tenant, and the migration adopting existing data into master — **not yet implemented** |
 
 ## `plans/` — milestone build plans
 
