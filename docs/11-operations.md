@@ -47,10 +47,23 @@ sudo -u idm bash -c 'set -a && . .env && set +a && <command>'
 
 ## Scheduled work
 
-There is **no scheduler in the process**. Both recurring jobs are on-demand scripts, so
-you own the cadence.
+There is **no scheduler in the process**. Both recurring jobs are plain scripts. The
+lifecycle pass is driven by a systemd timer the installer sets up for you; reconciliation
+is still yours to schedule.
 
-### Lifecycle — run daily
+### Lifecycle — installed as a daily timer
+
+`scripts/install.sh` installs `idm-lifecycle.service` and `idm-lifecycle.timer` from
+`deploy/systemd/` alongside the API unit, and enables the **timer**. Nothing to write by
+hand.
+
+```bash
+systemctl list-timers idm-lifecycle.timer   # confirm it is armed
+systemctl start idm-lifecycle.service       # run one pass now
+journalctl -u idm-lifecycle -n 50           # what the last pass did
+```
+
+To run it manually against any environment:
 
 ```bash
 pnpm --filter @idm/api jml:lifecycle
@@ -74,37 +87,20 @@ It reports `skipped` — every due user it selected but could not transition, wi
 reason. **A clean run has an empty list.** Anything in it is a genuine race worth
 looking at.
 
-A systemd timer:
+The timer fires at 02:00 daily with `Persistent=true`, so a host that was powered off
+at 02:00 runs the missed pass on next boot rather than skipping a day, plus a jittered
+delay of up to five minutes. It runs the compiled output as the `idm` user under the
+same hardening block as the API unit — see `deploy/systemd/idm-lifecycle.service` for
+the units themselves and the reasoning in their comments.
 
-```ini
-# /etc/systemd/system/idm-lifecycle.service
-[Unit]
-Description=Identity Manager lifecycle job
-After=network-online.target
-
-[Service]
-Type=oneshot
-User=idm
-WorkingDirectory=/opt/identity-manager
-ExecStart=/bin/bash -lc 'set -a && . .env && set +a && pnpm --filter @idm/api jml:lifecycle'
-```
-
-```ini
-# /etc/systemd/system/idm-lifecycle.timer
-[Unit]
-Description=Run the Identity Manager lifecycle job daily
-
-[Timer]
-OnCalendar=daily
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-```
-
-```bash
-systemctl daemon-reload && systemctl enable --now idm-lifecycle.timer
-```
+> **This was a real outage, not a hypothetical.** Until 2026-08-08 this section told you
+> to hand-write those units, and the timer had never actually been installed on any
+> host. Nothing invoked the lifecycle job, so every joiner with a `start_date` stayed
+> `pending` forever — and because each connector derives `desiredEnabled` from
+> `status === 'active'`, those people were asserted into Keycloak and every other target
+> as **disabled accounts** and left that way. If you are upgrading a host installed
+> before that date, run `scripts/install.sh` again (or install the two units by hand)
+> and then run one pass immediately to clear the backlog.
 
 ### Reconciliation — run periodically, and after any incident
 

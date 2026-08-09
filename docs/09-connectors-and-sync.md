@@ -244,6 +244,56 @@ Dead letters are **not retried over HTTP** — deliberately. Fix the cause, then
 reconciliation. That keeps "retry" from becoming an un-audited way to re-trigger
 arbitrary outbound calls.
 
+## The sync badge, and what it aggregates
+
+`GET /users` and `GET /users/:id` carry a derived `syncState` per person —
+`synced`, `pending` or `failed` — which the console renders as a badge. It is computed
+per request, never stored, and it aggregates over **every target currently `enabled` in
+`connector_targets`**, taking the worst state it finds. A healthy Keycloak sync does not
+mask a broken mail sync: `docs/product-brief.md`'s second requirement is that nobody
+should look healthy while a real sync is broken.
+
+Per target, two sources are consulted **in order**:
+
+1. The latest `outbox_events` row for that `(user, target)`. `failed` → failed,
+   `pending`/`processing` → pending, `done` → healthy.
+2. Only if that target has no event at all, the `external_identities` row for it.
+
+The ordering matters for a connector that returns `NotApplicableError` — "this user has
+nothing for me to represent", e.g. someone with no mailbox. That leaves a `done` event
+and **no** identity row, and the ordering makes it read as settled rather than as a
+target that never synced.
+
+The badge also folds in `group` and `membership` events for groups the person is an
+effective member of, because a fan-out that dead-letters partway through cannot cleanly
+attribute itself to any single user. That is the case the whole derivation exists for,
+and it is why a person can show `failed` while all of their own targets are green.
+
+### Why is this person's badge that colour?
+
+`GET /users/:id/sync`, and the **Sync** tab on their detail page in the console. One row
+per enabled target: state, external id, last synced, attempts, next retry, and the
+error. Any group holding them back is listed separately.
+
+It shows events that are still **retrying**, which `GET /outbox/dead-letters` by
+definition cannot — that endpoint lists only `status = 'failed'`. An event mid-backoff,
+or head-of-line blocked behind an older event for the same aggregate and target, is
+otherwise invisible.
+
+Two permission levels, deliberately:
+
+| Caller holds | Sees |
+|---|---|
+| `user:read` | Every structural fact — per-target state, attempts, next retry, timestamps, external id |
+| …**and** a global `audit:read` | The above, plus the raw error text from the target |
+
+Without the global `audit:read` the response sets `errorDetailRedacted: true` and nulls
+`lastError`, and the console says so rather than showing an empty cell. This is the same
+reasoning that gates `GET /outbox/dead-letters`: raw target error text can name internal
+hosts and directory paths, and should not widen with a narrow grant. An ordinary admin
+still learns *which* target failed and how many times, which is enough to diagnose and
+escalate.
+
 ## Reconciliation and the blast-radius guard
 
 ```bash
