@@ -34,6 +34,7 @@ The complete catalog (`apps/api/src/authz/actions.ts`):
 | `user:read` | Reading people; also gates the attribute-definition catalog |
 | `user:create` | Creating people; also gates CSV import preview **and** commit |
 | `user:update` | Editing a person |
+| `user:activate` | Activating a person — `pending`/`suspended` → `active` |
 | `user:deactivate` | Deactivating a person |
 | `group:read` | Reading groups, members and effective members |
 | `group:create` | Creating a group |

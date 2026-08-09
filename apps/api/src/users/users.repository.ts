@@ -712,6 +712,42 @@ export class UsersRepository {
    * idempotent across repeated runs, the same mechanism
    * `listPendingWithStartDateOnOrBefore` uses above.
    */
+  /**
+   * Every `pending` user, optionally narrowed to ONE org-unit SUBTREE —
+   * `BulkActivateJob`'s candidate query.
+   *
+   * Deliberately NOT `listPendingWithStartDateOnOrBefore`'s shape: that one
+   * exists for the SCHEDULED path and therefore requires a `start_date`,
+   * which is exactly what strands a user created without one (they are
+   * never selectable, so they sit `pending` — and disabled in every
+   * connector, since `desiredEnabled = status === 'active'` — forever).
+   * This query has no date predicate at all: an operator asking to activate
+   * a subtree is making that decision directly, not asking the calendar to
+   * make it for them.
+   *
+   * `status = 'pending'` is the whole filter, so `deactivated` (terminal)
+   * and `suspended` are both excluded. Suspension is a deliberate act and
+   * un-suspending in bulk would silently undo it; `deactivated` must never
+   * be resurrected at all. Reuses `scopeFilter` — the SAME ltree `<@`
+   * containment the permission scope path uses — so "subtree" means here
+   * exactly what it means everywhere else, rather than a second, drifting
+   * definition.
+   */
+  async listPending(scopePath?: string): Promise<User[]> {
+    const filters = [eq(users.status, 'pending')]
+    if (scopePath !== undefined) {
+      filters.push(this.scopeFilter([scopePath]))
+    }
+
+    const rows = await this.db
+      .select()
+      .from(users)
+      .where(and(...filters))
+      .orderBy(asc(users.id))
+
+    return rows as User[]
+  }
+
   async listNonDeactivatedWithEndDateOnOrBefore(onOrBeforeDate: string): Promise<User[]> {
     const rows = await this.db
       .select()

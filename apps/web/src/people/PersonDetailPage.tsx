@@ -8,7 +8,7 @@ import { ConfirmDialog } from '../shell/ConfirmDialog'
 import { useSelfPermissions } from '../shell/permissions'
 import { useToast } from '../shell/ToastProvider'
 import { formatDateOnly, formatDateTime } from '../format'
-import { deactivatePerson, fetchGroupsForUser, fetchPeopleByIds, fetchPerson, type Group, type Person } from './api'
+import { activatePerson, deactivatePerson, fetchGroupsForUser, fetchPeopleByIds, fetchPerson, type Group, type Person } from './api'
 import { StatusBadge, SYNC_WORD, SyncBadge } from './badges'
 import { PersonSyncTab } from './PersonSyncTab'
 import { PersonRolesTab } from './PersonRolesTab'
@@ -208,6 +208,7 @@ export default function PersonDetailPage() {
   const [managerState, setManagerState] = useState<ManagerState>({ status: 'none' })
   const [activeTab, setActiveTab] = useState<TabKey>('profile')
   const [deactivateOpen, setDeactivateOpen] = useState(false)
+  const [activateOpen, setActivateOpen] = useState(false)
   const tabRefs = useRef<Record<TabKey, HTMLButtonElement | null>>({
     profile: null,
     groups: null,
@@ -218,6 +219,7 @@ export default function PersonDetailPage() {
 
   const canUpdate = permissions.status === 'ready' && permissions.actions.has('user:update')
   const canDeactivate = permissions.status === 'ready' && permissions.actions.has('user:deactivate')
+  const canActivate = permissions.status === 'ready' && permissions.actions.has('user:activate')
 
   /**
    * Deactivation's confirmation dialog owns its OWN request lifecycle
@@ -244,6 +246,26 @@ export default function PersonDetailPage() {
     setDeactivateOpen(false)
     showToast(
       `Deactivated ${updated.displayName}. Sign-in is blocked and active sessions were revoked. ${SYNC_WORD[updated.syncState]}.`,
+      updated.syncState === 'failed' ? 'danger' : updated.syncState === 'pending' ? 'warn' : 'neutral',
+    )
+  }
+
+  /**
+   * Deliberately NOT worded like handleConfirmDeactivate above. That one
+   * states session revocation as accomplished fact, which is honest only
+   * because POST /users/:id/deactivate performs it inline before
+   * responding. Activation does not: the Keycloak account is still
+   * disabled when this promise resolves, and stays that way until the sync
+   * worker drains the queued event. Saying "they can sign in now" here
+   * would be a lie roughly as often as the worker is behind.
+   */
+  async function handleConfirmActivate() {
+    if (accessToken === undefined || person === null) return
+    const updated = await activatePerson(accessToken, person.id)
+    setPerson(updated)
+    setActivateOpen(false)
+    showToast(
+      `Activated ${updated.displayName}. Sign-in is enabled once the change reaches each connected directory. ${SYNC_WORD[updated.syncState]}.`,
       updated.syncState === 'failed' ? 'danger' : updated.syncState === 'pending' ? 'warn' : 'neutral',
     )
   }
@@ -390,6 +412,16 @@ export default function PersonDetailPage() {
                 Edit
               </Link>
             )}
+            {canActivate && (person.status === 'pending' || person.status === 'suspended') && (
+              <button
+                type="button"
+                className="btn btn--secondary"
+                data-testid="activate-button"
+                onClick={() => setActivateOpen(true)}
+              >
+                Activate
+              </button>
+            )}
             {canDeactivate && person.status !== 'deactivated' && (
               <button
                 type="button"
@@ -422,6 +454,23 @@ export default function PersonDetailPage() {
           )}
         </div>
       </header>
+
+      <ConfirmDialog
+        open={activateOpen}
+        title={`Activate ${person.displayName}?`}
+        confirmLabel="Activate"
+        tone="primary"
+        onConfirm={handleConfirmActivate}
+        onDismiss={() => setActivateOpen(false)}
+        testId="activate-dialog"
+      >
+        <p data-testid="activate-consequence">
+          This makes <strong>{person.displayName}</strong> an active account. Their sign-in is
+          enabled in Keycloak, and their account is enabled in every connected directory, once
+          the change syncs — not instantly.
+        </p>
+        <p>You can deactivate them afterwards, but deactivation is permanent.</p>
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={deactivateOpen}

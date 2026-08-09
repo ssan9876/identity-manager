@@ -60,6 +60,7 @@ export function fetchAuditLog(accessToken: string, params: AuditListParams): Pro
 const ACTION_LABEL: Record<string, string> = {
   'user:create': 'Person created',
   'user:update': 'Person updated',
+  'user:activate': 'Person activated',
   'user:deactivate': 'Person deactivated',
   'user:self_update': 'Self-service profile update',
   'group:create': 'Group created',

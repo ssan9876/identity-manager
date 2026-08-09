@@ -96,16 +96,27 @@ You land on the new person's detail page. The person is created with status **pe
 
 ### Activating them
 
-Two ways:
+A pending person exists in the directory but is **disabled everywhere downstream** —
+every connector derives its enabled flag from `status = 'active'`. Two ways to move them:
 
-- Set a **start date**. When `jml:lifecycle` next runs on or after that date, the user
+- **Activate them directly.** On the person's detail page, click **Activate**. This is the
+  right move for someone who is already here, or who was created without a start date.
+- **Set a start date.** When `jml:lifecycle` next runs on or after that date, the user
   transitions `pending → active` automatically, and any `start_date_reached` rules fire
-  once.
-- Or leave the start date empty and let a JML rule or a direct status change do it.
+  once. This is the right move for a future joiner.
 
-> There is no "activate" button in the console and no status field on the edit form.
-> Status is changed by lifecycle automation and by deactivation, not by hand-editing a
-> dropdown.
+**Needs:** `user:activate` covering the person's org unit, and you must outrank them.
+`help_desk` does not hold it — enabling an account is a different kind of act from
+editing one.
+
+> **Activation is not instant downstream.** Unlike deactivation, which disables the
+> Keycloak account before the request returns, activation only queues the change. The
+> account is enabled when the sync worker drains the event; the sync badge tells you when
+> that has happened.
+
+> **There is still no status field on the edit form.** Activation and deactivation are
+> discrete, audited, permission-gated actions — not a dropdown you can set to anything.
+> Only `jml:lifecycle` reaches `active` any other way.
 
 ---
 
@@ -370,8 +381,8 @@ Each row expands to a `before`/`after` diff. Snapshots name their fields explici
 never a spread — so a column added later cannot silently leak into an append-only log.
 
 Actions you will see include `user:create`, `user:update`, `user:self_update`,
-`user:deactivate`, `group:*`, `org_unit:create`, `role:assign`, `import:preview`,
-`connector_target:configure`, `connector_target:reconcile`,
+`user:activate`, `user:deactivate`, `group:*`, `org_unit:create`, `role:assign`,
+`import:preview`, `connector_target:configure`, `connector_target:reconcile`,
 `attribute_target_mapping:*`.
 
 `user:self_update` is deliberately distinct from `user:update`, so a review can tell

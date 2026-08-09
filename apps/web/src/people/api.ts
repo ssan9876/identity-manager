@@ -163,6 +163,18 @@ export function deactivatePerson(accessToken: string, id: string): Promise<Perso
 }
 
 /**
+ * Moves a `pending` or `suspended` person to `active`, which is what makes
+ * every connector assert their account as enabled. Returns the updated
+ * record WITH its freshly-resolved `syncState`, same as `deactivatePerson`
+ * above — but note the two are NOT symmetric: deactivation disables the
+ * Keycloak account before it responds, activation only enqueues the change.
+ * The caller's toast has to say so.
+ */
+export function activatePerson(accessToken: string, id: string): Promise<Person> {
+  return authorizedRequest<Person>(`/users/${id}/activate`, accessToken, { method: 'POST' })
+}
+
+/**
  * Mirrors `UserSyncLatestEvent` (apps/api/src/outbox/sync-detail.repository.ts).
  * `lastError` is `null` whenever the caller lacks a GLOBAL `audit:read`
  * grant — see `UserSyncDetail.errorDetailRedacted`, and do not read a null
