@@ -34,6 +34,11 @@ import { GroupsRepository } from './groups/groups.repository'
 import { HealthController } from './health/health.controller'
 import { IMPORTS_CONFIG, ImportsController, type ImportsConfig } from './imports/imports.controller'
 import {
+  KEYCLOAK_FACTORY_CONFIG,
+  KeycloakAdminClientFactory,
+  type KeycloakFactoryConfig,
+} from './keycloak/keycloak-admin-client.factory'
+import {
   KEYCLOAK_ADMIN_CONFIG,
   KeycloakAdminClient,
   type KeycloakAdminClientConfig,
@@ -120,6 +125,26 @@ import { UsersRepository } from './users/users.repository'
       },
     },
     {
+      // Organizations, Task 9: the per-realm admin client factory's config.
+      // Mirrors KEYCLOAK_ADMIN_CONFIG above and deliberately does NOT
+      // replace it — the existing singleton, and everything injecting it,
+      // is untouched by this task. The extra two vars are optional
+      // (env.ts's KEYCLOAK_PROVISION_CLIENT_ID), so a deployment that never
+      // creates organizations wires this provider up with both nulls and
+      // simply never asks the factory for a non-master realm.
+      provide: KEYCLOAK_FACTORY_CONFIG,
+      useFactory: (): KeycloakFactoryConfig => {
+        const env = loadEnv(process.env)
+        return {
+          issuer: env.keycloakIssuer,
+          clientId: env.keycloakAdminClientId,
+          clientSecret: env.keycloakAdminClientSecret,
+          provisionClientId: env.keycloakProvisionClientId,
+          provisionClientSecret: env.keycloakProvisionClientSecret,
+        }
+      },
+    },
+    {
       // Finding M6 (docs/archive/audits/audit-integrity.md): the explicit,
       // configurable row-count cap on bulk import — see ImportsController's
       // own doc comment.
@@ -157,6 +182,11 @@ import { UsersRepository } from './users/users.repository'
     // `bootstrap()`, which no test ever executes — see SyncWorker's
     // file-level doc comment.
     KeycloakAdminClient,
+    // Organizations, Task 9. Constructs nothing and performs no I/O until
+    // `forRealm` is first called, so registering it costs a boot nothing —
+    // the same property that makes KeycloakAdminClient above safe to
+    // register unconditionally.
+    KeycloakAdminClientFactory,
     OutboxRepository,
     // Milestone 10, Task 2: the connector spine. `EchoConnector` (never
     // network I/O at construction — same property as KeycloakAdminClient/

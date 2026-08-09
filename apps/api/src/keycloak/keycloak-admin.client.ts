@@ -29,6 +29,20 @@ export interface KeycloakAdminClientConfig {
    * headroom under full-suite host contention than the default gives.
    */
   requestTimeoutMs?: number
+  /**
+   * Which realm this client ADMINISTERS, when that is not the realm it
+   * authenticates against. Defaults to the issuer's own realm, so every
+   * construction that predates organizations is unchanged.
+   *
+   * Organizations, Task 9. `issuer` fixes the token endpoint; the admin base
+   * URL is otherwise derived from it, which is right for a realm-scoped
+   * service account (it authenticates against, and administers, one realm)
+   * and wrong for the master-realm provisioning account (it authenticates
+   * against `master` and administers a TENANT realm). Overriding only the
+   * realm segment of `adminBaseUrl` keeps the two facts separable without a
+   * second URL to keep in sync with the issuer's host and port.
+   */
+  adminRealm?: string
 }
 
 /** What this client reads back off Keycloak's own user representation. */
@@ -307,7 +321,21 @@ export class KeycloakAdminClient {
   private readonly adminBaseUrl: string
   private cachedToken: { value: string; expiresAt: number } | null = null
 
-  constructor(@Inject(KEYCLOAK_ADMIN_CONFIG) private readonly config: KeycloakAdminClientConfig) {
+  /**
+   * Held as a TRUE ECMAScript private field, not `private readonly config`.
+   * A TS `private` is compile-time only: the property is still enumerable at
+   * runtime, so `JSON.stringify(client)` — or any structured logger, error
+   * reporter or Nest debug dump that walks a provider — would print
+   * `clientSecret` verbatim. `#config` is invisible to all of them. Same
+   * rule connectors/secrets.ts states for connector credentials, applied to
+   * the one this class was constructed with (Organizations, Task 9, where a
+   * SECOND secret — the realm-provisioning account's — started flowing
+   * through this same constructor).
+   */
+  readonly #config: KeycloakAdminClientConfig
+
+  constructor(@Inject(KEYCLOAK_ADMIN_CONFIG) config: KeycloakAdminClientConfig) {
+    this.#config = config
     // `config.issuer` is `<serverRoot>/realms/<realm>` (identical shape to
     // env.keycloakIssuer) — split it into the two bases the admin REST API
     // and the token endpoint each need, rather than requiring a THIRD env
@@ -321,7 +349,11 @@ export class KeycloakAdminClient {
     }
     const [, serverRoot, realm] = match
     this.tokenUrl = `${config.issuer}/protocol/openid-connect/token`
-    this.adminBaseUrl = `${serverRoot}/admin/realms/${realm}`
+    // `adminRealm` when the caller set one, else the issuer's own realm —
+    // see KeycloakAdminClientConfig.adminRealm. The two are deliberately
+    // read from different places: the token endpoint always follows the
+    // issuer, the admin path does not have to.
+    this.adminBaseUrl = `${serverRoot}/admin/realms/${config.adminRealm ?? realm}`
   }
 
   // ---------------------------------------------------------------------
@@ -331,7 +363,7 @@ export class KeycloakAdminClient {
 
   /** `config.requestTimeoutMs` when the caller set one, else `DEFAULT_REQUEST_TIMEOUT_MS` — see that constant's and `KeycloakAdminClientConfig.requestTimeoutMs`'s own doc comments. Every outbound `fetch` in this class carries this, unconditionally: there is no longer an unbounded call site. */
   private abortSignal(): AbortSignal {
-    return AbortSignal.timeout(this.config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS)
+    return AbortSignal.timeout(this.#config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS)
   }
 
   private async fetchToken(): Promise<{ value: string; expiresAt: number }> {
@@ -341,8 +373,8 @@ export class KeycloakAdminClient {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         grant_type: 'client_credentials',
-        client_id: this.config.clientId,
-        client_secret: this.config.clientSecret,
+        client_id: this.#config.clientId,
+        client_secret: this.#config.clientSecret,
       }),
       signal: this.abortSignal(),
     })
