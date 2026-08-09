@@ -97,10 +97,24 @@ export class BusinessRolesRepository {
     await this.db.update(businessRoles).set({ enabled, updatedAt: new Date() }).where(eq(businessRoles.id, id))
   }
 
-  /** Every enabled role, shaped for the evaluator. The reconciler's hot read. */
-  async listEnabledForEvaluation(): Promise<EvaluableRole[]> {
-    const roles = await this.db.select().from(businessRoles).where(eq(businessRoles.enabled, true))
-    return Promise.all(roles.map((role) => this.loadDefinition(role.id, role.name)))
+  /**
+   * Every enabled role, shaped for the evaluator. The reconciler's hot read.
+   *
+   * Takes an OPTIONAL trailing `db` handle, defaulting to the injected
+   * pooled connection (`this.db`) — same contract as UsersRepository's
+   * write methods (see that class's own doc comment for the full
+   * explanation this mirrors). `RoleReconciler.reconcileUser` (Milestone
+   * 17, Task 8) always runs inside a caller's already-open transaction and
+   * passes it through here rather than defaulting to the pool: this
+   * project has previously deadlocked its own connection pool by opening a
+   * transaction and then calling something that checked out a SECOND
+   * connection from the same pool while the first sat open (finding C1,
+   * docs/archive/audits/audit-integrity.md; regression-guarded by
+   * test/pool-exhaustion.spec.ts).
+   */
+  async listEnabledForEvaluation(db: NodePgDatabase<typeof schema> = this.db): Promise<EvaluableRole[]> {
+    const roles = await db.select().from(businessRoles).where(eq(businessRoles.enabled, true))
+    return Promise.all(roles.map((role) => this.loadDefinition(role.id, role.name, db)))
   }
 
   async findById(id: string) {
@@ -110,11 +124,15 @@ export class BusinessRolesRepository {
     return { ...role, conditions: definition.conditions, grants: definition.grants, exceptions: definition.exceptions }
   }
 
-  private async loadDefinition(id: string, name: string): Promise<EvaluableRole> {
+  private async loadDefinition(
+    id: string,
+    name: string,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<EvaluableRole> {
     const [conditions, grants, exceptions] = await Promise.all([
-      this.db.select().from(businessRoleConditions).where(eq(businessRoleConditions.businessRoleId, id)),
-      this.db.select().from(businessRoleGrants).where(eq(businessRoleGrants.businessRoleId, id)),
-      this.db.select().from(businessRoleExceptions).where(eq(businessRoleExceptions.businessRoleId, id)),
+      db.select().from(businessRoleConditions).where(eq(businessRoleConditions.businessRoleId, id)),
+      db.select().from(businessRoleGrants).where(eq(businessRoleGrants.businessRoleId, id)),
+      db.select().from(businessRoleExceptions).where(eq(businessRoleExceptions.businessRoleId, id)),
     ])
 
     return {
