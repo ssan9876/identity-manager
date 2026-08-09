@@ -1,0 +1,29 @@
+[Unit]
+Description=Daily joiner/mover/leaver lifecycle pass
+Documentation=file://@REPO_ROOT@/docs/07-admin-guide.md
+
+[Timer]
+# 02:00 local time. LifecycleJob computes "today" in UTC (isoToday), so the
+# exact hour is not load-bearing — it only needs to be off-peak and to fire
+# once a day.
+OnCalendar=*-*-* 02:00:00
+
+# A host powered off at 02:00 runs the missed pass on next boot instead of
+# silently skipping a day. Without this, an intermittently powered
+# deployment leaves joiners disabled indefinitely — a slower version of the
+# exact failure this timer exists to fix (before it, nothing on any host
+# ever invoked the job at all, so a joiner with a start date was never
+# activated and every connector asserted them as a disabled account).
+Persistent=true
+
+# The job re-derives who is due from the database on every run and is
+# structurally idempotent — each query's WHERE clause excludes anyone a
+# prior run already transitioned (LifecycleJob's own doc comment) — so a
+# jittered start is free, and avoids a thundering herd if several hosts ever
+# share one database.
+RandomizedDelaySec=300
+
+Unit=idm-lifecycle.service
+
+[Install]
+WantedBy=timers.target

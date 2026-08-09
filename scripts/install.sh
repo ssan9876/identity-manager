@@ -201,6 +201,16 @@ ok "database migrated, runtime role provisioned"
 info "installing systemd unit"
 sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" -e "s|@IDM_USER@|$IDM_USER|g" \
   "$REPO_ROOT/deploy/systemd/idm-api.service" >/etc/systemd/system/idm-api.service
+
+# The lifecycle pass (joiner activation on start_date, leaver deactivation on
+# end_date) is a oneshot script driven by a timer, not a daemon. Before this
+# existed nothing on any host ever invoked it, so a joiner with a start date
+# was never activated and every connector asserted them as a disabled
+# account indefinitely.
+for unit in idm-lifecycle.service idm-lifecycle.timer; do
+  sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" -e "s|@IDM_USER@|$IDM_USER|g" \
+    "$REPO_ROOT/deploy/systemd/$unit" >"/etc/systemd/system/$unit"
+done
 # A self-signed Keycloak certificate makes Node refuse the JWKS fetch, and
 # every token then fails verification with 401 despite being perfectly valid.
 # NODE_EXTRA_CA_CERTS trusts THAT ONE certificate; NODE_TLS_REJECT_UNAUTHORIZED=0
@@ -219,6 +229,9 @@ fi
 
 systemctl daemon-reload
 systemctl enable idm-api >/dev/null
+# The TIMER, not the service: `systemctl enable` on a Type=oneshot unit asks
+# systemd to run it once at boot and never again.
+systemctl enable --now idm-lifecycle.timer >/dev/null
 
 # --- nginx ------------------------------------------------------------------
 # Console and API are served from ONE origin. That is deliberate: the API calls

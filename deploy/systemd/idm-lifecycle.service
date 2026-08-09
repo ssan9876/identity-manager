@@ -1,0 +1,54 @@
+[Unit]
+Description=Identity Manager joiner/mover/leaver lifecycle pass
+Documentation=file://@REPO_ROOT@/docs/07-admin-guide.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+# oneshot, not simple: this is a script that runs to completion and exits,
+# not a daemon. systemd waits for it and records the exit code, so a failed
+# pass shows as a failed unit — lifecycle-cli.ts sets a non-zero code on any
+# unhandled error, and reports users it could not action via report.skipped
+# (finding M5) on stdout, which lands in the journal below.
+Type=oneshot
+User=@IDM_USER@
+Group=@IDM_USER@
+WorkingDirectory=@REPO_ROOT@/apps/api
+
+# The same file idm-api.service reads, holding both database passwords and
+# the Keycloak sync client secret. Installed 0640, owned by this user.
+EnvironmentFile=@REPO_ROOT@/.env
+
+# The compiled output, not tsx — same reasoning as idm-api.service. This CLI
+# happens to construct its dependencies by hand rather than through Nest, so
+# it would in fact survive tsx's missing design:paramtypes metadata, but
+# running the same build artifact as the API keeps one deployment story and
+# one thing to get wrong.
+ExecStart=/usr/bin/node dist/src/jml/lifecycle-cli.js
+
+# --- Hardening --------------------------------------------------------------
+# Identical to idm-api.service: this process needs the repo (read), its .env
+# (read), and TCP to Postgres and Keycloak. Nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=idm-lifecycle
+
+# Deliberately NO [Install] section. This unit is triggered by
+# idm-lifecycle.timer and must never be enabled directly: `systemctl enable`
+# on a oneshot service asks systemd to run it once at boot and never again,
+# which is a subtler version of the very bug this unit exists to fix.

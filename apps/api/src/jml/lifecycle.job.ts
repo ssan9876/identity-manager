@@ -47,11 +47,21 @@ function isoToday(): string {
 
 /**
  * The date-driven join/leave half of joiner/mover/leaver automation —
- * Milestone 7, Task 7. An ON-DEMAND script, in the same style as
+ * Milestone 7, Task 7. An on-demand script, in the same style as
  * `db:migrate` (db/migrate-cli.ts) and the reconciliation job
- * (outbox/reconcile-cli.ts): no cron, no in-process timer — see
- * `lifecycle-cli.ts`, the runtime entrypoint that actually invokes `run()`
- * against a real database/Keycloak.
+ * (outbox/reconcile-cli.ts) — see `lifecycle-cli.ts`, the runtime entrypoint
+ * that actually invokes `run()` against a real database/Keycloak.
+ *
+ * ALSO SCHEDULED since 2026-08-08 (sync-diagnostics spec):
+ * `deploy/systemd/idm-lifecycle.timer` runs it daily at 02:00. Until that
+ * timer existed, nothing on any host invoked this job at all — no cron
+ * entry, no unit — so a joiner with a `start_date` was never activated, and
+ * because every connector derives `desiredEnabled` from
+ * `status === 'active'` (sync.worker.ts), they were asserted into Keycloak
+ * and every other target as a DISABLED account and stayed that way. Still
+ * no in-process timer and no scheduler inside the API: the unit invokes
+ * `lifecycle-cli.ts` exactly as an operator would, so there is one code path
+ * whether a human or systemd starts it.
  *
  * IDEMPOTENCY is structural, not a separate tracked flag: `run()` re-derives
  * "who is due" from `UsersRepository`'s two lifecycle queries EVERY time it

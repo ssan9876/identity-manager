@@ -15,8 +15,14 @@ import { RuleApplier } from './rule-applier'
  * opposed to `LifecycleJob` itself, which the test suite also constructs
  * directly against Testcontainers. Mirrors `db/migrate-cli.ts` and
  * `outbox/reconcile-cli.ts` exactly: a plain `tsx` script wired to `pnpm run
- * jml:lifecycle`, in the same on-demand style — no scheduler, no cron (see
- * the milestone plan, decision 4).
+ * jml:lifecycle`, in the same on-demand style — invoked by hand, and daily
+ * by `deploy/systemd/idm-lifecycle.timer` (2026-08-08 sync-diagnostics
+ * spec). The milestone plan's decision 4 said "no scheduler, no cron"; that
+ * held only until it turned out nothing was invoking this at all, which is
+ * why joiners sat disabled indefinitely. The script itself is unchanged by
+ * that — it already exits non-zero on failure and already reports
+ * unactioned users via `report.skipped` (finding M5), which is exactly what
+ * a scheduled run needs to be diagnosable from the journal.
  *
  * Connects as the RUNTIME role (finding H1, docs/archive/audits/
  * audit-integrity.md) — same reasoning as reconcile-cli.ts: every write this
