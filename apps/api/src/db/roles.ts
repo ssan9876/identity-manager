@@ -64,7 +64,82 @@ function quoteLiteral(value: string): string {
 // NOCREATEDB, NOCREATEROLE) — the point of this role is precisely that none of
 // these are true of it, so the SQL itself should say so, not rely on defaults
 // a future Postgres version or a hand-edited role could quietly change.
+//
+// CREATE only. This string must NOT be reused on ALTER — see
+// `assertRuntimeRoleNotEscalated` below for why that is impossible on
+// PostgreSQL 16 and what replaces it.
 const RUNTIME_ROLE_ATTRIBUTES = 'LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE'
+
+/**
+ * The attributes the runtime role must NOT have, and the `pg_roles` column
+ * that reports each. Kept beside RUNTIME_ROLE_ATTRIBUTES so the two cannot
+ * drift: everything asserted at CREATE is verified here on every later run.
+ */
+const FORBIDDEN_RUNTIME_ATTRIBUTES = [
+  ['rolsuper', 'SUPERUSER'],
+  ['rolcreatedb', 'CREATEDB'],
+  ['rolcreaterole', 'CREATEROLE'],
+] as const
+
+/**
+ * Verifies — rather than re-asserts — that the runtime role has not been
+ * escalated.
+ *
+ * The original code re-ran the full `RUNTIME_ROLE_ATTRIBUTES` string as
+ * `ALTER ROLE ... WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE` on every
+ * migrate. On PostgreSQL 16 that is IMPOSSIBLE for the owner role this
+ * project deploys with, and it fails closed:
+ *
+ *     ERROR: permission denied to alter role
+ *     DETAIL: Only roles with the SUPERUSER attribute may change the
+ *             SUPERUSER attribute.
+ *
+ * PG16 tightened `CREATEROLE`: it may now only set attributes the altering
+ * role itself holds. `idm_owner` is deliberately NOSUPERUSER/NOCREATEDB, so
+ * it may not name SUPERUSER or CREATEDB in an ALTER — not even to set them to
+ * the negative. `CREATE ROLE` with the same words is still fine, which is why
+ * a fresh install works and only the SECOND migrate fails. Found by running
+ * `pnpm db:migrate` against a real deployed container (Proxmox ct:101 clone,
+ * PostgreSQL 16.14) rather than a throwaway test database, where the role is
+ * always created fresh and the ALTER branch never runs.
+ *
+ * Verifying is also strictly stronger than the SET it replaces. `ALTER ROLE`
+ * assumed the write succeeded and reported nothing; reading `pg_roles` and
+ * refusing to migrate actually DETECTS a hand-escalated runtime role, which
+ * is the threat the original comment names.
+ */
+async function assertRuntimeRoleNotEscalated(pool: Pool, username: string): Promise<void> {
+  const {
+    rows: [row],
+  } = await pool.query<Record<string, boolean>>(
+    'SELECT rolsuper, rolcreatedb, rolcreaterole, rolcanlogin FROM pg_roles WHERE rolname = $1',
+    [username],
+  )
+
+  if (row === undefined) {
+    throw new Error(`runtime role "${username}" vanished between existence check and verification`)
+  }
+
+  const escalated = FORBIDDEN_RUNTIME_ATTRIBUTES.filter(([column]) => row[column]).map(
+    ([, label]) => label,
+  )
+
+  if (escalated.length > 0) {
+    throw new Error(
+      `runtime role "${username}" has been escalated: it holds ${escalated.join(', ')}. ` +
+        'Migrations refuse to run against an over-privileged runtime role (finding H1). ' +
+        `Revoke with: ALTER ROLE ${quoteIdent(username)} WITH ${RUNTIME_ROLE_ATTRIBUTES.replace('LOGIN ', '')} ` +
+        '(as a superuser), then re-run.',
+    )
+  }
+
+  if (!row.rolcanlogin) {
+    throw new Error(
+      `runtime role "${username}" cannot log in (NOLOGIN). The application would fail to start; ` +
+        `fix with: ALTER ROLE ${quoteIdent(username)} WITH LOGIN`,
+    )
+  }
+}
 
 /**
  * Idempotently provisions the RUNTIME role and grants it exactly the
@@ -93,8 +168,17 @@ export async function provisionRuntimeRole(pool: Pool, credentials: RuntimeRoleC
   if (existing.length === 0) {
     await pool.query(`CREATE ROLE ${role} ${RUNTIME_ROLE_ATTRIBUTES} PASSWORD ${password}`)
   } else {
-    await pool.query(`ALTER ROLE ${role} WITH ${RUNTIME_ROLE_ATTRIBUTES} PASSWORD ${password}`)
+    // PASSWORD only — never the attribute string. Re-asserting the password
+    // is what makes rotating RUNTIME_DATABASE_URL take effect on the next
+    // migrate; re-asserting the attributes is not possible here at all (see
+    // assertRuntimeRoleNotEscalated) and used to make every migrate after the
+    // first fail outright.
+    await pool.query(`ALTER ROLE ${role} WITH PASSWORD ${password}`)
   }
+
+  // Runs on BOTH paths: a role this function just created should trivially
+  // pass, and saying so costs one cheap catalog read.
+  await assertRuntimeRoleNotEscalated(pool, credentials.username)
 
   const {
     rows: [{ current_database: database }],
