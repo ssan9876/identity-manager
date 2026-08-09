@@ -39,8 +39,13 @@ ea162ca feat(business-roles): role, condition, grant and exception tables
 391f7b4 feat(business-roles): provenance on group membership
 ```
 
-> **`2e36561`'s message is wrong.** It says "tests not yet run". They have since been
-> run: **5 of 19 fail**. Do not treat that commit as green. Details immediately below.
+> **RESOLVED 2026-08-08, on the merged `master`: 19/19 pass.** The diagnosis in
+> section 1 below was correct — cross-test contamination, not a reconciler bug —
+> and its recommended fix (a per-seed unique `jobTitle`) is in the merged code.
+> The fixtures additionally now seed `organizationId` from
+> `OrganizationsRepository.findMaster()`, which `feat/organizations` made
+> mandatory. Section 1's failure table is kept as history; **tasks 9-20 below
+> are still current.**
 
 ---
 
