@@ -218,9 +218,18 @@ EXEMPT from the realm deferral, because its realm predates this system so
 `realm_provisioned_at` is null forever and the plan's literal rule would have
 deferred every user in every existing deployment.
 
-**Not yet verified:** `apps/web/e2e/organizations.spec.ts` has never executed —
-it needs the dev stack with `KEYCLOAK_PROVISION_*` configured — and the
-Organizations console has never been seen in a browser.
+**Verified in a browser on 2026-08-09**, against a real Keycloak 26 with a
+`create-realm`-only provisioning client, every UI claim checked against the
+Keycloak Admin API rather than the badge: creating "Acme Corp" derived the slug
+`acme-corp` and really created that realm (`enabled: true`, displayName set);
+the row showed `Provisioning` then `Active`, and `Keycloak only` against
+master's `All enabled targets`; **Suspend disabled the realm without deleting
+it** — three realms still present, `acme-corp` `enabled: false` — and Reactivate
+re-enabled it. Master carries no Suspend control. No console errors.
+
+**Still not run:** `apps/web/e2e/organizations.spec.ts` as a spec. It needs
+`KEYCLOAK_PROVISION_*` configured, which nothing scripts yet — see the
+housekeeping item on `idm-provisioner`.
 
 ---
 
@@ -466,6 +475,22 @@ Two traps worth knowing, both of which made a working fix look broken:
       re-render described above.
 
 ## Housekeeping
+
+- [ ] **Nothing creates the provisioning client, so Organizations is
+      unreachable on a documented install.** `scripts/keycloak-setup.sh` builds
+      the realm and three clients through the Admin API, but never creates
+      `idm-provisioner` (a master-realm service account holding `create-realm`).
+      `docs/06-configuration.md` says to make it "by hand or by your Keycloak
+      IaC", so an operator who follows the install and then opens Organizations
+      gets `503 NOT_CONFIGURED` — correct fail-closed behaviour with no scripted
+      path out of it. It also means `apps/web/e2e/organizations.spec.ts` cannot
+      run in CI. Creating it is ~30 lines in the same idempotent style the script
+      already uses for the other three clients: create the client
+      (confidential, service accounts on, standard flow and direct grants off),
+      read its secret, assign the realm role `create-realm` to its service
+      account user, and print the secret the way the script already prints the
+      sync secret. Verified working by hand on 2026-08-09 via exactly those Admin
+      API calls.
 
 - [ ] **`.env.example` blocks `db:migrate` out of the box.** The two
       `KEYCLOAK_PROVISION_CLIENT_ID` / `_SECRET` lines are present-but-empty, and
