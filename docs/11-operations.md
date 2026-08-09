@@ -47,9 +47,10 @@ sudo -u idm bash -c 'set -a && . .env && set +a && <command>'
 
 ## Scheduled work
 
-There is **no scheduler in the process**. Both recurring jobs are plain scripts. The
-lifecycle pass is driven by a systemd timer the installer sets up for you; reconciliation
-is still yours to schedule.
+There is **no scheduler in the process**. Both recurring jobs are plain scripts driven by
+systemd timers the installer sets up and enables for you — nothing to write by hand, and
+nothing to add to a crontab. Per-target reconciliation (`target-reconcile`) is the one
+exception and stays manual, deliberately; see below.
 
 ### Lifecycle — installed as a daily timer
 
@@ -102,16 +103,58 @@ the units themselves and the reasoning in their comments.
 > before that date, run `scripts/install.sh` again (or install the two units by hand)
 > and then run one pass immediately to clear the backlog.
 
-### Reconciliation — run periodically, and after any incident
+### Reconciliation — installed as a daily timer
+
+A queue cannot detect drift someone caused directly inside a target. Reconciliation is
+what catches a manually-disabled AD account or a group edited in the Keycloak console —
+and it is the backstop a good deal of this system's residual risk is parked against, so
+it needs to run whether or not anyone remembers to run it.
+
+`scripts/install.sh` installs `idm-reconcile.service` and `idm-reconcile.timer` from
+`deploy/systemd/` in the same loop as the lifecycle units, and enables the **timer**.
 
 ```bash
-pnpm --filter @idm/api reconcile                          # Keycloak drift
+systemctl list-timers idm-reconcile.timer   # confirm it is armed
+systemctl start idm-reconcile.service       # run one pass now
+journalctl -u idm-reconcile -n 50           # what the last pass found and repaired
+```
+
+It fires at 03:00 daily — an hour after the lifecycle timer, so a night's status
+transitions have settled before reconciliation decides what counts as drift — with
+`Persistent=true` (a host powered off at 03:00 runs the missed pass on next boot) and up
+to five minutes of jitter. It runs the compiled output as the `idm` user under the same
+hardening block as the API unit — see `deploy/systemd/idm-reconcile.service` for the
+units themselves and the reasoning in their comments.
+
+The journal is the only report. A pass prints every drifted user with its reasons, then
+how many repair events it enqueued and how many outbox events it drained; a clean run
+says it found none. Nothing is written anywhere else, so drift that a run silently
+repaired is invisible unless someone reads `journalctl -u idm-reconcile`.
+
+**It compares against Keycloak only, and in one direction.** It walks `users` in Postgres
+and checks each against Keycloak; an account that exists *only* in Keycloak is not seen,
+not reported, and not disabled. That gap is open and tracked — this timer closes the
+"nothing ever runs it" half of it, not that half.
+
+To run it manually against any environment:
+
+```bash
+pnpm --filter @idm/api reconcile
+```
+
+**Per-target reconciliation stays manual**, and is deliberately not on a timer:
+
+```bash
 pnpm --filter @idm/api target-reconcile active_directory  # dry run first
 pnpm --filter @idm/api target-reconcile active_directory --apply
 ```
 
-A queue cannot detect drift someone caused directly inside a target. Reconciliation is
-what catches a manually-disabled AD account or a group edited in the Keycloak console.
+That is not an oversight. `target-reconcile` requires a target argument, applies nothing
+unless given `--apply`, and has a blast-radius guard that `--force` exists to override.
+Putting it on a timer would mean baking `--apply` into a unit file and — the first time
+the guard tripped at 03:00 — `--force` after it, defeating the confirm-first design it
+was given on purpose. Run it by hand, dry run first, after a connector incident or a bulk
+change made at the target.
 
 ## Monitoring
 

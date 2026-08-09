@@ -14,8 +14,14 @@ import { SyncWorker } from './sync.worker'
  * and a real Keycloak (dev, ops) — as opposed to `ReconciliationJob` itself,
  * which the test harness also constructs directly against Testcontainers.
  * Mirrors `db/migrate-cli.ts`'s split exactly: a plain `tsx` script wired to
- * `pnpm run reconcile`, in the same on-demand style as `db:migrate` — no
- * scheduler (see the milestone plan / task-4-brief.md).
+ * `pnpm run reconcile` — invoked on demand, and daily by
+ * `deploy/systemd/idm-reconcile.timer`. The milestone plan / task-4-brief.md
+ * originally said "no scheduler"; that held only until it became clear that
+ * several findings park their residual risk on this job as "the backstop",
+ * which is worth nothing on a host where nothing ever invokes it. The script
+ * itself is unchanged by that — it already exits non-zero on failure and
+ * already prints every drifted user and reason on stdout, which is exactly
+ * what a scheduled run needs to be diagnosable from the journal.
  *
  * Connects as the RUNTIME role (finding H1, docs/archive/audits/
  * audit-integrity.md), not the OWNER: everything this job does — reading

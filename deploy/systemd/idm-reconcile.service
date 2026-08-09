@@ -1,0 +1,66 @@
+[Unit]
+Description=Identity Manager Keycloak reconciliation pass
+Documentation=file://@REPO_ROOT@/docs/11-operations.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+# oneshot, not simple: like idm-lifecycle.service this is a script that runs
+# to completion and exits, not a daemon. systemd waits for it and records the
+# exit code, so a failed pass shows as a failed unit — reconcile-cli.ts sets
+# a non-zero exit code on any unhandled error, and prints the per-user drift
+# it found and repaired on stdout, which lands in the journal below. That
+# stdout IS the report: this job has no other output channel, so a run whose
+# journal nobody reads still repairs drift but tells nobody it existed.
+Type=oneshot
+User=@IDM_USER@
+Group=@IDM_USER@
+WorkingDirectory=@REPO_ROOT@/apps/api
+
+# The same file idm-api.service reads, holding both database passwords and
+# the Keycloak sync client secret. Installed 0640, owned by this user.
+EnvironmentFile=@REPO_ROOT@/.env
+
+# The compiled output, not tsx — same reasoning as idm-api.service. Like
+# lifecycle-cli.ts this CLI constructs its dependencies by hand rather than
+# through Nest, so it would survive tsx's missing design:paramtypes metadata,
+# but running the same build artifact as the API keeps one deployment story
+# and one thing to get wrong.
+#
+# reconcile-cli.js, NOT target-reconcile-cli.js. This is the Keycloak
+# backstop several audit findings park their residual risk against
+# ("reconciliation will catch it"); it takes no arguments and repairs what it
+# finds. target-reconcile-cli.ts is the deliberately operator-driven tool: it
+# requires a target argument, is dry-run unless given --apply, and has a
+# blast-radius guard that --force exists to override. Scheduling that one
+# would mean baking --apply (and eventually --force) into a unit file, which
+# defeats the confirm-first design it was given on purpose.
+ExecStart=/usr/bin/node dist/src/outbox/reconcile-cli.js
+
+# --- Hardening --------------------------------------------------------------
+# Identical to idm-api.service and idm-lifecycle.service: this process needs
+# the repo (read), its .env (read), and TCP to Postgres and Keycloak. Nothing
+# else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=idm-reconcile
+
+# Deliberately NO [Install] section. This unit is triggered by
+# idm-reconcile.timer and must never be enabled directly: `systemctl enable`
+# on a oneshot service asks systemd to run it once at boot and never again,
+# which is a subtler version of the very bug this unit exists to fix.
