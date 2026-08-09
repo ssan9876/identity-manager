@@ -1,5 +1,11 @@
 import { sql } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
+import {
+  businessRoleConditionOperator,
+  businessRoleExceptionMode,
+  businessRoleGrantKind,
+  businessRoles,
+} from '../src/db/schema/business-roles'
 import { grantSource } from '../src/db/schema/grant-source'
 import { withTestDatabase } from './support/pg'
 
@@ -34,5 +40,58 @@ describe('grant provenance (Milestone 15, Task 1)', () => {
       { column_name: 'granted_at', is_nullable: 'NO' },
       { column_name: 'granted_by', is_nullable: 'YES' },
     ])
+  })
+})
+
+describe('business role tables (Milestone 15, Task 2)', () => {
+  it('declares the closed operator, grant-kind and exception-mode vocabularies', () => {
+    expect([...businessRoleConditionOperator.enumValues].sort()).toEqual([
+      'equals',
+      'in',
+      'in_org_subtree',
+      'not_equals',
+    ])
+    expect([...businessRoleGrantKind.enumValues].sort()).toEqual(['group_membership', 'target_account'])
+    expect([...businessRoleExceptionMode.enumValues].sort()).toEqual(['exclude', 'include'])
+  })
+
+  it('a new role is disabled, undrafted and unsimulated', async () => {
+    const [role] = await ctx.db.insert(businessRoles).values({ name: 'Sales AE' }).returning()
+
+    expect(role.enabled).toBe(false)
+    expect(role.draftDefinition).toBeNull()
+    expect(role.simulatedAt).toBeNull()
+    expect(role.simulatedDraftHash).toBeNull()
+  })
+
+  it('a grant must set exactly one of group_id / target, matching its kind', async () => {
+    const [role] = await ctx.db.insert(businessRoles).values({ name: 'Check constraint' }).returning()
+
+    // group_membership with no group_id
+    await expect(
+      ctx.db.execute(sql`
+        INSERT INTO business_role_grants (business_role_id, kind, group_id, target)
+        VALUES (${role.id}, 'group_membership', NULL, NULL)
+      `),
+    ).rejects.toThrow(/business_role_grants_kind_matches_reference/)
+
+    // group_membership carrying a target as well
+    await expect(
+      ctx.db.execute(sql`
+        INSERT INTO business_role_grants (business_role_id, kind, group_id, target)
+        VALUES (${role.id}, 'target_account', NULL, 'keycloak'), (${role.id}, 'group_membership', NULL, 'keycloak')
+      `),
+    ).rejects.toThrow(/business_role_grants_kind_matches_reference/)
+  })
+
+  it('an exception requires a reason', async () => {
+    const [role] = await ctx.db.insert(businessRoles).values({ name: 'Reason required' }).returning()
+
+    await expect(
+      ctx.db.execute(sql`
+        INSERT INTO business_role_exceptions (business_role_id, user_id, mode, reason)
+        VALUES (${role.id}, gen_random_uuid(), 'include', NULL)
+      `),
+    ).rejects.toThrow()
   })
 })

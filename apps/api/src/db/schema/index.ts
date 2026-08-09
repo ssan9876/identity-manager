@@ -3,6 +3,7 @@
 export * from './attribute-definitions'
 export * from './attribute-target-mappings'
 export * from './audit-log'
+export * from './business-roles'
 export * from './connector-targets'
 export * from './external-group-identities'
 export * from './external-identities'
