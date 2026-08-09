@@ -88,13 +88,34 @@ code. Treat that file's "5 of 19 fail" section as history.
       re-evaluates one person inside it. 27/27 in
       `test/business-roles.controller.spec.ts`; `guard-coverage`,
       `app.module`, `actions`, `business-roles` and `business-role-evaluator`
-      re-run green. The full suite was NOT run (concurrent agents).
-- [ ] **Task 12 — `GET /api/users/:id/entitlements`.** `justifiedBy` computed
-      live, never stored; an unevaluable result returns rows with a marker
-      rather than failing the read.
+      re-run green. **Merged; full suite since run green, including
+      `pool-exhaustion` and `outbox-emission`** — the two this task flagged as
+      "argued, not measured" for its connection discipline. `simulate` reports
+      the diff role-locally, which over-states `lossCount` and never
+      under-states it: the safe direction for a screen whose purpose is "am I
+      about to remove access". Also registered `RoleReconciliationJob`, which
+      Task 10 had left registered nowhere.
+- [x] **Task 12 — `GET /api/users/:id/entitlements`.** Done, 10/10.
+      `justifiedBy` is three-valued on purpose: a list of roles, `[]` (nothing
+      justifies it — the permanent state of a `manual` row), or `null`
+      (**unknown**: the engine refused). Collapsing `null` into `[]` would
+      render a broken engine as "no role justifies any of this", which reads
+      as an instruction to revoke everything. A refusal returns HTTP 200 with
+      the rows plus an `unevaluable` marker, because this is the screen someone
+      opens *because* something is wrong. Out-of-scope is 403, not 404
+      (SEC-L2). No transaction on the route, deliberately — nothing to make
+      atomic, and holding one across the reads would be the shape of C1.
 - [ ] **Tasks 13–15 — sync integration.** `outbox-emission.spec.ts` must pass
       **unmodified**; if it needs editing, that is the bug.
-- [ ] **Tasks 16–20 — JML cleanup and console.**
+- [x] **Task 16 — remove JML's group actions.** Done, 48/48. Business roles own
+      desired membership now, so a JML rule granting one would be a second
+      writer the reconciler revokes. Migration `0027` is a GUARD, not a schema
+      change: Postgres cannot `DROP VALUE`, so the enum keeps both labels and
+      application code rejects them — the migration refuses to run while any
+      stranded rule survives, because a silently dead rule is a permission
+      somebody still believes is being maintained. It can only protect a
+      database on the way past, never retroactively.
+- [ ] **Tasks 17–20 — console and end-to-end.**
 
 ---
 
