@@ -750,7 +750,12 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       await roleAssignmentsRepo().assign({ userId: actor.id, roleKey: 'read_only' })
 
       const res = await request(app.getHttpServer()).get('/self/permissions').expect(200)
-      expect([...res.body.actions].sort()).toEqual(['user:read', 'group:read', 'org_unit:read'].sort())
+      // Milestone 17, Task 11: read_only also holds business_role:read — a role
+      // formula DESCRIBES access rather than conferring it, so it is readable by
+      // everyone who can already see the memberships it explains.
+      expect([...res.body.actions].sort()).toEqual(
+        ['user:read', 'group:read', 'org_unit:read', 'business_role:read'].sort(),
+      )
     })
 
     it('unions actions across multiple role assignments, with no duplicates', async () => {
@@ -776,8 +781,19 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       // Milestone 14, Task 9: auditor also holds connector:read (per-target
       // health/dead-letter visibility, the same category of information
       // audit:read already grants — see authz/actions.ts's own doc comment).
+      // Milestone 17, Task 11 adds business_role:read to auditor for the same
+      // reason it is on read_only: seeing WHY someone holds a membership is
+      // part of reviewing that they should.
       expect([...actions].sort()).toEqual(
-        ['user:read', 'user:update', 'group:read', 'org_unit:read', 'audit:read', 'connector:read'].sort(),
+        [
+          'user:read',
+          'user:update',
+          'group:read',
+          'org_unit:read',
+          'audit:read',
+          'connector:read',
+          'business_role:read',
+        ].sort(),
       )
     })
 
