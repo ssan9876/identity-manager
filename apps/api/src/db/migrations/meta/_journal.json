@@ -162,6 +162,13 @@
       "when": 1786250143229,
       "tag": "0022_sso_app_catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1786251225473,
+      "tag": "0023_sso_apps_tables",
+      "breakpoints": true
     }
   ]
 }
