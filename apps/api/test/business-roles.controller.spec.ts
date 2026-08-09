@@ -462,6 +462,43 @@ describe('BusinessRolesController (Milestone 17, Task 11)', () => {
     expect(await membershipsFor(memberId)).toEqual([])
   })
 
+  /**
+   * A CONTRACT test, not a behaviour one, and it exists because the missing
+   * contract was found the expensive way: `apps/web/e2e/business-roles.spec.ts`
+   * (Task 20) drove enable through the real console and the detail page threw
+   * on its next render — blank screen, no toast — because these two routes
+   * alone answered with the bare `business_roles` row, while every other route
+   * that returns a role (GET /:id, PATCH /:id, PUT /:id/draft, POST
+   * /:id/publish) returns it WITH its published `conditions`, `grants` and
+   * `exceptions`, which is what the console is typed against.
+   *
+   * Nothing about the VALUES was wrong, so no assertion on counts or on
+   * membership could have caught it. Only the shape could.
+   */
+  it('enable and disable answer with the whole role — conditions, grants and exceptions — not the bare row', async () => {
+    const { roleId, jobTitle, groupId } = await seedRoleAndPeople()
+    await goLive(roleId, jobTitle, groupId)
+
+    as(globalAdmin)
+    const server = app.getHttpServer()
+
+    // `goLive` already enabled it, so this is the idempotent re-enable — the
+    // same response body a console reads after the button click either way.
+    const enabled = await request(server).post(`/business-roles/${roleId}/enable`).expect(200)
+    expect(enabled.body.enabled).toBe(true)
+    expect(enabled.body.conditions).toEqual([
+      expect.objectContaining({ field: 'jobTitle', operator: 'equals', value: jobTitle }),
+    ])
+    expect(enabled.body.grants).toEqual([expect.objectContaining({ kind: 'group_membership', groupId })])
+    expect(enabled.body.exceptions).toEqual([])
+
+    const disabled = await request(server).post(`/business-roles/${roleId}/disable`).expect(200)
+    expect(disabled.body.enabled).toBe(false)
+    expect(disabled.body.conditions).toHaveLength(1)
+    expect(disabled.body.grants).toHaveLength(1)
+    expect(disabled.body.exceptions).toEqual([])
+  })
+
   // =========================================================================
   // Exceptions — live adjustments to a running role
   // =========================================================================

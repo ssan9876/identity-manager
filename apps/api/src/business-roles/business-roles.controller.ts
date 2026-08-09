@@ -476,7 +476,7 @@ export class BusinessRolesController {
   private async setEnabled(id: string, enabled: boolean, request: AuthorizedRequest) {
     await this.requireGlobalManageGrant(request)
 
-    const role = await this.db.transaction(async (tx) => {
+    await this.db.transaction(async (tx) => {
       const before = await this.roles.findById(id, tx)
       if (before === null) throw new NotFoundError('business role', id)
 
@@ -496,6 +496,26 @@ export class BusinessRolesController {
 
     // After the commit, never inside it — see the connection-discipline note.
     const reconciliation = await this.reconciliation.reconcileRole(id, new Date())
+
+    /*
+     * The FULL role, not the bare `business_roles` row `setEnabled` returns.
+     *
+     * Found by e2e/business-roles.spec.ts (Task 20) and not by any unit test,
+     * because it is a contract mismatch rather than a wrong value: every other
+     * route that answers with a role — GET /:id, PATCH /:id, PUT /:id/draft,
+     * POST /:id/publish — returns the row PLUS its published `conditions`,
+     * `grants` and `exceptions`, and the console is typed against exactly that
+     * (`EnabledChangeResult extends BusinessRoleDetail`). Enable and disable
+     * alone returned the bare row, so the three child arrays arrived
+     * `undefined` and the detail page threw on the first render after
+     * enabling — a blank screen with no toast, in the one flow where an admin
+     * most needs to be told what just happened.
+     *
+     * Read after the sweep, deliberately: the definition cannot have changed
+     * (nothing here writes it), and reading last means the response describes
+     * the state that actually exists once reconciliation has finished.
+     */
+    const role = await this.requireRole(id)
 
     return {
       ...role,
