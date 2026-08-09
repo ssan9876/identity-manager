@@ -14,6 +14,12 @@ const STATUS_BY_CODE: Record<string, HttpStatus> = {
   CYCLE_DETECTED: HttpStatus.CONFLICT,
   VALIDATION_FAILED: HttpStatus.BAD_REQUEST,
   FORBIDDEN: HttpStatus.FORBIDDEN,
+  // Deliberately 500, and deliberately EXPLICIT rather than left to the
+  // `??` fallback below: a data-integrity fault is not the caller's fault
+  // and must never become a 4xx, but it is also not an anonymous crash —
+  // mapping it here is what gives the response a `code` and a message an
+  // operator can act on. See DataIntegrityError's doc comment (AUTHZ-L-4).
+  DATA_INTEGRITY_FAULT: HttpStatus.INTERNAL_SERVER_ERROR,
 }
 
 /**

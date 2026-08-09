@@ -33,6 +33,40 @@ export interface ConnectorTargetRow {
   blastRadiusFloor: number
 }
 
+/**
+ * Serializes `upsert` per target — finding INT-H4's residual
+ * (docs/archive/audits/carried-findings-verification.md, "the read-merge-write
+ * pattern recurs in newer code"). Wave D fixed the two sites the original
+ * audit found; this one was written afterwards with the same shape and no
+ * lock, so two concurrent `PATCH /connector-targets/:target` calls setting
+ * DIFFERENT config keys lost one of them — the same mechanism the audit
+ * measured at 30/30 on `PATCH /self`.
+ *
+ * WHY AN ADVISORY LOCK AND NOT `SELECT ... FOR UPDATE`, which is what the
+ * H4 fix used elsewhere. FOR UPDATE can only lock a row that EXISTS, and
+ * this method's whole job is "create it if it isn't there" — every target
+ * starts with no row at all (`findOne` returns a synthetic default; see
+ * `defaultRow`). Two concurrent FIRST writes would each lock nothing, each
+ * merge onto `{}`, and each INSERT; `ON CONFLICT DO UPDATE` then resolves
+ * the collision by letting the loser's `set` overwrite the winner's config
+ * wholesale. The lost update survives precisely in the case FOR UPDATE
+ * cannot cover. An advisory lock keyed on the TARGET NAME does not depend
+ * on a row existing.
+ *
+ * `pg_advisory_xact_lock` (not the session variant) so the lock is released
+ * by the surrounding transaction's COMMIT/ROLLBACK and cannot leak back into
+ * the pool — the same rule GROUP_GRAPH_LOCK_ID and SYNC_USER_LOCK_NAMESPACE
+ * already follow, and the reason `upsert` takes a REQUIRED `tx` rather than
+ * defaulting to the pool.
+ *
+ * Namespace `0x1d3a_0003`, following 0x1d3a_0001 (group graph) and
+ * 0x1d3a_0002 (per-user sync). Distinct namespace, so a connector-target
+ * write can never collide with a `hashtext(userId)` that happens to hash to
+ * the same 32 bits. Contention is nil in practice: there are a handful of
+ * targets and these are rare admin writes.
+ */
+const CONNECTOR_TARGET_LOCK_NAMESPACE = 0x1d3a_0003
+
 const DEFAULT_BLAST_RADIUS_THRESHOLD = 20
 const DEFAULT_BLAST_RADIUS_FLOOR = 5
 
@@ -132,6 +166,15 @@ export class ConnectorTargetsRepository {
    * follows.
    */
   async upsert(tx: DbHandle, target: ConnectorTarget, patch: ConnectorTargetPatch): Promise<ConnectorTargetRow> {
+    // Serialize this target's read-merge-write against any concurrent one —
+    // finding INT-H4 residual. Taken BEFORE the read, or the read it is
+    // meant to protect has already happened. See
+    // CONNECTOR_TARGET_LOCK_NAMESPACE for why this is an advisory lock and
+    // not `SELECT ... FOR UPDATE`.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(${CONNECTOR_TARGET_LOCK_NAMESPACE}, hashtext(${target}::text))`,
+    )
+
     const [existingRow] = await tx.select().from(connectorTargets).where(eq(connectorTargets.target, target)).limit(1)
     const current = existingRow ?? {
       enabled: false,

@@ -313,8 +313,44 @@ export interface SimulatedEffect {
  * because it is, in fact, currently off. `matchRules`, by contrast, is LIVE
  * evaluation against real, currently-enabled rules, where `enabled` must
  * gate everything.
+ *
+ * `trigger` is the OPPOSITE case, and this used to get it wrong — finding
+ * INJ-INFO (docs/archive/audits/audit-injection.md, carried as an Item-10
+ * residual). `simulate` never consulted `trigger` at all, while `matchRules`
+ * refuses any rule whose trigger is not in KNOWN_TRIGGERS. So a rule with a
+ * garbage trigger previewed as `wouldApply: true` against every matching
+ * user while being incapable of EVER firing. The preview did not merely
+ * omit a caveat; it asserted the opposite of the truth, which is the one
+ * thing a simulation must not do.
+ *
+ * The distinction against `enabled` is the whole reason these two are
+ * treated differently, and it is not "one is checked, one is not":
+ *   - `enabled: false` is a state the caller can change, and changing it is
+ *     usually the very decision the preview exists to inform. Ignoring it is
+ *     answering the question actually being asked.
+ *   - an unrecognised `trigger` is not a state anything can flip. Nothing in
+ *     this binary will ever dispatch on it. There is no "if this were live"
+ *     under which the rule applies, so `wouldApply: true` would be false.
+ * A RECOGNISED-but-different trigger is still not consulted here, and that
+ * is correct: `simulate` takes no trigger argument because it previews "if
+ * this rule fired", not "if this specific event happened".
  */
 export function simulate(rule: JmlRule, users: readonly User[]): SimulatedEffect[] {
+  // Checked ONCE, outside the loop: it is a property of the rule, not of any
+  // user, and logging it per-user would turn one misconfigured rule into one
+  // warning line per person in the directory.
+  if (!Object.hasOwn(KNOWN_TRIGGERS, rule.trigger)) {
+    logSkippedRule(rule, 'unknown_trigger')
+    return users.map((user) => ({
+      userId: user.id,
+      username: user.username,
+      wouldApply: false,
+      action: null,
+      actionParams: null,
+      skipReason: 'unknown_trigger' as const,
+    }))
+  }
+
   return users.map((user) => {
     const evaluation = evaluateRule(rule, user)
     return {

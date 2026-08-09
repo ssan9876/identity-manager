@@ -34,15 +34,26 @@ function unreachableKeycloak(): KeycloakAdminClient {
  * `assertNoLeak` on it directly.
  *
  * RED-THEN-GREEN, done for real during development (not just asserted): the
- * meta-test in the last `describe` block below is the PERMANENT, in-suite
- * proof that `assertNoLeak` itself actually detects a leak rather than being
- * a vacuous pass — it deliberately constructs a leaking string and asserts
- * the helper throws on it. Task 2's own report additionally records a
- * SEPARATE, manual proof: this suite was run once against a deliberately
- * reintroduced leak in `EchoConnector.health()` (interpolating the resolved
- * secret value into its `detail` string) and observed to fail red, then run
- * again against the real, fixed implementation and observed to pass green —
- * see task-2-report.md for both captured runs.
+ * meta-test in the nested `assertNoLeak is not a vacuous check` describe
+ * block below is the PERMANENT, in-suite proof that `assertNoLeak` itself
+ * actually detects a leak rather than being a vacuous pass — it
+ * deliberately constructs a leaking string and asserts the helper throws
+ * on it.
+ *
+ * There was additionally a one-off manual proof during development: this
+ * suite was run once against a deliberately reintroduced leak in
+ * `EchoConnector.health()` (interpolating the resolved secret value into its
+ * `detail` string), observed to fail red, then run again against the real
+ * implementation and observed to pass green. That run is not reproducible
+ * from this repository and nothing here depends on it — the in-suite
+ * meta-test below is the coverage that actually holds. This paragraph used
+ * to end with "see task-2-report.md for both captured runs", a bare
+ * reference to a file that exists at no path relative to this one; it is
+ * removed rather than repointed, because a citation a reader cannot follow
+ * is worse than no citation — it reads as evidence while being unavailable
+ * for checking. (Ledger references in this tree that DO resolve carry their
+ * full `.superpowers/...` path; see apps/web/src/styles/tokens.css for that
+ * form.)
  */
 describe('secret resolution never leaks the resolved value (Milestone 10, Task 2)', () => {
   const ctx = withTestDatabase()

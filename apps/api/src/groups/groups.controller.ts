@@ -166,12 +166,38 @@ export class GroupsController {
     return { users, groups }
   }
 
+  /**
+   * Finding AUTHZ-M-1's residual (docs/archive/audits/carried-findings-
+   * verification.md). `requireGroup` authorizes the group the caller NAMED
+   * and nothing else — but effective membership is transitive, so the answer
+   * is assembled from every group reachable below it, and those were never
+   * re-checked. A GLOBAL admin nesting a scoped group under a global one is
+   * an ordinary, intended operation, and after it this route handed the
+   * nested group's out-of-scope roster to any holder of `group:read` at any
+   * scope. No attack is required to set it up, which is why closing the
+   * WRITE half (`addChildGroup` now scope-checks the child) did not close
+   * this.
+   *
+   * `scopePathsFor` is the same idiom `list` above already uses, with the
+   * same contract: `null` (a GLOBAL grant) narrows nothing, an array —
+   * including `[]` — narrows for real. See
+   * `GroupsRepository.listEffectiveUserMembersWithin` for what the narrowing
+   * does and, importantly, what it deliberately does not do (it does not
+   * prune the walk).
+   *
+   * Still a 200 with a shorter list, never a 403: the caller is entitled to
+   * this group's membership, and the groups they cannot read are not this
+   * group. Turning an entitled read into a refusal because of something
+   * nested underneath it would make the route's behaviour depend on
+   * structure the caller cannot see.
+   */
   @Get(':id/effective-members')
   @RequirePermission('group:read')
   async effectiveMembers(@Param('id') rawId: string, @Req() request: AuthorizedRequest): Promise<string[]> {
     const id = parseId(rawId)
     await this.requireGroup(id, request.actor)
-    return this.groups.listEffectiveUserMembers(id)
+    const scopePaths = await this.engine.scopePathsFor(request.actor, 'group:read')
+    return this.groups.listEffectiveUserMembersWithin(id, scopePaths)
   }
 
   /**

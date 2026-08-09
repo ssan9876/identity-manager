@@ -590,6 +590,95 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
       expect(await totalAuditCount(ctx)).toBe(before)
     })
 
+    /**
+     * Finding INJ-L-1 (docs/archive/audits/audit-injection.md, carried as an
+     * Item-10 residual in carried-findings-verification.md). Wave C landed
+     * the NFC half of this finding's fix direction and not the other half:
+     * nothing rejected `Cf`-category characters, so the audit's own repro
+     * (`ad<U+202E>nimda`, `ad<U+200D>min`) still returned 201 and put a name
+     * into `displayName` — derived from firstName/lastName and shown to
+     * every user in the directory — that renders identically to another
+     * person's. Written with `String.fromCharCode`, never as a literal, so
+     * the character cannot be lost or "helpfully" stripped by an editor,
+     * a diff tool or a copy/paste on the way into this file.
+     *
+     * Both spellings are asserted because they fail for different reasons:
+     * the override REORDERS the glyphs after it, the joiner is simply
+     * invisible. NFC normalisation removes neither.
+     */
+    const RTL_OVERRIDE = String.fromCharCode(0x202e)
+    const ZERO_WIDTH_JOINER = String.fromCharCode(0x200d)
+
+    it('rejects a bidi override in firstName with 400 and writes no audit row', async () => {
+      const org = await makeOrgUnit('Bidi Root')
+      const actor = await makeActiveUser('creator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const before = await totalAuditCount(ctx)
+      const tag = nextTag()
+
+      const res = await request(app.getHttpServer())
+        .post('/users')
+        .send({
+          primaryEmail: `bidi-${tag}@example.com`,
+          username: `bidi-${tag}`,
+          firstName: `ad${RTL_OVERRIDE}nimda`,
+          lastName: 'Impostor',
+          orgUnitId: org.id,
+        })
+        .expect(400)
+
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+      expect(res.body.issues.join(' ')).toContain('firstName')
+      // SEC-L2: the response names the field, never echoes the value.
+      expect(res.body.issues.join(' ')).not.toContain(RTL_OVERRIDE)
+      expect(await totalAuditCount(ctx)).toBe(before)
+    })
+
+    it('rejects a zero-width joiner in username with 400', async () => {
+      const org = await makeOrgUnit('ZWJ Root')
+      const actor = await makeActiveUser('creator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const tag = nextTag()
+      const res = await request(app.getHttpServer())
+        .post('/users')
+        .send({
+          primaryEmail: `zwj-${tag}@example.com`,
+          username: `ad${ZERO_WIDTH_JOINER}min-${tag}`,
+          firstName: 'Zero',
+          lastName: 'Width',
+          orgUnitId: org.id,
+        })
+        .expect(400)
+
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+      expect(res.body.issues.join(' ')).toContain('username')
+    })
+
+    it('still accepts an ordinary accented name (the constraint is Cf, not non-ASCII)', async () => {
+      const org = await makeOrgUnit('Accent Root')
+      const actor = await makeActiveUser('creator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const tag = nextTag()
+      const res = await request(app.getHttpServer())
+        .post('/users')
+        .send({
+          primaryEmail: `accent-${tag}@example.com`,
+          username: `accent-${tag}`,
+          firstName: 'Zoë',
+          lastName: 'Núñez',
+          orgUnitId: org.id,
+        })
+        .expect(201)
+
+      expect(res.body.displayName).toBe('Zoë Núñez')
+    })
+
     it('rejects an unrecognized custom attribute by default (no active definitions exist)', async () => {
       const org = await makeOrgUnit('Attributes Root')
       const actor = await makeActiveUser('creator', org.id)
@@ -722,6 +811,99 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
       expect(rows[0].before?.username).toBe(target.username)
       expect(rows[0].after?.username).toBe(target.username)
     })
+
+    /**
+     * Finding INJ-L-1, PATCH half. `displayName` is recomputed from exactly
+     * these two fields, so PATCH is the cheaper way to plant an invisible
+     * override than a create is — it needs no new email, username or org
+     * unit, only `user:update` on someone who already exists. See the POST
+     * pair above and safe-string.ts's `noFormatChar` doc comment.
+     */
+    it('rejects a bidi override in a PATCHed firstName with 400 and leaves displayName untouched', async () => {
+      const org = await makeOrgUnit('Bidi Patch Root')
+      const actor = await makeActiveUser('updater', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      const target = await makeActiveUser('target', org.id)
+      currentUsername = actor.username
+
+      const before = await totalAuditCount(ctx)
+
+      const res = await request(app.getHttpServer())
+        .patch(`/users/${target.id}`)
+        .send({ firstName: `ad${String.fromCharCode(0x202e)}nimda` })
+        .expect(400)
+
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+      expect(res.body.issues.join(' ')).toContain('firstName')
+      expect(await totalAuditCount(ctx)).toBe(before)
+
+      const reloaded = await usersRepo().findById(target.id)
+      expect(reloaded?.displayName).toBe(target.displayName)
+    })
+
+    /**
+     * Finding INT-L2 (docs/archive/audits/audit-integrity.md, carried as an
+     * Item-10 residual). The admin write paths snapshotted the audit
+     * `before` image from an UNLOCKED `findById`, while the repository
+     * re-read the row under `SELECT ... FOR UPDATE` when it wrote. Between
+     * those two reads a concurrent writer can commit — so the second
+     * request's `before` recorded a state that was never the immediate
+     * predecessor of its own `after`, and the audit chain for that user has
+     * a silent gap: reading the rows in order, one change simply vanishes.
+     *
+     * The assertion is on the CHAIN, not on either row alone, because
+     * neither row is wrong in isolation — that is exactly why this survived
+     * the H4 lock. Two concurrent PATCHes naming DIFFERENT fields, so both
+     * succeed and both must appear: contiguity is `row[n].before` equalling
+     * `row[n-1].after`, field for field.
+     *
+     * 20 iterations, not one: this is a race, and the original H4/M1
+     * measurements in this file's sibling test used repetition for the same
+     * reason. Pre-fix this failed on the first iteration every time.
+     */
+    it(
+      '20 iterations of two concurrent PATCHes leave a contiguous audit chain (before[n] === after[n-1])',
+      async () => {
+        const org = await makeOrgUnit('Audit Chain Root')
+        const actor = await makeActiveUser('chain-updater', org.id)
+        await grant(actor.id, 'user_admin', org.id)
+        currentUsername = actor.username
+
+        for (let i = 0; i < 20; i++) {
+          const target = await makeActiveUser('chain-target', org.id)
+
+          const [resA, resB] = await Promise.all([
+            request(app.getHttpServer())
+              .patch(`/users/${target.id}`)
+              .send({ jobTitle: `Job ${i}` }),
+            request(app.getHttpServer())
+              .patch(`/users/${target.id}`)
+              .send({ location: `Loc ${i}` }),
+          ])
+          expect(resA.status).toBe(200)
+          expect(resB.status).toBe(200)
+
+          const rows = await auditRowsFor(ctx, target.id)
+          expect(rows).toHaveLength(2)
+
+          // Both writes landed — neither was lost (that half is H4/M1's
+          // lock, already in place; asserted here so a regression in it
+          // cannot masquerade as this test passing).
+          const reloaded = await usersRepo().findById(target.id)
+          expect(reloaded?.jobTitle).toBe(`Job ${i}`)
+          expect(reloaded?.location).toBe(`Loc ${i}`)
+
+          // The headline assertion. Pre-fix, the second row's `before`
+          // carried the ORIGINAL row — both nulls — while the first row's
+          // `after` already had one field set, so the chain read as though
+          // the first change had never happened.
+          for (const field of ['jobTitle', 'location', 'displayName', 'status'] as const) {
+            expect(rows[1].before?.[field]).toEqual(rows[0].after?.[field])
+          }
+        }
+      },
+      60_000,
+    )
 
     // Finding M1 (docs/archive/audits/audit-integrity.md): `displayName` is
     // DERIVED from `patch.firstName ?? current.firstName` / `patch.lastName

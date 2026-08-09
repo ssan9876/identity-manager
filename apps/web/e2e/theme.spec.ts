@@ -16,13 +16,21 @@ async function signIn(page: Page): Promise<void> {
 
 /**
  * Milestone 9, Task 2 — dark mode. Two things get automated coverage here
- * beyond the visual pass (task-2-report.md): the pre-paint resolution that
- * prevents a flash of the wrong theme, and the top-bar toggle's own
- * contract (persists, keyboard operable). Contrast itself is verified by
- * computation (see tokens.css's own header comment and the report), not by
- * a browser assertion — a screenshot diff or an in-page luminance check
- * would only re-derive numbers already proven correct against the CSS
- * Color 4 conversion the browser itself implements.
+ * beyond the visual pass: the pre-paint resolution that prevents a flash of
+ * the wrong theme, and the top-bar toggle's own contract (persists, keyboard
+ * operable). Contrast itself is verified by computation — see
+ * apps/web/src/styles/tokens.css's own header comment, which records the
+ * computation method, the ratios it corrected inline, and the full
+ * `.superpowers/...` path to the report holding the complete table — not
+ * by a browser assertion: a screenshot diff or an in-page luminance check
+ * would only re-derive numbers already proven correct
+ * against the CSS Color 4 conversion the browser itself implements.
+ *
+ * The two bare `task-2-report.md` references that used to appear above are
+ * gone. A bare filename resolves to nothing from here, so it read as
+ * evidence while being impossible to follow; the one pointer that does
+ * resolve is tokens.css, which is in this repository, and it carries the
+ * ledger path onward for anyone who has the ledger.
  */
 test.describe('theme resolution', () => {
   /**

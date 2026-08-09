@@ -863,6 +863,133 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       expect(await auditRowsFor(ctx, globalParent.id)).toHaveLength(1)
     })
 
+    /**
+     * Finding AUTHZ-M-1's RESIDUAL (docs/archive/audits/carried-findings-
+     * verification.md): "make `effective-members` re-narrow each contributing
+     * group" was the audit's second fix for M-1 and Wave B took only the
+     * first. The write half above is what a scoped attacker would have had to
+     * do. This one needs no attacker at all — the nesting is performed by a
+     * GLOBAL admin, legitimately, and is exactly the operation the positive
+     * control above asserts must keep working. After it, a scoped
+     * `group:read` holder reading the global parent received the nested
+     * group's out-of-scope roster.
+     *
+     * The victim is asserted UNREADABLE directly first, so the leak is
+     * measured against what this actor can actually reach rather than
+     * assumed.
+     */
+    it('effective-members on a global parent does not disclose a nested out-of-scope roster to a scoped reader', async () => {
+      const root = await makeOrgUnit('EffMembers Residual Root')
+      const mine = await makeChildOrgUnit(root.id, 'EffMembers Mine')
+      const theirs = await makeChildOrgUnit(root.id, 'EffMembers Theirs')
+
+      // A GLOBAL admin builds the structure — the intended, ordinary
+      // operation, not an exploit.
+      const globalAdmin = await makeActiveUser('effmembers-global', root.id)
+      await grant(globalAdmin.id, 'user_admin', null)
+
+      const globalParent = await groupsRepo().create({ name: `EffMembers Global ${nextTag()}` })
+      const mineGroup = await groupsRepo().create({
+        name: `EffMembers Mine Group ${nextTag()}`,
+        orgUnitId: mine.id,
+      })
+      const theirsGroup = await groupsRepo().create({
+        name: `EffMembers Theirs Group ${nextTag()}`,
+        orgUnitId: theirs.id,
+      })
+
+      const mineMember = await makeActiveUser('effmembers-mine-member', mine.id)
+      const victim = await makeActiveUser('effmembers-victim', theirs.id)
+      await groupsRepo().addUser(mineGroup.id, mineMember.id)
+      await groupsRepo().addUser(theirsGroup.id, victim.id)
+
+      currentUsername = globalAdmin.username
+      await request(app.getHttpServer())
+        .post(`/groups/${globalParent.id}/child-groups`)
+        .send({ childId: mineGroup.id })
+        .expect(201)
+      await request(app.getHttpServer())
+        .post(`/groups/${globalParent.id}/child-groups`)
+        .send({ childId: theirsGroup.id })
+        .expect(201)
+
+      // Now the scoped reader.
+      const reader = await makeActiveUser('effmembers-reader', mine.id)
+      await grant(reader.id, 'user_admin', mine.id)
+      currentUsername = reader.username
+
+      // Baseline: the out-of-scope group is not readable directly, so
+      // anything it contributes below is genuinely new disclosure.
+      await request(app.getHttpServer()).get(`/groups/${theirsGroup.id}`).expect(403)
+      // ...while the global parent legitimately IS readable from any scope
+      // (decision 1), which is why this could never have been fixed by
+      // refusing the request.
+      await request(app.getHttpServer()).get(`/groups/${globalParent.id}`).expect(200)
+
+      const res = await request(app.getHttpServer())
+        .get(`/groups/${globalParent.id}/effective-members`)
+        .expect(200)
+
+      // The headline regression assertion: the in-scope contribution is
+      // still there (this is a narrowing, not a refusal), and the
+      // out-of-scope one is gone.
+      expect(res.body).toContain(mineMember.id)
+      expect(res.body).not.toContain(victim.id)
+    })
+
+    /**
+     * The other half of the same contract, and the reason the narrowing does
+     * NOT prune the walk: a group the reader may not see, with a child they
+     * MAY see, must still contribute that child's members. Pruning would be
+     * the obvious implementation and would hide members of a group this
+     * caller can read directly, one request at a time — safety it does not
+     * buy, behaviour it does cost.
+     */
+    it('still contributes an in-scope grandchild reached through a group the reader cannot see', async () => {
+      const root = await makeOrgUnit('EffMembers Prune Root')
+      const mine = await makeChildOrgUnit(root.id, 'EffMembers Prune Mine')
+      const theirs = await makeChildOrgUnit(root.id, 'EffMembers Prune Theirs')
+
+      const globalAdmin = await makeActiveUser('effmembers-prune-global', root.id)
+      await grant(globalAdmin.id, 'user_admin', null)
+
+      const globalParent = await groupsRepo().create({ name: `EffMembers Prune Global ${nextTag()}` })
+      const middle = await groupsRepo().create({
+        name: `EffMembers Prune Middle ${nextTag()}`,
+        orgUnitId: theirs.id,
+      })
+      const grandchild = await groupsRepo().create({
+        name: `EffMembers Prune Grandchild ${nextTag()}`,
+        orgUnitId: mine.id,
+      })
+
+      const hidden = await makeActiveUser('effmembers-prune-hidden', theirs.id)
+      const visible = await makeActiveUser('effmembers-prune-visible', mine.id)
+      await groupsRepo().addUser(middle.id, hidden.id)
+      await groupsRepo().addUser(grandchild.id, visible.id)
+
+      currentUsername = globalAdmin.username
+      await request(app.getHttpServer())
+        .post(`/groups/${globalParent.id}/child-groups`)
+        .send({ childId: middle.id })
+        .expect(201)
+      await request(app.getHttpServer())
+        .post(`/groups/${middle.id}/child-groups`)
+        .send({ childId: grandchild.id })
+        .expect(201)
+
+      const reader = await makeActiveUser('effmembers-prune-reader', mine.id)
+      await grant(reader.id, 'user_admin', mine.id)
+      currentUsername = reader.username
+
+      const res = await request(app.getHttpServer())
+        .get(`/groups/${globalParent.id}/effective-members`)
+        .expect(200)
+
+      expect(res.body).toContain(visible.id)
+      expect(res.body).not.toContain(hidden.id)
+    })
+
     it('maps a nonexistent childId to 404 NOT_FOUND and writes no audit row', async () => {
       const org = await makeOrgUnit('Bogus Child Root')
       const actor = await makeActiveUser('manager', org.id)

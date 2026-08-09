@@ -600,6 +600,86 @@ export class GroupsRepository {
   }
 
   /**
+   * `listEffectiveUserMembers`, re-narrowed per CONTRIBUTING group — finding
+   * AUTHZ-M-1's residual (docs/archive/audits/carried-findings-verification.md).
+   *
+   * The audit offered two fixes for M-1 and Wave B took only the first. The
+   * write half is closed: `addChildGroup` scope-checks the CHILD, so a scoped
+   * actor can no longer nest a foreign group under one they control. What
+   * survived is a READ channel that needs no attack at all — a GLOBAL admin
+   * legitimately nesting a scoped group under a global one is an ordinary,
+   * intended operation, and after it, ANY holder of `group:read` at ANY scope
+   * reading the global parent's effective members received the nested group's
+   * out-of-scope roster (user ids) along with it. `requireGroup` cannot stop
+   * that: under `group:read` a global group is deliberately readable from any
+   * scope (decision 1), and the group the caller NAMED is legitimately
+   * readable. It is the groups reached THROUGH it that were never re-checked.
+   *
+   * So the check has to be per contributing group, which is what this is.
+   *
+   * WHAT IT DOES NOT DO, deliberately: it does not PRUNE the walk. A group
+   * the caller may not read still has its own children traversed, and those
+   * children contribute if the caller may read THEM. Pruning would be the
+   * more obvious implementation and it is the wrong one — it would hide
+   * members of a perfectly readable group merely because the path to it ran
+   * through an unreadable one, while adding no safety: every user id this
+   * returns comes from a group this caller could have read directly, one
+   * request at a time. The property being enforced is "no roster you could
+   * not have asked for", not "no path you could not have walked".
+   *
+   * `scopePaths` follows PermissionEngine.scopePathsFor's contract exactly,
+   * the same way `scopeFilter` above does: `null` means a GLOBAL grant and
+   * applies no filter at all; an array — INCLUDING `[]` — applies a real one,
+   * and with `[]` only global contributing groups remain. Do not spell the
+   * check `scopePaths?.length`; see `scopeFilter`'s doc comment. Bound as ONE
+   * array parameter via `sql.param`, never interpolated (permission.engine.ts).
+   *
+   * A contributing group with `org_unit_id IS NULL` is included
+   * unconditionally, exactly as `scopeFilter` includes global groups in
+   * `list()`: decision 1 makes a global group readable from any scope, so
+   * excluding it here would narrow reads BELOW what a direct
+   * `GET /groups/:id/effective-members` on that same global group already
+   * returns.
+   *
+   * NOT used by the sync path. `SyncWorker` and `SyncStateRepository` call
+   * the unnarrowed `listEffectiveUserMembers` above and must keep doing so —
+   * they act as the system, not as a principal, and a narrowed membership
+   * list there would mean silently failing to provision people.
+   */
+  async listEffectiveUserMembersWithin(
+    groupId: string,
+    scopePaths: string[] | null,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<string[]> {
+    if (scopePaths === null) {
+      return this.listEffectiveUserMembers(groupId, db)
+    }
+
+    const { rows } = await db.execute<{ user_id: string }>(sql`
+      WITH RECURSIVE reachable AS (
+        SELECT ${groupId}::uuid AS id
+        UNION
+        SELECT ggm.child_group_id
+          FROM group_group_members ggm
+          JOIN reachable r ON ggm.parent_group_id = r.id
+      )
+      SELECT DISTINCT gum.user_id
+        FROM group_user_members gum
+        JOIN reachable r ON gum.group_id = r.id
+        JOIN groups g ON g.id = r.id
+       WHERE g.org_unit_id IS NULL
+          OR EXISTS (
+               SELECT 1 FROM org_units ou
+                WHERE ou.id = g.org_unit_id
+                  AND ou.path <@ ANY (${sql.param(scopePaths)}::ltree[])
+             )
+       ORDER BY gum.user_id
+    `)
+
+    return rows.map((row) => row.user_id)
+  }
+
+  /**
    * Every group this user belongs to directly, plus all of their ancestors.
    *
    * `db` is an OPTIONAL trailing handle, defaulting to the injected pooled
