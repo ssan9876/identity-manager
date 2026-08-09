@@ -105,8 +105,21 @@ code. Treat that file's "5 of 19 fail" section as history.
       opens *because* something is wrong. Out-of-scope is 403, not 404
       (SEC-L2). No transaction on the route, deliberately — nothing to make
       atomic, and holding one across the reads would be the shape of C1.
-- [ ] **Tasks 13–15 — sync integration.** `outbox-emission.spec.ts` must pass
-      **unmodified**; if it needs editing, that is the bug.
+- [x] **Tasks 13–15 — sync integration.** Done. `outbox-emission.spec.ts`
+      passes **33/33 unmodified**, which was the whole safety property: the
+      `all_users` default reproduces existing behaviour exactly.
+      Two things worth remembering, both found by deviating from the plan:
+      the plan's own illustrative code would have filtered group/org-unit/
+      sso_app events by an empty entitlement set and **silently stopped those
+      syncs** to any `entitled_only` target — now gated behind a
+      `consultsEntitlement` flag; and Task 14 required making
+      `SyncWorker.buildDesiredUser` entitlement-aware even though that file was
+      not in its list, because otherwise the revoke-disable event lands and the
+      worker immediately recomputes `enabled` from status alone and re-asserts
+      `enabled: true`. Offboarding independence (settled decision 8) needed no
+      production change; its four tests are regression guards, and they first
+      assert a 409 to prove the unevaluable-role landmine is genuinely live
+      rather than passing vacuously.
 - [x] **Task 16 — remove JML's group actions.** Done, 48/48. Business roles own
       desired membership now, so a JML rule granting one would be a second
       writer the reconciler revokes. Migration `0027` is a GUARD, not a schema
