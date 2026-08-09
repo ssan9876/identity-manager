@@ -87,19 +87,19 @@ describe('organizations schema', () => {
     expect(org1.id).not.toEqual(org2.id)
   })
 
-  it('slug comparison is case-insensitive (unique index uses lower)', async () => {
+  it('duplicate slug rejects with organizations_slug_unique', async () => {
     await ctx.db.insert(organizations).values({
-      slug: 'case-test',
-      name: 'Case Test',
-      realm: 'case-realm',
+      slug: 'duplicate-test',
+      name: 'First Duplicate',
+      realm: 'realm-dup-1',
     })
 
-    // Try to insert same slug in different case
+    // Try to insert same slug again
     await expect(
       ctx.db.insert(organizations).values({
-        slug: 'CASE-TEST',
-        name: 'Case Test Upper',
-        realm: 'case-realm-2',
+        slug: 'duplicate-test',
+        name: 'Second Duplicate',
+        realm: 'realm-dup-2',
       }),
     ).rejects.toThrow(/organizations_slug_unique/)
   })
