@@ -408,6 +408,9 @@ describe('TargetReconciliationJob (Milestone 10, Task 4)', () => {
       }
     })
 
+    // `actorUserId` is deliberately NOT passed here: this is the CLI shape
+    // (target-reconcile-cli.ts), whose override row correctly has no human to
+    // name. The HTTP shape is the test immediately below.
     it('overriding a tripped guard with force applies the changes and writes exactly one audited override row', async () => {
       await configureEchoTarget(1, 1)
       const users = await makeActiveUsers(6)
@@ -443,6 +446,44 @@ describe('TargetReconciliationJob (Milestone 10, Task 4)', () => {
       expect(rows[0]?.after.changedCount).toBe(6)
       expect(rows[0]?.after.thresholdPercent).toBe(1)
       expect(rows[0]?.after.floor).toBe(1)
+    })
+
+    // Finding CAR-system-actor, item 3
+    // (docs/archive/audits/carried-findings-verification.md): the override row
+    // is the ONE row an auditor searches for when asking "who deliberately
+    // overrode the blast-radius guard". It used to be hard-coded to
+    // `actorUserId: null` on the grounds that this job only ever ran from a
+    // CLI — untrue since `POST /connector-targets/:target/reconcile` began
+    // calling `reconcile()` from a JWT-guarded handler.
+    it('attributes the override row to the acting user when one is supplied — CAR-system-actor item 3', async () => {
+      await configureEchoTarget(1, 1)
+      const actor = await makeActiveUser()
+      await makeActiveUsers(6)
+
+      const report = await job.reconcile('echo', { force: true, actorUserId: actor.id })
+
+      expect(report.overridden).toBe(true)
+
+      const { rows } = await ctx.pool.query<{ actor_user_id: string | null; after: { target: string } }>(
+        "SELECT actor_user_id, after FROM audit_log WHERE action = 'connector:reconcile-override' ORDER BY id DESC LIMIT 1",
+      )
+      expect(rows).toHaveLength(1)
+      expect(rows[0]?.actor_user_id).toBe(actor.id)
+      expect(rows[0]?.after.target).toBe('echo')
+    })
+
+    it('keeps the system-actor shape when no acting user is supplied — the CLI path is unchanged', async () => {
+      await configureEchoTarget(1, 1)
+      await makeActiveUsers(6)
+
+      const report = await job.reconcile('echo', { force: true, actorUserId: null })
+
+      expect(report.overridden).toBe(true)
+
+      const { rows } = await ctx.pool.query<{ actor_user_id: string | null }>(
+        "SELECT actor_user_id FROM audit_log WHERE action = 'connector:reconcile-override' ORDER BY id DESC LIMIT 1",
+      )
+      expect(rows[0]?.actor_user_id).toBeNull()
     })
 
     it('fails cleanly when the target has no connector_targets row configured, rather than guessing a default', async () => {

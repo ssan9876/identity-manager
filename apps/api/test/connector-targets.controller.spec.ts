@@ -656,5 +656,58 @@ describe('ConnectorTargetsController (Milestone 14, Task 9)', () => {
         .send({ blastRadiusThreshold: 100, blastRadiusFloor: 1000000 })
         .expect(200)
     })
+
+    // Finding CAR-system-actor, item 3
+    // (docs/archive/audits/carried-findings-verification.md). Overriding the
+    // blast-radius guard is the most dangerous thing this endpoint offers, and
+    // `connector:reconcile-override` is the row an auditor searches for. It
+    // used to be written with `actorUserId: null` even over HTTP, because
+    // TargetReconciliationJob predates this route and assumed it only ever ran
+    // from a CLI. Asserted against the audit row itself, not the response body.
+    it('a forced override over HTTP names the acting user on the connector:reconcile-override row', async () => {
+      const admin = await makeActiveUser('super_admin')
+      currentUsername = admin.username
+
+      // A strict, guaranteed-to-trip guard for THIS one target row.
+      await request(app.getHttpServer())
+        .patch('/connector-targets/echo')
+        .send({ blastRadiusThreshold: 1, blastRadiusFloor: 0 })
+        .expect(200)
+
+      const person = await usersRepo().create({
+        primaryEmail: `override-${nextTag()}@example.com`,
+        username: `override-${nextTag()}@example.com`,
+        firstName: 'Override',
+        lastName: 'Test',
+        orgUnitId,
+      })
+      await usersRepo().changeStatus(person.id, 'active')
+
+      const res = await request(app.getHttpServer())
+        .post('/connector-targets/echo/reconcile')
+        .send({ dryRun: false, force: true })
+        .expect(200)
+      expect(res.body.overridden).toBe(true)
+      expect(res.body.halted).toBe(false)
+
+      const { rows } = await ctx.pool.query<{ actor_user_id: string | null }>(
+        "SELECT actor_user_id FROM audit_log WHERE action = 'connector:reconcile-override' ORDER BY id DESC LIMIT 1",
+      )
+      expect(rows).toHaveLength(1)
+      expect(rows[0]?.actor_user_id).toBe(admin.id)
+
+      // The invocation-level row already carried the actor; assert both, so a
+      // future regression on either is caught here.
+      const { rows: invocationRows } = await ctx.pool.query<{ actor_user_id: string | null }>(
+        "SELECT actor_user_id FROM audit_log WHERE action = 'connector_target:reconcile' ORDER BY id DESC LIMIT 1",
+      )
+      expect(invocationRows[0]?.actor_user_id).toBe(admin.id)
+
+      // Restore lenient settings for any later test in this file.
+      await request(app.getHttpServer())
+        .patch('/connector-targets/echo')
+        .send({ blastRadiusThreshold: 100, blastRadiusFloor: 1000000 })
+        .expect(200)
+    })
   })
 })
