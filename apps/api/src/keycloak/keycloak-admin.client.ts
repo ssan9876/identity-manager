@@ -319,6 +319,13 @@ function toKeycloakUser(raw: RawKeycloakUser): KeycloakUser {
 export class KeycloakAdminClient {
   private readonly tokenUrl: string
   private readonly adminBaseUrl: string
+  /**
+   * `http://host:port` — everything before `/realms/...`. Kept alongside
+   * `adminBaseUrl` rather than re-derived, because `requestServerLevel`
+   * (realm lifecycle) addresses paths that hang off the server root and have
+   * no realm segment of their own.
+   */
+  private readonly serverRoot: string
   private cachedToken: { value: string; expiresAt: number } | null = null
 
   /**
@@ -354,6 +361,7 @@ export class KeycloakAdminClient {
     // read from different places: the token endpoint always follows the
     // issuer, the admin path does not have to.
     this.adminBaseUrl = `${serverRoot}/admin/realms/${config.adminRealm ?? realm}`
+    this.serverRoot = serverRoot
   }
 
   // ---------------------------------------------------------------------
@@ -434,6 +442,77 @@ export class KeycloakAdminClient {
   private async request(method: string, path: string, body?: unknown): Promise<Response> {
     const attempt = async (token: string): Promise<Response> =>
       fetch(`${this.adminBaseUrl}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: this.abortSignal(),
+      })
+
+    const res = await attempt(await this.getToken(false))
+    if (res.status !== 401) {
+      return res
+    }
+    return attempt(await this.getToken(true))
+  }
+
+  /**
+   * Drops the cached access token so the NEXT call mints a fresh one.
+   *
+   * Exists for exactly one situation, found empirically against Keycloak 26
+   * while building Organizations Task 11, and it is not obvious: Keycloak
+   * grants the `<realm>-realm` client roles to a realm's CREATOR at the
+   * moment of creation, but an access token already in hand was minted
+   * BEFORE that grant and therefore does not carry them. So the very client
+   * that just created a realm is the one client guaranteed to be denied on
+   * it — `POST /admin/realms` answered 201, and the next call through the
+   * same cached token answered 403. (Task 9 did not see this because its
+   * fixture re-fetched a token for every raw call; the first caller to reuse
+   * one across a realm creation was `OrganizationConnector.ensureRealm`.)
+   *
+   * The 401 retry in `request`/`requestServerLevel` cannot cover it: Keycloak
+   * answers 403, not 401 — the token is perfectly valid, it simply lacks a
+   * role that now exists. Retrying every 403 would be the wrong fix, since a
+   * genuine authorization failure would then cost a pointless token request
+   * and still fail. So the ONE caller that knows it just changed its own role
+   * mappings says so explicitly.
+   */
+  invalidateCachedToken(): void {
+    this.cachedToken = null
+  }
+
+  /**
+   * One authenticated admin call addressed to the SERVER root rather than to
+   * `/admin/realms/{realm}` — `path` here starts at `/admin/...` and carries
+   * whatever realm segment it needs (or none at all).
+   *
+   * EXISTS FOR REALM LIFECYCLE ONLY (Organizations, Task 11:
+   * connectors/organization.connector.ts). `POST /admin/realms` has no realm
+   * in its path because it is what CREATES one, and `PUT /admin/realms/{r}`
+   * updates the realm object itself rather than something inside it —
+   * neither is expressible through `request`, whose whole contract is "this
+   * path hangs off one realm's admin base". Nothing else in this class, and
+   * nothing else in this system, should reach for it: every other admin
+   * operation is realm-scoped by construction, and routing one through here
+   * would quietly bypass the `adminRealm` split the factory depends on.
+   *
+   * Returns the raw `Response` rather than throwing on a non-2xx, which is
+   * the one place this method deliberately differs from every sibling. The
+   * caller has to distinguish 409-means-already-exists (a SUCCESS for a
+   * desired-state method) from a genuine failure, and it cannot do that
+   * through `assertOk`'s ConflictError without pattern-matching on an
+   * exception type to decide that nothing went wrong.
+   *
+   * Shares `getToken`, the 401-retry and the abort signal with `request` —
+   * same token cache, same single forced refresh, same timeout — so realm
+   * lifecycle inherits the credential handling rather than growing a second,
+   * subtly different copy of it.
+   */
+  async requestServerLevel(method: string, path: string, body?: unknown): Promise<Response> {
+    const attempt = async (token: string): Promise<Response> =>
+      fetch(`${this.serverRoot}${path}`, {
         method,
         headers: {
           Authorization: `Bearer ${token}`,
