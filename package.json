@@ -1,8 +1,10 @@
 {
   "name": "identity-manager",
   "private": true,
-  "packageManager": "pnpm@9.12.0",
-  "engines": { "node": ">=20" },
+  "packageManager": "pnpm@9.12.0+sha512.Sr9yUITXvLr71yi/x77mHy95H5d/2HVCs1edyyNQTRcNRjN5ReTGZIXNEtWIoMDlcO2cR358zdhQfPBfP5Lqyg==",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "test": "pnpm -r test",
     "typecheck": "pnpm -r run typecheck",
@@ -15,5 +17,10 @@
   },
   "devDependencies": {
     "typescript": "^5.6.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

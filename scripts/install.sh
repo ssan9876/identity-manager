@@ -99,7 +99,18 @@ if ! command -v node >/dev/null || [[ "$(node -v | sed 's/v\([0-9]*\).*/\1/')" -
   apt-get install -y -qq nodejs >/dev/null
 fi
 corepack enable >/dev/null 2>&1 || npm install -g corepack >/dev/null
-corepack prepare pnpm@9 --activate >/dev/null
+# EXACT version, not the `pnpm@9` range this used to pin. A range resolves at
+# install time to whatever the newest 9.x is that day, so two hosts installed a
+# week apart got different package managers — and the tool that then resolves,
+# downloads and executes every dependency was itself fetched with no integrity
+# verification, into a root shell (finding CS-H1,
+# docs/archive/audits/audit-client-supply-chain.md).
+#
+# Corepack verifies this against the `packageManager` field in package.json,
+# which now carries the `+sha512.…` digest. Keep the two in step: if you bump
+# one, bump the other, or corepack refuses with a hash mismatch — which is the
+# failure you want, rather than silently running an unverified binary.
+corepack prepare pnpm@9.12.0 --activate >/dev/null
 ok "node $(node -v), pnpm $(pnpm -v)"
 
 # --- Service account --------------------------------------------------------

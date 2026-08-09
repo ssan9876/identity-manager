@@ -248,6 +248,45 @@ It grants global `super_admin` while bypassing all four privilege checks, delibe
 
 ## Hardening checklist for a real deployment
 
+## Supply chain
+
+Finding CS-H1 was the highest-leverage exposure in this system: a malicious
+`postinstall` in any of ~460 packages ran as the `idm` service account, on the
+machine holding `RUNTIME_DATABASE_URL`, `KEYCLOAK_ADMIN_CLIENT_SECRET` and every
+`CONNECTOR_*` secret — reached on a schedule (every install and upgrade) rather
+than by finding a flaw. Two changes close it:
+
+**Dependency lifecycle scripts are blocked by an allow-list.** `package.json`
+carries `pnpm.onlyBuiltDependencies`, and only what is listed there may run a
+`preinstall`/`install`/`postinstall`. Everything else is installed as inert
+files. The list is deliberately tiny:
+
+| Package | Why it must build |
+|---|---|
+| `esbuild` | Resolves and links its platform binary; Vite and tsx cannot run without it. |
+
+`cpu-features` is the only package this blocks in practice — it is an optional
+native accelerator for `ssh2`, itself a Testcontainers dependency. It already
+failed to build on any host without a C++ toolchain and nothing depended on it;
+the full API suite and the Playwright suite both pass with it absent.
+
+The audit assumed this needed pnpm 10's `onlyBuiltDependencies`. It does not —
+pnpm 9 supports the same field, so no package-manager upgrade was required.
+
+**To add a package to the allow-list**, verify it genuinely fails without its
+script rather than assuming: run `pnpm install --frozen-lockfile` and read the
+"dependencies have build scripts that were ignored" line, then confirm the build
+and test suite actually break. A package added on suspicion re-opens the hole
+for that package permanently.
+
+**The package manager itself is pinned by digest.** `packageManager` carries
+`pnpm@9.12.0+sha512.…`, and `scripts/install.sh` runs
+`corepack prepare pnpm@9.12.0` rather than the `pnpm@9` range it used to. A
+range resolved to whatever the newest 9.x was that day, fetched with no
+integrity check, into a root shell. Corepack verifies the digest; CI inherits it
+because `pnpm/action-setup` reads the same field. **Bump both together** or
+corepack fails with a hash mismatch — which is the intended failure.
+
 - [ ] TLS on **both** the console and Keycloak. Without it, sign-in silently fails.
 - [ ] Do **not** import `keycloak/realm-import/identity-manager-realm.dev.json`. Use
       `keycloak-setup.sh`. That file is hardened against the accident — `.dev.json`
