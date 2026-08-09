@@ -1,13 +1,36 @@
 import { z } from 'zod'
 import { ValidationError } from '../common/errors'
 import { noNulChar } from '../common/http/safe-string'
+import {
+  type AttributeFormat,
+  applyAttributeFormat,
+  describeAttributeFormats,
+  isAttributeFormat,
+} from './attribute-formats'
 
 export type AttributeDataType = 'string' | 'number' | 'boolean' | 'date' | 'enum'
 
 export interface ValidationRules {
   minLength?: number
   maxLength?: number
+  /**
+   * **Rejected, never compiled.** Declared here precisely so it stays
+   * visible: `pattern` was a caller-supplied regular expression compiled
+   * with `new RegExp(...)` and executed against user input, which is this
+   * system running an admin-supplied program against its own directory, and
+   * was a measured 96.7-second event-loop stall on a 33-character input
+   * (docs/12-security.md). It is replaced by `format` — a closed vocabulary
+   * of named, statically-written validators (attribute-formats.ts).
+   *
+   * A definition row still carrying this key fails CLOSED and loudly, with
+   * an error naming the key and the vocabulary that replaces it. It is never
+   * silently ignored: ignoring it would drop a constraint an admin
+   * deliberately set, which is a fail-OPEN weakening of validation dressed
+   * up as a security fix.
+   */
   pattern?: string
+  /** One of `attribute-formats.ts`'s closed vocabulary. */
+  format?: string
   min?: number
   max?: number
   options?: string[]
@@ -70,7 +93,17 @@ function isIsoCalendarDate(value: string): boolean {
   )
 }
 
-function fieldSchema(definition: AttributeDefinition): z.ZodTypeAny {
+/**
+ * The Zod schema for ONE attribute, without the surrounding object —
+ * exported (Milestone: attribute-definition write path) so
+ * `AttributeDefinitionsRepository.assessImpact` can validate values ALREADY
+ * STORED in `users.attributes`/`groups.attributes` against a PROPOSED
+ * definition, using the exact same code path a future write will use. A
+ * second, parallel "is this value still valid" implementation would be free
+ * to drift from this one, and the whole point of the impact check is that it
+ * tells the truth about what a definition edit would invalidate.
+ */
+export function buildFieldSchema(definition: AttributeDefinition): z.ZodTypeAny {
   const rules = definition.validationRules
 
   switch (definition.dataType) {
@@ -78,15 +111,45 @@ function fieldSchema(definition: AttributeDefinition): z.ZodTypeAny {
       let schema = z.string()
       if (rules.minLength !== undefined) schema = schema.min(rules.minLength)
       if (rules.maxLength !== undefined) schema = schema.max(rules.maxLength)
-      // SECURITY (deferred, not fixed here): `rules.pattern` is DB-sourced
-      // and unvalidated. A catastrophic-backtracking pattern (e.g.
-      // `^(a+)+$`) compiled and executed here can hang the Node event loop
-      // — measured 96.7s on a 33-character input. Currently unreachable
-      // (no write path exists for `attribute_definitions`), so left as-is.
-      // This MUST be addressed — a pattern-safety check or an execution
-      // timeout — by whichever change first exposes a write path for
-      // `attribute_definitions`.
-      if (rules.pattern !== undefined) schema = schema.regex(new RegExp(rules.pattern))
+
+      // SECURITY, closed: this is where `new RegExp(rules.pattern)` used to
+      // be. See attribute-formats.ts's file-level doc comment for the full
+      // reasoning and the measurement; the short version is that a regex is
+      // a program, `validation_rules` is admin-authored database content,
+      // and compiling one from the other blocked the single Node process
+      // serving the whole API for 12.5 seconds on a 28-character input on
+      // this very branch.
+      //
+      // Fails CLOSED, exactly like the `enum`-with-no-options branch below
+      // and for the same reason: validation for this whole scope stops
+      // rather than silently skipping a constraint the admin set. Skipping
+      // it would be a fail-OPEN regression — the field would quietly accept
+      // anything from the moment this fix shipped, with nothing anywhere
+      // saying so. Surfaced as AttributeValidationError so it maps to a 400
+      // naming the definition, never an unhandled 500.
+      if (rules.pattern !== undefined) {
+        throw new AttributeValidationError([
+          `attribute "${definition.key}" still declares validationRules.pattern, which is no ` +
+            'longer supported: a caller-supplied regular expression is executable content and ' +
+            'was a measured 96.7-second event-loop stall (docs/12-security.md). Replace it with ' +
+            `validationRules.format, one of: ${describeAttributeFormats()} — or, for a fixed set ` +
+            'of permitted values, with an enum attribute and validationRules.options.',
+        ])
+      }
+
+      // An unrecognised `format` fails closed for the same reason a
+      // three-valued condition match does in business-roles/role-evaluator.ts:
+      // a value written by a migration newer than the running binary must
+      // not be treated as "no constraint".
+      if (rules.format !== undefined) {
+        if (!isAttributeFormat(rules.format)) {
+          throw new AttributeValidationError([
+            `attribute "${definition.key}" declares an unknown validationRules.format ` +
+              `"${String(rules.format)}" — known formats: ${describeAttributeFormats()}`,
+          ])
+        }
+        schema = applyAttributeFormat(rules.format satisfies AttributeFormat, schema)
+      }
       // docs/archive/audits/audit-injection.md HIGH finding: a custom string
       // attribute value is jsonb-stored — reject an embedded NUL here,
       // after any custom pattern (which might otherwise happen to allow
@@ -145,7 +208,7 @@ export function buildAttributeSchema(
       continue
     }
 
-    const field = fieldSchema(definition)
+    const field = buildFieldSchema(definition)
     shape[definition.key] = definition.required ? field : field.optional()
   }
 

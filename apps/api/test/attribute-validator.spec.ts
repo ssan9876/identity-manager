@@ -1,4 +1,7 @@
+import { readdirSync, readFileSync } from 'node:fs'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { ALL_ATTRIBUTE_FORMATS } from '../src/attributes/attribute-formats'
 import {
   AttributeValidationError,
   type AttributeDefinition,
@@ -50,19 +53,32 @@ describe('validateAttributes', () => {
     expect(() => validateAttributes(defs, { salary: 100 })).toThrow(/salary/)
   })
 
-  it('enforces string pattern and length rules', () => {
+  it('enforces string length rules', () => {
     const defs = [
       def({
         key: 'cost_center',
         dataType: 'string',
-        validationRules: { pattern: '^CC-\\d{4}$', maxLength: 7 },
+        validationRules: { minLength: 4, maxLength: 7 },
       }),
     ]
-    expect(() => validateAttributes(defs, { cost_center: 'XX-1' })).toThrow(
-      /cost_center/,
-    )
+    expect(() => validateAttributes(defs, { cost_center: 'XX' })).toThrow(/cost_center/)
+    expect(() => validateAttributes(defs, { cost_center: 'CC-102400' })).toThrow(/cost_center/)
     expect(validateAttributes(defs, { cost_center: 'CC-1024' })).toEqual({
       cost_center: 'CC-1024',
+    })
+  })
+
+  it('enforces a named format alongside length rules', () => {
+    const defs = [
+      def({
+        key: 'cost_center',
+        dataType: 'string',
+        validationRules: { format: 'slug', maxLength: 20 },
+      }),
+    ]
+    expect(() => validateAttributes(defs, { cost_center: 'Cost Center' })).toThrow(/cost_center/)
+    expect(validateAttributes(defs, { cost_center: 'cost-center-emea' })).toEqual({
+      cost_center: 'cost-center-emea',
     })
   })
 
@@ -364,5 +380,234 @@ describe('validateAttributes', () => {
     })
 
     expect(validateAttributes(defs, payload)).toEqual({ cost_center: 'CC-9999' })
+  })
+})
+
+/**
+ * docs/12-security.md, "Known open items" -> ReDoS in the attribute
+ * validator. `new RegExp(rules.pattern)` compiled an unvalidated,
+ * database-sourced pattern and executed it against user input.
+ *
+ * Measured on this branch, against the code as it stood BEFORE the fix,
+ * with the pattern `^(a+)+$`:
+ *
+ *   28-character input -> 12,537.5 ms of fully blocked event loop
+ *
+ * Cost doubles per added character, so the audit's own 33-character
+ * measurement (96.7 s) is the same phenomenon further along the same curve.
+ * There is ONE Node process serving the whole API and draining the outbox
+ * (docs/02-architecture.md), so this is a total outage, not a slow request.
+ *
+ * The elapsed-time bound below is the assertion that matters. A test that
+ * only checked "it throws" would pass just as happily 96 seconds late.
+ */
+describe('ReDoS: validationRules.pattern is refused, never compiled', () => {
+  const CATASTROPHIC = '^(a+)+$'
+  // Deliberately far longer than the 28 characters measured above: at ~2^n
+  // this input would not complete in any meaningful timeframe, so if the
+  // pattern were ever compiled and run again this test cannot pass slowly —
+  // it can only hang, which the suite reports as a failure too.
+  const LONG_INPUT = 'a'.repeat(40) + '!'
+
+  it('rejects the exact ^(a+)+$ case against a long input in bounded time', () => {
+    const defs = [
+      def({ key: 'cost_center', dataType: 'string', validationRules: { pattern: CATASTROPHIC } }),
+    ]
+
+    const started = process.hrtime.bigint()
+    let thrown: unknown
+    try {
+      validateAttributes(defs, { cost_center: LONG_INPUT })
+    } catch (error) {
+      thrown = error
+    }
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6
+
+    expect(thrown).toBeInstanceOf(AttributeValidationError)
+    expect(elapsedMs).toBeLessThan(250)
+  })
+
+  it('fails CLOSED — a definition still carrying `pattern` rejects even a value that pattern would have allowed', () => {
+    // Fail-open is the tempting shape of this fix: drop `pattern`, accept
+    // everything. That silently removes a constraint an admin set.
+    const defs = [
+      def({
+        key: 'cost_center',
+        dataType: 'string',
+        validationRules: { pattern: '^CC-[0-9]{4}$' },
+      }),
+    ]
+    expect(() => validateAttributes(defs, { cost_center: 'CC-1024' })).toThrow(
+      AttributeValidationError,
+    )
+  })
+
+  it('names the definition and the replacement vocabulary in the rejection', () => {
+    const defs = [
+      def({ key: 'cost_center', dataType: 'string', validationRules: { pattern: CATASTROPHIC } }),
+    ]
+    expect(() => validateAttributes(defs, { cost_center: 'x' })).toThrow(/cost_center/)
+    expect(() => validateAttributes(defs, { cost_center: 'x' })).toThrow(/validationRules\.format/)
+    expect(() => validateAttributes(defs, { cost_center: 'x' })).toThrow(/iso_country_code/)
+  })
+
+  it('fails CLOSED on a `format` this binary does not know, rather than skipping the constraint', () => {
+    // The role-evaluator's three-valued rule, applied here: a value written
+    // by a migration newer than the running binary must not silently become
+    // "no constraint at all".
+    const defs = [
+      def({ key: 'cost_center', dataType: 'string', validationRules: { format: 'postcode_uk' } }),
+    ]
+    expect(() => validateAttributes(defs, { cost_center: 'SW1A 1AA' })).toThrow(
+      AttributeValidationError,
+    )
+    expect(() => validateAttributes(defs, { cost_center: 'SW1A 1AA' })).toThrow(/unknown/)
+  })
+
+  it('fails CLOSED on a prototype-chain `format` name', () => {
+    // `format` is a jsonb value an admin controls. On a plain `{}` catalog,
+    // `FORMAT_SPECS['constructor']` is a truthy inherited function — the
+    // defect class this project has hit four times (docs/12-security.md).
+    for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      const defs = [
+        def({ key: 'cost_center', dataType: 'string', validationRules: { format: name } }),
+      ]
+      expect(() => validateAttributes(defs, { cost_center: 'anything' })).toThrow(
+        AttributeValidationError,
+      )
+    }
+  })
+})
+
+describe('the closed format vocabulary', () => {
+  const accepts: Record<string, string> = {
+    email: 'a.person@example.com',
+    url: 'https://example.com/x',
+    uuid: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
+    alphanumeric: 'CC1024',
+    numeric: '1024',
+    slug: 'cost-center-emea',
+    identifier: '_cost_center1',
+    phone_e164: '+442071234567',
+    iso_country_code: 'GB',
+    no_whitespace: 'CC-1024',
+  }
+  const rejects: Record<string, string> = {
+    email: 'not-an-email',
+    url: 'not a url',
+    uuid: 'not-a-uuid',
+    alphanumeric: 'CC-1024',
+    numeric: '10.24',
+    slug: 'Cost Center',
+    identifier: '1cost',
+    phone_e164: '0044 20 7123 4567',
+    iso_country_code: 'gbr',
+    no_whitespace: 'CC 1024',
+  }
+
+  it('covers every format in ALL_ATTRIBUTE_FORMATS, so a new one cannot land untested', () => {
+    expect(Object.keys(accepts).sort()).toEqual([...ALL_ATTRIBUTE_FORMATS].sort())
+    expect(Object.keys(rejects).sort()).toEqual([...ALL_ATTRIBUTE_FORMATS].sort())
+  })
+
+  for (const format of ALL_ATTRIBUTE_FORMATS) {
+    it(`accepts and rejects correctly for format "${format}"`, () => {
+      const defs = [def({ key: 'field', dataType: 'string', validationRules: { format } })]
+      expect(validateAttributes(defs, { field: accepts[format] })).toEqual({
+        field: accepts[format],
+      })
+      expect(() => validateAttributes(defs, { field: rejects[format] })).toThrow(
+        AttributeValidationError,
+      )
+    })
+  }
+
+  /**
+   * Every format is applied to long adversarial inputs and must complete
+   * promptly. This is what makes "closed vocabulary" a real guarantee rather
+   * than a relabelling: it would be entirely possible to write a
+   * catastrophically-backtracking literal in attribute-formats.ts and be no
+   * better off than before.
+   */
+  it('every format resolves in bounded time on long adversarial inputs', () => {
+    const adversarial = [
+      'a'.repeat(4000),
+      'a'.repeat(2000) + '!',
+      '-'.repeat(2000) + '!',
+      'a-'.repeat(1000) + '!',
+      '+' + '1'.repeat(2000) + '!',
+      ' '.repeat(2000) + 'x',
+      'a@' + 'b'.repeat(2000),
+    ]
+
+    const started = process.hrtime.bigint()
+    for (const format of ALL_ATTRIBUTE_FORMATS) {
+      const defs = [def({ key: 'field', dataType: 'string', validationRules: { format } })]
+      for (const value of adversarial) {
+        try {
+          validateAttributes(defs, { field: value })
+        } catch {
+          // rejection is expected for most of these; timing is the assertion
+        }
+      }
+    }
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6
+
+    expect(elapsedMs).toBeLessThan(1000)
+  })
+})
+
+/**
+ * Static source scan, in the same shape and for the same reason as
+ * test/jml-rule-engine.spec.ts's and test/business-role-evaluator.spec.ts's:
+ * the guarantee is about what the source CANNOT do, so asserting it against
+ * the source is stronger than asserting behaviour at one call site that a
+ * future call site is free to bypass.
+ *
+ * Scoped to the whole of `src/`, not just `src/attributes/`, because the
+ * brief for this fix was explicitly to apply the same scrutiny to any other
+ * dynamic regex construction in the tree. Regex LITERALS (`/^[a-z]+$/`) are
+ * fine and plentiful — they are reviewed source, not database content. It is
+ * dynamic CONSTRUCTION from a runtime value that is banned, so the ban is on
+ * the `RegExp` constructor itself.
+ */
+describe('no dynamic code or regex construction anywhere in src/', () => {
+  function sourceFiles(dir: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) return sourceFiles(full)
+      return entry.isFile() && full.endsWith('.ts') ? [full] : []
+    })
+  }
+
+  /**
+   * Comments are stripped before scanning. Without this the scan is unusable
+   * in exactly the files that matter most: attribute-formats.ts and
+   * attribute-validator.ts both DISCUSS `new RegExp` at length in their doc
+   * comments, explaining why it is gone. A scan that cannot tell an
+   * explanation from a call would force those explanations to be deleted,
+   * which is the opposite of what this project wants.
+   */
+  function stripComments(text: string): string {
+    return text.replace(/\/\*[^]*?\*\//g, ' ').replace(/\/\/.*$/gm, ' ')
+  }
+
+  it('constructs no RegExp from a runtime value, and contains no eval or Function construction', () => {
+    const offenders: string[] = []
+
+    for (const file of sourceFiles(path.resolve(process.cwd(), 'src'))) {
+      const text = stripComments(readFileSync(file, 'utf8'))
+      if (
+        /\bnew\s+RegExp\s*\(/.test(text) ||
+        /(?<!\w|\.)RegExp\s*\(/.test(text) ||
+        /\beval\s*\(/.test(text) ||
+        /\bnew\s+Function\s*\(/.test(text) ||
+        /(?<!\w)Function\s*\(/.test(text)
+      ) {
+        offenders.push(path.relative(process.cwd(), file))
+      }
+    }
+
+    expect(offenders).toEqual([])
   })
 })
