@@ -167,16 +167,31 @@ state of each.
       commit off the request path. **The item most likely to take a real
       deployment down, and it is currently labelled "fixed".** Left alone here
       because choosing between those three is a product decision, not a defect fix.
-- [ ] **3. The system-actor guarantee is stale.**
-      `POST /connector-targets/:target/reconcile` induces a directory-wide,
-      unscoped, per-entity-unaudited system write from an HTTP request. Thread the
-      acting `userId` into `TargetReconciliationJob.auditOverride`, and correct the
-      two doc comments and the `docs/12-security.md` bullet that currently tell a
-      reader this cannot happen.
-- [ ] **4. Attribute values land verbatim and permanently in the audit log**, with
-      no read control (`users.controller.ts:200`). The report says this must land
-      **before** any `attribute_definitions` write path does — and that write path
-      has now merged, so this is a live blocker rather than a follow-up.
+- [x] **3. The system-actor guarantee is stale.** Both halves done: the acting
+      `userId` is threaded into `TargetReconciliationJob.auditOverride`, so a
+      `connector:reconcile-override` row names a human when one exists (the CLI
+      path keeps its system-actor shape), and the two doc comments plus the
+      `docs/12-security.md` bullet no longer tell a reader this cannot be induced
+      from a user-facing path. **Carried forward, still open:** the per-entity
+      writes a reconcile performs are not permission-checked, scope-narrowed,
+      audited or outboxed, so security constraint 7 does not hold for that route
+      (nor, less dramatically, for `PATCH /connector-targets/:target` and the
+      `attribute-target-mappings` routes).
+- [x] **4. Attribute values land verbatim and permanently in the audit log.**
+      Done. `attribute_definitions` gains a `sensitive` flag (migration `0026`);
+      flagged values are withheld from audit snapshots and the withheld keys are
+      named in `attributesRedacted`. Applied to every audit path the finding
+      lists — users create/update/activate/deactivate, self-service, imports, JML
+      lifecycle, the rule applier and bulk-activate — and deliberately NOT to
+      outbox payloads, because connectors provision from those. **Correction to
+      an earlier note in this file:** the `attribute_definitions` write path has
+      NOT merged; that controller still exposes only `@Get()`. So this landed
+      before a write path exists, which is what the audit's fix direction asked
+      for, rather than after one as previously stated here.
+      **Known limitation:** with both `before` and `after` redacted, an audit row
+      no longer shows whether a sensitive value CHANGED. A hash would restore
+      that, but these values are low-entropy and a hash of one is reversible by
+      enumeration, which would put the value back in the log by a side door.
 - [ ] **5. Enabling a propagation mapping retroactively exports withheld values**,
       and is now reachable. Needs a confirmation step stating how many users' values
       a new mapping will newly export. Interacts with item 4.
@@ -217,6 +232,13 @@ state of each.
 - [ ] **CS-M6.** `vite@5.4.21` + `esbuild@0.21.5` dev-server advisories, unfixed on
       the 5.x line. Developer workstations only, but this project's dev platform is
       Windows, where the path-traversal case is live.
+- [ ] **`Referrer-Policy: same-origin` still sends the search term to the API.**
+      Surfaced while fixing CS-L3. The access log no longer retains it, and the
+      request is same-origin so it terminates at nginx — not a live exposure. But
+      `same-origin-when-cross-origin` or `strict-origin-when-cross-origin` would
+      remove the term from the request itself rather than only from what gets
+      written down. Deferred because both vhost header blocks were just rewritten
+      for CS-M1 and this is a different header and a different finding.
 - [ ] **Remaining item-10 residuals** — `Cf`-category Unicode in display names,
       unknown `role_key` yielding an unmapped 500, admin-path audit `before`
       snapshot unlocked, `effective-members` never re-narrowing,
