@@ -152,6 +152,7 @@ state of each.
 | CS-M5 | CI ran with the default GITHUB_TOKEN scope, mutable action tags, and the token left on disk beside dependency lifecycle scripts. All three closed. |
 | CS-L1 | A failed sign-out was silent and the session survived. Now reported, driven by `auth.error` (a try/catch cannot see it), and `removeUser()` runs on the failure path. |
 | CS-L2 | `revokeTokensOnSignout` left at its `false` default. Set. |
+| CS-L3 | Search terms — people's names and emails — were written to `/var/log/nginx/access.log` in plaintext, from the console URL, from `GET /api/users?search=…`, and a third time from the same-origin `Referer`. Both vhosts now log through an `idm_noquery` format that drops the query string from the request line and the referrer; verified against nginx 1.24. Filters stay in the URL, so deep links still work — the browser-history half is documented, not fixed, and the OIDC `code`/`state` in the redirect is protocol behaviour, now merely not retained. |
 | SEC-L1 | PKCE `code_verifier`/`nonce` persisted in `localStorage`. Both stores are now sessionStorage. |
 | SEC-L2 | `POST /users`' 409 echoed the value back, confirming a cross-scope email/username against global unique indexes. Now non-confirming, with the two regression tests that were missing. |
 | SEC-L4 | `jwtVerify` did not require `exp`, so a signed token omitting it never expired. `requiredClaims: ['exp']`, with a test proven non-vacuous. |
@@ -198,8 +199,6 @@ state of each.
 - [ ] **CS-M6.** `vite@5.4.21` + `esbuild@0.21.5` dev-server advisories, unfixed on
       the 5.x line. Developer workstations only, but this project's dev platform is
       Windows, where the path-traversal case is live.
-- [ ] **CS-L3.** People's names and emails go into the URL query string, so they
-      land in browser history and nginx access logs in plaintext.
 - [ ] **Remaining item-10 residuals** — `Cf`-category Unicode in display names,
       unknown `role_key` yielding an unmapped 500, admin-path audit `before`
       snapshot unlocked, `effective-members` never re-narrowing,

@@ -276,8 +276,10 @@ and leave HTTP/2 out.
 | Service | `idm-api.service` — API **and** outbox worker in one process |
 | Timers | `idm-lifecycle.timer` (02:00) and `idm-reconcile.timer` (03:00), each firing a oneshot service |
 | Web bundle | `/opt/identity-manager/apps/web/dist`, served by nginx |
+| nginx vhost | `/etc/nginx/sites-available/idm.conf` |
+| nginx log format | `/etc/nginx/conf.d/idm-log.conf` — defines `idm_noquery`, which the vhost references |
 | Database | local PostgreSQL 16, database `identity_manager` |
-| Logs | `journalctl -u idm-api -f`; the timers log under `-u idm-lifecycle` / `-u idm-reconcile` |
+| Logs | `journalctl -u idm-api -f`; the timers log under `-u idm-lifecycle` / `-u idm-reconcile`; nginx's own `/var/log/nginx/access.log` |
 
 **Two database roles, deliberately.** `idm_owner` owns the schema and is what migrations
 run as; `idm_app` is what the application runs as, and is created *by* the migration
