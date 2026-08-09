@@ -76,12 +76,19 @@ code. Treat that file's "5 of 19 fail" section as history.
 - [x] **Task 10 — sweep job and CLI.** Done and verified: 23/23, including
       idempotence and tolerating a refusal without aborting the sweep. The CLI
       constructs the job itself, mirroring `target-reconcile`.
-- [ ] **Task 11 — actions, guards, controller.** `business_role:read` /
-      `business_role:manage`; mutation requires a *global* grant.
-      **Partially started** on `feat/br-task11-api` (pushed): the two actions and
-      their role assignments are added to `authz/actions.ts`, but the controller,
-      routes and guards are not written. A subagent was cut off by a session
-      limit; that branch is committed as explicitly-unverified WIP.
+- [x] **Task 11 — actions, guards, controller.** Done on `feat/br-task11-api`,
+      NOT yet merged. `business_role:read` (super_admin, user_admin, auditor,
+      read_only) and `business_role:manage` (super_admin alone), plus
+      `BusinessRolesController`: list/create/detail/patch, the
+      draft/simulate/publish gate, enable/disable, and the two exception
+      routes. Every MUTATING route asserts a *global* grant
+      (`scopePathsFor(...) === null`), so a scoped super_admin is refused —
+      finding AUTHZ-M-2, asserted route by route. Publish, enable and disable
+      sweep with `reconcileRole` AFTER their transaction commits; an exception
+      re-evaluates one person inside it. 27/27 in
+      `test/business-roles.controller.spec.ts`; `guard-coverage`,
+      `app.module`, `actions`, `business-roles` and `business-role-evaluator`
+      re-run green. The full suite was NOT run (concurrent agents).
 - [ ] **Task 12 — `GET /api/users/:id/entitlements`.** `justifiedBy` computed
       live, never stored; an unevaluable result returns rows with a marker
       rather than failing the read.
