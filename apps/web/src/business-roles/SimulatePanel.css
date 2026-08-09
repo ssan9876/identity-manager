@@ -1,0 +1,148 @@
+/* The simulate panel is a raised surface inside the Definition tab — the
+   same --panel-over-canvas relationship every table and toolbar in this
+   console uses, so it reads as part of the system rather than an inserted
+   widget. */
+.simulate {
+  padding: var(--space-5);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.simulate__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+
+.simulate__heading {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.simulate__hint {
+  margin-top: var(--space-1);
+  max-width: 68ch;
+  font-size: var(--text-base);
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+.simulate__skeletons {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Two counts and the population they came out of. Deliberately NOT a
+   stat-tile hero row: no card per figure, no accent fill, no third
+   decorative metric — an inset well, two numbers, and the sentence that
+   says what they mean. The numbers are large because this is the only
+   blast-radius control in the design, not for decoration. */
+.simulate__figures {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-6);
+  padding: var(--space-4) var(--space-5);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-md);
+}
+
+.simulate__figure {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.simulate__figure-value {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.simulate__figure-label {
+  font-size: var(--text-base);
+  color: var(--ink-muted);
+}
+
+.simulate__scanned {
+  margin-left: auto;
+  font-size: var(--text-sm);
+  color: var(--ink-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+.simulate__caveat {
+  margin-top: var(--space-3);
+  max-width: 78ch;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+.simulate__lists {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  gap: var(--space-6);
+  margin-top: var(--space-5);
+}
+
+.simulate__list-heading {
+  padding-bottom: var(--space-2);
+  margin-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.simulate__entries {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-height: 24rem;
+  overflow-y: auto;
+}
+
+.simulate__entry {
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.simulate__entry:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.simulate__entry-who {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.simulate__entry-org {
+  font-size: var(--text-xs);
+  color: var(--ink-subtle);
+}
+
+.simulate__entry-what {
+  margin-top: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+
+.simulate__more {
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--ink-subtle);
+}

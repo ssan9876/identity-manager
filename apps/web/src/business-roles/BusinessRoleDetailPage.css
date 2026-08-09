@@ -1,0 +1,220 @@
+.br-detail__breadcrumb {
+  margin-bottom: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.br-detail__breadcrumb a {
+  color: var(--ink-muted);
+}
+
+.br-detail__breadcrumb a:hover {
+  color: var(--ink);
+}
+
+.br-detail__skeletons {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.br-detail__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.br-detail__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+/* The state line sits between the header and the tabs, on the canvas
+   rather than in a panel: it is a caption for the whole page, not a
+   component of it. --ink for the state word, --ink-muted for the
+   explanation, so the three states are legible at a glance without
+   colour doing the work. */
+.br-detail__state {
+  margin-bottom: var(--space-4);
+  max-width: 82ch;
+  font-size: var(--text-base);
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+.br-detail__state strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.br-detail__safety {
+  margin-bottom: var(--space-5);
+}
+
+.br-detail__section-heading {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.br-detail__section-hint {
+  margin-top: var(--space-1);
+  max-width: 72ch;
+  font-size: var(--text-base);
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+.br-detail__optional {
+  font-weight: 400;
+  color: var(--ink-subtle);
+}
+
+.br-detail__draft-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+.br-detail__simulate {
+  margin-top: var(--space-6);
+}
+
+/* ---------------------------------------------------------------------
+ * The draft editor. Condition and grant rows are one shape — same row
+ * rhythm, same control vocabulary — because they are read together and a
+ * second layout for the second list would be noise.
+ * ------------------------------------------------------------------- */
+
+.definition-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+}
+
+.definition-editor__section {
+  padding: var(--space-5);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.definition-editor__section-head {
+  margin-bottom: var(--space-4);
+}
+
+.definition-editor__heading {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.definition-editor__hint {
+  margin-top: var(--space-1);
+  max-width: 72ch;
+  font-size: var(--text-base);
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+.rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.rule-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-md);
+}
+
+.rule-row__field {
+  flex: 1 1 12rem;
+  min-width: 9rem;
+}
+
+.rule-row__field--narrow {
+  flex: 0 1 11rem;
+}
+
+.rule-row__field .input,
+.rule-row__field .select {
+  width: 100%;
+}
+
+.rule-row__remove {
+  flex: none;
+}
+
+/* ---------------------------------------------------------------------
+ * Exceptions tab
+ * ------------------------------------------------------------------- */
+
+.br-exceptions__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-5);
+}
+
+.br-exceptions__form {
+  margin-bottom: var(--space-5);
+  padding: var(--space-5);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.br-exceptions__form-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.br-exceptions__person {
+  flex: 2 1 18rem;
+  min-width: 14rem;
+}
+
+.br-exceptions__mode {
+  flex: 2 1 18rem;
+  min-width: 14rem;
+}
+
+.br-exceptions__expiry {
+  flex: 1 1 12rem;
+  min-width: 11rem;
+}
+
+.br-exceptions__form-fields .input,
+.br-exceptions__form-fields .select {
+  width: 100%;
+}
+
+.br-exceptions__reason {
+  width: 100%;
+  min-height: 3.5rem;
+  resize: vertical;
+}
+
+.br-exceptions__form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}

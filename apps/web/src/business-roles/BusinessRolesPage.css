@@ -1,0 +1,63 @@
+/* The header shape comes from `.page-header` (styles/components.css); only
+   what is specific to this screen lives here. */
+
+/* The create form is a raised toolbar-class surface sitting above the
+   table, the same relationship PeopleListPage's filter row has with its
+   own results — it reads as something acting ON the list below it rather
+   than a second, unrelated block. Not a modal: docs/design-system.md bans "modal as
+   first thought", and a name plus a description does not earn one. */
+.business-roles__create {
+  margin-bottom: var(--space-5);
+  padding: var(--space-5);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.business-roles__create-heading {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.business-roles__create-hint {
+  margin-top: var(--space-1);
+  max-width: 68ch;
+  font-size: var(--text-base);
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+.business-roles__create-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.business-roles__create-name {
+  flex: 1 1 16rem;
+  min-width: 12rem;
+}
+
+.business-roles__create-description {
+  flex: 2 1 24rem;
+  min-width: 12rem;
+}
+
+.business-roles__create-fields .input {
+  width: 100%;
+}
+
+.business-roles__optional {
+  font-weight: 400;
+  color: var(--ink-subtle);
+}
+
+.business-roles__create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
