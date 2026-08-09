@@ -161,7 +161,32 @@ Carry-forward findings, already diagnosed:
       realm's creating service account admin rights on that realm. Decides
       whether `ensureRealm` needs an explicit `<realm>-realm` role grant.
 
-Tasks 3–16 are otherwise not started; the plan specifies each.
+- [x] **Tasks 3–4 — per-organization uniqueness and composite FKs.** Done.
+      Migrations `0028`/`0029`. Three bugs in the plan's own SQL were found and
+      fixed: `ON DELETE SET NULL` on the composite manager FK would have nulled
+      `organization_id` (which is NOT NULL), so **every manager deletion would
+      have failed** — now the Postgres 15+ column-list form
+      `ON DELETE SET NULL (manager_id)`, which Drizzle cannot express, so the
+      SQL is deliberately narrower than the schema declaration and both files
+      say why; composite FKs were added before the unique indexes they
+      reference; and an edge column was made NOT NULL with no backfill.
+- [ ] **NEW CONSTRAINT from Task 4: every migration from `0027` onward must be
+      re-runnable.** `migrate.spec.ts` used to rewind the ledger by deleting the
+      newest `created_at` row, which silently stopped testing `0027`'s guard the
+      moment any later migration landed — it would have kept passing while
+      asserting nothing. It now rewinds to `0027`'s own journal `when`, so the
+      whole tail replays. Use `ADD COLUMN IF NOT EXISTS` and `duplicate_object`
+      guards, as `0025` and `0029` do.
+- [ ] **Deferred to Task 12: teach `translateWriteError` the composite-FK
+      constraint names.** `GroupsRepository.addUser` now relies on
+      `gum_user_organization_fk` to refuse a cross-tenant membership, which
+      surfaces as a raw 23503 → 500 rather than a translated 4xx. Safe (the
+      write IS refused) and not reachable today, because there is exactly one
+      organization until the organizations API exists. Client responses stay
+      clean (SEC-L7), so nothing leaks. Do it in Task 12, when the journey that
+      makes it reachable is in hand.
+
+Tasks 5–16 are otherwise not started; the plan specifies each.
 
 ---
 
