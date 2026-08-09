@@ -3,7 +3,7 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { User } from '../src/users/users.repository'
 import type { JmlRule } from '../src/jml/jml-rules.repository'
-import { evaluateRule, matchRules, simulate } from '../src/jml/rule-engine'
+import { evaluateRule, KNOWN_ACTION_NAMES, matchRules, simulate } from '../src/jml/rule-engine'
 
 let ruleSeq = 0
 function makeRule(overrides: Partial<JmlRule> = {}): JmlRule {
@@ -16,8 +16,8 @@ function makeRule(overrides: Partial<JmlRule> = {}): JmlRule {
     conditionField: 'jobTitle',
     conditionOperator: 'equals',
     conditionValue: 'Engineer',
-    action: 'add_to_group',
-    actionParams: { groupId: '11111111-1111-1111-1111-111111111111' },
+    action: 'set_attribute',
+    actionParams: { key: 'costCenter', value: 'CC-42' },
     simulatedAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -51,6 +51,35 @@ function makeUser(overrides: Partial<User> = {}): User {
   }
 }
 
+describe('rule-engine (Milestone 19, Task 16): the group actions are gone', () => {
+  it('JML no longer grants group membership — business roles own desired state', () => {
+    expect([...KNOWN_ACTION_NAMES].sort()).toEqual(['deactivate', 'set_attribute'])
+  })
+
+  /**
+   * Postgres cannot `DROP VALUE` from an enum, so `jml_action` still carries
+   * both removed labels and a stored row really can come back holding one.
+   * The closed-set check is the ONLY thing rejecting it — hence the cast,
+   * which reproduces that row shape rather than pretending it is impossible.
+   *
+   * It must be REJECTED with a reason naming the action, not silently treated
+   * as "no match": a rule that stops firing without saying so is a permission
+   * somebody still believes is being maintained. Migration
+   * 0027_jml_group_actions_removed.sql refuses to run while such a row exists,
+   * so this is the second of two guards, not the only one.
+   */
+  for (const action of ['add_to_group', 'remove_from_group'] as const) {
+    it(`a stored rule naming "${action}" is rejected, not silently skipped`, () => {
+      const rule = makeRule({ action: action as unknown as JmlRule['action'] })
+
+      const result = evaluateRule(rule, makeUser({ jobTitle: 'Engineer' }))
+
+      expect(result.matched).toBe(false)
+      expect(result.skipReason).toBe('unknown_action')
+    })
+  }
+})
+
 describe('rule-engine (Milestone 7, Task 5): evaluateRule', () => {
   it('a matching rule yields its action', () => {
     const rule = makeRule({ conditionField: 'jobTitle', conditionOperator: 'equals', conditionValue: 'Engineer' })
@@ -59,7 +88,7 @@ describe('rule-engine (Milestone 7, Task 5): evaluateRule', () => {
     const result = evaluateRule(rule, user)
 
     expect(result.matched).toBe(true)
-    expect(result.action).toBe('add_to_group')
+    expect(result.action).toBe('set_attribute')
     expect(result.actionParams).toEqual(rule.actionParams)
     expect(result.skipReason).toBeNull()
   })
@@ -164,7 +193,7 @@ describe('rule-engine: matchRules (given a user and a trigger, return the matchi
       conditionField: 'jobTitle',
       conditionOperator: 'equals',
       conditionValue: 'Engineer',
-      action: 'add_to_group',
+      action: 'set_attribute',
     })
     const user = makeUser({ jobTitle: 'Engineer' })
 
@@ -174,7 +203,7 @@ describe('rule-engine: matchRules (given a user and a trigger, return the matchi
     expect(matches[0]).toEqual({
       ruleId: rule.id,
       ruleName: rule.name,
-      action: 'add_to_group',
+      action: 'set_attribute',
       actionParams: rule.actionParams,
     })
   })
@@ -226,7 +255,7 @@ describe('rule-engine: simulate (Milestone 7, Task 6) — writes nothing, previe
       conditionField: 'jobTitle',
       conditionOperator: 'equals',
       conditionValue: 'Engineer',
-      action: 'add_to_group',
+      action: 'set_attribute',
     })
     const matching = makeUser({ jobTitle: 'Engineer' })
     const nonMatching = makeUser({ jobTitle: 'Manager' })
@@ -238,7 +267,7 @@ describe('rule-engine: simulate (Milestone 7, Task 6) — writes nothing, previe
         userId: matching.id,
         username: matching.username,
         wouldApply: true,
-        action: 'add_to_group',
+        action: 'set_attribute',
         actionParams: rule.actionParams,
         skipReason: null,
       },

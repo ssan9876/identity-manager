@@ -23,7 +23,21 @@ export type JmlTrigger =
 
 export type JmlConditionOperator = 'equals' | 'not_equals' | 'in'
 
-export type JmlActionType = 'add_to_group' | 'remove_from_group' | 'set_attribute' | 'deactivate'
+/**
+ * Milestone 19, Task 16. `add_to_group`/`remove_from_group` are GONE: business
+ * roles own desired group membership now (the reconciler runs on every user
+ * write — Task 9 — and sweeps every user — Task 10), so a JML rule granting a
+ * membership would be a second, competing writer that the reconciler would
+ * simply revoke on its next pass.
+ *
+ * The `jml_action` POSTGRES ENUM keeps both labels, because Postgres cannot
+ * `DROP VALUE`. So a stored row can still carry one, and the closed-set check
+ * below is the only thing that rejects it — which is precisely the hazard
+ * `closedSet`'s `Object.create(null)` catalog exists for. Migration
+ * 0027_jml_group_actions_removed.sql refuses to run while any such row
+ * survives, so this cannot strand a rule silently.
+ */
+export type JmlActionType = 'set_attribute' | 'deactivate'
 
 /**
  * Why every "is this value one of the known ones" check below reads
@@ -57,12 +71,14 @@ const KNOWN_TRIGGERS = closedSet<JmlTrigger>([
   'end_date_reached',
 ])
 
-const KNOWN_ACTIONS = closedSet<JmlActionType>([
-  'add_to_group',
-  'remove_from_group',
-  'set_attribute',
-  'deactivate',
-])
+/**
+ * Exported so a test can assert the set has actually narrowed. Reading it back
+ * from `KNOWN_ACTIONS` rather than re-listing the names means the assertion
+ * cannot drift from the catalog it is checking.
+ */
+export const KNOWN_ACTION_NAMES: readonly JmlActionType[] = ['set_attribute', 'deactivate']
+
+const KNOWN_ACTIONS = closedSet<JmlActionType>(KNOWN_ACTION_NAMES)
 
 type FieldExtractor = (user: User) => unknown
 

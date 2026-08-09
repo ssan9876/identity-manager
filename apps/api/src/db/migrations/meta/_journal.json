@@ -190,6 +190,13 @@
       "when": 1786286023010,
       "tag": "0026_attribute_definitions_sensitive",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1786286024010,
+      "tag": "0027_jml_group_actions_removed",
+      "breakpoints": true
     }
   ]
 }
