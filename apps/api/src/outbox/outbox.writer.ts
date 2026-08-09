@@ -22,7 +22,21 @@ export type DbHandle = Parameters<
   Parameters<NodePgDatabase<typeof schema>['transaction']>[0]
 >[0]
 
-export type OutboxAggregateType = 'user' | 'group' | 'membership' | 'org_unit'
+// The array is the source and the union DERIVES from it — same discipline as
+// `ALL_CONNECTOR_TARGETS` (connectors/connector.ts), and for the same reason:
+// `targetsForAggregate` (target-fanout.ts) must be exhaustively testable
+// against every aggregate that exists, which needs the values at RUNTIME.
+// `test/connector-target-catalog.spec.ts` asserts this matches the
+// `outbox_aggregate_type` pgEnum in both directions.
+export const ALL_OUTBOX_AGGREGATE_TYPES = [
+  'user',
+  'group',
+  'membership',
+  'org_unit',
+  'sso_app',
+] as const
+
+export type OutboxAggregateType = (typeof ALL_OUTBOX_AGGREGATE_TYPES)[number]
 
 // No 'deleted' value — see db/schema/outbox-events.ts's doc comment on
 // `outboxEventType`. Removal propagates as 'status_changed' carrying

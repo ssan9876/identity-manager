@@ -40,9 +40,36 @@ export const ALL_CONNECTOR_TARGETS = [
   'google_workspace',
   'echo',
   'mail_server',
+  // SSO applications. Unlike every target above it, this one carries no
+  // principals at all — it registers OIDC clients. See DIRECTORY_TARGETS.
+  'keycloak_sso',
 ] as const
 
 export type ConnectorTarget = (typeof ALL_CONNECTOR_TARGETS)[number]
+
+// Targets that carry USERS. `keycloak_sso` carries applications: it has no
+// user attributes to map and no principals to reconcile, so the attribute
+// mapping editor and the per-target reconcile CLI iterate THIS list rather
+// than the full catalog. Handing either of them `keycloak_sso` would offer
+// attribute mappings for a target with no users, and let `pnpm
+// target-reconcile keycloak_sso` walk every user against a connector that
+// cannot accept one.
+//
+// Kept as a FILTER of ALL_CONNECTOR_TARGETS — not a second hand-written
+// literal — because a hand-copied list is exactly the "catalog drift" bug
+// this module's own doc comment above was written for. The classification
+// test in test/connector-target-catalog.spec.ts asserts the split stays
+// total, so a future target added to the catalog and forgotten here fails
+// the suite rather than silently defaulting to one side.
+export type DirectoryTarget = Exclude<ConnectorTarget, 'keycloak_sso'>
+
+// The tuple assertion is what lets `z.enum(DIRECTORY_TARGETS)` compile:
+// `.filter` returns a plain array and `z.enum` demands a non-empty tuple.
+// Safe by construction — the catalog above always holds more than just
+// `keycloak_sso`, and the catalog spec asserts the split covers it exactly.
+export const DIRECTORY_TARGETS = ALL_CONNECTOR_TARGETS.filter(
+  (target): target is DirectoryTarget => target !== 'keycloak_sso',
+) as [DirectoryTarget, ...DirectoryTarget[]]
 
 /**
  * A directory backend's DESIRED state for one user, already resolved to

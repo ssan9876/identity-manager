@@ -23,6 +23,7 @@ export type ConnectorTarget =
   | 'google_workspace'
   | 'echo'
   | 'mail_server'
+  | 'keycloak_sso'
 
 export const ALL_CONNECTOR_TARGETS: readonly ConnectorTarget[] = [
   'keycloak',
@@ -31,7 +32,19 @@ export const ALL_CONNECTOR_TARGETS: readonly ConnectorTarget[] = [
   'google_workspace',
   'echo',
   'mail_server',
+  'keycloak_sso',
 ]
+
+/**
+ * Mirrors `DIRECTORY_TARGETS` (apps/api/src/connectors/connector.ts) — the
+ * targets that carry USERS. `keycloak_sso` registers OIDC applications, so
+ * it has no user attributes to map; the attribute mapping editor iterates
+ * this list while the target list and dead-letter filter keep the full
+ * catalog.
+ */
+export const DIRECTORY_TARGETS: readonly ConnectorTarget[] = ALL_CONNECTOR_TARGETS.filter(
+  (target) => target !== 'keycloak_sso',
+)
 
 export const CONNECTOR_TARGET_LABEL: Record<ConnectorTarget, string> = {
   keycloak: 'Keycloak',
@@ -40,6 +53,7 @@ export const CONNECTOR_TARGET_LABEL: Record<ConnectorTarget, string> = {
   google_workspace: 'Google Workspace',
   echo: 'Echo (in-repo test target)',
   mail_server: 'Mail server',
+  keycloak_sso: 'Keycloak (SSO applications)',
 }
 
 /** Mirrors `CoreProfileField` (apps/api/src/connectors/attribute-mapping.ts). */
