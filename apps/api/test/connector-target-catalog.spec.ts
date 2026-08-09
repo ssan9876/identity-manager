@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { ALL_CONNECTOR_TARGETS } from '../src/connectors/connector'
+import { ALL_CONNECTOR_TARGETS, DIRECTORY_TARGETS } from '../src/connectors/connector'
 import { externalIdentitySystem } from '../src/db/schema/external-identities'
-import { outboxTarget } from '../src/db/schema/outbox-events'
+import { outboxAggregateType, outboxTarget } from '../src/db/schema/outbox-events'
+import { ALL_OUTBOX_AGGREGATE_TYPES } from '../src/outbox/outbox.writer'
 
 /**
  * The regression guard for the "catalog drift" security-audit finding.
@@ -38,5 +39,35 @@ describe('connector target catalog', () => {
 
   it('includes mail_server — the target whose absence this guard was written for', () => {
     expect(ALL_CONNECTOR_TARGETS).toContain('mail_server')
+  })
+
+  it('includes keycloak_sso — the SSO application target', () => {
+    expect(ALL_CONNECTOR_TARGETS).toContain('keycloak_sso')
+  })
+
+  it('DIRECTORY_TARGETS is every target that carries users — i.e. all but keycloak_sso', () => {
+    // keycloak_sso carries APPLICATIONS. Attribute mappings and the
+    // per-target reconcile CLI both walk users, so they must iterate this
+    // list, never the full catalog.
+    expect([...DIRECTORY_TARGETS].sort()).toEqual(
+      [...ALL_CONNECTOR_TARGETS].filter((t) => t !== 'keycloak_sso').sort(),
+    )
+  })
+
+  it('every target is classified — DIRECTORY_TARGETS plus keycloak_sso covers the catalog', () => {
+    // Fails when a future target is added to ALL_CONNECTOR_TARGETS and
+    // nobody decided whether it carries users.
+    const classified = new Set<string>([...DIRECTORY_TARGETS, 'keycloak_sso'])
+    expect([...classified].sort()).toEqual([...ALL_CONNECTOR_TARGETS].sort())
+  })
+})
+
+describe('outbox aggregate catalog', () => {
+  it('matches the outbox_aggregate_type pgEnum exactly, in both directions', () => {
+    expect([...ALL_OUTBOX_AGGREGATE_TYPES].sort()).toEqual([...outboxAggregateType.enumValues].sort())
+  })
+
+  it('includes sso_app', () => {
+    expect(ALL_OUTBOX_AGGREGATE_TYPES).toContain('sso_app')
   })
 })

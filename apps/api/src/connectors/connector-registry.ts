@@ -4,11 +4,18 @@ import { connectorTargets } from '../db/schema/connector-targets'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
 import type { DbHandle } from '../outbox/outbox.writer'
 import { ActiveDirectoryConnector } from './active-directory.connector'
-import type { ConnectorTarget, DirectoryConnector, DirectoryGroupConnector } from './connector'
+import type {
+  ConnectorHealth,
+  ConnectorTarget,
+  DirectoryConnector,
+  DirectoryGroupConnector,
+  SsoConnector,
+} from './connector'
 import { EchoConnector } from './echo.connector'
 import { EntraIdConnector } from './entra-id.connector'
 import { GoogleWorkspaceConnector } from './google-workspace.connector'
 import { KeycloakConnector } from './keycloak.connector'
+import { KeycloakSsoConnectorFactory } from './keycloak-sso.connector'
 import { MailServerConnector } from './mail-server.connector'
 
 /** Builds a connector instance already bound to ITS target's current `connector_targets.config` (see `ConnectorRegistry.resolve`). */
@@ -16,6 +23,7 @@ type ConnectorFactory = (config: Record<string, unknown>) => DirectoryConnector
 
 /** The GROUP-shaped mirror of `ConnectorFactory`, for `resolveGroupConnector` below. */
 type GroupConnectorFactory = (config: Record<string, unknown>) => DirectoryGroupConnector
+type SsoConnectorFactory = (config: Record<string, unknown>) => SsoConnector
 
 // Only the targets with a REAL implementation TODAY. Widening this (and the
 // `satisfies` literal in the constructor below) together, in the SAME
@@ -63,6 +71,13 @@ type ImplementedConnectorTarget =
 // reasoning, identical here).
 type ImplementedGroupConnectorTarget = 'active_directory' | 'echo'
 
+// The third interface family. `keycloak_sso` is deliberately absent from
+// BOTH unions above: it implements neither DirectoryConnector nor
+// DirectoryGroupConnector, so `resolve` throwing for it is correct, not a
+// gap -- see `healthFor` for the one place that must not care which family
+// a target belongs to.
+type ImplementedSsoConnectorTarget = 'keycloak_sso'
+
 /**
  * Target -> connector. This project has been bitten FOUR times by
  * prototype-chain bypasses (`'constructor' in obj` is `true`, and returns a
@@ -99,6 +114,7 @@ type ImplementedGroupConnectorTarget = 'active_directory' | 'echo'
 export class ConnectorRegistry {
   private readonly factories: Record<ImplementedConnectorTarget, ConnectorFactory>
   private readonly groupFactories: Record<ImplementedGroupConnectorTarget, GroupConnectorFactory>
+  private readonly ssoFactories: Record<ImplementedSsoConnectorTarget, SsoConnectorFactory>
 
   constructor(
     @Inject(KeycloakAdminClient) keycloak: KeycloakAdminClient,
@@ -149,6 +165,9 @@ export class ConnectorRegistry {
     @Optional()
     @Inject(MailServerConnector)
     private readonly mailServerConnector: MailServerConnector = new MailServerConnector(),
+    @Optional()
+    @Inject(KeycloakSsoConnectorFactory)
+    private readonly keycloakSsoConnectorFactory: KeycloakSsoConnectorFactory = new KeycloakSsoConnectorFactory(),
   ) {
     // Keycloak's OWN config source is unchanged by this task (still the
     // env-sourced KEYCLOAK_ADMIN_CONFIG token — see keycloak.connector.ts's
@@ -211,6 +230,13 @@ export class ConnectorRegistry {
         active_directory: (config: Record<string, unknown>) => this.activeDirectoryConnector.configure(config),
         echo: (config: Record<string, unknown>) => this.echoConnector.configure(config),
       } satisfies Record<ImplementedGroupConnectorTarget, GroupConnectorFactory>,
+    )
+    this.ssoFactories = Object.assign(
+      Object.create(null) as Record<ImplementedSsoConnectorTarget, SsoConnectorFactory>,
+      {
+        keycloak_sso: (config: Record<string, unknown>) =>
+          this.keycloakSsoConnectorFactory.configure(config),
+      } satisfies Record<ImplementedSsoConnectorTarget, SsoConnectorFactory>,
     )
   }
 
@@ -299,6 +325,33 @@ export class ConnectorRegistry {
   }
 
   /** The one Postgres read every `resolve*` method needs — `connector_targets.config` for `target`, via the CALLER's own `tx` (see `resolve`'s own doc comment on connection discipline). `undefined`/no row resolves to an empty config, same as before this was extracted. */
+  async resolveSsoConnector(target: ConnectorTarget, tx: DbHandle): Promise<SsoConnector | null> {
+    if (!Object.hasOwn(this.ssoFactories, target)) {
+      return null
+    }
+    const config = await this.loadConfig(target, tx)
+    return this.ssoFactories[target as ImplementedSsoConnectorTarget](config)
+  }
+
+  /**
+   * Health for ANY target, whichever interface family implements it.
+   *
+   * The console's target list must summarize every target in
+   * ALL_CONNECTOR_TARGETS, and `resolve` only knows the user-directory
+   * family. Calling it for `keycloak_sso` throws "no connector registered",
+   * which the caller would render as a FAILING health status on a target that
+   * is in fact perfectly healthy -- an operator would go hunting for a
+   * Keycloak outage that does not exist.
+   */
+  async healthFor(target: ConnectorTarget, tx: DbHandle): Promise<ConnectorHealth> {
+    const sso = await this.resolveSsoConnector(target, tx)
+    if (sso !== null) {
+      return sso.health()
+    }
+    const connector = await this.resolve(target, tx)
+    return connector.health()
+  }
+
   private async loadConfig(target: ConnectorTarget, tx: DbHandle): Promise<Record<string, unknown>> {
     const [row] = await tx
       .select({ config: connectorTargets.config })

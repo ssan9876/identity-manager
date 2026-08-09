@@ -4,7 +4,7 @@ import { ApiError } from '../api/client'
 import { fetchAttributeDefinitions } from '../attributes/api'
 import { useToast } from '../shell/ToastProvider'
 import {
-  ALL_CONNECTOR_TARGETS,
+  DIRECTORY_TARGETS,
   ALL_CORE_FIELDS,
   CONNECTOR_TARGET_LABEL,
   CORE_FIELD_LABEL,
@@ -184,7 +184,7 @@ export function AttributeMappingsEditor({ canManage }: { canManage: boolean }) {
           <thead>
             <tr>
               <th scope="col">Field</th>
-              {ALL_CONNECTOR_TARGETS.map((target) => (
+              {DIRECTORY_TARGETS.map((target) => (
                 <th scope="col" key={target}>
                   {CONNECTOR_TARGET_LABEL[target]}
                 </th>
@@ -198,7 +198,7 @@ export function AttributeMappingsEditor({ canManage }: { canManage: boolean }) {
                   <div className="mapping-editor__field-name">{row.label}</div>
                   <div className="cell-muted mono mapping-editor__field-key">{row.key}</div>
                 </td>
-                {ALL_CONNECTOR_TARGETS.map((target) => {
+                {DIRECTORY_TARGETS.map((target) => {
                   const mapping = findMapping(row, target)
                   const cell = cellKey(target, row.source, row.key)
                   const isAdding = addingCell === cell

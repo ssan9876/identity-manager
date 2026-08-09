@@ -18,12 +18,20 @@ import {
 // PARENT group's id but is NOT the same stream as that group's own
 // name/description/attributes — see outbox.writer.ts's doc comment on why
 // role assignment mutations, by contrast, are emitted as a 'user' aggregate
-// rather than getting a fifth value here.
+// rather than getting a value of their own here.
+//
+// 'sso_app' is the one value that describes something OTHER than a principal
+// or a grouping of principals. That difference is not cosmetic: fan-out is
+// filtered by aggregate type before any row is written (see
+// outbox/target-fanout.ts), because an application means nothing to Active
+// Directory, Entra or Google, and the `keycloak_sso` target has no idea what
+// a user is.
 export const outboxAggregateType = pgEnum('outbox_aggregate_type', [
   'user',
   'group',
   'membership',
   'org_unit',
+  'sso_app',
 ])
 
 // There is deliberately NO 'deleted' value — this system has no delete for
@@ -83,6 +91,9 @@ export const outboxTarget = pgEnum('outbox_target', [
   // addresses a principal by OUR user id rather than by an id of its own —
   // see `DesiredUser.userId`'s doc comment (connectors/connector.ts).
   'mail_server',
+  // SSO applications. Carries no principals — see DIRECTORY_TARGETS
+  // (connectors/connector.ts) for which surfaces must exclude it.
+  'keycloak_sso',
 ])
 
 export const outboxStatus = pgEnum('outbox_status', [

@@ -424,6 +424,52 @@ Every invocation is audited, dry runs included.
 
 ---
 
+## SSO applications
+
+Every route requires a **global** grant; `sso_app:read` and `sso_app:manage` are held
+by `super_admin` alone. A scoped grant is rejected with an explanation — an application
+belongs to no org unit, so there is nothing to narrow to.
+
+| Route | Action | Notes |
+|---|---|---|
+| `GET /sso-apps` | `sso_app:read` | |
+| `GET /sso-apps/:id` | `sso_app:read` | |
+| `POST /sso-apps` | `sso_app:manage` | |
+| `PATCH /sso-apps/:id` | `sso_app:manage` | |
+| `POST /sso-apps/:id/enable` | `sso_app:manage` | |
+| `POST /sso-apps/:id/disable` | `sso_app:manage` | |
+| `POST /sso-apps/:id/client-secret` | `sso_app:manage` | Mints; returns the value once |
+
+There is no `DELETE`.
+
+`PATCH` accepts `name`, `description`, `redirectUris`, `webOrigins`, `groupsClaim` and
+nothing else. Bodies are `.strict()`, so sending `clientId`, `publicClient` or `enabled`
+is a **400 naming the field**, not a silent no-op — an admin who thinks they renamed a
+client must not be told it worked. `clientId` is immutable because downstream
+applications hard-code it; `publicClient` because flipping it invalidates the secret and
+changes the whole auth model; `enabled` because enable/disable are separately audited
+verb routes, mirroring `POST /users/:id/deactivate`.
+
+**Validation rails.** A wildcard is permitted only in the path of a redirect URI —
+`https://app.example.com/*` is accepted, `https://*` and `*` are rejected. `webOrigins`
+accepts `+` but not `*`. Every offending value is reported in one response rather than
+failing on the first, and each reason names the value verbatim. A reserved client id is
+rejected (see [12 — Security](12-security.md#known-open-items)).
+
+**Client secrets.** `POST /sso-apps/:id/client-secret` mints a new secret, invalidating
+the previous one, and returns it in that one response. It is never stored — not in
+`sso_apps`, the outbox, or the audit snapshot — so there is no endpoint that can return
+it again and no reveal affordance in the console. The audit row records that a secret
+was minted, by whom, for which application, never the value. Rotation is a re-mint.
+
+| Case | Status |
+|---|---|
+| Minted before the first successful sync | **409** — the application exists here; no Keycloak client does yet |
+| Minted for a public client | **409** — public clients use PKCE and have no secret |
+| Duplicate `client_id` | **409** |
+
+---
+
 ## Audit and dead letters
 
 Both require a **global** grant of `audit:read`. A scoped grant is rejected with an

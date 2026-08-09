@@ -7,6 +7,25 @@ import {
   type Action,
 } from '../src/authz/actions'
 
+describe('sso_app actions', () => {
+  it('grants sso_app actions to super_admin only', () => {
+    // Minting OAuth clients is realm-security work, not people
+    // administration — deliberately NOT user_admin, which otherwise holds
+    // every create/update action in the catalog.
+    for (const action of ['sso_app:read', 'sso_app:manage'] as const) {
+      expect(ROLE_PERMISSIONS.super_admin).toContain(action)
+      for (const role of ALL_ROLE_KEYS.filter((r) => r !== 'super_admin')) {
+        expect(ROLE_PERMISSIONS[role]).not.toContain(action)
+      }
+    }
+  })
+
+  it('lists both actions in the catalog', () => {
+    expect(ALL_ACTIONS).toContain('sso_app:read')
+    expect(ALL_ACTIONS).toContain('sso_app:manage')
+  })
+})
+
 describe('role catalog', () => {
   it('defines permissions for every role', () => {
     for (const role of ALL_ROLE_KEYS) {

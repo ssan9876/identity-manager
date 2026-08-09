@@ -18,6 +18,8 @@ export type Action =
   | 'audit:read'
   | 'connector:read'
   | 'connector:manage'
+  | 'sso_app:read'
+  | 'sso_app:manage'
 
 /** Mirrors SelfPermissionsResponse from apps/api/src/self-service/self-service.controller.ts. */
 export interface SelfPermissionsResponse {

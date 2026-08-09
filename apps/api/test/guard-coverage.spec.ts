@@ -98,6 +98,7 @@ describe('guard coverage', () => {
         'OutboxController',
         'RoleAssignmentsController',
         'SelfServiceController',
+        'SsoAppsController',
         'UsersController',
       ].sort(),
     )

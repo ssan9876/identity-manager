@@ -20,6 +20,8 @@ export type Action =
   | 'audit:read'
   | 'connector:read'
   | 'connector:manage'
+  | 'sso_app:read'
+  | 'sso_app:manage'
 
 export const ALL_ROLE_KEYS: readonly RoleKey[] = [
   'super_admin',
@@ -44,6 +46,11 @@ export const ALL_ACTIONS: readonly Action[] = [
   'audit:read',
   'connector:read',
   'connector:manage',
+  // SSO applications. GLOBAL GRANT ONLY -- an application has no
+  // containing org unit, so there is nothing to narrow a scoped grant to;
+  // same rule as the audit log, dead letters and connector targets.
+  'sso_app:read',
+  'sso_app:manage',
 ]
 
 const READ_ONLY_ACTIONS: readonly Action[] = ['user:read', 'group:read', 'org_unit:read']

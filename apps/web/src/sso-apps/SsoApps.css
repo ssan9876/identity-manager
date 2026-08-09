@@ -1,0 +1,89 @@
+.detail-grid {
+  display: grid;
+  grid-template-columns: minmax(10rem, 14rem) 1fr;
+  gap: 0.75rem 1.5rem;
+  margin: 1.5rem 0;
+}
+
+.detail-grid dt {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.detail-grid dd {
+  margin: 0;
+}
+
+.plain-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.page__actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 1.5rem;
+}
+
+.secret-modal__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 55%);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  z-index: 100;
+}
+
+.secret-modal {
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 1.5rem;
+  max-width: 34rem;
+  width: 100%;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+}
+
+.secret-modal h2 {
+  margin-top: 0;
+}
+
+.secret-modal__warning {
+  font-weight: 600;
+}
+
+/* Selectable and wrapping: if the clipboard write fails, this is the only
+   copy of the value that will ever exist. */
+.secret-modal__value {
+  display: block;
+  margin: 1rem 0;
+  padding: 0.75rem;
+  border-radius: 6px;
+  background: var(--surface-sunken, rgb(0 0 0 / 20%));
+  font-family: var(--font-mono, ui-monospace, monospace);
+  word-break: break-all;
+  user-select: all;
+}
+
+.secret-modal__actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
+
+.secret-modal__copy-failed {
+  margin-top: 0.75rem;
+  color: var(--danger, #b3261e);
+}
+
+.secret-modal__note {
+  margin-bottom: 0;
+  margin-top: 1rem;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}

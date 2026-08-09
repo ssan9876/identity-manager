@@ -127,6 +127,7 @@ every run, because that script sends an admin password and receives a client sec
 | `idm-api` | confidential | The **audience**. Nobody logs into it; it exists so access tokens have an `aud` the API can match against `KEYCLOAK_AUDIENCE`. |
 | `idm-console` | public | Browser SSO for the web UI. Its `redirectUris`/`webOrigins` must be your real console URL. |
 | `idm-sync-service` | confidential, service account | What the outbox worker authenticates as to create and update users in Keycloak. |
+| `idm-sso-admin` | confidential, service account | Registers SSO application clients. Only needed if you use the Applications section. |
 
 `idm-sync-service` gets **exactly four** `realm-management` client roles:
 
@@ -137,6 +138,14 @@ manage-users   query-users   view-users   query-groups
 No more. The worker creates and updates users and reads groups; it never needs
 `manage-realm` or `manage-clients`, which would let it alter the realm's own security
 configuration.
+
+`idm-sso-admin` gets **`manage-clients` and nothing else**, and it is a separate
+credential precisely so the sync worker above does not hold it — the user and group
+path structurally cannot mint or alter an OIDC client rather than merely declining to.
+Its secret goes into `CONNECTOR_KEYCLOAK_SSO_CLIENT_SECRET`; the setup script prints
+it alongside the sync-service secret. Note that `manage-clients` is realm-wide and
+Keycloak offers nothing narrower — read
+[12 — Security](12-security.md#known-open-items) before enabling this.
 
 `idm-console` also gets an **audience protocol mapper** injecting `idm-api` into the
 access token. This is the single most commonly missed step when doing the setup by

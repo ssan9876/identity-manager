@@ -22,6 +22,12 @@ export const externalIdentitySystem = pgEnum('external_identity_system', [
   'google_workspace',
   'echo',
   'mail_server',
+  // Present so this enum stays one-for-one with `outboxTarget`, which the
+  // comment above depends on. No row in THIS table will ever carry it —
+  // `external_identities` correlates users, and `keycloak_sso` has none.
+  // Its correlation rows live in `external_sso_app_identities`, which reuses
+  // this same enum for its own `system` column.
+  'keycloak_sso',
 ])
 
 // Reflects whether THIS row's `external_id` is currently believed to match

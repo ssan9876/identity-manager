@@ -39,6 +39,49 @@ export interface ConfigFieldSpec {
  */
 export const TARGET_CONFIG_FIELDS: Record<ConnectorTarget, ConfigFieldSpec[]> = {
   keycloak: [],
+  // SSO applications. A SEPARATE credential from the `keycloak` target's
+  // above, deliberately: this one authenticates as `idm-sso-admin`, which
+  // holds `manage-clients` and nothing else, so the user and group sync path
+  // structurally cannot mint or alter an OIDC client.
+  //
+  // `realm` must name the SAME realm the console authenticates against —
+  // an application registered in a different realm is invisible to every
+  // account this system masters — which is why the connector's `health()`
+  // compares it against KEYCLOAK_ISSUER rather than trusting these two
+  // separately-carried values to stay aligned by hand.
+  keycloak_sso: [
+    {
+      key: 'baseUrl',
+      label: 'Keycloak base URL',
+      type: 'string',
+      required: true,
+      placeholder: 'https://sso.example.com',
+      hint: 'The Keycloak server root, without /realms. A trailing slash is trimmed.',
+    },
+    {
+      key: 'realm',
+      label: 'Realm',
+      type: 'string',
+      required: true,
+      placeholder: 'identity-manager',
+      hint: 'Must be the same realm the console signs in against, or registered applications will be invisible to your users.',
+    },
+    {
+      key: 'clientId',
+      label: 'Admin client ID',
+      type: 'string',
+      required: true,
+      placeholder: 'idm-sso-admin',
+      hint: 'Created by scripts/keycloak-setup.sh. Holds manage-clients only.',
+    },
+    {
+      key: 'credentialSecretName',
+      label: 'Client secret environment variable',
+      type: 'secret-name',
+      required: true,
+      placeholder: 'CONNECTOR_KEYCLOAK_SSO_CLIENT_SECRET',
+    },
+  ],
   // Sub-project 4. Mirrors `mail-server.connector.ts`'s own BASE_URL_KEY /
   // TOKEN_SECRET_NAME_KEY (both required — `requiredString` throws without
   // them) plus the one genuinely admin-facing behavioural switch. Its

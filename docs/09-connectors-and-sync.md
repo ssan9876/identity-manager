@@ -62,6 +62,55 @@ empty object.
 | `google_workspace` | ✅ | flattened via Members API | Google `id` |
 | `mail_server` | ✅ | — | **our** `users.id` |
 | `echo` | ✅ | ✅ | in-repo, for testing the spine |
+| `keycloak_sso` | — | — | Keycloak **client** UUID (applications, not people) |
+
+`keycloak_sso` is the one target that carries no principals at all. Everything that
+walks users — the attribute mapping editor and `pnpm target-reconcile` — iterates
+`DIRECTORY_TARGETS` (`connectors/connector.ts`), which is `ALL_CONNECTOR_TARGETS`
+minus this one. The dead-letter filter and the connector target list deliberately keep
+the full catalog: an `sso_app` event can dead-letter, and `keycloak_sso` is
+configurable and disable-able like any other target.
+
+### Three interface families
+
+`DirectoryConnector` (users) and `DirectoryGroupConnector` (groups) are joined by
+`SsoConnector` (applications): `planApp`, `applyApp`, `health`. An application is
+neither a user nor a group, and `DirectoryConnector` is deliberately narrow — widening
+it would make four methods over `DesiredUser` mean something different per target.
+`ConnectorRegistry.healthFor` dispatches to whichever family owns a target, so the
+console's target list can summarize all of them; calling `resolve` for `keycloak_sso`
+throws by design, and would otherwise render a healthy target as failing.
+
+`SsoConnector` has no `disable` (an application is always driven from its local row,
+so `enabled: false` in the desired state covers it) and no delete at all. Minting a
+client secret is deliberately **not** on this interface either — it is imperative and
+administrator-triggered, not desired-state reconciliation, and folding it in would
+imply the sync worker could call it.
+
+### Keycloak (SSO applications) — `keycloak_sso`
+
+Registers OIDC clients from `sso_apps`. Configured with `baseUrl`, `realm`, `clientId`
+(`idm-sso-admin`) and `credentialSecretName`
+(`CONNECTOR_KEYCLOAK_SSO_CLIENT_SECRET`).
+
+The realm **must** be the same one the console authenticates against — an application
+registered elsewhere is invisible to every account this system masters. The two
+targets carry that value separately, so `health()` should compare it against
+`KEYCLOAK_ISSUER` rather than trusting an admin to keep them aligned by hand.
+
+Two Keycloak behaviours the implementation handles explicitly:
+
+- **Protocol mappers are ignored on update.** Keycloak accepts `protocolMappers` on
+  client create and silently drops them on update — `scripts/keycloak-setup.sh` hits
+  the identical trap with the `idm-api` audience mapper. The `groups` mapper is
+  therefore asserted against `/clients/{uuid}/protocol-mappers/models` on every apply.
+  Miss this and the failure is the confusing one: the client looks fully configured and
+  the claim is simply absent from the token.
+- **Read-modify-write, never blind overwrite.** Client update takes a full
+  `ClientRepresentation`, so the connector reads the current one and overlays only the
+  fields this system manages, leaving `defaultClientScopes` and admin-set `attributes`
+  intact. *Not yet verified empirically against Keycloak 26 — it is the safe choice
+  under either answer, but whether a partial PUT would also work is unproven.*
 
 ### Keycloak
 

@@ -3,6 +3,9 @@ import { useAuth } from 'react-oidc-context'
 import { Route, Routes } from 'react-router-dom'
 import AuditPage from './audit/AuditPage'
 import ConnectorsListPage from './connectors/ConnectorsListPage'
+import CreateSsoAppPage from './sso-apps/CreateSsoAppPage'
+import SsoAppDetailPage from './sso-apps/SsoAppDetailPage'
+import SsoAppsListPage from './sso-apps/SsoAppsListPage'
 import TargetDetailPage from './connectors/TargetDetailPage'
 import CreateGroupPage from './groups/CreateGroupPage'
 import EditGroupPage from './groups/EditGroupPage'
@@ -163,6 +166,9 @@ export default function App() {
           <Route path="/roles" element={<RolesCatalogPage />} />
           <Route path="/import" element={<ImportPage />} />
           <Route path="/audit" element={<AuditPage />} />
+          <Route path="/applications" element={<SsoAppsListPage />} />
+          <Route path="/applications/new" element={<CreateSsoAppPage />} />
+          <Route path="/applications/:id" element={<SsoAppDetailPage />} />
           <Route path="/connectors" element={<ConnectorsListPage />} />
           <Route path="/connectors/:target" element={<TargetDetailPage />} />
           <Route path="/self" element={<SelfServicePage />} />

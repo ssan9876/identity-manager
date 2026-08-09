@@ -307,8 +307,10 @@ export class ConnectorTargetsController {
 
     let health: ConnectorHealth
     try {
-      const connector = await this.db.transaction((tx) => this.registry.resolve(target, tx))
-      health = await connector.health()
+      // healthFor, not resolve+health: `resolve` only knows the
+      // user-directory family, so it throws "no connector registered" for
+      // keycloak_sso and this catch would report a healthy target as failing.
+      health = await this.db.transaction((tx) => this.registry.healthFor(target, tx))
     } catch (error) {
       health = { ok: false, detail: error instanceof Error ? error.message : String(error) }
     }

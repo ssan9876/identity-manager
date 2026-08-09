@@ -40,9 +40,36 @@ export const ALL_CONNECTOR_TARGETS = [
   'google_workspace',
   'echo',
   'mail_server',
+  // SSO applications. Unlike every target above it, this one carries no
+  // principals at all — it registers OIDC clients. See DIRECTORY_TARGETS.
+  'keycloak_sso',
 ] as const
 
 export type ConnectorTarget = (typeof ALL_CONNECTOR_TARGETS)[number]
+
+// Targets that carry USERS. `keycloak_sso` carries applications: it has no
+// user attributes to map and no principals to reconcile, so the attribute
+// mapping editor and the per-target reconcile CLI iterate THIS list rather
+// than the full catalog. Handing either of them `keycloak_sso` would offer
+// attribute mappings for a target with no users, and let `pnpm
+// target-reconcile keycloak_sso` walk every user against a connector that
+// cannot accept one.
+//
+// Kept as a FILTER of ALL_CONNECTOR_TARGETS — not a second hand-written
+// literal — because a hand-copied list is exactly the "catalog drift" bug
+// this module's own doc comment above was written for. The classification
+// test in test/connector-target-catalog.spec.ts asserts the split stays
+// total, so a future target added to the catalog and forgotten here fails
+// the suite rather than silently defaulting to one side.
+export type DirectoryTarget = Exclude<ConnectorTarget, 'keycloak_sso'>
+
+// The tuple assertion is what lets `z.enum(DIRECTORY_TARGETS)` compile:
+// `.filter` returns a plain array and `z.enum` demands a non-empty tuple.
+// Safe by construction — the catalog above always holds more than just
+// `keycloak_sso`, and the catalog spec asserts the split covers it exactly.
+export const DIRECTORY_TARGETS = ALL_CONNECTOR_TARGETS.filter(
+  (target): target is DirectoryTarget => target !== 'keycloak_sso',
+) as [DirectoryTarget, ...DirectoryTarget[]]
 
 /**
  * A directory backend's DESIRED state for one user, already resolved to
@@ -432,5 +459,48 @@ export interface DirectoryConnector {
   disable(externalId: string): Promise<void>
 
   /** Can we reach and authenticate to this target RIGHT NOW. Never throws — a target whose secret is missing from the environment resolves to `{ ok: false, detail: <actionable, secret-VALUE-free message> }`, not a thrown error. */
+  health(): Promise<ConnectorHealth>
+}
+
+/**
+ * An SSO application's DESIRED state, already resolved to plain data — same
+ * discipline as `DesiredUser`/`DesiredGroup`: no connector implementation
+ * reads Postgres itself.
+ *
+ * `existingExternalId` is the Keycloak client UUID from a previous successful
+ * sync, absent before the first one. It is what makes a clientId rename in
+ * Keycloak recoverable rather than duplicating the client — see
+ * `KeycloakSsoConnector.findExisting`.
+ */
+export interface DesiredSsoApp {
+  clientId: string
+  name: string
+  description: string
+  protocol: 'openid-connect'
+  publicClient: boolean
+  redirectUris: readonly string[]
+  webOrigins: readonly string[]
+  groupsClaim: boolean
+  enabled: boolean
+  existingExternalId?: string
+}
+
+/**
+ * The third connector interface family, alongside `DirectoryConnector`
+ * (users) and `DirectoryGroupConnector` (groups). An application is neither a
+ * user nor a group, and `DirectoryConnector`'s own doc comment calls it
+ * settled and deliberately narrow — widening it to carry applications would
+ * make four methods over `DesiredUser` mean something different per target.
+ *
+ * No `disable`. A person must be disable-able knowing only an external id,
+ * because the offboarding path works from `external_identities`; an
+ * application is always driven from its local row, so `enabled: false` in the
+ * desired state covers it. No delete at all, deliberately — removing the
+ * capability removes the class of disaster, exactly as `DirectoryConnector`
+ * records for the same decision.
+ */
+export interface SsoConnector {
+  planApp(desired: DesiredSsoApp): Promise<ConnectorOperation[]>
+  applyApp(desired: DesiredSsoApp): Promise<{ externalId: string }>
   health(): Promise<ConnectorHealth>
 }

@@ -1,6 +1,6 @@
 import { AuditWriter } from '../audit/audit.writer'
 import { loadEnv } from '../config/env'
-import { ALL_CONNECTOR_TARGETS, type ConnectorTarget } from '../connectors/connector'
+import { DIRECTORY_TARGETS, type ConnectorTarget } from '../connectors/connector'
 import { ConnectorRegistry } from '../connectors/connector-registry'
 import { createDbClient } from '../db/client'
 import { GroupsRepository } from '../groups/groups.repository'
@@ -19,7 +19,9 @@ import { TargetReconciliationJob, type TargetReconciliationReport } from './targ
 // the moment `mail_server` was added, so the CLI rejected a real target as
 // unknown — including the `--dry-run` step the deployment runbook tells an
 // operator to run first.
-const KNOWN_TARGETS: readonly ConnectorTarget[] = ALL_CONNECTOR_TARGETS
+// Reconcile walks every USER against one target, so an application-only
+// target is not a valid argument here — see DIRECTORY_TARGETS.
+const KNOWN_TARGETS: readonly ConnectorTarget[] = DIRECTORY_TARGETS
 
 interface ParsedArgs {
   target: ConnectorTarget

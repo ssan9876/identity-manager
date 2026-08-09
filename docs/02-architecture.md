@@ -95,14 +95,23 @@ mutation itself. Either both land or neither does.
 An event carries `(aggregateType, aggregateId, eventType, payload, target, status,
 attempts, nextAttemptAt, lastError)`.
 
-- **Aggregates**: `user`, `group`, `membership`, `org_unit`. `membership` is its own
-  aggregate because a membership row is a pure edge with no id of its own — it is
-  anchored on the parent group but is not the same stream as that group's own
-  name/description/attributes.
+- **Aggregates**: `user`, `group`, `membership`, `org_unit`, `sso_app`. `membership`
+  is its own aggregate because a membership row is a pure edge with no id of its own —
+  it is anchored on the parent group but is not the same stream as that group's own
+  name/description/attributes. `sso_app` is the one aggregate that describes something
+  other than a principal or a grouping of principals: a registered OIDC application.
 - **There is no `deleted` event type.** Nothing in this system is deleted. Removal
   propagates as `status_changed` carrying `deactivated`.
-- **Fan-out happens at write time.** `OutboxWriter.record` reads `connector_targets
-  WHERE enabled = true` and writes one row per enabled target.
+- **Fan-out happens at write time, and is aggregate-aware.** `OutboxWriter.record`
+  reads `connector_targets WHERE enabled = true`, then filters that list through
+  `targetsForAggregate` (`outbox/target-fanout.ts`) before writing a row per surviving
+  target. An `sso_app` event reaches `keycloak_sso` and nothing else; every other
+  aggregate reaches every enabled target *except* `keycloak_sso`. Without that filter
+  an application would be handed to Active Directory, Entra and Google — none of which
+  know what an application is — and every one of those rows would fail, retry and
+  dead-letter. The split is asserted against both pgEnums in
+  `test/target-fanout.spec.ts`, so a future aggregate added and left unclassified
+  fails the suite rather than defaulting to the directory branch.
 - **Ordering is per `(aggregate, target)`**, not per aggregate. A stalled Active
   Directory delivery for a user must not head-of-line block that same user's later
   Keycloak events.
