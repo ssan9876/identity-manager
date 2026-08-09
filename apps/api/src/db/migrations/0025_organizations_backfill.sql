@@ -8,8 +8,7 @@
 -- — column types, FK constraint names, index names — matches exactly what
 -- `db:generate` would have produced from the Drizzle schema changes in this
 -- same commit (confirmed by generating it once to check, then replacing the
--- generated ALTER-only body with this backfill-aware sequence — see
--- task-2-report.md).
+-- generated ALTER-only body with this backfill-aware sequence).
 
 -- The master organization. `realm` stays NULL until first startup resolves
 -- KEYCLOAK_ISSUER into it (see master-organization.ts) — the CHECK added in

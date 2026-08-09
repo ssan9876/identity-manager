@@ -714,18 +714,6 @@ export class UsersRepository {
   }
 
   /**
-   * Every NOT-YET-`deactivated` user whose `end_date` has passed (<=
-   * `onOrBeforeDate`) — Milestone 7, Task 7's leaver half. `status <>
-   * 'deactivated'` (rather than restricting to `active`) deliberately also
-   * catches a `pending` or `suspended` user whose end date arrived without
-   * ever being activated (or while suspended) — an offboarded-before-ever-
-   * onboarded/resumed employee is exactly as much a leaver as an active one.
-   * `deactivated` is terminal (UsersRepository.changeStatus's own doc
-   * comment), so excluding it here is what makes this query naturally
-   * idempotent across repeated runs, the same mechanism
-   * `listPendingWithStartDateOnOrBefore` uses above.
-   */
-  /**
    * Every `pending` user, optionally narrowed to ONE org-unit SUBTREE —
    * `BulkActivateJob`'s candidate query.
    *
@@ -761,6 +749,18 @@ export class UsersRepository {
     return rows as User[]
   }
 
+  /**
+   * Every NOT-YET-`deactivated` user whose `end_date` has passed (<=
+   * `onOrBeforeDate`) — Milestone 7, Task 7's leaver half. `status <>
+   * 'deactivated'` (rather than restricting to `active`) deliberately also
+   * catches a `pending` or `suspended` user whose end date arrived without
+   * ever being activated (or while suspended) — an offboarded-before-ever-
+   * onboarded/resumed employee is exactly as much a leaver as an active one.
+   * `deactivated` is terminal (UsersRepository.changeStatus's own doc
+   * comment), so excluding it here is what makes this query naturally
+   * idempotent across repeated runs, the same mechanism
+   * `listPendingWithStartDateOnOrBefore` uses above.
+   */
   async listNonDeactivatedWithEndDateOnOrBefore(onOrBeforeDate: string): Promise<User[]> {
     const rows = await this.db
       .select()
