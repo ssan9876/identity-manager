@@ -539,7 +539,8 @@ export default function BusinessRoleDetailPage() {
             running={simulating}
             error={simulateError}
             canSimulate={canManage}
-            hasDraft={role.draftDefinition !== null && !dirty}
+            hasDraft={role.draftDefinition !== null}
+            dirty={dirty}
             onSimulate={() => void handleSimulate()}
           />
         </div>

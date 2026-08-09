@@ -128,8 +128,10 @@ export interface SimulatePanelProps {
   error: string | null
   /** True when the caller may run a simulation at all (`business_role:manage`, held globally). */
   canSimulate: boolean
-  /** False when there is no draft to simulate — the API answers that with a 409, so the button says so first. */
+  /** False when there is no draft to simulate — the API answers that with a 409, so the panel says so first. */
   hasDraft: boolean
+  /** True when the editor above holds unsaved edits: simulating now would report on the SAVED draft, which is not what is on screen. */
+  dirty: boolean
   onSimulate: () => void
 }
 
@@ -156,6 +158,7 @@ export function SimulatePanel({
   error,
   canSimulate,
   hasDraft,
+  dirty,
   onSimulate,
 }: SimulatePanelProps) {
   const people = useResolvedPeople([...(report?.losses ?? []), ...(report?.gains ?? [])])
@@ -181,7 +184,7 @@ export function SimulatePanel({
           <button
             type="button"
             className="btn btn--secondary"
-            disabled={running || !hasDraft}
+            disabled={running || !hasDraft || dirty}
             data-loading={running ? 'true' : undefined}
             onClick={onSimulate}
             data-testid="run-simulation-again"
@@ -206,9 +209,11 @@ export function SimulatePanel({
         </div>
       ) : report === null ? (
         <p className="cell-muted" data-testid="simulate-idle">
-          {hasDraft
-            ? 'No simulation for this draft yet. Publishing is blocked until there is one.'
-            : 'There are no pending changes to simulate.'}
+          {dirty
+            ? 'Save the draft first — a simulation runs against what is stored, not against unsaved edits.'
+            : hasDraft
+              ? 'No simulation for this draft yet. Publishing is blocked until there is one.'
+              : 'There are no pending changes to simulate.'}
         </p>
       ) : (
         <>
