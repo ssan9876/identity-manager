@@ -160,20 +160,29 @@ export const outboxEvents = pgTable(
     // index must change TOGETHER, in the SAME shape, or the fix is either
     // wrong or slow.
     //
-    // Known, accepted trade-off: `SyncStateRepository`'s `latestUserEvents`/
-    // `latestEventsForAggregateType`/`latestMembershipEvents` queries also
-    // lean on this index for their `WHERE aggregate_type = ? ... ORDER BY
-    // aggregate_id, id DESC` / `DISTINCT ON (aggregate_id)` shape, which
-    // does NOT constrain `target` at all. With `target` now sitting between
-    // `aggregate_id` and `id`, Postgres can no longer walk this index in a
-    // single pre-sorted pass to get "max id per aggregate_id" the way the
-    // old 3-column index allowed — it may fall back to an index scan on the
-    // equality prefix plus an explicit sort. Still CORRECT (DISTINCT ON's
-    // semantics do not depend on which index executes it), only potentially
-    // less efficient at large scale; not addressed by this task, since
-    // `SyncStateRepository` stays intentionally Keycloak-scoped (Milestone
-    // 10, Task 1 seeds no other target as enabled — see connector-targets.ts
-    // — so it has no non-Keycloak rows to reason about yet regardless).
+    // FORMER trade-off, resolved 2026-08-08 (sync-diagnostics spec).
+    // `SyncStateRepository`'s `latestUserEvents`/
+    // `latestEventsForAggregateType`/`latestMembershipEvents` used to run
+    // `DISTINCT ON (aggregate_id) ... ORDER BY aggregate_id, id DESC`, which
+    // does not constrain `target` at all — so once `target` was inserted
+    // between `aggregate_id` and `id`, Postgres could no longer walk this
+    // index in a single pre-sorted pass for "max id per aggregate_id" and
+    // fell back to an equality-prefix scan plus an explicit sort.
+    //
+    // That was accepted on the reasoning that the read model "stays
+    // intentionally Keycloak-scoped (Milestone 10, Task 1 seeds no other
+    // target as enabled)". Enabling `mail_server` ended that, and the same
+    // assumption turned out to be the root of a real defect, not just a
+    // performance note: a dead-lettered mail event outranked a healthy
+    // Keycloak sync for the same user and the badge could never recover.
+    // See SyncStateRepository's own doc comment.
+    //
+    // Those queries now group per (aggregate, target) —
+    // `DISTINCT ON (aggregate_id, target) ... ORDER BY aggregate_id, target,
+    // id DESC` — which is exactly this index's column order after the
+    // `aggregate_type` equality prefix, so the sort is served by the index
+    // again rather than materialized. The correctness fix and the plan
+    // improvement were the same edit.
     aggregateIdx: index('outbox_events_aggregate_idx').on(
       table.aggregateType,
       table.aggregateId,

@@ -3,8 +3,10 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { DB_CLIENT } from '../common/db.token'
 import * as schema from '../db/schema/index'
+import { connectorTargets } from '../db/schema/connector-targets'
 import { externalIdentities } from '../db/schema/external-identities'
 import { GroupsRepository } from '../groups/groups.repository'
+import type { OutboxTarget } from './outbox.writer'
 
 /**
  * The read model's derived, user-facing sync health (Milestone 4, Task 4) —
@@ -24,6 +26,7 @@ export type SyncState = 'pending' | 'synced' | 'failed'
 // alias gets from TypeScript, never a named `interface`.
 type LatestAggregateEventRow = {
   aggregate_id: string
+  target: OutboxTarget
   status: 'pending' | 'processing' | 'done' | 'failed'
 }
 
@@ -58,6 +61,16 @@ function raiseWorst(
   target.set(key, status)
 }
 
+/**
+ * `external_identity_system` and `outbox_target` have identical members
+ * (db/schema/external-identities.ts's own doc comment), so one key shape
+ * serves both maps. `:` is an unambiguous separator because neither a uuid
+ * nor any enum member can contain one — no escaping needed.
+ */
+function perTargetKey(userId: string, target: string): string {
+  return `${userId}:${target}`
+}
+
 function worseOf(
   a: 'pending' | 'failed' | undefined,
   b: 'pending' | 'failed' | undefined,
@@ -87,8 +100,23 @@ function worseOf(
  * aggregate types and folds in whichever of THOSE currently-troubled
  * aggregates the user is an effective member of.
  *
- * Only the LATEST event per aggregate is consulted, not "has this aggregate
- * EVER had a failure" — `outbox_events` rows are never deleted, including
+ * TARGET SCOPE (2026-08-08 sync-diagnostics spec). Both halves are scoped to
+ * the targets currently `enabled` in `connector_targets`. This class was
+ * formerly incoherent: the `external_identities` half filtered
+ * `system = 'keycloak'` while the outbox half filtered no target whatsoever
+ * — invisibly consistent while Keycloak was the only enabled target, and
+ * silently wrong the moment `mail_server` was enabled, at which point a
+ * dead-lettered mail event outranked a healthy Keycloak sync and the badge
+ * could never go green again. Widening (not narrowing) is deliberate:
+ * docs/product-brief.md's second requirement is that a user must never look
+ * healthy while a real sync is broken. Within ONE target the two sources are
+ * ORDERED — the latest event decides, and `external_identities` is consulted
+ * only when that target has no event at all, so a connector that returned
+ * NotApplicableError (a `done` event, no identity row) reads as settled
+ * rather than permanently pending.
+ *
+ * Only the LATEST event per (aggregate, target) is consulted, not "has this
+ * aggregate EVER had a failure" — `outbox_events` rows are never deleted, including
  * dead letters, so an aggregate that failed once and was later fixed by a
  * subsequent, successful event must read as healthy again, matching
  * `external_identities`' own self-healing behaviour (a later successful
@@ -151,22 +179,59 @@ export class SyncStateRepository {
     }
     const ids = [...new Set(userIds)]
 
+    const targets = await this.enabledTargets()
+    if (targets.length === 0) {
+      // No target is enabled, so nothing can be asserted anywhere and no
+      // claim of health would be honest. Matches the pre-existing fallback
+      // for a user with no events and no identity row.
+      for (const userId of ids) result.set(userId, 'pending')
+      return result
+    }
+
     const [identityRows, userEvents, groupEvents, membershipEvents] = await Promise.all([
       this.db
-        .select({ userId: externalIdentities.userId, syncState: externalIdentities.syncState })
+        .select({
+          userId: externalIdentities.userId,
+          system: externalIdentities.system,
+          syncState: externalIdentities.syncState,
+        })
         .from(externalIdentities)
-        .where(
-          and(inArray(externalIdentities.userId, ids), eq(externalIdentities.system, 'keycloak')),
-        ),
-      this.latestUserEvents(ids),
-      this.latestEventsForAggregateType('group'),
-      this.latestMembershipEvents(),
+        .where(and(inArray(externalIdentities.userId, ids), inArray(externalIdentities.system, targets))),
+      this.latestUserEvents(ids, targets),
+      this.latestEventsForAggregateType('group', targets),
+      this.latestMembershipEvents(targets),
     ])
 
-    const troubledUsers = new Map<string, 'pending' | 'failed'>()
+    const eventByUserTarget = new Map<string, LatestAggregateEventRow['status']>()
     for (const row of userEvents) {
-      const status = unsettledStatus(row.status)
-      if (status !== null) raiseWorst(troubledUsers, row.aggregate_id, status)
+      eventByUserTarget.set(perTargetKey(row.aggregate_id, row.target), row.status)
+    }
+    const identityByUserSystem = new Map<string, 'pending' | 'synced' | 'failed'>()
+    for (const row of identityRows) {
+      identityByUserSystem.set(perTargetKey(row.userId, row.system), row.syncState)
+    }
+
+    // THE ORDERED RULE (2026-08-08 sync-diagnostics spec, "The
+    // not-applicable subtlety"). The latest event for a (user, target)
+    // decides first; the external_identities row is consulted ONLY when that
+    // target has no event at all. A connector that threw NotApplicableError
+    // leaves a `done` event and NO identity row -- settled, contributing
+    // nothing -- which a naive "missing row means pending" reading would
+    // turn into a permanently yellow badge for every mail-exempt person.
+    const troubledUsers = new Map<string, 'pending' | 'failed'>()
+    for (const userId of ids) {
+      for (const target of targets) {
+        const key = perTargetKey(userId, target)
+        const eventStatus = eventByUserTarget.get(key)
+        if (eventStatus !== undefined) {
+          const status = unsettledStatus(eventStatus)
+          if (status !== null) raiseWorst(troubledUsers, userId, status)
+          continue
+        }
+        const identity = identityByUserSystem.get(key)
+        if (identity === 'failed') raiseWorst(troubledUsers, userId, 'failed')
+        else if (identity !== 'synced') raiseWorst(troubledUsers, userId, 'pending')
+      }
     }
 
     const affectedByGroup = new Map<string, 'pending' | 'failed'>()
@@ -181,7 +246,7 @@ export class SyncStateRepository {
 
     // Finding H3 (docs/archive/audits/audit-integrity.md): mirrors
     // SyncWorker.reconcileMembership's OWN affected-set computation exactly
-    // — `payload.userId` names a direct add/remove's single affected user
+    // -- `payload.userId` names a direct add/remove's single affected user
     // DIRECTLY (still discoverable even after a removal deletes the edge);
     // `payload.childGroupId` affects every user CURRENTLY effective under
     // that child. A troubled event can carry either, so both are checked
@@ -202,13 +267,23 @@ export class SyncStateRepository {
       }
     }
 
-    const identityByUser = new Map(identityRows.map((row) => [row.userId, row.syncState]))
-
     for (const userId of ids) {
       const worst = worseOf(troubledUsers.get(userId), affectedByGroup.get(userId))
-      result.set(userId, worst ?? identityByUser.get(userId) ?? 'pending')
+      // No `?? identityByUser.get(userId)` tail any more: the per-target loop
+      // above already folded every enabled target's identity row in, so
+      // "nothing troubled" now genuinely means synced.
+      result.set(userId, worst ?? 'synced')
     }
     return result
+  }
+
+  /** Targets an operator currently has switched on. The SAME `WHERE enabled = true` read `OutboxWriter.record` uses to decide fan-out, so this read model can never weigh a target the writer would not even emit for. */
+  private async enabledTargets(): Promise<OutboxTarget[]> {
+    const rows = await this.db
+      .select({ target: connectorTargets.target })
+      .from(connectorTargets)
+      .where(eq(connectorTargets.enabled, true))
+    return rows.map((row) => row.target)
   }
 
   /**
@@ -219,14 +294,28 @@ export class SyncStateRepository {
    * `${ids}` interpolation would splice as individually-bound scalars
    * (Drizzle's IN-list convenience shape), which cannot cast to an array
    * type for `= ANY(...)`.
+   *
+   * Latest event per (aggregate, TARGET) -- not per aggregate (2026-08-08
+   * sync-diagnostics spec). That distinction IS the fix:
+   * `DISTINCT ON (aggregate_id)` alone let a dead-lettered mail_server event
+   * outrank a later successful keycloak one for the same user, because the
+   * newer id won regardless of which backend it described.
+   *
+   * `target::text = ANY(...::text[])` rather than a native enum array cast:
+   * `sql.param` binds a JS string[] as a text array, and Postgres will not
+   * implicitly coerce text[] to outbox_target[]. Casting the COLUMN to text
+   * keeps the comparison well-typed with no per-element cast; the
+   * enabled-target list is at most six values, so the lost index usability
+   * on `target` costs nothing here.
    */
-  private async latestUserEvents(ids: string[]): Promise<LatestAggregateEventRow[]> {
+  private async latestUserEvents(ids: string[], targets: OutboxTarget[]): Promise<LatestAggregateEventRow[]> {
     const { rows } = await this.db.execute<LatestAggregateEventRow>(sql`
-      SELECT DISTINCT ON (aggregate_id) aggregate_id, status
+      SELECT DISTINCT ON (aggregate_id, target) aggregate_id, target, status
         FROM outbox_events
        WHERE aggregate_type = 'user'
          AND aggregate_id = ANY(${sql.param(ids)}::uuid[])
-       ORDER BY aggregate_id, id DESC
+         AND target::text = ANY(${sql.param(targets)}::text[])
+       ORDER BY aggregate_id, target, id DESC
     `)
     return rows
   }
@@ -240,12 +329,16 @@ export class SyncStateRepository {
    * an equality prefix (`aggregate_type`) followed by the exact
    * `DISTINCT ON`/`ORDER BY` columns.
    */
-  private async latestEventsForAggregateType(aggregateType: 'group'): Promise<LatestAggregateEventRow[]> {
+  private async latestEventsForAggregateType(
+    aggregateType: 'group',
+    targets: OutboxTarget[],
+  ): Promise<LatestAggregateEventRow[]> {
     const { rows } = await this.db.execute<LatestAggregateEventRow>(sql`
-      SELECT DISTINCT ON (aggregate_id) aggregate_id, status
+      SELECT DISTINCT ON (aggregate_id, target) aggregate_id, target, status
         FROM outbox_events
        WHERE aggregate_type = ${aggregateType}
-       ORDER BY aggregate_id, id DESC
+         AND target::text = ANY(${sql.param(targets)}::text[])
+       ORDER BY aggregate_id, target, id DESC
     `)
     return rows
   }
@@ -257,12 +350,13 @@ export class SyncStateRepository {
    * (finding H3; see `resolveForUsers`'s use of the result, and
    * `LatestMembershipEventRow`'s own doc comment for why).
    */
-  private async latestMembershipEvents(): Promise<LatestMembershipEventRow[]> {
+  private async latestMembershipEvents(targets: OutboxTarget[]): Promise<LatestMembershipEventRow[]> {
     const { rows } = await this.db.execute<LatestMembershipEventRow>(sql`
-      SELECT DISTINCT ON (aggregate_id) aggregate_id, status, payload
+      SELECT DISTINCT ON (aggregate_id, target) aggregate_id, target, status, payload
         FROM outbox_events
        WHERE aggregate_type = 'membership'
-       ORDER BY aggregate_id, id DESC
+         AND target::text = ANY(${sql.param(targets)}::text[])
+       ORDER BY aggregate_id, target, id DESC
     `)
     return rows
   }

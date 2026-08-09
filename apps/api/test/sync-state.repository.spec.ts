@@ -1,7 +1,7 @@
 import { type CanActivate, type ExecutionContext, type INestApplication } from '@nestjs/common'
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { AuditWriter } from '../src/audit/audit.writer'
 import { JwtGuard } from '../src/auth/jwt.guard'
 import { PermissionEngine } from '../src/authz/permission.engine'
@@ -94,12 +94,13 @@ describe('SyncStateRepository (Milestone 4, Task 4)', () => {
     status: 'pending' | 'processing' | 'done' | 'failed',
     eventType: 'created' | 'updated' | 'status_changed' | 'membership_changed' = 'updated',
     payload: Record<string, unknown> = {},
+    target: 'keycloak' | 'mail_server' | 'echo' = 'keycloak',
   ): Promise<number> {
     const { rows } = await ctx.pool.query<{ id: string }>(
-      `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, status)
-       VALUES ($1, $2, $3, $4::jsonb, $5)
+      `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, status, target)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6)
        RETURNING id`,
-      [aggregateType, aggregateId, eventType, JSON.stringify(payload), status],
+      [aggregateType, aggregateId, eventType, JSON.stringify(payload), status, target],
     )
     return Number(rows[0]!.id)
   }
@@ -107,13 +108,32 @@ describe('SyncStateRepository (Milestone 4, Task 4)', () => {
   async function setExternalIdentity(
     userId: string,
     syncState: 'pending' | 'synced' | 'failed',
+    system: 'keycloak' | 'mail_server' | 'echo' = 'keycloak',
   ): Promise<void> {
     await ctx.pool.query(
       `INSERT INTO external_identities (user_id, system, external_id, sync_state, last_synced_at)
-       VALUES ($1, 'keycloak', $2, $3, now())
+       VALUES ($1, $2, $3, $4, now())
        ON CONFLICT (user_id, system) DO UPDATE SET sync_state = EXCLUDED.sync_state`,
-      [userId, `kc-${userId}`, syncState],
+      [userId, system, `${system}-${userId}`, syncState],
     )
+  }
+
+  /**
+   * `connector_targets` seeds ONLY ('keycloak', enabled: true) — see that
+   * table's own doc comment for the Postgres ALTER TYPE reason. A test that
+   * needs a second enabled target inserts its own row, exactly as
+   * outbox-emission.spec.ts already does for active_directory.
+   */
+  async function enableTarget(target: 'mail_server' | 'echo'): Promise<void> {
+    await ctx.pool.query(
+      `INSERT INTO connector_targets (target, enabled) VALUES ($1, true)
+       ON CONFLICT (target) DO UPDATE SET enabled = true`,
+      [target],
+    )
+  }
+
+  async function disableTarget(target: 'mail_server' | 'echo'): Promise<void> {
+    await ctx.pool.query(`DELETE FROM connector_targets WHERE target = $1`, [target])
   }
 
   // =====================================================================
@@ -347,6 +367,74 @@ describe('SyncStateRepository (Milestone 4, Task 4)', () => {
 
     it('returns an empty map for empty input, without querying anything', async () => {
       expect((await syncStates().resolveForUsers([])).size).toBe(0)
+    })
+  })
+
+  // =====================================================================
+  // Multi-target derivation (2026-08-08 sync-diagnostics spec). Before this
+  // change the external_identities half filtered system = 'keycloak' while
+  // the outbox half filtered no target at all — coherent only while
+  // Keycloak was the sole enabled target, which mail_server ended.
+  // =====================================================================
+  describe('multi-target derivation', () => {
+    afterEach(async () => {
+      await disableTarget('mail_server')
+    })
+
+    it('reports failed when a non-Keycloak target dead-lettered, even though Keycloak is synced', async () => {
+      await enableTarget('mail_server')
+      const user = await makeUser()
+      await insertOutboxEvent('user', user.id, 'done', 'created')
+      await setExternalIdentity(user.id, 'synced')
+      await insertOutboxEvent('user', user.id, 'failed', 'created', {}, 'mail_server')
+
+      expect(await syncStates().resolveForUser(user.id)).toBe('failed')
+    })
+
+    it('treats a not-applicable target as settled, not pending', async () => {
+      // The mail connector throws NotApplicableError for a user with no
+      // mailbox (mail-server.connector.ts:217), so reconcileUser returns
+      // WITHOUT writing an external_identities row and the event completes
+      // normally. A missing row here must NOT read as pending forever.
+      await enableTarget('mail_server')
+      const user = await makeUser()
+      await insertOutboxEvent('user', user.id, 'done', 'created')
+      await setExternalIdentity(user.id, 'synced')
+      await insertOutboxEvent('user', user.id, 'done', 'created', {}, 'mail_server')
+
+      expect(await syncStates().resolveForUser(user.id)).toBe('synced')
+    })
+
+    it('ignores a DISABLED target dead letter', async () => {
+      const user = await makeUser()
+      await insertOutboxEvent('user', user.id, 'done', 'created')
+      await setExternalIdentity(user.id, 'synced')
+      // mail_server deliberately never enabled — a target an operator turned
+      // off must not keep dragging every user down forever.
+      await insertOutboxEvent('user', user.id, 'failed', 'created', {}, 'mail_server')
+
+      expect(await syncStates().resolveForUser(user.id)).toBe('synced')
+    })
+
+    it('falls back to the external_identities row when a target has no event at all', async () => {
+      await enableTarget('mail_server')
+      const user = await makeUser()
+      await insertOutboxEvent('user', user.id, 'done', 'created')
+      await setExternalIdentity(user.id, 'synced')
+      await setExternalIdentity(user.id, 'failed', 'mail_server')
+
+      expect(await syncStates().resolveForUser(user.id)).toBe('failed')
+    })
+
+    it('scopes the GROUP half by target too', async () => {
+      const group = await makeGroup('Disabled Target Group')
+      const user = await makeUser()
+      await groupsRepo().addUser(group.id, user.id)
+      await insertOutboxEvent('user', user.id, 'done', 'created')
+      await setExternalIdentity(user.id, 'synced')
+      await insertOutboxEvent('group', group.id, 'failed', 'updated', {}, 'mail_server')
+
+      expect(await syncStates().resolveForUser(user.id)).toBe('synced')
     })
   })
 })
