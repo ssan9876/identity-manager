@@ -21,6 +21,7 @@
 - **Audit snapshots name fields explicitly.** Never `{ ...row }` — a spread carries future columns into an append-only log.
 - **Enum values added by `ALTER TYPE ... ADD VALUE` may not be used in the migration that adds them.** Drizzle applies all pending migrations in one transaction.
 - **Run `pnpm verify:quick` before every commit**; `pnpm verify` before finishing a phase.
+- **A schema task's tests must exercise the constraint, not the column list.** Where a task adds a CHECK, a unique index, a partial index, a composite FK or an enum, assert it against a real migrated database using the existing `withTestDatabase()` helper (`apps/api/test/support/pg.ts`), in the style of `apps/api/test/business-roles-schema.spec.ts:84-133` — insert the violating row and expect a rejection naming the constraint. Also assert the *permitted* neighbouring case, which is what catches a partial index that lost its `WHERE`. Asserting that `Object.keys(table)` contains a name proves nothing. This governs Tasks 2, 3, 4, 5 and 10, and overrides any thinner test written into an individual task's steps.
 
 ## File Structure
 
