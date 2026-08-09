@@ -125,7 +125,11 @@
   text-wrap: pretty;
 }
 
-.signin-gate__submit {
+/* `.btn.signin-gate__submit` for the same cascade reason documented in
+   shell/AppShell.css: styles/components.css is injected after every
+   feature stylesheet, so `.btn { height: 2.25rem }` would otherwise beat
+   an equally-specific rule here. */
+.btn.signin-gate__submit {
   height: 2.75rem;
   margin-top: var(--space-2);
   font-size: var(--text-md);

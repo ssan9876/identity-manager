@@ -101,11 +101,13 @@
   margin-left: var(--space-2);
 }
 
-.topbar__search-input {
+/* `.input.topbar__search-input`, not `.topbar__search-input`: see this
+   file's note below on cascade order — an equally-specific rule in
+   styles/components.css is injected LATER and would otherwise win. */
+.input.topbar__search-input {
   width: 100%;
   height: 2.125rem;
-  padding-left: var(--space-8);
-  padding-right: 3rem;
+  padding: 0 3rem 0 var(--space-8);
   background: var(--surface-sunken);
   border-color: transparent;
   border-radius: var(--radius-md);
@@ -113,7 +115,7 @@
 /* Focus lifts the field out of the bar onto its own surface — the search
    is the one control here that becomes a mode, and it should look like
    one. */
-.topbar__search-input:focus {
+.input.topbar__search-input:focus {
   background: var(--bg);
   border-color: var(--border-strong);
 }
@@ -143,7 +145,7 @@
 }
 /* Once the field has focus the shortcut has done its job and the hint is
    just clutter sitting where the caret will end up. */
-.topbar__search-input:focus ~ .topbar__search-hint {
+.input.topbar__search-input:focus ~ .topbar__search-hint {
   opacity: 0;
 }
 
@@ -301,7 +303,7 @@
   .topbar__search-hint {
     display: none;
   }
-  .topbar__search-input {
+  .input.topbar__search-input {
     padding-right: var(--space-3);
   }
 }

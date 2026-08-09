@@ -45,6 +45,13 @@
 }
 .brand-lockup--lg {
   gap: var(--space-3);
+  /* The base .brand-lockup pins `color: var(--ink)`; on the sign-in gate's
+     drenched panel that is near-black on dark olive — the wordmark and mark
+     both vanished, caught in the browser pass. At `lg` the lockup takes its
+     ink from whatever it is placed on instead, which is what lets the same
+     component sit on --brand-panel and on --panel with no caller-side
+     override. */
+  color: inherit;
 }
 .brand-lockup--lg .brand-lockup__mark {
   width: 2.25rem;
@@ -215,6 +222,13 @@
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
   white-space: nowrap;
+  /* .btn is applied to <a> (every "Create user" / "Register application"
+     call to action is a Link) as often as to <button>. Without this the
+     anchor keeps the browser's default underline and base.css's global
+     `a { color: var(--primary) }`, so the primary button rendered as
+     underlined olive text on an olive fill — caught in the browser pass. */
+  text-decoration: none;
+  color: inherit;
   transition:
     background-color var(--motion-duration-fast) var(--motion-ease),
     border-color var(--motion-duration-fast) var(--motion-ease),
@@ -806,8 +820,15 @@
 .tabs {
   display: flex;
   gap: var(--space-1);
+  /* Wrap rather than scroll. A first pass used `overflow-x: auto` for
+     narrow viewports and the browser pass caught two problems with it:
+     CSS forces `overflow-y` to `auto` as soon as one axis is not
+     `visible`, so `.tab`'s own -1px bottom margin produced a stray
+     vertical scrollbar; and a scroll container clips the 2px offset
+     focus ring on whichever tab has focus. Wrapping costs a second row on
+     a phone and clips nothing. */
+  flex-wrap: wrap;
   border-bottom: 1px solid var(--border);
-  overflow-x: auto;
 }
 .tab {
   flex: none;

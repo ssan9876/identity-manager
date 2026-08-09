@@ -1,7 +1,30 @@
 # DESIGN.md
 
-Visual system for the Identity Manager admin console. Register: **product**. Platform: **web**.
-Strategy: **Restrained** — tinted neutrals, one accent under 10% of surface.
+Visual system for the **Keystone** admin console (previously "Identity Manager" —
+see `docs/brand.md` for the name, the mark, and where the single source of truth
+for both lives). Register: **product**. Platform: **web**.
+Strategy: **Restrained** — tinted neutrals, one accent under 10% of surface —
+with exactly **one Committed surface**: the sign-in gate. That screen is the only
+moment a visitor is not mid-task, so it is the only place a drenched brand panel
+(`--brand-panel` and its own ink pair) and the two display type steps are
+allowed. Everywhere inside the console, Restrained still governs.
+
+## Depth
+
+Added with the rebrand, and the thing that most separates this console from
+default admin chrome: there are now two surface ROLES, not one.
+
+- `--canvas` is the ground: the page behind the content, and nothing else.
+- `--panel` is the raised content surface: tables, toolbars, form cards, the
+  sign-in card, dialogs, toasts.
+- Chrome (top bar, left nav) sits on `--panel` too, so the frame reads as one
+  continuous surface around a recessed work area.
+
+In light that is a faintly olive-tinted ground with true-white panels; in dark
+the same relationship inverted (ground *deeper* than `--bg`, panels *above* it).
+`--shadow-sm` confirms the lift; the border does the edge work. `--bg` is
+unchanged and still what `body` paints, so the pre-paint theme contract is
+untouched.
 
 ## Theme
 
@@ -156,13 +179,31 @@ Line length capped at 65–75ch for prose. Tables may run denser.
 
 Conventional admin shell, per the chosen direction.
 
-- **Top bar**, 48px: product name, global search (`⌘K` / `Ctrl-K` also opens it), the
-  signed-in identity, sign out.
-- **Left nav**, 240px: People · Groups · Org units · Roles · Import · Audit. Collapses
-  to an icon rail under 1100px, and behind a disclosure under 780px.
+- **Top bar**, 56px (was 48px): the brand lockup, global search (`⌘K` / `Ctrl-K`
+  also opens it, and the field carries a leading glyph plus an inline shortcut
+  hint that clears on focus), the signed-in identity as a monogram chip, sign
+  out. It sheds ornament as the viewport narrows in a fixed order — shortcut
+  hint, then the "Signed in as" caption, then the My Profile link, then the
+  search field — and the monogram survives longest, because at that width it is
+  the only thing left saying who is signed in.
+- **Left nav**, 248px, grouped into **Directory · Access · Operations**. A group
+  whose every item is hidden by `GET /self/permissions` renders nothing at all,
+  heading included. The current item takes a filled `--primary-soft` pill, never
+  a side stripe (banned). In the icon rail the headings are dropped and the
+  grouping survives as spacing plus a hairline. Collapses to the rail under
+  1100px, and behind a disclosure under 780px.
 - **Content**: max-width 1440px, 24px gutters.
 - Lists are **tables**, not card grids. Detail pages use **tabs**, not accordions.
 - Flexbox for 1D, Grid for 2D. No Grid where `flex-wrap` suffices.
+
+**Cascade order matters here.** `main.tsx`'s `import App` is hoisted above its
+own `import './styles/components.css'`, so every feature stylesheet is injected
+*before* the shared one. A single-class rule in a feature file therefore LOSES to
+an equally-specific rule in `components.css` — which is how `.input`'s `padding`
+shorthand silently beat the top-bar search field's `padding-left` and hid the
+search glyph under the placeholder. Where a feature file must override a shared
+component, double the class (`.input.topbar__search-input`) rather than relying
+on source order.
 
 **z-index scale** — semantic, never arbitrary:
 `--z-dropdown: 10; --z-sticky: 20; --z-backdrop: 30; --z-modal: 40; --z-toast: 50; --z-tooltip: 60;`
@@ -177,7 +218,9 @@ disabled, loading, error. Shipping half is not shipping.
   button's width, so layout does not jump.
 - **Tables** — sticky header on `--surface-sunken`, zebra-free (borders instead),
   row hover, keyboard-navigable rows, sortable columns where sorting is real.
-- **Status badges** — word + optional shape, never colour alone. Active is uncoloured.
+- **Status badges** — word + optional shape, never colour alone. Active is
+  uncoloured: no fill, `--ink-muted`, and a hairline border so it still has a
+  shape. Pill radius; the exceptions add a tint, a matching border and a dot.
 - **Forms** — labels above inputs, inline validation on blur, error text under the
   field naming the field. Attribute-driven fields render by `dataType`, mirroring the
   existing self-service page.

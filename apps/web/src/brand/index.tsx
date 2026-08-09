@@ -68,7 +68,7 @@ export function BrandMark({
       <path
         fill="currentColor"
         fillRule="evenodd"
-        d="M3.4 3.6 L20.6 3.6 L17.4 20.4 L6.6 20.4 Z M13.95 10.2 A1.95 1.95 0 1 0 10.05 10.2 L10.9 16.5 H13.1 Z"
+        d="M3.9 3.4 L20.1 3.4 L17.05 20.6 L6.95 20.6 Z M14.2 9.9 A2.2 2.2 0 1 0 9.8 9.9 L10.65 16.8 H13.35 Z"
       />
     </svg>
   )
