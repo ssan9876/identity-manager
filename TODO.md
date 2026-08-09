@@ -245,6 +245,63 @@ state of each.
       `ConnectorTargetsRepository.upsert` lost update, `simulate()` ignoring
       `rule.trigger`, no structured logger, inert JML triggers.
 
+## Verified against a real deployment
+
+Run 2026-08-09 against a Proxmox LXC clone of the live host (Ubuntu 24.04,
+PostgreSQL 16.14, upgrading from `58c3577` — 90 commits behind). The live
+container was never touched; a snapshot was taken first and the work was done on
+a full clone.
+
+**Two bugs that only real infrastructure could surface:**
+
+- [x] **Migrations could never run twice on a deployed host.**
+      `provisionRuntimeRole` re-ran `ALTER ROLE ... NOSUPERUSER NOCREATEDB` on
+      every migrate. PostgreSQL 16 tightened `CREATEROLE` so a role may only set
+      attributes it holds itself; `idm_owner` is deliberately NOSUPERUSER, so it
+      cannot name those even to set them negative. `CREATE ROLE` with the same
+      words still works — so a fresh install succeeds and the SECOND migrate
+      fails. Every test database is created fresh, so this branch never ran in
+      CI or Testcontainers. Now asserts the password alone and VERIFIES the
+      attributes against `pg_roles`, which is strictly stronger.
+- [x] **`git pull` does not deploy anything under `deploy/`.** Those are
+      templates; only `install.sh` copies them. An upgrade that pulls the CS-M1
+      header fix and CS-L3 log fix and restarts `idm-api` leaves the console
+      serving no security headers and still logging emails. Both confirmed
+      absent after a pull-only upgrade and present after re-rendering. An
+      upgrade procedure is now documented in `docs/11-operations.md`.
+
+**Confirmed working against live data** (3 users, 1 org unit, 19 migrations
+already applied):
+
+| Check | Result |
+|---|---|
+| Migrations `0019`→`0026` | applied, 27 total |
+| Organizations backfill | master org created; users/org_units/groups **0 orphaned** |
+| `sensitive` column (`0026`), `sso_apps` (`0023`) | present |
+| API after upgrade | healthy, `/users` 401s, clean journal |
+| Security headers (CS-M1/CS-M3) | all 4 present, incl. SPA fall-through, over the network |
+| Access log (CS-L3) | search term and referrer stripped; 0 occurrences of the PII |
+
+Two traps worth knowing, both of which made a working fix look broken:
+
+- **The vhost is selected by `server_name`.** `curl https://127.0.0.1/` reaches a
+  different server block and shows no headers at all. Always pass
+  `-H "Host: <hostname>"`.
+- **Check for an IP collision before assigning one to a clone.** A clone
+  inherits the source's static IP; reusing an address already held by another
+  container makes it answer for the wrong host, which looks exactly like the
+  upgrade having deployed the wrong bundle.
+
+### Still unverified on real infrastructure
+
+- [ ] **The console has never been driven in a browser.** Chrome automation was
+      unavailable (extension not connected), so verification stopped at HTTP:
+      HTML, bundle and SPA routing all serve correctly, but nothing has exercised
+      sign-in, the OIDC redirect, or any React rendering path on a deployment.
+- [ ] **`idm-lifecycle.timer` / `idm-reconcile.timer` are not installed on the
+      live host** — only `idm-api.service` is. They arrive with the deploy/
+      re-render described above.
+
 ## Housekeeping
 
 - [ ] **`scripts/verify.mjs`'s header is out of date.** It states "This
