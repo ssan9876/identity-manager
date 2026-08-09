@@ -12,13 +12,18 @@ import { activatePerson, deactivatePerson, fetchGroupsForUser, fetchPeopleByIds,
 import { StatusBadge, SYNC_WORD, SyncBadge } from './badges'
 import { PersonSyncTab } from './PersonSyncTab'
 import { PersonRolesTab } from './PersonRolesTab'
+import { PersonEntitlementsTab } from './PersonEntitlementsTab'
 import './PersonDetailPage.css'
 
-type TabKey = 'profile' | 'groups' | 'roles' | 'sync' | 'activity'
+type TabKey = 'profile' | 'groups' | 'roles' | 'entitlements' | 'sync' | 'activity'
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'profile', label: 'Profile' },
   { key: 'groups', label: 'Groups' },
   { key: 'roles', label: 'Roles' },
+  // Milestone 17, Task 19. Sits after Groups and Roles because it ANSWERS
+  // both of them: those two say what this person has, this one says why —
+  // and, for a row nothing justifies, that nothing does.
+  { key: 'entitlements', label: 'Entitlements' },
   { key: 'sync', label: 'Sync' },
   { key: 'activity', label: 'Activity' },
 ]
@@ -213,6 +218,7 @@ export default function PersonDetailPage() {
     profile: null,
     groups: null,
     roles: null,
+    entitlements: null,
     sync: null,
     activity: null,
   })
@@ -556,6 +562,24 @@ export default function PersonDetailPage() {
           </p>
         )}
       </div>
+      <div
+        id="panel-entitlements"
+        role="tabpanel"
+        aria-labelledby="tab-entitlements"
+        hidden={activeTab !== 'entitlements'}
+        tabIndex={0}
+        className="tabpanel"
+      >
+        {/* No permission gate of its own: `GET /users/:id/entitlements`
+            requires `user:read` and nothing more (it re-applies findOne's
+            exact scoping), so anyone who can see this page can see this
+            tab. It also never fails closed — a role engine refusal comes
+            back as a 200 with the rows intact and an `unevaluable` marker,
+            because this is the screen someone opens BECAUSE something is
+            wrong. */}
+        <PersonEntitlementsTab personId={person.id} />
+      </div>
+
       <div
         id="panel-sync"
         role="tabpanel"
