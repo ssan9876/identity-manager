@@ -92,12 +92,19 @@ const envSchema = z.object({
   BODY_LIMIT_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
   // Explicit, configurable ceiling on the number of DATA rows one
   // `POST /imports/preview`/`/commit` request may carry — the other half of
-  // finding M6. Import commit is ~10.4ms/row of SERIAL, BLOCKING, on-request
-  // work — one transaction per row, on the request path — so this number is
-  // really a request-duration budget wearing a row count's clothes:
+  // finding M6. Import commit is SERIAL, BLOCKING, on-request work — one
+  // transaction per row, on the request path — so this number is really a
+  // request-duration budget wearing a row count's clothes. Measured against a
+  // real Postgres (test/import-bench, 5,000 rows, one org unit, all rows
+  // valid), BEFORE and AFTER the lookups were batched:
   //
-  //     1,000 rows x 10.4ms  ~= 10s   <- this default
-  //     5,000 rows x 10.4ms  ~= 52s   <- the previous default
+  //     commit  12.18 ms/row  ->  8.45 ms/row     (5,000 rows: 61s -> 42s)
+  //     preview  2.99 ms/row  ->  0.05 ms/row     (5,000 rows: 15s -> 0.3s)
+  //
+  // so at this default:
+  //
+  //     1,000 rows x 8.45ms  ~= 8.5s   <- this default
+  //     5,000 rows x 8.45ms  ~= 42s    <- the previous default
   //
   // against a pool of 10 (DB_POOL_MAX). Five concurrent maximal imports at
   // the old default could hold half the pool for the better part of a minute.
@@ -116,8 +123,27 @@ const envSchema = z.object({
   // decision about how long they are willing to occupy a pool connection
   // rather than a number they inherited without anyone reasoning about it.
   //
-  // The real fix, if imports ever get bigger, is not a larger number here —
-  // it is batching the per-row lookups or moving commit off the request path.
+  // WHY THIS STAYS AT 1,000 NOW THAT THE LOOKUPS ARE BATCHED. The
+  // verification pass named three ways out: lower this number, batch the
+  // per-row lookups, or move commit off the request path. Batching landed
+  // (see imports/import-lookups.ts) and it did NOT make this number
+  // unnecessary — it only moved which part of the work dominates. Preview,
+  // which is pure resolution, effectively stopped costing anything (15s ->
+  // 0.3s for 5,000 rows, a ~58x improvement). Commit improved by ~31% and no
+  // more, because what remains is not lookups: it is one DURABLE transaction
+  // per row (BEGIN, the INSERT/UPDATE, the audit row, the outbox row, COMMIT
+  // — a WAL flush each). Measured in the same environment, a trivial query
+  // round trip is 0.31 ms and an empty transaction 0.85 ms, so ~8.45 ms/row
+  // is dominated by real write work and per-row commit durability, not by
+  // chattiness that batching can remove.
+  //
+  // One transaction per row is deliberate and load-bearing — it is what makes
+  // a failing row roll back ONLY itself while every other row stays committed
+  // and individually attributed (see ImportsController.commit). Collapsing it
+  // is not a tuning knob; it is a change to the endpoint's failure contract.
+  // So the remaining lever, short of moving commit off the request path
+  // entirely (a job queue and a status-polling UI — a different project), is
+  // this ceiling. It stays at 1,000.
   IMPORT_MAX_ROWS: z.coerce.number().int().positive().default(1_000),
 })
 

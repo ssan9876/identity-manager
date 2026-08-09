@@ -40,7 +40,7 @@ same realm.
 | `SYNC_WORKER_ENABLED` | `true` | Starts the outbox drain in-process. Set to `false` on a second API instance behind a load balancer so only one drains. Spelled as the literal string `true`/`false` — a boolean coercion would treat `"false"` as true and make the off switch impossible to flip. |
 | `DB_POOL_MAX` | `10` | Ceiling on physical Postgres connections. Raise for a bigger instance; lower when several API instances share one small one. |
 | `BODY_LIMIT_BYTES` | `10485760` (10 MiB) | Explicit ceiling on the whole request body, replacing Express's *accidental* 100 KiB default. Comfortably covers a several-thousand-row CSV import. |
-| `IMPORT_MAX_ROWS` | `5000` | Ceiling on **data rows** in one import preview/commit. Bounds worst-case request duration independently of body size (commit is roughly 10 ms of serial work per row). |
+| `IMPORT_MAX_ROWS` | `1000` | Ceiling on **data rows** in one import preview/commit. Bounds worst-case request duration independently of body size (commit is roughly 8.5 ms of serial work per row — measured; preview is now effectively free). |
 
 ### Connector secrets
 

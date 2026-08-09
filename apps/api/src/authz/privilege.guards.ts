@@ -173,6 +173,57 @@ export class PrivilegeGuards {
       .from(roleAssignments)
       .where(eq(roleAssignments.userId, targetUserId))
 
+    this.assertRankPermitsModifying(
+      actor,
+      targetAssignments.map((row) => row.roleKey),
+    )
+  }
+
+  /**
+   * "The role keys held by each of these principals", in ONE round trip —
+   * the set-based half of `assertCanModifyPrincipal` above, for a caller
+   * that must make the SAME decision about many targets at once. Bulk
+   * import checks one target per matched CSV row, and paying a round trip
+   * each is a measurable share of that endpoint's per-row cost (see
+   * `ImportLookups`, imports/import-lookups.ts, the only caller today).
+   *
+   * A user id with no assignment row simply has no entry in the returned
+   * map, which a caller must read as the empty list — the same thing the
+   * single-target query returns for such a principal, i.e. `NO_PRIVILEGE`.
+   * The decision itself is NOT duplicated here: callers pass what this
+   * returns straight to `assertRankPermitsModifying`, the one place the
+   * rank comparison and the unknown-role-key fault live, so a batched
+   * caller and a single-target caller can never drift apart on what
+   * "permitted" means.
+   */
+  async loadRoleKeysByUserId(
+    userIds: readonly string[],
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<Map<string, RoleKey[]>> {
+    const byUserId = new Map<string, RoleKey[]>()
+    if (userIds.length === 0) return byUserId
+
+    const rows = await db
+      .select({ userId: roleAssignments.userId, roleKey: roleAssignments.roleKey })
+      .from(roleAssignments)
+      .where(sql`${roleAssignments.userId} = ANY (${sql.param([...userIds])}::uuid[])`)
+
+    for (const row of rows) {
+      const existing = byUserId.get(row.userId)
+      if (existing === undefined) byUserId.set(row.userId, [row.roleKey])
+      else existing.push(row.roleKey)
+    }
+    return byUserId
+  }
+
+  /**
+   * The decision half of `assertCanModifyPrincipal`, over role keys already
+   * fetched — pure, no database access. Called by `assertCanModifyPrincipal`
+   * itself and by batched callers holding a `loadRoleKeysByUserId` map; it
+   * is the single place the rank comparison and the unknown-role-key
+   * data-integrity fault are expressed.
+   */
+  assertRankPermitsModifying(actor: Actor, targetRoleKeys: readonly RoleKey[]): void {
     // TARGET side of the asymmetric pair with highestRank above — see
     // Finding I-1. An unrecognized role_key here must NEVER read as "this
     // principal holds no privilege, go ahead": role_assignments.role_key is
@@ -210,13 +261,13 @@ export class PrivilegeGuards {
     // cast — the previous `ROLE_RANK[row.roleKey as RoleKey]` cast is
     // exactly what suppressed the compiler's ability to flag this as
     // possibly `undefined`.
-    const targetRank = targetAssignments.reduce((highest, row) => {
-      if (!Object.hasOwn(ROLE_RANK, row.roleKey)) {
+    const targetRank = targetRoleKeys.reduce((highest, roleKey) => {
+      if (!Object.hasOwn(ROLE_RANK, roleKey)) {
         throw new DataIntegrityError(
-          `role_assignments references a role_key this build does not recognise: "${row.roleKey}"`,
+          `role_assignments references a role_key this build does not recognise: "${roleKey}"`,
         )
       }
-      return Math.max(highest, ROLE_RANK[row.roleKey])
+      return Math.max(highest, ROLE_RANK[roleKey])
     }, NO_PRIVILEGE)
 
     if (this.highestRank(actor.assignments) < targetRank) {

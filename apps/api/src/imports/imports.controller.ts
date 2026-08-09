@@ -25,6 +25,7 @@ import {
   UsersRepository,
 } from '../users/users.repository'
 import { parseCsv } from './csv'
+import { ImportLookups } from './import-lookups'
 import { extraHeaders, missingRequiredHeaders, parseImportRowShape, type ShapeParsedRow } from './import-row'
 
 const importBodySchema = z.object({ csv: z.string() }).strict()
@@ -201,14 +202,25 @@ function isNoopUpdate(input: UpdateUserInput, current: User): boolean {
  * endpoint's own manager handling, which is likewise identical for create
  * and update (a plain FK, translated by UsersRepository.translateWriteError).
  */
-async function appendManagerReason(
-  users: UsersRepository,
+function appendManagerReason(
+  lookups: ImportLookups,
   managerId: string | null,
   reasons: string[],
-): Promise<void> {
+): void {
   if (managerId === null) return
-  const manager = await users.findById(managerId)
-  if (manager === null) reasons.push('managerId: manager not found')
+  if (lookups.findById(managerId) === null) reasons.push('managerId: manager not found')
+}
+
+/**
+ * One CSV row's shape-validation result, paired with the row number and the
+ * `employeeId` a failure would be reported against. Every row in the file is
+ * shape-parsed ONCE, up front (`prepareRows`), because that pure pass is what
+ * yields the keys `ImportLookups` then fetches in bulk — see its doc comment.
+ */
+interface PreparedRow {
+  rowNumber: number
+  employeeIdForReporting: string | null
+  shape: ReturnType<typeof parseImportRowShape>
 }
 
 /**
@@ -335,6 +347,41 @@ export class ImportsController {
   }
 
   /**
+   * The second half of per-request preparation, shared verbatim by both
+   * routes exactly as `resolveRow` is: shape-parse every row (pure, no
+   * database access — `parseImportRowShape`), then fetch, in one set-based
+   * query per kind, every record the whole file's rows could ask about.
+   *
+   * This is where the ~10 ms/row the audit measured (docs/archive/audits/
+   * carried-findings-verification.md, INJ-M-1/INT-M6) mostly went: resolving
+   * a row issued up to six SINGLE-ROW queries, each a network round trip, and
+   * 5,000 rows made that 30,000 sequential round trips. None of it was
+   * inherently per-row. See `ImportLookups` for what is fetched, why every
+   * lookup still yields the identical decision, and how a commit's own
+   * in-flight writes are folded back in.
+   */
+  private async prepareRows(
+    rows: Array<Record<string, string>>,
+    fileHasExtraHeaders: boolean,
+    actor: Actor,
+  ): Promise<{ prepared: PreparedRow[]; lookups: ImportLookups }> {
+    const prepared: PreparedRow[] = rows.map((raw, index) => ({
+      // +1 for 1-based, +1 for the header line itself
+      rowNumber: index + 2,
+      employeeIdForReporting: (raw.employeeId ?? '').trim() || null,
+      shape: parseImportRowShape(raw, fileHasExtraHeaders),
+    }))
+
+    const lookups = await ImportLookups.build(
+      prepared.flatMap((row) => (row.shape.ok ? [row.shape.row] : [])),
+      actor,
+      { users: this.users, orgUnits: this.orgUnits, engine: this.engine, privileges: this.privileges },
+    )
+
+    return { prepared, lookups }
+  }
+
+  /**
    * Dry-run diff: every row is resolved exactly as `commit` would resolve
    * it, but nothing about a USER is written — `resolveRow` never calls
    * `this.users.create`/`update` or `this.outboxWriter.record`; it only
@@ -379,21 +426,15 @@ export class ImportsController {
       })
     })
 
+    const { prepared, lookups } = await this.prepareRows(rows, fileHasExtraHeaders, request.actor)
+
     const toCreate: ImportPreviewCreateRow[] = []
     const toUpdate: ImportPreviewUpdateRow[] = []
     const failures: ImportRowFailure[] = []
     const seen = new Map<string, number>()
 
-    for (let index = 0; index < rows.length; index++) {
-      const rowNumber = index + 2 // +1 for 1-based, +1 for the header line itself
-      const resolution = await this.resolveRow(
-        rows[index],
-        rowNumber,
-        request.actor,
-        seen,
-        fileHasExtraHeaders,
-        definitions,
-      )
+    for (const row of prepared) {
+      const resolution = await this.resolveRow(row, seen, fileHasExtraHeaders, definitions, lookups)
 
       if (resolution.kind === 'failure') {
         failures.push({ row: resolution.row, employeeId: resolution.employeeId, reasons: resolution.reasons })
@@ -450,6 +491,8 @@ export class ImportsController {
     // (finding SEC-M1 — see snapshotUserForAudit's own doc comment).
     const sensitiveKeys = sensitiveAttributeKeys(definitions)
 
+    const { prepared, lookups } = await this.prepareRows(rows, fileHasExtraHeaders, request.actor)
+
     const batchId = randomUUID()
     let created = 0
     let updated = 0
@@ -457,16 +500,8 @@ export class ImportsController {
     const failures: ImportRowFailure[] = []
     const seen = new Map<string, number>()
 
-    for (let index = 0; index < rows.length; index++) {
-      const rowNumber = index + 2
-      const resolution = await this.resolveRow(
-        rows[index],
-        rowNumber,
-        request.actor,
-        seen,
-        fileHasExtraHeaders,
-        definitions,
-      )
+    for (const row of prepared) {
+      const resolution = await this.resolveRow(row, seen, fileHasExtraHeaders, definitions, lookups)
 
       if (resolution.kind === 'failure') {
         failures.push({ row: resolution.row, employeeId: resolution.employeeId, reasons: resolution.reasons })
@@ -475,7 +510,7 @@ export class ImportsController {
 
       try {
         if (resolution.kind === 'create') {
-          await this.db.transaction(async (tx) => {
+          const newUser = await this.db.transaction(async (tx) => {
             const user = await this.users.create(resolution.input, tx)
 
             await this.auditWriter.record(tx, {
@@ -494,7 +529,15 @@ export class ImportsController {
               eventType: 'created',
               payload: { ...snapshotUser(user), action: 'user:create', batchId },
             })
+
+            return user
           })
+          // AFTER the transaction commits, never inside it: a later row
+          // naming this row's email/username/id must resolve against what
+          // this request actually WROTE, exactly as the old per-row
+          // re-queries did — see ImportLookups' "THE OVERLAY". A rolled-back
+          // row must leave no trace in the maps either.
+          lookups.noteCreated(newUser)
           created += 1
         } else if (isNoopUpdate(resolution.input, resolution.current)) {
           // Finding M4 (docs/archive/audits/audit-integrity.md): the resolved
@@ -580,16 +623,14 @@ export class ImportsController {
    * operation rather than a no-op that merely avoids erroring.
    */
   private async resolveRow(
-    raw: Record<string, string>,
-    rowNumber: number,
-    actor: Actor,
+    prepared: PreparedRow,
     seen: Map<string, number>,
     fileHasExtraHeaders: boolean,
     definitions: AttributeDefinition[],
+    lookups: ImportLookups,
   ): Promise<RowResolution> {
-    const employeeIdForReporting = (raw.employeeId ?? '').trim() || null
+    const { rowNumber, employeeIdForReporting, shape } = prepared
 
-    const shape = parseImportRowShape(raw, fileHasExtraHeaders)
     if (!shape.ok) {
       return { kind: 'failure', row: rowNumber, employeeId: employeeIdForReporting, reasons: shape.issues }
     }
@@ -608,32 +649,32 @@ export class ImportsController {
 
     const reasons: string[] = []
     const rawAttributes = row.rawAttributes ?? {}
-    const existing = await this.users.findByEmployeeId(row.employeeId)
+    const existing = lookups.findByEmployeeId(row.employeeId)
 
     if (existing !== null) {
       return this.resolveUpdateRow(
         row,
         rowNumber,
-        actor,
         existing,
         reasons,
         rawAttributes,
         fileHasExtraHeaders,
         definitions,
+        lookups,
       )
     }
-    return this.resolveCreateRow(row, rowNumber, actor, reasons, rawAttributes, definitions)
+    return this.resolveCreateRow(row, rowNumber, reasons, rawAttributes, definitions, lookups)
   }
 
   private async resolveUpdateRow(
     row: ShapeParsedRow,
     rowNumber: number,
-    actor: Actor,
     existing: User,
     reasons: string[],
     rawAttributes: Record<string, string>,
     fileHasExtraHeaders: boolean,
     definitions: AttributeDefinition[],
+    lookups: ImportLookups,
   ): Promise<RowResolution> {
     // Scope AND privilege are checked FIRST, before anything else about
     // this row is computed or disclosed — docs/archive/audits/audit-secrets.md
@@ -665,13 +706,13 @@ export class ImportsController {
       // on 'user:create' at PermissionGuard besides), but it was a
       // route/action mismatch that would misauthorize silently the moment
       // that catalog fact ever changed.
-      await this.engine.assertCanIn(actor, 'user:update', existing.orgUnitId)
+      await lookups.assertCanIn('user:update', existing.orgUnitId)
     } catch (error) {
       scopeReasons.push(...domainErrorReasons(error))
     }
 
     try {
-      await this.privileges.assertCanModifyPrincipal(actor, existing.id)
+      lookups.assertCanModifyPrincipal(existing.id)
     } catch (error) {
       scopeReasons.push(...domainErrorReasons(error))
     }
@@ -702,7 +743,7 @@ export class ImportsController {
       )
     }
 
-    await appendManagerReason(this.users, row.managerId, reasons)
+    appendManagerReason(lookups, row.managerId, reasons)
 
     let attributes: Record<string, unknown> | undefined
     if (fileHasExtraHeaders) {
@@ -735,10 +776,10 @@ export class ImportsController {
   private async resolveCreateRow(
     row: ShapeParsedRow,
     rowNumber: number,
-    actor: Actor,
     reasons: string[],
     rawAttributes: Record<string, string>,
     definitions: AttributeDefinition[],
+    lookups: ImportLookups,
   ): Promise<RowResolution> {
     // Scope BEFORE existence, mirroring UsersController.create's own
     // assertCanIn-then-insert ordering: a GLOBAL grant short-circuits
@@ -750,17 +791,16 @@ export class ImportsController {
     // single-record endpoint; only a global actor ever reaches "not found".
     let scopeOk = false
     try {
-      await this.engine.assertCanIn(actor, 'user:create', row.orgUnitId)
+      await lookups.assertCanIn('user:create', row.orgUnitId)
       scopeOk = true
     } catch (error) {
       reasons.push(...domainErrorReasons(error))
     }
-    if (scopeOk) {
-      const orgUnit = await this.orgUnits.findById(row.orgUnitId)
-      if (orgUnit === null) reasons.push('orgUnitId: org unit not found')
+    if (scopeOk && !lookups.orgUnitExists(row.orgUnitId)) {
+      reasons.push('orgUnitId: org unit not found')
     }
 
-    await appendManagerReason(this.users, row.managerId, reasons)
+    appendManagerReason(lookups, row.managerId, reasons)
 
     // Residual half of the cross-scope enumeration oracle from fix wave C
     // (docs/archive/audits/fix-wave-c-report.md's own "Concerns" note,
@@ -774,11 +814,11 @@ export class ImportsController {
     // email/username oracle. "not available" still correctly rejects the
     // row (the row IS un-creatable either way) without confirming WHY a
     // specific guessed value is taken, and never echoes it back.
-    const existingByEmail = await this.users.findByEmail(row.primaryEmail)
+    const existingByEmail = lookups.findByEmail(row.primaryEmail)
     if (existingByEmail !== null) {
       reasons.push('primaryEmail: not available')
     }
-    const existingByUsername = await this.users.findByUsername(row.username)
+    const existingByUsername = lookups.findByUsername(row.username)
     if (existingByUsername !== null) {
       reasons.push('username: not available')
     }

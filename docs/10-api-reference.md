@@ -45,7 +45,7 @@ is *clamped*, not rejected) and `offset` (default 0). They return:
 An out-of-scope resource **that exists** returns **403, not 404**.
 
 **Limits.** Request bodies are capped by `BODY_LIMIT_BYTES` (10 MiB default → 413).
-Import rows are capped by `IMPORT_MAX_ROWS` (5,000 default → 400).
+Import rows are capped by `IMPORT_MAX_ROWS` (1,000 default → 400).
 
 ---
 
