@@ -103,6 +103,21 @@ describe('the publish gate (Milestone 17, Task 7)', () => {
     expect(published?.simulatedDraftHash).toBeNull()
   })
 
+  it('publish refuses when a recorded simulation hash does not match the current draft', async () => {
+    const role = await repo().create({ name: 'Stale simulation hash', description: null })
+    await repo().saveDraft(role.id, DEFINITION)
+    // A hash for a DIFFERENT definition — the state a race between simulate and
+    // saveDraft would leave behind. This is the only path that reaches publish's
+    // hash comparison with a non-null stored hash, so it is the only thing that
+    // proves the second mechanism is load-bearing.
+    await repo().recordSimulation(role.id, hashDefinition(parseDefinition({
+      conditions: [{ field: 'status', operator: 'equals', value: 'active' }],
+      grants: [],
+    })))
+
+    await expect(repo().publish(role.id)).rejects.toThrow(/simulat/i)
+  })
+
   it('listEnabledForEvaluation returns only enabled roles, with their published definitions', async () => {
     const on = await repo().create({ name: 'Enabled role', description: null })
     await repo().saveDraft(on.id, DEFINITION)
