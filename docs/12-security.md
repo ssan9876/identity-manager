@@ -35,7 +35,16 @@ intention.
 10. **Scope is evaluated per request and never cached across requests.**
 11. **JML rules are data, never executable code** — proven by a static source scan in
     the test suite.
-12. **Single tenant.** There is no `tenant_id` anywhere.
+12. **Tenancy is enforced by the database, not by application code.** Every directory
+    row carries `organization_id`, and every reference that could cross a tenant
+    boundary — a user's org unit and manager, a group's org unit, an org unit's parent,
+    both endpoints of every membership and nesting edge — is a **composite foreign key**
+    including that column, so a cross-tenant row cannot be inserted by any writer: not
+    the API, not a CSV import, not a connector write-back, not a future endpoint, not a
+    bug. Application checks are bypassable; a composite foreign key is not.
+    Administrators are **platform operators** who authenticate against the master realm,
+    and a global role assignment therefore spans every organization. Tenant isolation
+    here is about the DATA, not about who may see it.
 
 ## The mechanisms
 

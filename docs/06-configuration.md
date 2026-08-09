@@ -32,6 +32,46 @@ half-configured.
 checked on **inbound** tokens, the second authenticates **outbound** calls into the
 same realm.
 
+### Realm provisioning (required only to create organizations)
+
+| Variable | Purpose |
+|---|---|
+| `KEYCLOAK_PROVISION_CLIENT_ID` | A **master-realm** service account that may create and administer *other* realms. |
+| `KEYCLOAK_PROVISION_CLIENT_SECRET` | That service account's secret. |
+
+Both or neither. A half-configured pair is treated as unconfigured rather than
+attempted, so the failure is an actionable "set these two variables" at the point of use
+instead of a 401 from Keycloak's token endpoint with an empty secret. With neither set,
+everything else works exactly as before and `POST /organizations` answers **503
+`NOT_CONFIGURED`** rather than accepting a tenant whose realm could never be created.
+
+They are a **second, separate credential** from `KEYCLOAK_ADMIN_CLIENT_ID`, and that is
+not redundancy. The admin credential is *realm-scoped*: its roles are
+`realm-management` client roles inside `identity-manager`, and a token minted there
+cannot reach `/admin/realms/<anything-else>` at all. Creating a realm is a
+**server-level** operation, which only a master-realm principal can perform.
+
+**Creating the service account** (once, by hand or by your Keycloak IaC):
+
+1. In the Keycloak admin console, switch to the **`master`** realm — not
+   `identity-manager`.
+2. **Clients → Create client.** Client ID `idm-provisioner`. Client authentication
+   **on**; standard flow and direct access grants **off**; **Service accounts roles
+   on**.
+3. **Credentials** → copy the secret into `KEYCLOAK_PROVISION_CLIENT_SECRET`.
+4. **Service accounts roles → Assign role → Filter by realm roles → `create-realm`.**
+   Assign that, and nothing else.
+
+`create-realm` alone is sufficient, and this was verified against a real Keycloak 26
+rather than assumed: Keycloak grants the creator of a realm the `<realm>-realm` client
+roles at creation time, so the provisioner can administer every realm it made. It
+follows that a realm this credential did **not** create — one made by hand, or made
+before the credential was rotated — is *not* administrable, and `ensureRealm` probes for
+exactly that on the already-exists path and refuses with a message naming the remedy.
+
+Grant nothing beyond `create-realm`. A master-realm `admin` would work, and would also
+be a credential that can do anything to anything, held by a long-running service.
+
 ### Optional, with defaults
 
 | Variable | Default | Purpose |
@@ -152,6 +192,12 @@ Rows in `jml_rules`. **No HTTP surface exists today** — they are managed direc
 database and executed by the `jml:lifecycle` CLI. A rule cannot be enabled until it has
 been simulated at least once, enforced in the repository against the durable
 `simulated_at` column rather than by caller convention.
+
+### Organizations
+
+Tenants are **not** database-held configuration — they are created over the API
+(`POST /organizations`) or from the console's Organizations page, and each one is
+audited. See [07 — Admin guide](07-admin-guide.md#walkthrough-12--create-and-suspend-an-organization).
 
 ## Configuration checklist for a new deployment
 

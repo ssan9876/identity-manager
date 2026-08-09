@@ -41,8 +41,8 @@ out the way they did in more depth than a reference chapter should carry.
 
 ## The two-minute version
 
-A single-tenant identity provider for one organisation. Postgres is the system of
-record for people, org structure, groups and lifecycle state. Keycloak owns
+An identity provider run by one operator for one or more organisations, each with its
+own Keycloak realm. Postgres is the system of record for people, org structure, groups and lifecycle state. Keycloak owns
 credentials, MFA, sessions and SSO. Connectors push mastered identity outward into
 Active Directory, Entra ID, Google Workspace and a mail server. A React admin console
 is the surface an IT administrator actually works in.

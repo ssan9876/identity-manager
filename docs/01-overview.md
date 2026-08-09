@@ -2,8 +2,8 @@
 
 ## What this is
 
-**Identity Manager** is a self-hosted, single-tenant identity provider for one real
-organisation. It is the **system of record** for:
+**Identity Manager** is a self-hosted identity provider, run by one operator for one or
+more real organisations. It is the **system of record** for:
 
 - **People** — who exists, their profile, their manager, their lifecycle state.
 - **Org structure** — a hierarchical tree of org units, stored as a Postgres `ltree`.
@@ -88,8 +88,14 @@ out to Keycloak's Account Console for password and MFA.
 
 ## What it is not
 
-- **Not multi-tenant.** One organisation per deployment. `connector_targets` is keyed
-  by target name precisely because there is exactly one configuration per target.
+- **Not a multi-tenant SaaS control plane.** It *is* multi-tenant as of the
+  organizations milestone — every directory row belongs to an `organizations` row, and
+  each tenant gets its own Keycloak realm — but every administrator is a **platform
+  operator** authenticating against the master realm, and there is no tenant-facing API
+  surface. A tenant's people reach **Keycloak only**: `connector_targets` is keyed by
+  target name, so the one Active Directory / Entra / Google / mail configuration in the
+  system belongs to the platform, and fanning a tenant out to it would create real
+  accounts inside somebody else's estate.
 - **Not a credential store.** No password field exists anywhere in the schema, and the
   console has an end-to-end test asserting no password input is ever rendered.
 - **Not multi-forest / multi-domain AD.** Explicitly out of scope: one domain per

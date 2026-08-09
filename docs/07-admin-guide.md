@@ -472,6 +472,73 @@ A deactivated or suspended user gets 403 on every `/self` route.
 
 ---
 
+## Walkthrough 12 — Create and suspend an organization
+
+An **organization** is a tenant: its own root org unit, its own people and groups, and
+its own Keycloak realm. Creating one is a platform-operator act — `organization:read`,
+`:create` and `:update` are held by `super_admin` alone, and all three require a
+**global** grant.
+
+**Before you start**, the deployment needs a realm-provisioning credential
+(`KEYCLOAK_PROVISION_CLIENT_ID` / `_SECRET` — see
+[06 — Configuration](06-configuration.md#realm-provisioning-required-only-to-create-organizations)).
+Without it the console answers *"creating an organization requires
+KEYCLOAK_PROVISION_CLIENT_ID and KEYCLOAK_PROVISION_CLIENT_SECRET, which are not
+configured"* and writes nothing — deliberately, rather than accepting a tenant whose
+realm could never be created.
+
+### Create
+
+1. **Operations → Organizations → New organization.**
+2. **Name** — the human name, e.g. `Acme Corp`.
+3. **Slug** — derived from the name (`acme-corp`) but **editable, and worth editing**.
+   The slug becomes the Keycloak realm name, permanently: it appears in the issuer URL
+   every person in this tenant authenticates against, and **there is no rename**.
+   Lower-case letters, digits and hyphens only.
+4. **Create.**
+
+The row appears immediately, showing **Provisioning**. That is honest rather than
+cosmetic: the organization exists in Postgres, the realm does not exist yet. The sync
+worker drains the `organization` event within a second or two, creates the realm, and
+the badge becomes **Active** on the next refresh.
+
+### What happens, in order
+
+1. In **one transaction**: the `organizations` row, its single root org unit, an audit
+   row (`organization:create`) and one `organization` outbox event.
+2. The sync worker claims that event, calls Keycloak's server-level realm API, sets the
+   realm enabled, and stamps `realm_provisioned_at`.
+3. Any person you create in the new organization before step 2 finishes is **deferred**,
+   not failed: their event stays `pending` with `attempts` still at 0 and
+   `last_error` reading *"waiting on realm provisioning for organization acme"*. It
+   converges on its own once the realm lands. Waiting on a prerequisite never spends the
+   dead-letter budget.
+
+### Keycloak only
+
+Every tenant row reads **Keycloak only**, and master reads **All enabled targets**. That
+is a real restriction, not a label: `connector_targets` is keyed by target name, so the
+one Active Directory / Entra / Google / mail configuration in this system belongs to the
+platform. A tenant's people are never fanned out to it — doing so would create real
+accounts, with real addresses, inside a different organization's directory.
+
+### Suspend
+
+**Suspend** on the row. This disables the tenant's realm: nobody in it can sign in, and
+every session ends. It does **not** delete anything — the realm, its users, its clients
+and its credentials are all still there, and **Reactivate** puts it back.
+
+There is no delete, here or anywhere in this product. Deleting a realm destroys every
+credential inside it irreversibly, which is the same reason a terminated person is
+`deactivated` rather than removed.
+
+**Master carries no Suspend control at all** — not a disabled one, none. Suspending
+master would disable the realm every administrator signs in through, including whoever
+clicked it, with no API path back in because there would be no way to authenticate to
+call it. The API refuses it independently with a 409, and so does the connector.
+
+---
+
 ## What the console cannot do yet
 
 These exist in the data model or the API but have no console surface:
@@ -479,5 +546,7 @@ These exist in the data model or the API but have no console surface:
 - **Create or edit attribute definitions** — no write endpoint at all; database only.
 - **Create or edit JML rules** — database rows plus the `jml:lifecycle` CLI.
 - **Business roles** — schema only; no engine, API or UI yet. See [14 — Roadmap](14-roadmap.md).
+- **Configure a connector target per organization** — targets are system-wide, which is
+  why a tenant reaches Keycloak only. See [14 — Roadmap](14-roadmap.md).
 - **Move a person between org units**, rename an org unit, or delete anything.
 - **Retry a dead letter** — reconciliation is the retry path.
