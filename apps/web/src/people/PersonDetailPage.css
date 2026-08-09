@@ -11,7 +11,9 @@
 }
 
 .person-detail__header {
-  margin-bottom: var(--space-5);
+  margin-bottom: var(--space-6);
+  padding-bottom: var(--space-5);
+  border-bottom: 1px solid var(--border);
 }
 
 .person-detail__title-row {
@@ -50,7 +52,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
 }
@@ -83,8 +86,8 @@
   flex-direction: column;
   gap: var(--space-4);
   margin-top: var(--space-2);
-  padding: var(--space-4);
-  background: var(--surface);
+  padding: var(--space-5);
+  background: var(--surface-sunken);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   max-width: 28rem;

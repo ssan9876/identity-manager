@@ -443,8 +443,14 @@ export default function OrgUnitsPage() {
 
   return (
     <div className="org-units-page">
-      <div className="org-units-page__header">
-        <h1 className="text-title">Org units</h1>
+      <div className="page-header org-units-page__header">
+        <div className="page-header__text">
+          <h1 className="text-title">Org units</h1>
+          <p className="page-header__subtitle">
+            The shape of the organisation. Every person sits in exactly one unit, and a
+            unit&rsquo;s path is what scopes who an administrator can see.
+          </p>
+        </div>
       </div>
 
       {isScopeLimited && (

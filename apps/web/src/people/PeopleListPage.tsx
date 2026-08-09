@@ -22,6 +22,23 @@ const STATUS_OPTIONS: { value: UserStatus | ''; label: string }[] = [
 
 const ROW_LINK_SELECTOR = '[data-row-link="true"]'
 
+/**
+ * The medallion glyph for this screen's empty states — the same figure the
+ * left nav uses for People, so an empty directory still reads as "this is
+ * the People screen" rather than a generic blank panel. Decorative: the
+ * heading beside it already says what it is.
+ */
+function PeopleIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="7.5" cy="6.5" r="2.5" />
+      <path d="M2.5 16c0-2.9 2.24-4.5 5-4.5s5 1.6 5 4.5" />
+      <circle cx="14" cy="7.5" r="2" />
+      <path d="M13 11.5c2.1.2 3.5 1.7 3.5 4.5" />
+    </svg>
+  )
+}
+
 /** Moves focus between row links with ArrowUp/ArrowDown/Home/End — docs/design-system.md: tables are "keyboard-navigable rows", not just sequentially Tab-able. */
 function handleRowNavKeyDown(event: KeyboardEvent<HTMLTableSectionElement>) {
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
@@ -190,8 +207,14 @@ export default function PeopleListPage() {
 
   return (
     <div className="people-list">
-      <div className="people-list__header">
-        <h1 className="text-title">People</h1>
+      <div className="page-header people-list__header">
+        <div className="page-header__text">
+          <h1 className="text-title">People</h1>
+          <p className="page-header__subtitle">
+            Everyone in the directory. Search, status and org unit filters run on the
+            server, so they narrow the whole set — not just the page you can see.
+          </p>
+        </div>
         {canCreate && (
           <Link to="/people/new" className="btn btn--primary" data-testid="create-user-link">
             Create user
@@ -199,7 +222,7 @@ export default function PeopleListPage() {
         )}
       </div>
 
-      <div className="people-list__filters">
+      <div className="people-list__filters" role="group" aria-label="Filter the directory">
         <div className="field people-list__search-field">
           <label className="field__label" htmlFor="people-search">
             Search
@@ -272,6 +295,9 @@ export default function PeopleListPage() {
           <div className="empty-state">
             {filtersActive ? (
               <>
+                <span className="empty-state__mark" aria-hidden="true">
+                  <PeopleIcon />
+                </span>
                 <h3>No one matches these filters</h3>
                 <p>Try a different search term, or clear the filters to see the full directory.</p>
                 <button type="button" className="btn btn--secondary" onClick={clearFilters}>
@@ -280,6 +306,9 @@ export default function PeopleListPage() {
               </>
             ) : (
               <>
+                <span className="empty-state__mark" aria-hidden="true">
+                  <PeopleIcon />
+                </span>
                 <h3>No one&rsquo;s in the directory yet</h3>
                 <p>
                   This is where the people at your organisation show up once they&rsquo;re created or

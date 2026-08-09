@@ -2,12 +2,35 @@
    user form is one component (PersonForm) in two modes, and these two pages
    are thin wrappers around it, so they share one small stylesheet too. */
 
+/* The form sits on its own raised panel rather than directly on the
+   content ground — a create/edit screen is a single focused object, and
+   giving it an edge is what says "this is the thing you are working on"
+   without resorting to a modal. */
 .person-form-page {
   max-width: 40rem;
+  padding: var(--space-7);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+@media (max-width: 640px) {
+  .person-form-page {
+    padding: var(--space-5);
+    border-radius: var(--radius-md);
+  }
 }
 
 .person-form-page h1 {
-  margin: var(--space-2) 0 var(--space-5);
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xl);
+  letter-spacing: -0.014em;
+}
+
+.person-form-page > form,
+.person-form-page > .person-form {
+  margin-top: var(--space-6);
 }
 
 .person-form-page__readonly {
@@ -42,5 +65,7 @@
 .person-form__actions {
   display: flex;
   gap: var(--space-3);
-  margin-top: var(--space-2);
+  margin-top: var(--space-4);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
 }

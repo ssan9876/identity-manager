@@ -99,7 +99,7 @@ export default function SsoAppDetailPage() {
         </p>
       )}
 
-      <dl className="detail-grid">
+      <dl className="detail-grid detail-grid--labelled">
         <dt>Description</dt>
         <dd>{app.description || <span className="muted">None</span>}</dd>
 

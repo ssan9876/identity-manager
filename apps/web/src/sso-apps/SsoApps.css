@@ -1,16 +1,39 @@
-.detail-grid {
-  display: grid;
+/*
+ * Applications (SSO) — screen-specific styles only.
+ *
+ * Three real defects fixed in the rebrand pass, all of them invisible in
+ * review and obvious the moment the screen is opened:
+ *
+ *  1. `--text-muted` and `--text` were referenced here and are not tokens
+ *     this system defines (they were never in styles/tokens.css). Every
+ *     declaration using them fell back to the inherited value, so the
+ *     "muted" labels rendered at full body ink. Now --ink-muted / --ink.
+ *  2. `.detail-grid` was redefined here in raw rem values, silently
+ *     overriding the shared two-column definition in
+ *     styles/components.css for this screen alone. The screen-specific
+ *     label-beside-value variant it actually wanted is now a MODIFIER
+ *     (`.detail-grid--labelled`) instead of a redefinition, so it stops
+ *     depending on stylesheet order.
+ *  3. `.secret-modal__backdrop` used a bare `z-index: 100`, outside the
+ *     semantic scale docs/design-system.md mandates. It is a modal
+ *     backdrop; --z-backdrop is the token for exactly that, and the modal
+ *     itself now sits at --z-modal above it.
+ */
+
+/* Label beside value, rather than components.css's two equal columns —
+   a client id/redirect-URI list reads better as a key/value sheet. */
+.detail-grid--labelled {
   grid-template-columns: minmax(10rem, 14rem) 1fr;
-  gap: 0.75rem 1.5rem;
-  margin: 1.5rem 0;
+  gap: var(--space-3) var(--space-6);
+  margin: var(--space-6) 0;
 }
 
-.detail-grid dt {
+.detail-grid--labelled dt {
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--ink-muted);
 }
 
-.detail-grid dd {
+.detail-grid--labelled dd {
   margin: 0;
 }
 
@@ -19,15 +42,14 @@
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 0.25rem;
+  gap: var(--space-1);
 }
 
-.page__actions {
-  display: flex;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  margin-top: 1.5rem;
-}
+/* ---------------------------------------------------------------------
+ * Client-secret modal — the one moment this console shows a value that
+ * will never be recoverable, so it is deliberately heavier chrome than a
+ * confirm dialog.
+ * ------------------------------------------------------------------- */
 
 .secret-modal__backdrop {
   position: fixed;
@@ -35,55 +57,64 @@
   background: var(--backdrop);
   display: grid;
   place-items: center;
-  padding: 1rem;
-  z-index: 100;
+  padding: var(--space-4);
+  z-index: var(--z-backdrop);
 }
 
 .secret-modal {
-  background: var(--surface);
-  color: var(--text);
-  border-radius: 8px;
-  padding: 1.5rem;
+  position: relative;
+  z-index: var(--z-modal);
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
   max-width: 34rem;
   width: 100%;
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-lg);
 }
 
 .secret-modal h2 {
   margin-top: 0;
+  font-size: var(--text-lg);
+  letter-spacing: -0.011em;
 }
 
 .secret-modal__warning {
   font-weight: 600;
+  color: var(--ink);
 }
 
 /* Selectable and wrapping: if the clipboard write fails, this is the only
    copy of the value that will ever exist. */
 .secret-modal__value {
   display: block;
-  margin: 1rem 0;
-  padding: 0.75rem;
-  border-radius: 6px;
+  margin: var(--space-4) 0;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
   background: var(--surface-sunken);
-  font-family: var(--font-mono, ui-monospace, monospace);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   word-break: break-all;
   user-select: all;
 }
 
 .secret-modal__actions {
   display: flex;
-  gap: 0.75rem;
+  gap: var(--space-3);
   justify-content: flex-end;
 }
 
 .secret-modal__copy-failed {
-  margin-top: 0.75rem;
+  margin-top: var(--space-3);
   color: var(--danger);
+  font-weight: 500;
 }
 
 .secret-modal__note {
   margin-bottom: 0;
-  margin-top: 1rem;
-  color: var(--text-muted);
-  font-size: 0.875rem;
+  margin-top: var(--space-4);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
 }
