@@ -11,7 +11,30 @@ import { userTargetAccounts } from '../db/schema/user-target-accounts'
 import { users } from '../db/schema/users'
 import { OutboxWriter } from '../outbox/outbox.writer'
 import { BusinessRolesRepository } from './business-roles.repository'
-import { evaluateRoles, type EvaluableUser } from './role-evaluator'
+import { ATTRIBUTES_FIELD, CONDITION_FIELDS, evaluateRoles, type EvaluableUser } from './role-evaluator'
+
+/**
+ * The user fields whose change re-evaluates role membership (Milestone 17,
+ * Task 9). `UsersController`'s PATCH handler skips the reconciler entirely
+ * when a request names none of these — an email or display-name change must
+ * not walk every role — and calls it when a request names any.
+ *
+ * DERIVED, not restated. `CONDITION_FIELDS` is the evaluator's own allowlist
+ * (`CONDITION_FIELD_EXTRACTORS`' key set, role-evaluator.ts) and
+ * `ATTRIBUTES_FIELD` is the column behind its open-ended `attributes.<key>`
+ * form. The coupling is therefore STRUCTURAL: a nameable field cannot be
+ * added to the evaluator without this trigger list growing with it in the
+ * same edit, because there is only one list. A field that can be named in a
+ * formula but does not trigger re-evaluation when it changes is a mover whose
+ * access silently fails to follow them — the exact failure this sub-project
+ * exists to remove — and holding that property depends on no reviewer
+ * noticing anything.
+ *
+ * test/business-roles.spec.ts additionally pins the resulting set against the
+ * literal list the plan specifies, so WIDENING the evaluator's allowlist stays
+ * a deliberate, visible act rather than a silent one.
+ */
+export const REEVALUATION_FIELDS: readonly string[] = Object.freeze([...CONDITION_FIELDS, ATTRIBUTES_FIELD])
 
 /**
  * The live transaction handle passed to a `db.transaction(async (tx) => ...)`

@@ -25,8 +25,15 @@ import { PermissionEngine } from '../authz/permission.engine'
 import { PermissionGuard, type AuthorizedRequest } from '../authz/permission.guard'
 import { PrivilegeGuards } from '../authz/privilege.guards'
 import { RequirePermission } from '../authz/require-permission.decorator'
+// Milestone 17, Task 9: role re-evaluation runs INSIDE this controller's
+// existing write transactions — see `reevaluateRoles` below.
+import {
+  REEVALUATION_FIELDS,
+  RoleReconciler,
+  type DbHandle as ReconcilerDbHandle,
+} from '../business-roles/role-reconciler'
 import { DB_CLIENT } from '../common/db.token'
-import { NotFoundError, ValidationError } from '../common/errors'
+import { ConflictError, NotFoundError, ValidationError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
 import { noNulChar } from '../common/http/safe-string'
@@ -277,6 +284,28 @@ export function snapshotUserForAudit(
   return { ...snapshot, attributes: result, attributesRedacted: redactedKeys.sort() }
 }
 
+/**
+ * Does this parsed PATCH body name any field a business role can key on
+ * (Milestone 17, Task 9)?
+ *
+ * `!== undefined`, never truthiness and never `in`: `jobTitle: null` is a
+ * request to CLEAR the field, which can absolutely move someone out of a
+ * role, so it must count as touched — while a key the caller simply omitted
+ * must not. The body schema is `.strict()`, so nothing unrecognised reaches
+ * here at all.
+ *
+ * Reads REEVALUATION_FIELDS by name rather than checking a hand-written list
+ * of PATCH-able fields. Only `jobTitle`, `location` and `attributes` are on
+ * this milestone's PATCH surface today (see updateUserBodySchema — status and
+ * orgUnitId are deliberately absent), but the moment one of the others is
+ * added to that schema it starts triggering re-evaluation with no change
+ * here, which is the point.
+ */
+function touchesReevaluationField(parsed: object): boolean {
+  const body = parsed as Record<string, unknown>
+  return REEVALUATION_FIELDS.some((field) => body[field] !== undefined)
+}
+
 @Controller('users')
 @UseGuards(JwtGuard, PermissionGuard)
 export class UsersController {
@@ -289,8 +318,50 @@ export class UsersController {
     @Inject(KeycloakAdminClient) private readonly keycloak: KeycloakAdminClient,
     @Inject(SyncStateRepository) private readonly syncStates: SyncStateRepository,
     @Inject(SyncDetailRepository) private readonly syncDetails: SyncDetailRepository,
+    // Milestone 17, Task 9. NOT `@Optional()`, deliberately: an absent
+    // reconciler would mean every user write silently skips role
+    // re-evaluation, which is precisely the "access does not follow the
+    // person" failure this sub-project exists to remove. Better a boot-time
+    // DI error naming the missing provider than a directory that looks
+    // healthy and is wrong.
+    @Inject(RoleReconciler) private readonly roleReconciler: RoleReconciler,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
   ) {}
+
+  /**
+   * Re-evaluates this user's business roles on the CALLER's transaction,
+   * immediately after their row and audit row were written by it (Milestone
+   * 17, Task 9).
+   *
+   * `tx` is passed through, never omitted in favour of `this.db` — the
+   * handler is already holding one pooled connection for the open
+   * transaction, and letting anything inside it check out a SECOND is
+   * finding C1 (docs/archive/audits/audit-integrity.md): 11 concurrent
+   * `PATCH /users/:id` exhausted a 10-connection pool and deadlocked the API
+   * permanently. `RoleReconciler` keeps the same discipline internally, and
+   * test/pool-exhaustion.spec.ts guards it.
+   *
+   * A REFUSAL THROWS, which rolls the whole transaction back — the user is
+   * not saved at all. That is the deliberate choice: `evaluateRoles` refuses
+   * only when some enabled role names a field or operator this binary cannot
+   * understand (a migration newer than the running code), and in that state
+   * nobody can say what access this person should end up with. Saving the
+   * row and skipping evaluation would leave a person whose access is
+   * silently wrong; failing the write leaves the directory exactly as it
+   * was, with an error naming the role and the reason.
+   */
+  private async reevaluateRoles(
+    tx: ReconcilerDbHandle,
+    userId: string,
+    actor: AuthorizedRequest['actor'],
+  ): Promise<void> {
+    const outcome = await this.roleReconciler.reconcileUser(tx, userId, actor.userId, new Date())
+    if (outcome.status === 'refused') {
+      throw new ConflictError(
+        `business role "${outcome.roleName}" cannot be evaluated (${outcome.reason}) — the user was not saved`,
+      )
+    }
+  }
 
   @Get()
   @RequirePermission('user:read')
@@ -472,6 +543,11 @@ export class UsersController {
         payload: { ...snapshotUser(user), action: 'user:create' },
       })
 
+      // Milestone 17, Task 9. Unconditional on create — every field a role
+      // can name is being set for the first time here, so there is no
+      // "touched nothing relevant" case to skip (contrast PATCH below).
+      await this.reevaluateRoles(tx, user.id, request.actor)
+
       return user
     })
 
@@ -574,6 +650,18 @@ export class UsersController {
         eventType: 'updated',
         payload: { ...snapshotUser(updated), action: 'user:update' },
       })
+
+      // Milestone 17, Task 9. Skipped entirely when this request names none
+      // of REEVALUATION_FIELDS: a display-name or employee-id change cannot
+      // move anyone between roles, and walking every enabled role for it
+      // would put a directory-wide read on the hot path of the most common
+      // write in the system. Decided from the PARSED request (what the
+      // caller asked to change), not from a before/after diff of the row —
+      // a PATCH that re-sends a field's existing value still names it, and
+      // re-running an idempotent reconcile is the safe direction to err in.
+      if (touchesReevaluationField(parsed)) {
+        await this.reevaluateRoles(tx, id, request.actor)
+      }
 
       return updated
     })

@@ -23,6 +23,8 @@ import { OrgUnitsRepository, type OrgUnit } from '../src/org-units/org-units.rep
 import { OutboxWriter } from '../src/outbox/outbox.writer'
 import { SyncDetailRepository } from '../src/outbox/sync-detail.repository'
 import { SyncStateRepository } from '../src/outbox/sync-state.repository'
+import { BusinessRolesRepository } from '../src/business-roles/business-roles.repository'
+import { RoleReconciler } from '../src/business-roles/role-reconciler'
 import { UsersController } from '../src/users/users.controller'
 import { UsersRepository, type User } from '../src/users/users.repository'
 import { type TestDatabase, withTestDatabase } from './support/pg'
@@ -131,6 +133,13 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [UsersController, GroupsController, OrgUnitsController, RoleAssignmentsController],
       providers: [
+        // Milestone 17, Task 9: UsersController now re-evaluates business roles
+        // inside its own create/update transactions, and its RoleReconciler
+        // parameter is deliberately NOT @Optional() (an absent reconciler would
+        // mean every user write silently skips re-evaluation). Both providers are
+        // therefore required to construct it, here exactly as in AppModule.
+        BusinessRolesRepository,
+        RoleReconciler,
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         UsersRepository,
         GroupsRepository,

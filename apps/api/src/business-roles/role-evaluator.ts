@@ -93,7 +93,36 @@ const CONDITION_FIELD_EXTRACTORS: Record<string, FieldExtractor> = nullPrototype
   ['orgUnitId', (user) => user.orgUnitId],
 ])
 
-const ATTRIBUTE_PREFIX = 'attributes.'
+/**
+ * The user COLUMN behind the open-ended `attributes.<key>` condition form.
+ * Named once, here, because two separate things are derived from it: the
+ * `attributes.` prefix `extractField` matches on, and — through
+ * `REEVALUATION_FIELDS` in role-reconciler.ts — the PATCH field whose change
+ * must re-evaluate a user's roles (Milestone 17, Task 9). A literal
+ * `'attributes.'` in one file and a literal `'attributes'` in the other could
+ * drift apart silently; one constant cannot.
+ */
+export const ATTRIBUTES_FIELD = 'attributes'
+
+const ATTRIBUTE_PREFIX = `${ATTRIBUTES_FIELD}.`
+
+/**
+ * Every scalar field nameable in a role condition, DERIVED from the extractor
+ * table above rather than restated as a second literal list.
+ *
+ * Milestone 17, Task 9 depends on it being derived. `REEVALUATION_FIELDS`
+ * (role-reconciler.ts) is built from this array, so the set of fields whose
+ * change re-evaluates a user on write is structurally the same set a formula
+ * can name. Adding an extractor above therefore cannot leave behind a field
+ * that a role can key on but that never triggers re-evaluation — the mover
+ * whose access silently fails to follow them, which is the exact failure this
+ * sub-project exists to remove.
+ *
+ * `Object.keys` on a null-prototype map returns exactly the own keys inserted
+ * above; frozen so no caller can mutate the evaluator's own notion of what is
+ * nameable.
+ */
+export const CONDITION_FIELDS: readonly string[] = Object.freeze(Object.keys(CONDITION_FIELD_EXTRACTORS))
 
 type FieldLookup = { known: true; value: unknown } | { known: false }
 

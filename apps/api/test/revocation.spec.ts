@@ -17,6 +17,8 @@ import { OutboxWriter } from '../src/outbox/outbox.writer'
 import { SyncDetailRepository } from '../src/outbox/sync-detail.repository'
 import { SyncStateRepository } from '../src/outbox/sync-state.repository'
 import { SyncWorker } from '../src/outbox/sync.worker'
+import { BusinessRolesRepository } from '../src/business-roles/business-roles.repository'
+import { RoleReconciler } from '../src/business-roles/role-reconciler'
 import { UsersController } from '../src/users/users.controller'
 import { type User, UsersRepository } from '../src/users/users.repository'
 import { startKeycloak, type TestKeycloak } from './support/keycloak'
@@ -79,6 +81,13 @@ describe('synchronous revocation on deactivate (Milestone 4, Task 4)', () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [UsersController],
       providers: [
+        // Milestone 17, Task 9: UsersController now re-evaluates business roles
+        // inside its own create/update transactions, and its RoleReconciler
+        // parameter is deliberately NOT @Optional() (an absent reconciler would
+        // mean every user write silently skips re-evaluation). Both providers are
+        // therefore required to construct it, here exactly as in AppModule.
+        BusinessRolesRepository,
+        RoleReconciler,
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         UsersRepository,
         PermissionEngine,
