@@ -33,6 +33,9 @@ this shaped like that?") and, for the business-roles plan, for the work still to
 Milestones 1–7 built the core; 8–9 the console and CI; 10–14 the connectors; then the
 mail server; then 15–19 for business roles, of which only 15 has landed.
 
+`2026-08-08-user-activate-endpoint.md` is not a milestone — it is a small, self-contained
+plan for `POST /users/:id/activate`, built from the spec of the same date.
+
 ## `audits/` — the security audit
 
 | File | Contents |
