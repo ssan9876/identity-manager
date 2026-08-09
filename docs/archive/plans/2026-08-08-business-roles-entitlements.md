@@ -1811,7 +1811,7 @@ export function hashDefinition(definition: RoleDefinition): string {
 }
 ```
 
-Confirm `ValidationError` is the correct export name in `apps/api/src/common/errors.ts` before writing this; if the project's name differs, use the existing one rather than adding a new error class.
+**Correction (found during implementation).** The real signatures in `apps/api/src/common/errors.ts` differ from the code above. `ValidationError` takes `(issues: string[], message?)`, so every call must wrap its message in an array. `NotFoundError` takes `(resource, id)`, two arguments, not one. `ConflictError` takes a plain message and is correct as written. Do not add new error classes. Where this task text and the committed implementation disagree, the implementation is authoritative.
 
 - [ ] **Step 4: Write the repository**
 
@@ -1853,7 +1853,7 @@ export class BusinessRolesRepository {
     const parsed = parseDefinition(definition)
     const updated = await this.db
       .update(businessRoles)
-      .set({ draftDefinition: parsed as unknown as Record<string, unknown>, simulatedAt: null, simulatedDraftHash: null, updatedAt: new Date() })
+      .set({ draftDefinition: { conditions: parsed.conditions, grants: parsed.grants }, simulatedAt: null, simulatedDraftHash: null, updatedAt: new Date() })
       .where(eq(businessRoles.id, id))
       .returning({ id: businessRoles.id })
 
@@ -1944,7 +1944,7 @@ export class BusinessRolesRepository {
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `pnpm --filter @idm/api exec vitest run test/business-roles.spec.ts`
-Expected: PASS, 10 tests.
+Expected: PASS, 9 tests. (This plan originally said 10; the task text above contains 9 `it` blocks. Cumulative counts in later tasks shift down by one accordingly — Task 8 expects 18, not 19.)
 
 - [ ] **Step 6: Commit**
 
@@ -2144,7 +2144,7 @@ Rules the implementation must honour:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm --filter @idm/api exec vitest run test/business-roles.spec.ts`
-Expected: PASS, 19 tests.
+Expected: PASS, 18 tests (9 from Task 7 plus 9 new).
 
 - [ ] **Step 5: Run the pool-exhaustion guard specifically**
 
