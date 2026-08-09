@@ -213,6 +213,27 @@ Carry-forward findings, already diagnosed:
       Refusing to start: changing it would re-point every existing user."*
       Restoring the issuer recovered cleanly. That path had never run outside a
       container.
+      **Gate item 2 — "people, groups and sync behave exactly as before" — is
+      now actually exercised**, not inferred from a health check. Driven
+      through the real console against the real deployment: created a person
+      (organization populated automatically; outbox `user/created` reached
+      `done`), created a group, added a membership through the picker. All
+      three wrote audit rows attributed to the acting human, and the membership
+      emitted `membership_changed`, drained on the first attempt
+      (`attempts=0`). The membership row landed with `organization_id` matching
+      BOTH the user's and the group's — which is the design: ONE column
+      participates in TWO composite FKs (`gum_user_organization_fk` and
+      `gum_group_organization_fk`), so a cross-tenant edge is structurally
+      unrepresentable rather than merely rejected. Fixtures were cleaned up;
+      the lab database is back to its prior state.
+
+      **What the lab CANNOT prove, stated plainly:** the cross-tenant guard
+      itself. With exactly one organization every row is same-tenant by
+      construction — forcing a foreign `organization_id` is caught by the plain
+      FK for not existing, and a "real but different" tenant does not exist to
+      try. That guard is covered by `organizations.isolation.spec.ts` (10
+      tests) against fabricated tenants, and becomes live-testable only when
+      Task 12's API can create a second organization.
 
 - [x] **Tasks 8–9 — provisioning credentials and a per-realm Keycloak admin
       client.** No migration needed; neither touches the schema.
