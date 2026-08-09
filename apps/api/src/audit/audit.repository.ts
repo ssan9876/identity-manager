@@ -12,7 +12,7 @@ import { users } from '../db/schema/users'
  * `displayName`, resolved via a LEFT JOIN against `users` rather than left
  * for the caller to resolve separately: `audit:read` is the one permission
  * in today's static catalog whose entire purpose is "who did that, and what
- * changed" (PRODUCT.md), so identifying the actor cannot be gated behind a
+ * changed" (docs/product-brief.md), so identifying the actor cannot be gated behind a
  * SEPARATE `user:read` grant/scope an auditor might not hold — an auditor
  * scoped away from a given actor's org unit must still see WHO acted, even
  * though they could not `GET /users/:id` that same person directly. The join

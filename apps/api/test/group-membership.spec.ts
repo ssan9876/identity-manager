@@ -150,7 +150,7 @@ describe('group membership', () => {
     // and a cycle is committed, which makes effective-membership expansion
     // depend on UNION dedup rather than on the graph actually being a DAG.
     for (let i = 0; i < 20; i++) {
-      // finding H1 (docs/superpowers/audit-integrity.md): TRUNCATE is not
+      // finding H1 (docs/archive/audits/audit-integrity.md): TRUNCATE is not
       // among the runtime role's grants on ANY table (only SELECT/INSERT/
       // UPDATE/DELETE — see db/roles.ts), so this between-iteration reset
       // runs on the OWNER pool. Everything under test below — addChildGroup,

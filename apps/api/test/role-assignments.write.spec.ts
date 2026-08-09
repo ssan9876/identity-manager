@@ -71,7 +71,7 @@ async function totalAuditCount(ctx: TestDatabase): Promise<number> {
 
 /**
  * Table-wide, like `totalAuditCount` above — used by the finding H-1
- * regression block (docs/superpowers/audit-authz.md) to prove a rejected
+ * regression block (docs/archive/audits/audit-authz.md) to prove a rejected
  * assign/revoke leaves outbox_events untouched too, not just audit_log. No
  * other describe block in this file checks the outbox (that is
  * outbox-emission.spec.ts's job for the success paths); H-1's own "a
@@ -160,7 +160,7 @@ describe('role assignment write endpoints (Milestone 3b, Task 4)', () => {
       providers: [
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         RoleAssignmentsRepository,
-        // Finding H-1 (docs/superpowers/audit-authz.md): RoleAssignmentsController
+        // Finding H-1 (docs/archive/audits/audit-authz.md): RoleAssignmentsController
         // now loads the target user for the missing fourth check
         // (assertCanIn against the target's own org unit) — required here
         // for DI resolution.
@@ -713,7 +713,7 @@ describe('role assignment write endpoints (Milestone 3b, Task 4)', () => {
   })
 
   // =======================================================================
-  // Finding H-1 (docs/superpowers/audit-authz.md) — THE FOURTH CHECK.
+  // Finding H-1 (docs/archive/audits/audit-authz.md) — THE FOURTH CHECK.
   //
   // Every test above targets a user WITHIN the acting super_admin's own
   // scope (or the actor is global) — proving assertCanAssignRole's SCOPE

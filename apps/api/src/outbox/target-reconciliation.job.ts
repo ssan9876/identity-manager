@@ -494,7 +494,7 @@ export class TargetReconciliationJob {
    * would mean either threading a transaction through a method that cannot
    * accept one, or reading via the pool WHILE a transaction sits open
    * elsewhere in the same call stack — precisely the second-pool-connection-
-   * inside-an-open-transaction shape finding C1 (docs/superpowers/
+   * inside-an-open-transaction shape finding C1 (docs/archive/audits/
    * audit-integrity.md) already burned this project once. One short
    * transaction per user, opened fresh each time, is the same shape
    * `SyncWorker.reconcileUser` itself already uses per event — proven safe

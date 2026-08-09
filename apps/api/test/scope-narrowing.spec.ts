@@ -347,7 +347,7 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
           AuditWriter,
           OutboxWriter,
           Reflector,
-          // Finding L-2 (docs/superpowers/audit-authz.md): GroupsController
+          // Finding L-2 (docs/archive/audits/audit-authz.md): GroupsController
           // now loads the target user for the ?userId= scope check —
           // required here for DI resolution. See the "?userId=" tests below.
           UsersRepository,
@@ -451,7 +451,7 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
       expect(res.body.items.map((g: { name: string }) => g.name)).toEqual(['Sales Team'])
     })
 
-    // Finding L-2 (docs/superpowers/audit-authz.md): the test above proves
+    // Finding L-2 (docs/archive/audits/audit-authz.md): the test above proves
     // the RESULTING groups are narrowed; this proves the USER named by
     // ?userId= is now scope-checked too. Before this fix, a Sales-scoped
     // helen could query an Engineering user's id and get 200 back (an empty
@@ -619,7 +619,7 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
   })
 
   // ---------------------------------------------------------------------
-  // POST/DELETE /users/:id/roles — finding H-1 (docs/superpowers/audit-authz.md).
+  // POST/DELETE /users/:id/roles — finding H-1 (docs/archive/audits/audit-authz.md).
   //
   // Every OTHER describe block in this file pins the scope-narrowing
   // property for a resource's own GET routes. This file had NO

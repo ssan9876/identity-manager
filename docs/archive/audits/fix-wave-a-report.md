@@ -1,7 +1,7 @@
 # Fix Wave A — C1 (CRITICAL): connection-pool exhaustion deadlock
 
 Branch: `fix/audit-critical-pool-exhaustion`, from `master` at `91aa5b9`.
-Fixes finding **C1** from `docs/superpowers/audit-integrity.md` only — the
+Fixes finding **C1** from `docs/archive/audits/audit-integrity.md` only — the
 single CRITICAL finding from the integrity/concurrency/availability audit.
 No other finding (H1–H4, M1–M7, L1–L2) is touched in this pass.
 

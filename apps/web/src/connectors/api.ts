@@ -40,7 +40,7 @@ export interface ConnectorTargetSummary {
   /** Whether a `connector_targets` row exists at all — distinct from `enabled`: a target can be configured and deliberately switched off. */
   configured: boolean
   enabled: boolean
-  /** Non-secret only — a secret's NAME may appear here (e.g. `credentialSecretName`), never a value. See PRODUCT.md/DESIGN.md's own instruction: state plainly where a value comes from, never imply it is stored here. */
+  /** Non-secret only — a secret's NAME may appear here (e.g. `credentialSecretName`), never a value. See docs/product-brief.md and docs/design-system.md's own instruction: state plainly where a value comes from, never imply it is stored here. */
   config: Record<string, unknown>
   blastRadiusThreshold: number
   blastRadiusFloor: number

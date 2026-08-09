@@ -119,7 +119,7 @@ function printReport(report: TargetReconciliationReport): void {
  * and `--force` (an explicit, audited override) so the SAME entrypoint
  * covers the whole feature rather than needing a second script. Mirrors
  * `reconcile-cli.ts`/`bootstrap-admin-cli.ts` exactly: a plain `tsx`
- * script, connected as the RUNTIME role (finding H1, docs/superpowers/
+ * script, connected as the RUNTIME role (finding H1, docs/archive/audits/
  * audit-integrity.md) — every read/write this makes is ordinary DML the
  * runtime role already holds.
  */

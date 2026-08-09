@@ -259,7 +259,7 @@ describe('PrivilegeGuards', () => {
   // 'ghost_role'`), so the regression is pinned against genuine Postgres
   // behaviour, not a hand-typed fixture.
   // The ALTER TYPE calls below run on ctx.ownerPool, not ctx.pool: finding
-  // H1 (docs/superpowers/audit-integrity.md) — widening an enum requires
+  // H1 (docs/archive/audits/audit-integrity.md) — widening an enum requires
   // owning the type, which the RUNTIME role deliberately does not. Every
   // subsequent step in each test (the INSERT using the new value, and every
   // method under test) still runs as the runtime role.

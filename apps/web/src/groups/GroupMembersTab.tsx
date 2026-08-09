@@ -20,7 +20,7 @@ const SEARCH_RESULT_LIMIT = 8
  * so the extra mechanism earns its keep here specifically (a disclosed scope
  * call, not a silent inconsistency). Results render as a plain block-flow
  * list UNDER the input, never an absolutely-positioned floating dropdown —
- * DESIGN.md bans `position: absolute` dropdowns inside an overflow
+ * docs/design-system.md bans `position: absolute` dropdowns inside an overflow
  * container, and the simplest way to never collide with that ban is to not
  * float at all.
  */
@@ -255,7 +255,7 @@ type MembersState =
  * People list/detail already show — `fetchPeopleByIds` already returns
  * `syncState` per person, so this costs no extra request. This is precisely
  * the screen the security remediation's own motivating finding was about
- * (docs/superpowers/audit-integrity.md, finding H3): a user removed from a
+ * (docs/archive/audits/audit-integrity.md, finding H3): a user removed from a
  * group whose removal event dead-lettered would otherwise look like an
  * ordinary, healthy member right here, on the one screen an admin would
  * check to confirm who is actually still in a group.

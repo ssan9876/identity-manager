@@ -70,7 +70,7 @@ export interface UpdateUserInput {
   attributes?: Record<string, unknown>
 }
 
-// `pending -> deactivated` (finding M5, docs/superpowers/audit-integrity.md):
+// `pending -> deactivated` (finding M5, docs/archive/audits/audit-integrity.md):
 // a leaver whose end_date passes before they were ever activated is exactly
 // as much a leaver as an active one — see
 // `listNonDeactivatedWithEndDateOnOrBefore`'s own doc comment, which already
@@ -142,7 +142,7 @@ export class UsersRepository {
         .insert(users)
         .values({
           primaryEmail: input.primaryEmail,
-          // LOW finding (docs/superpowers/audit-injection.md): unnormalised
+          // LOW finding (docs/archive/audits/audit-injection.md): unnormalised
           // Unicode input (NFD, RTL overrides, ZWJ, homoglyphs) was stored
           // verbatim. `users_username_unique` and PermissionEngine.resolveActor
           // both already agree exactly on `lower(username)` — this is NOT an
@@ -198,7 +198,7 @@ export class UsersRepository {
    * blocker's COMMIT re-fetches the just-committed row version, not the
    * snapshot it originally requested.
    *
-   * Exists for finding H4 (docs/superpowers/audit-integrity.md): a caller
+   * Exists for finding H4 (docs/archive/audits/audit-integrity.md): a caller
    * that reads `current`, computes something derived from it (a merged
    * `attributes` object, a recomputed `displayName`), and writes that
    * derived value back is a lost-update hazard under a PLAIN `findById` —
@@ -299,7 +299,7 @@ export class UsersRepository {
    *     one, which is outside what this task specifies.
    *
    * Reads `current` via `findByIdForUpdate` (`SELECT ... FOR UPDATE`), not
-   * a plain read — finding M1 (docs/superpowers/audit-integrity.md):
+   * a plain read — finding M1 (docs/archive/audits/audit-integrity.md):
    * `displayName` is DERIVED from `patch.firstName ?? current.firstName` /
    * `patch.lastName ?? current.lastName` below, so a stale `current` under
    * concurrency produces a stale derived value with the SAME lost-update
@@ -484,7 +484,7 @@ export class UsersRepository {
    * `db` is an OPTIONAL trailing handle, defaulting to the injected pooled
    * connection (`this.db`) - same contract as create/findById/update above.
    * Added for SyncWorker.reconcileUser (finding C1,
-   * docs/superpowers/audit-integrity.md): that method runs inside the
+   * docs/archive/audits/audit-integrity.md): that method runs inside the
    * worker's own open claim transaction and now passes it through here
    * rather than defaulting to the pool, so draining the outbox no longer
    * permanently pins two of the pool's connections per in-flight claim.
@@ -526,7 +526,7 @@ export class UsersRepository {
    * group's membership — see UsersController.list's own doc comment on
    * `ids`), and silently dropping a deactivated member from that resolution
    * would look like a shorter membership list rather than what it actually
-   * is — exactly the kind of silent mismatch PRODUCT.md calls out ("a user
+   * is — exactly the kind of silent mismatch docs/product-brief.md calls out ("a user
    * who *looks* healthy while their group sync dead-lettered is the worst
    * outcome this product can produce" — the same "don't silently hide state
    * that changes what a screen is telling you" principle, applied here to
@@ -579,7 +579,7 @@ export class UsersRepository {
    * Case-insensitive substring match across displayName, username and
    * primaryEmail — the fields an admin would actually recognise someone by.
    * Milestone 8, Task 2: `GET /users` had no text search at all before
-   * this, only status/orgUnitId, which cannot do PRODUCT.md's #1 job
+   * this, only status/orgUnitId, which cannot do docs/product-brief.md's #1 job
    * ("find a person fast... search that survives hundreds of rows") on
    * their own — a client-side filter over a single fetched page cannot
    * either, once the directory outgrows one page.

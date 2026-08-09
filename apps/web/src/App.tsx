@@ -24,7 +24,7 @@ import './SignInGate.css'
 /**
  * Top-level shell: the authentication gate (unchanged since Milestone 1 —
  * still just a "Sign in" button, Keycloak's own hosted login page does the
- * rest), then — once authenticated — the admin console. PRODUCT.md bans "the
+ * rest), then — once authenticated — the admin console. docs/product-brief.md bans "the
  * SaaS dashboard opener": this product "opens onto a list of people, because
  * that is the job", so `/` and `/people` both render PeopleListPage directly
  * rather than routing through a separate placeholder landing page first.
@@ -61,7 +61,7 @@ import './SignInGate.css'
  * bookmark) without the grant sees why, never a bare 403 or a silent empty
  * screen.
  *
- * `ToastProvider` wraps `<Routes>`, not any single page — DESIGN.md's
+ * `ToastProvider` wraps `<Routes>`, not any single page — docs/design-system.md's
  * "Toasts for the result of an action" must survive the navigation an
  * action often triggers (e.g. deactivating from the detail page keeps that
  * page; creating a user redirects to the new record's own detail page),

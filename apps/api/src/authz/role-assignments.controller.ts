@@ -67,7 +67,7 @@ function snapshotRoleAssignment(assignment: RoleAssignment): Record<string, unkn
  *
  * THE FOUR CHECKS every route below runs, all load-bearing, none subsuming
  * another (task-4-brief.md, citing the M3a review; check 4 added post-launch
- * for finding H-1, docs/superpowers/audit-authz.md):
+ * for finding H-1, docs/archive/audits/audit-authz.md):
  *   1. `PermissionGuard` (class-level, below): does this actor hold
  *      `role:assign` ANYWHERE at all? Only `super_admin` does, in today's
  *      static catalog (see ROLE_PERMISSIONS in actions.ts) — every other
@@ -134,7 +134,7 @@ export class RoleAssignmentsController {
    * target cannot enumerate their existing grants either.
    *
    * Runs the SAME check 2 `assign`/`revoke` both run (finding H-1,
-   * docs/superpowers/audit-authz.md) — `assertCanIn(actor, 'role:assign',
+   * docs/archive/audits/audit-authz.md) — `assertCanIn(actor, 'role:assign',
    * target.orgUnitId)` — and nothing else: `assertCanAssignRole`/
    * `assertCanModifyPrincipal` answer "may I CHANGE this specific grant",
    * which has no meaning for a plain read. A target the actor cannot reach
@@ -173,7 +173,7 @@ export class RoleAssignmentsController {
    * every other write endpoint this milestone.
    *
    * The `assertCanIn` call below is check 2 of the class doc comment's FOUR
-   * CHECKS — finding H-1 (docs/superpowers/audit-authz.md): it loads the
+   * CHECKS — finding H-1 (docs/archive/audits/audit-authz.md): it loads the
    * target user and asks "can this actor reach THIS PERSON at all," which
    * `assertCanAssignRole` (scope of the grant) and `assertCanModifyPrincipal`
    * (rank of the target) never ask between them. Ordered FIRST, before the
@@ -263,7 +263,7 @@ export class RoleAssignmentsController {
    *
    * The `assertCanIn` call is check 2 of the class doc comment's FOUR
    * CHECKS — finding H-1's revoke-direction symmetry
-   * (docs/superpowers/audit-authz.md): granting demands the actor can reach
+   * (docs/archive/audits/audit-authz.md): granting demands the actor can reach
    * the target user (see `assign` above); revoking must demand exactly the
    * same thing, against the SAME target this grant already belongs to
    * (`current.userId`, loaded from the row above — never re-trust `userId`

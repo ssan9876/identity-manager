@@ -60,9 +60,9 @@ function labelFor(fieldName: string): string {
  * `badge-direct`/`badge-inherited` classes did not even match any selector
  * in components.css, which only defines double-dash `badge--*`). Direct and
  * inherited both render `badge--neutral` (this task's own choice): neither
- * is an "exception" in DESIGN.md's colour-marks-the-exception sense the way
+ * is an "exception" in docs/design-system.md's colour-marks-the-exception sense the way
  * pending/suspended/danger are — the WORD is what distinguishes them, which
- * DESIGN.md's own badge contract requires regardless of colour.
+ * docs/design-system.md's own badge contract requires regardless of colour.
  */
 function GroupList({ groups, directIds }: { groups: SelfGroup[]; directIds: Set<string> }) {
   if (groups.length === 0) {

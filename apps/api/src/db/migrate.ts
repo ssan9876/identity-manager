@@ -39,7 +39,7 @@ export async function runMigrations(pool: Pool, runtimeRole: RuntimeRoleCredenti
   await migrate(drizzle(pool), { migrationsFolder: MIGRATIONS_FOLDER })
   await enforceAuditAppendOnly(pool)
 
-  // Finding H1 (docs/superpowers/audit-integrity.md): re-asserted last, on
+  // Finding H1 (docs/archive/audits/audit-integrity.md): re-asserted last, on
   // every migrate run, so the runtime role's restricted privileges — and
   // its total lack of ownership/CREATE — can never silently drift from what
   // this function just created, and so a table added by a future migration

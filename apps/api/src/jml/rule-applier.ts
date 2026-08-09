@@ -195,7 +195,7 @@ export class RuleApplier {
    * `skippedReason: 'invalid_attribute'`.
    *
    * Loads `current` via `findByIdForUpdate` (`SELECT ... FOR UPDATE`), not a
-   * plain read — finding H4 (docs/superpowers/audit-integrity.md) names
+   * plain read — finding H4 (docs/archive/audits/audit-integrity.md) names
    * this exact read-merge-write shape as sharing `SelfServiceController.
    * update`'s lost-update hazard: a plain read takes no lock, so this merge
    * could race a concurrent `PATCH /self` or `PATCH /users/:id` on the same

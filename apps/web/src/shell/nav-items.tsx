@@ -12,7 +12,7 @@ export interface NavItem {
    * implies the caller should see that area at all: `role:assign` (only
    * super_admin holds it — nobody else can act on roles anyway), `user:create`
    * (bulk import creates/updates users), `audit:read` (the auditor role's
-   * whole purpose, per PRODUCT.md).
+   * whole purpose, per docs/product-brief.md).
    */
   action: Action
   icon: (props: { className?: string }) => ReactElement
@@ -90,7 +90,7 @@ function AuditIcon({ className }: { className?: string }) {
   )
 }
 
-/** Two nodes and a directional edge — this app pushing mastered identity outward to a directory backend (PRODUCT.md's own sub-project framing), the same idea Milestone 14's console makes configurable and inspectable. */
+/** Two nodes and a directional edge — this app pushing mastered identity outward to a directory backend (docs/product-brief.md's own sub-project framing), the same idea Milestone 14's console makes configurable and inspectable. */
 function ConnectorsIcon({ className }: { className?: string }) {
   return (
     <svg {...iconProps(className)}>

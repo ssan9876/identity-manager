@@ -6,7 +6,7 @@ import type { NextFunction, Request, Response } from 'express'
  * routing/controller layer — `DomainExceptionFilter` (`@Catch(DomainError)`,
  * common/domain-exception.filter.ts) never sees it, because it is not a
  * `DomainError`; it falls through to Nest's own default exception handling
- * instead. Finding M6 (docs/superpowers/audit-integrity.md) names the
+ * instead. Finding M6 (docs/archive/audits/audit-integrity.md) names the
  * observable effect: the response status is already the correct 413, but it
  * is logged as an "unhandled ExceptionsHandler ERROR" — noisy, and shaped
  * differently from every other rejected request this API returns.

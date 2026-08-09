@@ -13,7 +13,7 @@ import { MailServerConnector } from '../src/connectors/mail-server.connector'
  * of the cost of reproducing that suite here.
  *
  * Requires a reachable mail server (the tunnel up — see
- * docs/deployment/mail-server-transport.md), plus:
+ * docs/11-operations.md), plus:
  *
  *   MAIL_SERVER_BASE_URL     e.g. http://10.8.0.2/api/v1
  *   CONNECTOR_MAIL_SERVER_TOKEN  issued there, returned exactly once

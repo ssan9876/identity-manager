@@ -20,7 +20,7 @@ const NUL = String.fromCharCode(0)
  * once it reaches the `pg` driver, as a raw, non-`DomainError` exception —
  * `DomainExceptionFilter` (`@Catch(DomainError)`) does not touch it, so Nest
  * falls through to its default handler and returns an unmapped 500 on every
- * write (docs/superpowers/audit-injection.md HIGH finding). A literal, raw
+ * write (docs/archive/audits/audit-injection.md HIGH finding). A literal, raw
  * NUL *byte* embedded in JSON text is a DIFFERENT, already-safe case — that
  * is invalid JSON syntax and `JSON.parse` itself rejects it ("Bad control
  * character") before any application code runs; only the escaped form needs

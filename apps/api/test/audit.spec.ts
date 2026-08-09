@@ -76,7 +76,7 @@ describe('audit log', () => {
     expect(newest.actorUserId).toBeNull()
   })
 
-  // ctx.pool/ctx.db run as the RUNTIME role (finding H1, docs/superpowers/
+  // ctx.pool/ctx.db run as the RUNTIME role (finding H1, docs/archive/audits/
   // audit-integrity.md — test/support/pg.ts's withTestDatabase()). These
   // three now fail at the PRIVILEGE layer — Postgres checks table grants
   // before it ever invokes a BEFORE trigger — rather than the trigger's own
@@ -200,14 +200,14 @@ describe('audit log', () => {
 })
 
 /**
- * Finding H1 (docs/superpowers/audit-integrity.md): re-runs every bypass the
+ * Finding H1 (docs/archive/audits/audit-integrity.md): re-runs every bypass the
  * auditor demonstrated against the OLD single-role setup — where `idm` both
  * served runtime traffic and owned/could-alter its own schema — now that
  * `ctx.pool`/`ctx.db` (test/support/pg.ts's withTestDatabase()) are the
  * RUNTIME role: not a superuser, owns nothing, no CREATE on schema public.
  *
  * Each assertion pins the EXACT Postgres error, captured empirically against
- * a real Postgres (verified live, docs/superpowers/fix-wave-e-report.md) —
+ * a real Postgres (verified live, docs/archive/audits/fix-wave-e-report.md) —
  * not guessed — because WHICH mechanism blocks a given statement differs and
  * is exactly the thing worth documenting:
  * - "permission denied for schema public": the runtime role has no CREATE
@@ -303,7 +303,7 @@ describe('finding H1 — the runtime role cannot bypass append-only via DDL or o
 
   it('the upsert-shaped bypass (INSERT ... ON CONFLICT DO UPDATE) is now also blocked by privilege, not only by the trigger', async () => {
     // Previously blocked ONLY because the statement-level UPDATE trigger
-    // fires for the DO UPDATE branch (docs/superpowers/audit-integrity.md's
+    // fires for the DO UPDATE branch (docs/archive/audits/audit-integrity.md's
     // "what I tried that did not work"). Postgres checks UPDATE privilege
     // for an ON CONFLICT DO UPDATE clause at permission-check time,
     // regardless of whether any row actually conflicts — so this is

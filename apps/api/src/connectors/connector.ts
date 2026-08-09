@@ -267,8 +267,8 @@ export interface ConnectorHealth {
 /**
  * The one interface every directory backend implements — plan / apply /
  * disable / health, exactly four methods, nothing else. Settled by
- * docs/superpowers/specs/2026-08-06-directory-connectors-design.md and
- * docs/superpowers/plans/2026-08-06-idp-milestones-10-14-directory-
+ * docs/archive/specs/2026-08-06-directory-connectors-design.md and
+ * docs/archive/plans/2026-08-06-idp-milestones-10-14-directory-
  * connectors.md (Milestone 10, Task 2). Implemented today by
  * `KeycloakConnector` (keycloak.connector.ts — wraps the pre-existing
  * `KeycloakAdminClient` so Keycloak becomes a connector-shaped participant
@@ -290,7 +290,7 @@ export interface ConnectorHealth {
  * always inside the worker's claim transaction or a nested savepoint — see
  * sync.worker.ts's own doc comments), so a connector reaching for a second
  * pool connection here would reproduce the exact pool-exhaustion deadlock
- * finding C1 (docs/superpowers/audit-integrity.md) fixed elsewhere —
+ * finding C1 (docs/archive/audits/audit-integrity.md) fixed elsewhere —
  * regression-guarded there by test/pool-exhaustion.spec.ts. Whatever a
  * connector needs is either passed in `desired`/`externalId`, or bound into
  * the connector instance BEFORE any of these methods is ever called — see

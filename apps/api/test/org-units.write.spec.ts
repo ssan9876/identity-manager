@@ -275,7 +275,7 @@ describe('org unit write endpoints (Milestone 3b, Task 3)', () => {
       expect(await totalAuditCount(ctx)).toBe(before)
     })
 
-    // docs/superpowers/audit-injection.md HIGH finding: a JSON-escaped NUL
+    // docs/archive/audits/audit-injection.md HIGH finding: a JSON-escaped NUL
     // (Unicode code point 0) is legal JSON and passed every check that
     // existed pre-fix (body-parser, Zod's .min()/.max()), only failing once
     // it reached Postgres as a raw, non-DomainError exception — an unmapped

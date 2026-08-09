@@ -397,7 +397,7 @@ function randomChar(alphabet: string): string {
 
 /**
  * Generates a high-entropy, throwaway password for Google user CREATION —
- * spec decision 5a (docs/superpowers/specs/2026-08-06-directory-connectors-
+ * spec decision 5a (docs/archive/specs/2026-08-06-directory-connectors-
  * design.md), now SETTLED: "generate it, transmit it once, and retain
  * nothing... no storage, no log, no audit row, no response body, no return
  * value, no variable outliving the call." Google's own "Create user" schema

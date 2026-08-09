@@ -12,7 +12,7 @@ import { parseRoleCredentials } from './roles'
  *
  * The ONLY script in this codebase that connects as the OWNER role
  * (`env.databaseUrl`) — see config/env.ts's doc comment on DATABASE_URL vs
- * RUNTIME_DATABASE_URL, and finding H1 (docs/superpowers/audit-integrity.md).
+ * RUNTIME_DATABASE_URL, and finding H1 (docs/archive/audits/audit-integrity.md).
  * The runtime role's identity/password come from RUNTIME_DATABASE_URL
  * itself (parseRoleCredentials), so that connection string is the single
  * source of truth for who the role is; this script just makes it real in

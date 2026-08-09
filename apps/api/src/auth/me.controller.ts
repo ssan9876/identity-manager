@@ -3,7 +3,7 @@ import { JwtGuard, type AuthenticatedRequest, type Principal } from './jwt.guard
 
 /**
  * `GET /me` is a pure JWT-CLAIMS ECHO, deliberately NOT a session-validity
- * check — finding L-1 (docs/superpowers/audit-authz.md): a `pending`,
+ * check — finding L-1 (docs/archive/audits/audit-authz.md): a `pending`,
  * `suspended` or `deactivated` principal gets 200 here today, while every
  * other route in the system correctly 403s them (`PermissionEngine
  * .resolveActor`'s `status !== 'active'` check, which `SelfServiceController`

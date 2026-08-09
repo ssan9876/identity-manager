@@ -10,7 +10,7 @@
 // this machine (Docker, for the API suite's Testcontainers).
 //
 // Two known defect classes motivated this (see
-// docs/superpowers/plans/2026-08-06-idp-milestone-9-ci-and-polish.md, Task 1):
+// docs/archive/plans/2026-08-06-idp-milestone-9-ci-and-polish.md, Task 1):
 //   1. `apps/api/scripts/` sat outside the `tsc` program (apps/api/tsconfig.json's
 //      `include`) — `smoke-dev.ts` was never typechecked, only ever run through
 //      `tsx`, which strips types without checking them.

@@ -109,7 +109,7 @@ a {
   color: var(--primary);
 }
 
-/* Placeholders held to the SAME 4.5:1 floor as body text (DESIGN.md,
+/* Placeholders held to the SAME 4.5:1 floor as body text (docs/design-system.md,
    explicit call-out) — never the browser's default low-contrast grey, and
    never diluted by Firefox's default placeholder opacity. */
 ::placeholder {
@@ -117,7 +117,7 @@ a {
   opacity: 1;
 }
 
-/* Visible focus on every interactive element (DESIGN.md), via
+/* Visible focus on every interactive element (docs/design-system.md), via
    :focus-visible so a mouse click doesn't ring every element — keyboard
    navigation is what this exists for. Individual components may add
    :focus-visible rules of their own (e.g. inset rings inside a scroll
@@ -143,7 +143,7 @@ a {
 }
 
 /* Strings meant to be compared character-by-character — UUIDs, ltree org
-   paths, ids — per DESIGN.md's "mono is functional, not decorative".
+   paths, ids — per docs/design-system.md's "mono is functional, not decorative".
    `overflow-wrap: anywhere` — found via Task 3's own visual pass: an ltree
    path has no spaces at all (dot-separated labels), so a deep path (Org
    units, "make it usable at depth") does not wrap at the browser's default

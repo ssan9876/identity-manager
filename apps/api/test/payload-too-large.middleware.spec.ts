@@ -19,7 +19,7 @@ function fakeResponse() {
 }
 
 /**
- * Finding M6 (docs/superpowers/audit-integrity.md): "the 413 is also logged
+ * Finding M6 (docs/archive/audits/audit-integrity.md): "the 413 is also logged
  * as an unhandled ExceptionsHandler ERROR rather than a clean domain error."
  * Unit-tested in isolation (not through a booted app) — see this
  * middleware's own file-level doc comment for why `main.ts` itself cannot

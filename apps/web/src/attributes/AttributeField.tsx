@@ -39,7 +39,7 @@ export function initialAttributeStringValues(
   return values
 }
 
-/** Renders the right control for one attribute definition's `dataType` — moved from SelfServicePage, unchanged in behaviour, extended with the `aria-invalid`/`aria-describedby` wiring the self-service page never needed (it has no per-field error text; the admin create/edit form does, per DESIGN.md's Forms contract). */
+/** Renders the right control for one attribute definition's `dataType` — moved from SelfServicePage, unchanged in behaviour, extended with the `aria-invalid`/`aria-describedby` wiring the self-service page never needed (it has no per-field error text; the admin create/edit form does, per docs/design-system.md's Forms contract). */
 export function AttributeInput({
   id,
   definition,

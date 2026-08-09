@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { NAV_DISCLOSURE_MAX_WIDTH, NAV_RAIL_MAX_WIDTH, navModeForWidth, type NavMode } from './breakpoints'
 
 /**
- * Tracks the nav's current responsive mode (DESIGN.md: full nav / icon
+ * Tracks the nav's current responsive mode (docs/design-system.md: full nav / icon
  * rail under 1100px / disclosure under 780px). Driven by two `matchMedia`
  * listeners rather than a `resize` handler — cheaper (only fires on an
  * actual breakpoint crossing, not every intermediate pixel) and matches

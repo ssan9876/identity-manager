@@ -92,7 +92,7 @@
 
 /* The safety-rail banner — informational, never a warning: same visual
    language as OrgUnitsPage's own scope-legibility note (surface-sunken +
-   border + muted ink), deliberately NOT --warn/--danger, which DESIGN.md
+   border + muted ink), deliberately NOT --warn/--danger, which docs/design-system.md
    reserves for exceptions this note is not one of. */
 .import-page__safety-note {
   padding: var(--space-3) var(--space-4);

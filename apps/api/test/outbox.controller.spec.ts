@@ -29,13 +29,13 @@ function stubJwtGuard(getUsername: () => string): CanActivate {
 }
 
 /**
- * Finding H3's second half (docs/superpowers/audit-integrity.md): "there is
+ * Finding H3's second half (docs/archive/audits/audit-integrity.md): "there is
  * no operator-facing view of dead letters at all." `GET /outbox/dead-letters`
  * is that view — gated behind `audit:read` (the `auditor` role), read-only,
  * reporting every `status = 'failed'` `outbox_events` row regardless of
  * whether it ever folds into any single user's derived `syncState`.
  */
-describe('OutboxController (finding H3, docs/superpowers/audit-integrity.md)', () => {
+describe('OutboxController (finding H3, docs/archive/audits/audit-integrity.md)', () => {
   const ctx = withTestDatabase()
   let app: INestApplication
   let currentUsername = ''

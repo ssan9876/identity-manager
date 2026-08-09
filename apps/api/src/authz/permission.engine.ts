@@ -51,7 +51,7 @@ export class PermissionEngine {
         status: users.status,
       })
       .from(users)
-      // Finding M-3 (docs/superpowers/audit-authz.md): `principal.username`
+      // Finding M-3 (docs/archive/audits/audit-authz.md): `principal.username`
       // is bound via `sql.param`, not a bare `${...}` interpolation — this
       // was the one authorization SQL site in the codebase NOT doing so (see
       // `canIn`'s doc comment, permission.engine.ts:131, for the full
@@ -147,7 +147,7 @@ export class PermissionEngine {
    * inside `db.transaction(async (tx) => ...)` that omits `tx` here re-enters
    * the POOL for a second connection while its first is still checked out
    * for the open transaction — exactly
-   * docs/superpowers/audit-integrity.md finding C1 (11 concurrent
+   * docs/archive/audits/audit-integrity.md finding C1 (11 concurrent
    * `PATCH /users/:id` permanently deadlock the API: 2 connections held per
    * in-flight write against a pool of 10). Every write handler that calls
    * this from inside an open transaction MUST pass its `tx`; only a caller

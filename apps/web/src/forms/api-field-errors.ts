@@ -10,7 +10,7 @@ export interface FieldErrorResult {
 /**
  * Maps a failed create/update request onto the form's OWN fields —
  * task-3-brief.md: "surfacing the API's field-named 400s against the right
- * inputs rather than as a banner" — DESIGN.md: "error text under the field
+ * inputs rather than as a banner" — docs/design-system.md: "error text under the field
  * naming the field." `knownFields` is every field key this specific form
  * renders an input for (core fields the caller lists, unioned with whatever
  * attribute keys it fetched) — the create and edit forms pass DIFFERENT

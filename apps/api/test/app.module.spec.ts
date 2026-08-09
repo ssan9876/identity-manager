@@ -27,7 +27,7 @@ import { SyncWorker } from '../src/outbox/sync.worker'
  */
 const REQUIRED_ENV = {
   DATABASE_URL: 'postgres://idm:pw@localhost:5432/identity_manager',
-  // Finding H1 (docs/superpowers/audit-integrity.md): AppModule's DB_CLIENT
+  // Finding H1 (docs/archive/audits/audit-integrity.md): AppModule's DB_CLIENT
   // now reads RUNTIME_DATABASE_URL, not DATABASE_URL (app.module.ts) — like
   // DATABASE_URL, this is never actually dialled here (`pg.Pool`'s
   // constructor does no I/O — see db-client.spec.ts's doc comment), so a

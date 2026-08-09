@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 export interface ConfirmDialogProps {
   open: boolean
   title: string
-  /** The plain-language consequence statement — DESIGN.md/task-3-brief.md want what WILL happen stated plainly, not just "are you sure?". */
+  /** The plain-language consequence statement — docs/design-system.md/task-3-brief.md want what WILL happen stated plainly, not just "are you sure?". */
   children: ReactNode
   confirmLabel: string
   cancelLabel?: string
@@ -15,16 +15,16 @@ export interface ConfirmDialogProps {
 }
 
 /**
- * DESIGN.md bans "modal as first thought," but calls out its one earned use
+ * docs/design-system.md bans "modal as first thought," but calls out its one earned use
  * explicitly: "a destructive confirmation is one of the few places a modal
  * genuinely earns its keep." Native `<dialog>` + `showModal()`, the same
- * primitive AppShell.tsx's narrow-nav disclosure already uses (DESIGN.md:
+ * primitive AppShell.tsx's narrow-nav disclosure already uses (docs/design-system.md:
  * "Dropdowns use the native popover/`<dialog>` API... never `position:
  * absolute`") — full focus trap and Escape handling for free, on every
  * evergreen browser, with no bespoke focus-management code.
  *
  * Ownership split, deliberately: this component owns its OWN in-flight
- * request lifecycle (`submitting`/`localError` below — DESIGN.md's "all
+ * request lifecycle (`submitting`/`localError` below — docs/design-system.md's "all
  * seven states" applies to this confirmation as much as any button), but
  * NOT the decision to close after success. `onConfirm` resolving leaves
  * `open` untouched; the CALLER flips it to `false` once it has done whatever

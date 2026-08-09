@@ -17,7 +17,7 @@ import { SyncWorker } from './sync.worker'
  * `pnpm run reconcile`, in the same on-demand style as `db:migrate` — no
  * scheduler (see the milestone plan / task-4-brief.md).
  *
- * Connects as the RUNTIME role (finding H1, docs/superpowers/
+ * Connects as the RUNTIME role (finding H1, docs/archive/audits/
  * audit-integrity.md), not the OWNER: everything this job does — reading
  * users/groups, writing an outbox event and an audit row — is ordinary DML
  * the runtime role already holds. It is operationally part of "the

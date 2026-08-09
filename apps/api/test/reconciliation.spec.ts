@@ -208,7 +208,7 @@ describe('ReconciliationJob (Milestone 4, Task 4)', () => {
   })
 
   // =====================================================================
-  // Finding M2 (docs/superpowers/audit-integrity.md): binding constraint 7
+  // Finding M2 (docs/archive/audits/audit-integrity.md): binding constraint 7
   // requires every mutation be "audited AND outboxed in one transaction" —
   // `enqueueRepair` wrote an outbox event only. Measured by the audit over
   // exactly this scenario (a suspended user manually re-enabled directly in
@@ -217,7 +217,7 @@ describe('ReconciliationJob (Milestone 4, Task 4)', () => {
   // the outbox event, `before` = the observed Keycloak state, `after` =
   // desired state + the drift reasons.
   // =====================================================================
-  describe('audits its own repairs (finding M2, docs/superpowers/audit-integrity.md)', () => {
+  describe('audits its own repairs (finding M2, docs/archive/audits/audit-integrity.md)', () => {
     it('writes an actorUserId:null audit row when it repairs a deactivated user re-enabled directly in Keycloak', async () => {
       const user = await makeUser()
       await usersRepo().changeStatus(user.id, 'active')

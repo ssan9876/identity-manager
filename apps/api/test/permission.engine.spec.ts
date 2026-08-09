@@ -70,7 +70,7 @@ describe('PermissionEngine', () => {
     ).rejects.toBeInstanceOf(ForbiddenError)
   })
 
-  // Finding M-3 (docs/superpowers/audit-authz.md), defence-in-depth half:
+  // Finding M-3 (docs/archive/audits/audit-authz.md), defence-in-depth half:
   // `resolveActor` now binds `principal.username` via `sql.param`, so
   // Drizzle can never again splice it as a parenthesized SQL list. `JwtGuard`
   // is the PRIMARY fix (see jwt.guard.spec.ts's own M-3 section) and now
@@ -232,7 +232,7 @@ describe('PermissionEngine', () => {
   // the catalog fix resolves this call site automatically, with no change
   // to permission.engine.ts itself.
   it('grantingAssignments (via canAnywhere) does not throw for a role_key colliding with an inherited Object.prototype property, and correctly denies', async () => {
-    // finding H1 (docs/superpowers/audit-integrity.md): ALTER TYPE requires
+    // finding H1 (docs/archive/audits/audit-integrity.md): ALTER TYPE requires
     // owning the type, so this test-only simulation of catalog drift must
     // run as the OWNER role — ctx.pool (the RUNTIME role) cannot do this in
     // production either, which is now enforced rather than incidental.

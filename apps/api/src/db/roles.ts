@@ -1,7 +1,7 @@
 import type { Pool } from 'pg'
 
 /**
- * Finding H1 (docs/superpowers/audit-integrity.md): the audit log's
+ * Finding H1 (docs/archive/audits/audit-integrity.md): the audit log's
  * append-only guarantee rested on DML triggers alone, but the application's
  * own database role (`idm`) was BOTH superuser AND the owner of `audit_log`
  * — so it could simply redefine the guard (`CREATE OR REPLACE FUNCTION
@@ -22,7 +22,7 @@ import type { Pool } from 'pg'
  * Revoking UPDATE/DELETE/TRUNCATE there is deliberately belt-and-braces
  * alongside `enforceAuditAppendOnly`'s triggers (db/migrate.ts): two
  * independent mechanisms, so defeating one is not enough. See
- * docs/superpowers/fix-wave-e-report.md for the full bypass-by-bypass proof.
+ * docs/archive/audits/fix-wave-e-report.md for the full bypass-by-bypass proof.
  */
 
 export interface RuntimeRoleCredentials {

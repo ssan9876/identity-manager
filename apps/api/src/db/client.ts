@@ -22,7 +22,7 @@ export interface DbClientOptions {
    * attempt with "timeout exceeded when trying to connect" instead of
    * queuing forever.
    *
-   * THIS IS THE FIX for docs/superpowers/audit-integrity.md finding C1's
+   * THIS IS THE FIX for docs/archive/audits/audit-integrity.md finding C1's
    * second half. pg's own default is `undefined`, and the installed
    * `pg-pool` treats that as "wait forever, no error, ever" (see its
    * `connect()`: the pending-queue push only gets a `setTimeout` guard

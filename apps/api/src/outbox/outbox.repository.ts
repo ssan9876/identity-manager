@@ -208,7 +208,7 @@ export class OutboxRepository {
 
   /**
    * Every currently dead-lettered event, newest first — finding H3
-   * (docs/superpowers/audit-integrity.md): "there is no operator-facing
+   * (docs/archive/audits/audit-integrity.md): "there is no operator-facing
    * view of dead letters at all. No controller reads `outbox_events`; the
    * derived per-user `syncState` is the only surface, and it has [a] hole."
    * `SyncStateRepository` stays the per-USER read model; this is the

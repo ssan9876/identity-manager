@@ -10,7 +10,7 @@ import { provisioningMode } from './user-target-accounts'
  * primary key, not a surrogate `id`, because there is exactly one
  * configuration per target in this system: "Multi-forest and multi-domain AD
  * topologies" are explicitly out of scope (see
- * docs/superpowers/specs/2026-08-06-directory-connectors-design.md, "Out of
+ * docs/archive/specs/2026-08-06-directory-connectors-design.md, "Out of
  * scope") — single domain per configured target, so a natural key is both
  * sufficient and prevents a second, meaningless row for the same target ever
  * existing.

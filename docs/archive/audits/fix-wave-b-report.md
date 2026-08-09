@@ -2,7 +2,7 @@
 
 Branch: `fix/audit-critical-pool-exhaustion`, continuing from `c8fb15c` (the
 CRITICAL pool-exhaustion fix, Wave A). Fixes every finding in
-`docs/superpowers/audit-authz.md` except L-4 (documented-and-deliberate,
+`docs/archive/audits/audit-authz.md` except L-4 (documented-and-deliberate,
 no fix direction given, not in this task's scope). Nothing from
 `audit-injection.md` / `audit-integrity.md` / `audit-secrets.md` is touched.
 
@@ -286,7 +286,7 @@ suite re-verified green afterward.
 - **L-4** (unknown `role_key` on the target → unmapped 500) is untouched,
   as instructed — the audit itself calls it "documented and deliberate"
   with no fix direction given.
-- `docs/superpowers/audit-injection.md`, `audit-integrity.md` (beyond the
+- `docs/archive/audits/audit-injection.md`, `audit-integrity.md` (beyond the
   already-landed C1), and `audit-secrets.md` are untouched — out of this
   task's AUTHORIZATION-only scope.
 - M-2's reversal of the two "any scope, anywhere may manage a global

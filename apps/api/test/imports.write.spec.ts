@@ -248,7 +248,7 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
       expect(await totalOutboxCount(ctx)).toBe(outboxBefore)
     })
 
-    // docs/superpowers/audit-secrets.md H1 (mirrored in audit-injection.md):
+    // docs/archive/audits/audit-secrets.md H1 (mirrored in audit-injection.md):
     // preview used to write ZERO audit rows under any circumstance, which is
     // exactly what let cross-scope directory enumeration through this
     // endpoint go completely untraced. It must now write EXACTLY ONE
@@ -346,7 +346,7 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
       expect(res.body.failures[0].row).toBe(2)
     })
 
-    // docs/superpowers/audit-secrets.md H1 — the flagship reproduction.
+    // docs/archive/audits/audit-secrets.md H1 — the flagship reproduction.
     // resolveRow's existence lookups (findByEmployeeId/findByEmail/
     // findByUsername) are globally UNSCOPED, so an actor holding
     // user:create in ONE org unit could learn, for a victim they get 403 on
@@ -465,7 +465,7 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
     // leak is that the COLLIDING existing user can be anyone, anywhere,
     // and the old message confirmed exactly who by echoing "already
     // exists" for a guessed value.
-    describe('create-row email/username collision no longer confirms an out-of-scope victim (finding, docs/superpowers/fix-wave-c-report.md concerns)', () => {
+    describe('create-row email/username collision no longer confirms an out-of-scope victim (finding, docs/archive/audits/fix-wave-c-report.md concerns)', () => {
       it('an in-scope create row naming an out-of-scope victim\'s email gets a non-confirming reason, never "already exists"', async () => {
         const root = await makeOrgUnit('Create Oracle Root')
         const mine = await makeChildOrgUnit(root.id, 'Create Mine')
@@ -697,7 +697,7 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
       expect(res.body.code).toBe('FORBIDDEN')
     })
 
-    // docs/superpowers/audit-injection.md HIGH finding: a JSON-escaped NUL
+    // docs/archive/audits/audit-injection.md HIGH finding: a JSON-escaped NUL
     // (Unicode code point 0) is legal JSON, passes body-parser, every Zod
     // check that existed pre-fix, and csv-parse — it only failed once it
     // reached Postgres as a raw, non-DomainError exception, an unmapped
@@ -764,7 +764,7 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
       }
     })
 
-    it('re-running the identical file matches and reports rows unchanged, rather than duplicating OR re-writing them (finding M4, docs/superpowers/audit-integrity.md)', async () => {
+    it('re-running the identical file matches and reports rows unchanged, rather than duplicating OR re-writing them (finding M4, docs/archive/audits/audit-integrity.md)', async () => {
       const org = await makeOrgUnit('Commit Idempotent Root')
       const actor = await makeActiveUser('idempotent-committer', org.id)
       await grant(actor.id, 'user_admin', org.id)
@@ -1068,7 +1068,7 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
       expect(rows[0].after?.firstName).toBe('New')
     })
 
-    // Finding L-3 (docs/superpowers/audit-authz.md): resolveUpdateRow used
+    // Finding L-3 (docs/archive/audits/audit-authz.md): resolveUpdateRow used
     // to narrow with 'user:create', not 'user:update' — a route/action
     // mismatch, not exploitable today (every role holding 'user:create'
     // also holds 'user:update' — see ROLE_PERMISSIONS in authz/actions.ts —
@@ -1213,7 +1213,7 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
       expect(res.body.failures[0].reasons.join(' ')).toContain('mysteryColumn')
     })
 
-    // docs/superpowers/audit-injection.md HIGH finding — the fourth
+    // docs/archive/audits/audit-injection.md HIGH finding — the fourth
     // recurrence of this project's prototype-chain defect class, this time
     // as silent key ELISION rather than pollution. Pre-fix: a CSV column
     // literally named "__proto__" was silently discarded while the file
@@ -1282,7 +1282,7 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
       expect(Object.getOwnPropertyNames(Object.prototype)).not.toContain('anything')
     })
 
-    // docs/superpowers/audit-injection.md HIGH finding — the "sharp end":
+    // docs/archive/audits/audit-injection.md HIGH finding — the "sharp end":
     // pre-fix, a NUL in row 2 of a 3-row commit left row 1 already
     // committed, row 3 never attempted, and returned a bare 500 with NO
     // batchId — the admin could not even identify what had been written.
@@ -1388,7 +1388,7 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
 })
 
 /**
- * Finding M6 (docs/superpowers/audit-integrity.md): "no explicit row-count
+ * Finding M6 (docs/archive/audits/audit-integrity.md): "no explicit row-count
  * or file-size cap" — the practical ceiling before this fix was ~800 rows,
  * an ACCIDENT of express's own default 100 KiB body limit, not a control
  * anyone chose. A SEPARATE, small Nest app (its own `IMPORTS_CONFIG`
@@ -1397,7 +1397,7 @@ describe('bulk import (Milestone 5, Tasks 1+2)', () => {
  * tiny configured value here proves the wiring without generating a
  * multi-thousand-row CSV just to cross the real production default.
  */
-describe('bulk import row-count cap (finding M6, docs/superpowers/audit-integrity.md)', () => {
+describe('bulk import row-count cap (finding M6, docs/archive/audits/audit-integrity.md)', () => {
   const ctx = withTestDatabase()
   let app: INestApplication
   let currentUsername = ''

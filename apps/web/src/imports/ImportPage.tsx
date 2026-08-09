@@ -84,7 +84,7 @@ function FailuresTable({ failures, testId }: { failures: ImportRowFailure[]; tes
  * review the diff as three clear groups, then COMMIT as a separate,
  * deliberate click (task-5-brief.md: "Committing is a separate, deliberate
  * action — never automatic after preview"). The preview is the safety rail
- * ("Never lose an import," PRODUCT.md #4) — the banner above the diff and
+ * ("Never lose an import," docs/product-brief.md #4) — the banner above the diff and
  * the fact that nothing here auto-advances to commit are what make that
  * legible rather than merely true.
  */

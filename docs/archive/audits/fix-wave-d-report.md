@@ -3,7 +3,7 @@
 Branch: `fix/audit-critical-pool-exhaustion`, continuing from `c8fb15c` (Wave A —
 pool-exhaustion deadlock), `19ee90a` (Wave B — authorization scope checks), and
 `abefeca` (Wave C — prototype elision, NUL handling, enumeration oracle). Fixes
-every HIGH and MEDIUM finding from `docs/superpowers/audit-integrity.md`, plus
+every HIGH and MEDIUM finding from `docs/archive/audits/audit-integrity.md`, plus
 three cheap items. Every query added inside an already-open transaction threads
 `tx`, never the pool — the Wave A discipline holds throughout, and this wave's
 own H2 fix extends it with a per-user advisory lock for the one race

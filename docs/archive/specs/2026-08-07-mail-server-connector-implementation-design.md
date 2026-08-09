@@ -4,8 +4,8 @@
 **Status:** Approved for planning
 **Scope:** Phase 1 of the mail integration — the connector and its transport
 **Counterpart system:** `D:\mail-server` — see its
-`docs/superpowers/specs/2026-08-06-idm-sync-design.md`
-**Amends:** `docs/superpowers/specs/2026-08-06-mail-server-connector-design.md`
+`docs/archive/specs/2026-08-06-idm-sync-design.md`
+**Amends:** `docs/archive/specs/2026-08-06-mail-server-connector-design.md`
 (that document's Part 1 is already built; its Part 2 describes an interface that
 never shipped — see "What changed" below)
 
@@ -57,7 +57,7 @@ product can produce". That is fixed. In current code:
 ### Part 2 describes an interface that never shipped
 
 That spec proposed `SyncConnector { pushUser, pushGroup }`. The settled
-interface — `docs/superpowers/specs/2026-08-06-directory-connectors-design.md`,
+interface — `docs/archive/specs/2026-08-06-directory-connectors-design.md`,
 Milestone 10 Task 2, implemented by four connectors today — is
 `DirectoryConnector { plan, apply, disable, health }` (`connectors/connector.ts`).
 

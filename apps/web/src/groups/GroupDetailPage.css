@@ -53,7 +53,7 @@
 /* ---------------------------------------------------------------------
  * Add member / nest child group — progressive disclosure, never a modal.
  * Search results render as a plain block-flow list UNDER the input, never
- * an absolutely-positioned floating dropdown (DESIGN.md bans `position:
+ * an absolutely-positioned floating dropdown (docs/design-system.md bans `position:
  * absolute` dropdowns inside an overflow container — not floating at all
  * is the simplest way to never collide with that).
  * ------------------------------------------------------------------- */

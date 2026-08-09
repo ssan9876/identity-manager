@@ -1,5 +1,5 @@
 /**
- * The single JS source of truth for the two nav breakpoints DESIGN.md
+ * The single JS source of truth for the two nav breakpoints docs/design-system.md
  * specifies ("collapses to an icon rail under 1100px, and behind a
  * disclosure under 780px"). Mirrored as literal px values in AppShell.css's
  * @media rules (CSS cannot read a custom property inside an @media

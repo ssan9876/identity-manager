@@ -1,5 +1,5 @@
 /**
- * Design tokens — the single implementation of DESIGN.md's palette, type
+ * Design tokens — the single implementation of docs/design-system.md's palette, type
  * scale, spacing and z-index scale as CSS custom properties. Every screen in
  * this console consumes these SEMANTIC names (--bg, --ink, --primary, …)
  * only; no component file may hard-code a colour, font size, spacing value
@@ -13,7 +13,7 @@
  * Every colour token below is defined FOUR times, in this precedence order
  * (highest-specificity wins; see each block's own comment):
  *   1. `:root`                                   — light, the unconditional
- *      default (DESIGN.md: light stays the default even once dark exists).
+ *      default (docs/design-system.md: light stays the default even once dark exists).
  *   2. `@media (prefers-color-scheme: dark) :root` — dark, applied
  *      automatically when the OS says dark AND the user has not explicitly
  *      overridden the theme.
@@ -46,14 +46,14 @@
  *   - Auditing light mode's own numbers while building this turned up a
  *     pre-existing floor violation: --ink-subtle (placeholders) was
  *     L 0.58, measuring ~4.27:1 on --bg — under the 4.5:1 placeholder floor
- *     PRODUCT.md itself requires, despite the old comment claiming 4.7:1.
+ *     docs/product-brief.md itself requires, despite the old comment claiming 4.7:1.
  *     Corrected here to L 0.54 (~5.05:1). Not a Task 2 feature; a Task 2
  *     side-effect of actually computing rather than assuming.
  */
 
 :root {
   /* ---------------------------------------------------------------------
-   * Color — LIGHT (default). DESIGN.md's `:root` block, with one fix (see
+   * Color — LIGHT (default). docs/design-system.md's `:root` block, with one fix (see
    * --ink-subtle above).
    * ------------------------------------------------------------------- */
 
@@ -86,7 +86,7 @@
   --danger-hover: oklch(0.445 0.155 32);
   --danger-bg: oklch(0.968 0.028 32);
 
-  /* Chrome — dialog backdrop, skeleton shimmer highlight. Not in DESIGN.md's
+  /* Chrome — dialog backdrop, skeleton shimmer highlight. Not in docs/design-system.md's
      own :root block (which predates both features) but the same "verify
      every pairing, no bare literals outside this file" rule applies. */
   --shadow-md: 0 8px 24px oklch(0.205 0.01 110 / 0.16);
@@ -96,13 +96,13 @@
   color-scheme: light;
 
   /* ---------------------------------------------------------------------
-   * Typography — DESIGN.md, verbatim
+   * Typography — docs/design-system.md, verbatim
    * ------------------------------------------------------------------- */
 
   --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Roboto Mono', monospace;
 
-  /* Fixed rem scale, ratio ~1.15 — not fluid/clamp-sized (DESIGN.md: a
+  /* Fixed rem scale, ratio ~1.15 — not fluid/clamp-sized (docs/design-system.md: a
      sidebar-adjacent h1 gets worse, not better, from fluid type). */
   --text-xs: 0.75rem; /* 12px — badges, table meta */
   --text-sm: 0.8125rem; /* 13px — dense table cells, form labels */
@@ -116,7 +116,7 @@
 
   /* ---------------------------------------------------------------------
    * Spacing — 4px baseline grid, rem-based so it scales with user font
-   * settings. --space-6 is deliberately exactly DESIGN.md's "24px gutters".
+   * settings. --space-6 is deliberately exactly docs/design-system.md's "24px gutters".
    * ------------------------------------------------------------------- */
 
   --space-1: 0.25rem; /* 4px */
@@ -131,7 +131,7 @@
   --space-10: 4rem; /* 64px */
 
   /* ---------------------------------------------------------------------
-   * Layout — DESIGN.md's shell measurements
+   * Layout — docs/design-system.md's shell measurements
    * ------------------------------------------------------------------- */
 
   --topbar-height: 48px;
@@ -147,15 +147,15 @@
      apps/web/src/shell/breakpoints.ts (the single JS source of truth used
      by the useMediaQuery-driven icon-rail/disclosure switch). Keep all
      three in sync if either changes:
-       nav -> icon rail:    max-width: 1099px  (DESIGN.md: "under 1100px")
-       nav -> disclosure:   max-width: 779px   (DESIGN.md: "under 780px") */
+       nav -> icon rail:    max-width: 1099px  (docs/design-system.md: "under 1100px")
+       nav -> disclosure:   max-width: 779px   (docs/design-system.md: "under 780px") */
 
   /* ---------------------------------------------------------------------
-   * Radius & shadow — restrained, not spelled out in DESIGN.md but kept to
+   * Radius & shadow — restrained, not spelled out in docs/design-system.md but kept to
    * the same "considered, not soft" brief: small radii, one quiet shadow
    * used only where a layer genuinely floats above content (the narrow-nav
    * disclosure dialog). No shadow is used to fake depth on ordinary
-   * surfaces — DESIGN.md bans glassmorphism and this is the same instinct.
+   * surfaces — docs/design-system.md bans glassmorphism and this is the same instinct.
    * (--shadow-md itself is themed, above — dark needs more shadow opacity
    * to read against a dark surface, so it is not repeated here.)
    * ------------------------------------------------------------------- */
@@ -170,14 +170,14 @@
   --shadow-inset: oklch(0 0 0 / 0.25);
 
   /* ---------------------------------------------------------------------
-   * Motion — DESIGN.md: 150-200ms, ease-out (quart/quint), state only.
+   * Motion — docs/design-system.md: 150-200ms, ease-out (quart/quint), state only.
    * ------------------------------------------------------------------- */
 
   --motion-duration: 180ms;
   --motion-ease: cubic-bezier(0.22, 1, 0.36, 1); /* ease-out quint */
 
   /* ---------------------------------------------------------------------
-   * z-index — DESIGN.md, verbatim. Semantic, never arbitrary: every
+   * z-index — docs/design-system.md, verbatim. Semantic, never arbitrary: every
    * stacking-context rule in this codebase references one of these, never
    * a bare number.
    * ------------------------------------------------------------------- */
@@ -322,7 +322,7 @@
   :root {
     /* Every transition/animation in this codebase is written in terms of
        these two tokens, so collapsing them here is sufficient to satisfy
-       DESIGN.md's "every animation needs a prefers-reduced-motion
+       docs/design-system.md's "every animation needs a prefers-reduced-motion
        alternative" for the whole app at once, without every component
        needing its own reduced-motion branch. duration:1ms rather than 0ms —
        a genuine 0 causes some browsers to skip firing `transitionend`,

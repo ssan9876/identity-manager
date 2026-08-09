@@ -88,7 +88,7 @@ export class PrivilegeGuards {
    * as `PermissionEngine.canIn`/`assertCanIn` (see that doc comment): a
    * caller already inside `db.transaction(async (tx) => ...)` MUST pass its
    * `tx` here, or this re-enters the pool for a second connection while the
-   * caller's transaction still holds its first — docs/superpowers/audit-
+   * caller's transaction still holds its first — docs/archive/audits/audit-
    * integrity.md finding C1.
    */
   async assertCanAssignRole(

@@ -3,8 +3,8 @@ services:
   # the official Postgres image always makes it both the superuser and the
   # database owner. It is deliberately the ONLY role this compose file
   # knows about. The second, RUNTIME role the application and sync worker
-  # actually connect as (see README.md's "Database roles" section and
-  # docs/superpowers/audit-integrity.md finding H1) is NOT created here —
+  # actually connect as (see docs/02-architecture.md's "The two database roles" section and
+  # docs/archive/audits/audit-integrity.md finding H1) is NOT created here —
   # it is provisioned by `pnpm --filter @idm/api db:migrate`
   # (apps/api/src/db/roles.ts), which works identically against this
   # container, a CI Postgres, or a real managed instance (RDS, Cloud SQL,

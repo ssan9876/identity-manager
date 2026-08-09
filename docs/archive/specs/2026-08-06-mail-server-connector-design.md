@@ -4,7 +4,7 @@
 **Status:** Approved for planning
 **Scope:** Sub-project 4 — a second outbox target
 **Counterpart system:** `D:\mail-server` — see its
-`docs/superpowers/specs/2026-08-06-idm-sync-design.md`
+`docs/archive/specs/2026-08-06-idm-sync-design.md`
 
 ## Summary
 

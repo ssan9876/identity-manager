@@ -22,7 +22,7 @@ const STATUS_OPTIONS: { value: UserStatus | ''; label: string }[] = [
 
 const ROW_LINK_SELECTOR = '[data-row-link="true"]'
 
-/** Moves focus between row links with ArrowUp/ArrowDown/Home/End — DESIGN.md: tables are "keyboard-navigable rows", not just sequentially Tab-able. */
+/** Moves focus between row links with ArrowUp/ArrowDown/Home/End — docs/design-system.md: tables are "keyboard-navigable rows", not just sequentially Tab-able. */
 function handleRowNavKeyDown(event: KeyboardEvent<HTMLTableSectionElement>) {
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
   const container = event.currentTarget
@@ -71,7 +71,7 @@ function SkeletonRows() {
 
 /**
  * `GET /users` — Milestone 8, Task 2. Paginated, searchable (server-side,
- * so search genuinely survives hundreds of rows — PRODUCT.md's #1
+ * so search genuinely survives hundreds of rows — docs/product-brief.md's #1
  * requirement), filterable by status and org unit. Skeleton rows while
  * loading; an empty state that teaches rather than saying "no data".
  */
@@ -81,7 +81,7 @@ export default function PeopleListPage() {
   const orgUnits = useOrgUnits()
   const permissions = useSelfPermissions()
   // Hidden, not merely disabled, for a caller `GET /self/permissions`
-  // doesn't grant `user:create` to — PRODUCT.md: "The UI hides what you
+  // doesn't grant `user:create` to — docs/product-brief.md: "The UI hides what you
   // cannot do; it never decides it." `POST /users` still enforces this
   // itself regardless of what this button's visibility implies.
   const canCreate = permissions.status === 'ready' && permissions.actions.has('user:create')

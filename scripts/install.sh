@@ -30,7 +30,7 @@
 # VITE_KEYCLOAK_ISSUER / VITE_KEYCLOAK_CLIENT_ID / VITE_API_BASE_URL at BUILD
 # time, so they are compiled into the web bundle rather than read at runtime.
 # Changing them later requires a rebuild — see `reconfigure` in
-# docs/deployment/lxc-install.md.
+# docs/05-installation.md.
 # ============================================================================
 set -Eeuo pipefail
 
@@ -80,7 +80,7 @@ if [[ "$IDM_SCHEME" == "http" && "$IDM_HOSTNAME" != "localhost" && "$IDM_HOSTNAM
   warn "IDM_SCHEME=http on a non-localhost host: the console will load, but"
   warn "  signing in CANNOT work — crypto.subtle (needed for PKCE) is undefined"
   warn "  outside a secure context, so the Sign in button will do nothing."
-  warn "  See docs/deployment/lxc-install.md, \"TLS — required, not optional\"."
+  warn "  See docs/05-installation.md, \"TLS — required, not optional\"."
 fi
 info "installing identity-manager"
 echo "    console : $CONSOLE_URL"
@@ -298,4 +298,4 @@ else
 fi
 echo
 warn "SECURITY: the adversarial audit for this build is incomplete — see"
-warn "docs/deployment/lxc-install.md. Do not expose this to untrusted users."
+warn "docs/05-installation.md. Do not expose this to untrusted users."

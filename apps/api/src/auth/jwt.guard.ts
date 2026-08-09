@@ -76,7 +76,7 @@ export class JwtGuard implements CanActivate {
       // code, and defaulting to '' would silently fabricate one. Fail closed
       // exactly like any other invalid token, with the same generic message.
       //
-      // Finding M-3 (docs/superpowers/audit-authz.md): the previous
+      // Finding M-3 (docs/archive/audits/audit-authz.md): the previous
       // `payload.preferred_username as string | undefined` cast suppressed
       // the compiler without checking anything at runtime, and `!username`
       // only rejects FALSY values — a non-string, TRUTHY claim (an array, a

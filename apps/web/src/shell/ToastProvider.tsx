@@ -24,7 +24,7 @@ const ToastContext = createContext<ToastContextValue | null>(null)
 const AUTO_DISMISS_MS = 7000
 
 /**
- * DESIGN.md: "Toasts for the result of an action, especially the ones with
+ * docs/design-system.md: "Toasts for the result of an action, especially the ones with
  * consequence ('Deactivated — 2 active sessions revoked')." Mounted once, in
  * App.tsx above <Routes>, so a toast SURVIVES the navigation an action often
  * triggers (create user redirects to the new record's detail page) instead

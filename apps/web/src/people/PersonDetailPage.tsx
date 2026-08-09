@@ -220,7 +220,7 @@ export default function PersonDetailPage() {
    * Deactivation's confirmation dialog owns its OWN request lifecycle
    * (ConfirmDialog) — this only needs to perform the call and, on success,
    * update local state, close the dialog, and report a toast naming what
-   * ACTUALLY happened (PRODUCT.md: "be certain the action took effect...
+   * ACTUALLY happened (docs/product-brief.md: "be certain the action took effect...
    * including that live sessions are dead, not merely that a row changed").
    *
    * `POST /users/:id/deactivate` attempts Keycloak-side session revocation

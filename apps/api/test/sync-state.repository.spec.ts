@@ -83,7 +83,7 @@ describe('SyncStateRepository (Milestone 4, Task 4)', () => {
    * Inserts one outbox row with an EXPLICIT status — bypassing the worker
    * entirely, to pin exact scenarios. `payload` defaults to `{}` (fine for
    * `user`/`group` rows, which resolveForUsers never reads); a `membership`
-   * row exercising finding H3's fix (docs/superpowers/audit-integrity.md)
+   * row exercising finding H3's fix (docs/archive/audits/audit-integrity.md)
    * needs a REALISTIC payload — every real emitter always populates
    * `userId` or `childGroupId` (see GroupsController's/RuleApplier's own
    * membership-event call sites) — passed explicitly by the caller.
@@ -210,7 +210,7 @@ describe('SyncStateRepository (Milestone 4, Task 4)', () => {
       expect(await syncStates().resolveForUser(user.id)).toBe('failed')
     })
 
-    // THE gap finding H3 (docs/superpowers/audit-integrity.md) exists to
+    // THE gap finding H3 (docs/archive/audits/audit-integrity.md) exists to
     // close: the complementary cases above (a CURRENT member of a
     // dead-lettered group/membership event reads 'failed') all worked
     // pre-fix, which is what made this one so easy to miss — a member who

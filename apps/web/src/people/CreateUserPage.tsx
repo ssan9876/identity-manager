@@ -21,7 +21,7 @@ function emptyToUndefined(raw: string): string | undefined {
  * /attribute-definitions?appliesTo=user` (this task's one new endpoint) —
  * fetched here, once, and handed down; a failure to load it does NOT block
  * the page (core fields — the vast majority of what onboarding a starter
- * actually needs, per PRODUCT.md's scene — work regardless), it just means
+ * actually needs, per docs/product-brief.md's scene — work regardless), it just means
  * the form has no custom fields to render until a reload succeeds.
  */
 export default function CreateUserPage() {

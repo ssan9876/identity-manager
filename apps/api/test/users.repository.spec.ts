@@ -50,7 +50,7 @@ describe('UsersRepository', () => {
     await expect(users.create(input({ username: 'ada2' }))).rejects.toThrow()
   })
 
-  // LOW finding (docs/superpowers/audit-injection.md): unnormalised Unicode
+  // LOW finding (docs/archive/audits/audit-injection.md): unnormalised Unicode
   // usernames were stored verbatim, so an NFD-typed username and its NFC
   // (pre-composed) equivalent — visually IDENTICAL to a human, byte-distinct
   // to Postgres's lower()-based unique index — could both exist as separate
@@ -110,7 +110,7 @@ describe('UsersRepository', () => {
     expect(done.deactivatedAt).toBeInstanceOf(Date)
   })
 
-  // Finding M5 (docs/superpowers/audit-integrity.md): a leaver whose
+  // Finding M5 (docs/archive/audits/audit-integrity.md): a leaver whose
   // end_date passes before they were ever activated is exactly as much a
   // leaver as an active one (see
   // listNonDeactivatedWithEndDateOnOrBefore's own doc comment) — this

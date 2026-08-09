@@ -58,7 +58,7 @@ describe('loadEnv', () => {
     })
   })
 
-  // Finding C1 (docs/superpowers/audit-integrity.md): the pool's `max` is
+  // Finding C1 (docs/archive/audits/audit-integrity.md): the pool's `max` is
   // now tunable per deployment rather than only ever pg's own hardcoded
   // default — see db/client.ts's DbClientOptions doc comment.
   describe('DB_POOL_MAX', () => {
@@ -80,7 +80,7 @@ describe('loadEnv', () => {
     })
   })
 
-  // Finding M6 (docs/superpowers/audit-integrity.md): an explicit,
+  // Finding M6 (docs/archive/audits/audit-integrity.md): an explicit,
   // configurable ceiling replacing express's accidental 100 KiB default.
   describe('BODY_LIMIT_BYTES', () => {
     it('defaults to 10 MiB when absent', () => {
@@ -96,7 +96,7 @@ describe('loadEnv', () => {
     })
   })
 
-  // Finding M6 (docs/superpowers/audit-integrity.md): the other half — an
+  // Finding M6 (docs/archive/audits/audit-integrity.md): the other half — an
   // explicit, configurable row-count ceiling for bulk import.
   describe('IMPORT_MAX_ROWS', () => {
     it('defaults to 5,000 when absent', () => {
@@ -117,7 +117,7 @@ describe('loadEnv', () => {
     expect(() => loadEnv(broken)).toThrow(/DATABASE_URL/)
   })
 
-  // Finding H1 (docs/superpowers/audit-integrity.md): the RUNTIME
+  // Finding H1 (docs/archive/audits/audit-integrity.md): the RUNTIME
   // connection the app/SyncWorker actually connect as — see env.ts's own
   // doc comment. Required with no default and no fallback to DATABASE_URL:
   // an operator who forgets to set it must get a boot-time error, not an

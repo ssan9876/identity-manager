@@ -12,7 +12,7 @@ import './GroupsListPage.css'
 const LIMIT = 50
 const ROW_LINK_SELECTOR = '[data-row-link="true"]'
 
-/** Same ArrowUp/ArrowDown/Home/End row-to-row navigation as PeopleListPage's table (DESIGN.md: tables are "keyboard-navigable rows") — "same table... vocabulary as People" (task-4-brief.md), applied here too. */
+/** Same ArrowUp/ArrowDown/Home/End row-to-row navigation as PeopleListPage's table (docs/design-system.md: tables are "keyboard-navigable rows") — "same table... vocabulary as People" (task-4-brief.md), applied here too. */
 function handleRowNavKeyDown(event: KeyboardEvent<HTMLTableSectionElement>) {
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
   const container = event.currentTarget

@@ -18,7 +18,7 @@ import { RuleApplier } from './rule-applier'
  * jml:lifecycle`, in the same on-demand style — no scheduler, no cron (see
  * the milestone plan, decision 4).
  *
- * Connects as the RUNTIME role (finding H1, docs/superpowers/
+ * Connects as the RUNTIME role (finding H1, docs/archive/audits/
  * audit-integrity.md) — same reasoning as reconcile-cli.ts: every write this
  * job makes (status transitions, rule actions, audit rows, outbox events) is
  * ordinary DML the runtime role already holds, and it is part of "the
@@ -57,7 +57,7 @@ async function main(): Promise<void> {
     console.log(`[jml:lifecycle] deactivated ${report.deactivatedUserIds.length} user(s)`)
     console.log(`[jml:lifecycle] applied ${report.ruleActionsApplied} rule action(s)`)
 
-    // Finding M5 (docs/superpowers/audit-integrity.md): the report, not a
+    // Finding M5 (docs/archive/audits/audit-integrity.md): the report, not a
     // log line buried mid-run, is now the record of anything left
     // unactioned — surfaced here so an operator (or a monitored cron
     // wrapper) sees it without having to grep every run's console output.

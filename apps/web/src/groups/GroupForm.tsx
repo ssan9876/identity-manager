@@ -20,7 +20,7 @@ export const GROUP_CORE_FIELD_KEYS_BY_MODE: Record<'create' | 'edit', readonly (
   edit: ['name', 'description'],
 }
 
-/** Client-side check, run on blur AND submit — DESIGN.md's "inline validation on blur, error text under the field naming the field". Deliberately loose (the server's own Zod schema is the authority for everything else — task-3-brief.md's same "not a duplicate of every server rule" reasoning PersonForm's identical helper documents). */
+/** Client-side check, run on blur AND submit — docs/design-system.md's "inline validation on blur, error text under the field naming the field". Deliberately loose (the server's own Zod schema is the authority for everything else — task-3-brief.md's same "not a duplicate of every server rule" reasoning PersonForm's identical helper documents). */
 function validateCoreField(key: keyof GroupCoreFormValues, values: GroupCoreFormValues): string | null {
   if (key === 'name') {
     return values.name.trim() === '' ? 'Name is required.' : null

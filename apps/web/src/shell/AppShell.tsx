@@ -25,7 +25,7 @@ function hasAction(
 
 /**
  * `⌘K`/`Ctrl-K` focuses the global search input, from anywhere in the
- * console (DESIGN.md). Deliberately NOT guarded against firing while focus
+ * console (docs/design-system.md). Deliberately NOT guarded against firing while focus
  * is already inside another field: unlike a bare-letter shortcut, this one
  * requires a modifier key, so it cannot collide with ordinary typing
  * (the same reasoning command palettes in Slack/Linear/GitHub rely on) —
@@ -46,7 +46,7 @@ function useGlobalSearchShortcut(inputRef: React.RefObject<HTMLInputElement>) {
 }
 
 /**
- * `/` and `/people` both render PeopleListPage (PRODUCT.md bans a
+ * `/` and `/people` both render PeopleListPage (docs/product-brief.md bans a
  * dashboard-opener landing page — this product opens straight onto the
  * People list, so `/` IS that screen, not a separate thing that redirects
  * to it — see App.tsx's own doc comment for why a client-side redirect was
@@ -128,9 +128,9 @@ function ShellProviders({ children }: { children: ReactNode }) {
  * The console shell — Milestone 8, Task 2. 48px top bar, 240px left nav
  * (collapsing to a 64px icon rail under 1100px, and behind a `<dialog>`
  * disclosure under 780px — see useNavMode), content region capped at
- * DESIGN.md's 1440px. Nav items are hidden, not merely disabled, for
+ * docs/design-system.md's 1440px. Nav items are hidden, not merely disabled, for
  * anything the caller's own GET /self/permissions doesn't grant
- * (PRODUCT.md: "The API is the authority. The UI hides what you cannot
+ * (docs/product-brief.md: "The API is the authority. The UI hides what you cannot
  * do; it never decides it" — every route behind these links still checks
  * for itself).
  *

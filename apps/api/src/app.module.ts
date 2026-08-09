@@ -73,7 +73,7 @@ import { UsersRepository } from './users/users.repository'
       },
     },
     {
-      // Finding H1 (docs/superpowers/audit-integrity.md): the RUNTIME
+      // Finding H1 (docs/archive/audits/audit-integrity.md): the RUNTIME
       // connection, not the OWNER one — this is what makes every controller/
       // repository/SyncWorker (all inject DB_CLIENT) run as a role that owns
       // nothing and cannot alter its own schema. Deliberately
@@ -102,7 +102,7 @@ import { UsersRepository } from './users/users.repository'
       },
     },
     {
-      // Finding M6 (docs/superpowers/audit-integrity.md): the explicit,
+      // Finding M6 (docs/archive/audits/audit-integrity.md): the explicit,
       // configurable row-count cap on bulk import — see ImportsController's
       // own doc comment.
       provide: IMPORTS_CONFIG,

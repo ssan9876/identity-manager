@@ -16,7 +16,7 @@ import * as schema from '../db/schema/index'
 import { OutboxWriter } from '../outbox/outbox.writer'
 import { OrgUnitsRepository, type OrgUnit } from './org-units.repository'
 
-// noNulChar — see docs/superpowers/audit-injection.md's HIGH "JSON-escaped
+// noNulChar — see docs/archive/audits/audit-injection.md's HIGH "JSON-escaped
 // NUL" finding (confirmed live on POST /org-units) and safe-string.ts's own
 // doc comment.
 const createOrgUnitBodySchema = z

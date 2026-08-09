@@ -68,7 +68,7 @@ export function fetchPerson(accessToken: string, id: string): Promise<Person> {
 
 // The API caps a single `ids` request at 200 (users.controller.ts's
 // MAX_IDS) — generous for "one to a handful" of admins at "a single
-// organisation" (PRODUCT.md), the same scale assumption
+// organisation" (docs/product-brief.md), the same scale assumption
 // org-units/api.ts's fetchAllOrgUnits already makes explicit. A single
 // group's direct membership exceeding this is not handled specially here.
 const PEOPLE_BY_IDS_LIMIT = 200

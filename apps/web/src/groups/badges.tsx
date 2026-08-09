@@ -9,11 +9,11 @@ import type { Group } from './api'
  *
  * Global is rendered as the WORD "Global" in an uncoloured badge — same
  * convention PersonDetailPage's own GroupsTab already established for this
- * exact case (DESIGN.md: status is never colour alone, and "global" is not
+ * exact case (docs/design-system.md: status is never colour alone, and "global" is not
  * even an exception state to begin with, just a fact worth naming). A
  * scoped group renders its mono org unit path instead of a badge — the path
  * itself already answers "which scope", so wrapping it in a second, redundant
- * "Scoped" badge would be noise DESIGN.md's own "colour marks the exception"
+ * "Scoped" badge would be noise docs/design-system.md's own "colour marks the exception"
  * principle argues against.
  */
 export function GroupScopeBadge({ group, orgUnitPath }: { group: Group; orgUnitPath: string | null }) {

@@ -12,7 +12,7 @@ const TABS: { key: TabKey; label: string }[] = [
 ]
 
 /**
- * `/audit` — Milestone 8, Task 5. Two tabs, not two nav items: DESIGN.md's
+ * `/audit` — Milestone 8, Task 5. Two tabs, not two nav items: docs/design-system.md's
  * left nav is a fixed list (People · Groups · Org units · Roles · Import ·
  * Audit) with no slot for a separate "Sync"/"Dead letters" destination, and
  * `GET /outbox/dead-letters` is gated behind the exact same `audit:read`

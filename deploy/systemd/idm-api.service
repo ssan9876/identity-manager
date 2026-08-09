@@ -1,6 +1,6 @@
 [Unit]
 Description=Identity Manager API and outbox sync worker
-Documentation=file://@REPO_ROOT@/docs/deployment/lxc-install.md
+Documentation=file://@REPO_ROOT@/docs/05-installation.md
 After=network-online.target postgresql.service
 Wants=network-online.target
 Requires=postgresql.service

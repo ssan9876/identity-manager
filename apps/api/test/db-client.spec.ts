@@ -8,7 +8,7 @@ import { createDbClient } from '../src/db/client'
 const FAKE_DATABASE_URL = 'postgres://user:pw@127.0.0.1:1/db'
 
 /**
- * Pins Part 2 of finding C1's fix (docs/superpowers/audit-integrity.md):
+ * Pins Part 2 of finding C1's fix (docs/archive/audits/audit-integrity.md):
  * `createDbClient` used to be `new Pool({ connectionString })` — pg's own
  * defaults, `connectionTimeoutMillis` unset, meaning a caller queued behind
  * an exhausted pool waited FOREVER with no error, ever (see the installed

@@ -26,7 +26,7 @@ const connectorTargetSchema = z.enum(ALL_CONNECTOR_TARGETS)
 const coreFieldSchema = z.enum(['given_name', 'surname', 'title', 'department'])
 
 // noNulChar — the same JSON-escaped-NUL defence every other admin-editable
-// free-text field in this codebase applies (docs/superpowers/audit-
+// free-text field in this codebase applies (docs/archive/audits/audit-
 // injection.md) — remoteName is admin-configured, user-facing-adjacent text
 // with no other shape constraint (each vendor's own attribute-name alphabet
 // differs, and this layer deliberately does not attempt to validate against

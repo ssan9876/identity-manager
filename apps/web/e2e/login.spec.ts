@@ -7,7 +7,7 @@ const PASSWORD = 'dev_password_change_me'
  * Milestone 8, Task 2 changed what a signed-in user sees at `/`: the
  * Milestone 1 placeholder landing page (a `GET /me` echo — "API says
  * username" / "Subject: <uuid>") is retired in favour of the real console.
- * PRODUCT.md bans a dashboard opener — "this product opens onto a list of
+ * docs/product-brief.md bans a dashboard opener — "this product opens onto a list of
  * people, because that is the job" — so `/` now renders the People list
  * directly. This test's job is unchanged from before: prove the real
  * sign-in mechanics work end to end against Keycloak's own hosted login

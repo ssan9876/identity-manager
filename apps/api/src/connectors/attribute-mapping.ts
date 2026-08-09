@@ -54,7 +54,7 @@ export interface ResolvedTargetMapping {
  * Derives the four core-field RAW values for one user — pure, no I/O. Only
  * `department` is non-trivial: "derived from the org path" (Milestone 10,
  * Task 3 contract) means the name of the org unit this user currently
- * belongs to, i.e. `orgUnit.name` for `user.orgUnitId` — PRODUCT.md's own
+ * belongs to, i.e. `orgUnit.name` for `user.orgUnitId` — docs/product-brief.md's own
  * "moving someone between departments" already uses "department" as the
  * colloquial name for "which org unit," so this is not a new concept, only
  * the first place it becomes a propagatable value. `orgUnit` is the caller's

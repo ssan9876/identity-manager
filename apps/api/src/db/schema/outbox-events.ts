@@ -61,7 +61,7 @@ export const outboxEventType = pgEnum('outbox_event_type', [
 // citizen, not a test-only bypass of this enum, because Milestone 14's
 // console E2E configures and drives it through the SAME real spine (enable
 // it in `connector_targets`, dry-run, apply, watch health go green) that AD/
-// Entra/Google will use — see docs/superpowers/plans/2026-08-06-idp-
+// Entra/Google will use — see docs/archive/plans/2026-08-06-idp-
 // milestones-10-14-directory-connectors.md, Milestone 14 Task 9. Like
 // `entra_id` above, `external_identities.system` (external-identities.ts)
 // is widened in the SAME migration to keep correlation writes possible for

@@ -5,7 +5,7 @@ const envSchema = z.object({
   // sequence, the audit_log_append_only() trigger function) and is the
   // only credential `db:migrate` (db/migrate-cli.ts) ever connects with.
   // NEVER used by the running application or the sync worker — see
-  // RUNTIME_DATABASE_URL below, and docs/superpowers/audit-integrity.md
+  // RUNTIME_DATABASE_URL below, and docs/archive/audits/audit-integrity.md
   // finding H1: a role that both serves runtime traffic AND owns/can-alter
   // its own schema can simply redefine any guard it dislikes, DDL included.
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
@@ -48,13 +48,13 @@ const envSchema = z.object({
   // default (10) so an unset env is a no-op — see db/client.ts's doc
   // comment. Exists so a deployment can raise or lower it (e.g. a bigger
   // managed Postgres instance, or several API instances sharing one small
-  // one) without a code change; see docs/superpowers/audit-integrity.md
+  // one) without a code change; see docs/archive/audits/audit-integrity.md
   // finding C1 for why the pool's size and timeout behaviour are both
   // load-bearing for availability, not just performance tuning.
   DB_POOL_MAX: z.coerce.number().int().positive().default(10),
   // Explicit, configurable ceiling on the whole request body `main.ts`'s
   // body parser will accept, replacing express's ACCIDENTAL 100 KiB default
-  // (finding M6, docs/superpowers/audit-integrity.md: "the practical
+  // (finding M6, docs/archive/audits/audit-integrity.md: "the practical
   // ceiling is ~800 rows / ~7s per request... that is an accidental
   // control: it disappears the instant anyone sets `bodyParser: { limit }`
   // for a legitimate reason"). 10 MiB comfortably covers a several-thousand

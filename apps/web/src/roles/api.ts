@@ -135,8 +135,8 @@ export function pathWithin(candidatePath: string, withinPaths: readonly string[]
  * Turns a rejected grant/revoke into a sentence an admin understands —
  * task-4-brief.md: "explain which of the three checks failed in terms an
  * admin understands, without disclosing anything about principals or scopes
- * they cannot see." The three checks (README.md's own numbering, which this
- * task's brief matches):
+ * they cannot see." The three checks (docs/08-authorization.md's own
+ * numbering, which this task's brief matches):
  *   1. Does the actor hold `role:assign` anywhere, AND can they reach THIS
  *      target specifically? `PermissionGuard`'s entry gate and finding
  *      H-1's `assertCanIn` check both throw the BYTE-IDENTICAL message

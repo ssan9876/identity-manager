@@ -95,7 +95,7 @@ interface SeededActor {
  * process this script spawns, so seeding/cleanup work whether or not that
  * process is up.
  *
- * Connects as the RUNTIME role (finding H1, docs/superpowers/
+ * Connects as the RUNTIME role (finding H1, docs/archive/audits/
  * audit-integrity.md), deliberately: every write here (create a user,
  * activate it, assign a role, delete each on cleanup) is exactly the shape
  * of DML the real application performs, so seeding this way doubles as a

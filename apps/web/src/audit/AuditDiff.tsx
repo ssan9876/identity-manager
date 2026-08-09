@@ -9,7 +9,7 @@ import { buildDiffEntries, formatDiffValue, humanizeFieldKey } from './api'
  *  - REMOVAL (`after` null — e.g. `group:remove_child_group`): the same flat
  *    list, but built from `before`.
  *  - UPDATE (both present): a Field/Before/After table, but ONLY for fields
- *    that actually differ — "what changed," matching PRODUCT.md's own
+ *    that actually differ — "what changed," matching docs/product-brief.md's own
  *    framing ("who did that, and what changed") — with every OTHER field
  *    still available, never hidden, behind a collapsed "Show unchanged
  *    fields" disclosure for an auditor who wants to confirm nothing else

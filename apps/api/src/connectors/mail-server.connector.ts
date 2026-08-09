@@ -86,7 +86,7 @@ function readNumber(attributes: Record<string, string[]>, key: string): number |
  * The mail-server target — provisions mailboxes and mail-admin records on the
  * counterpart system at `D:\mail-server`, whose own receiving half is already
  * built and merged (its `feat/idm-sync-phase1`). Design:
- * docs/superpowers/specs/2026-08-07-mail-server-connector-implementation-design.md.
+ * docs/archive/specs/2026-08-07-mail-server-connector-implementation-design.md.
  *
  * NEVER sends a credential, in either direction. There is none to send —
  * Keycloak owns every credential here and does not release them — and the

@@ -87,7 +87,7 @@ function fieldSchema(definition: AttributeDefinition): z.ZodTypeAny {
       // timeout — by whichever change first exposes a write path for
       // `attribute_definitions`.
       if (rules.pattern !== undefined) schema = schema.regex(new RegExp(rules.pattern))
-      // docs/superpowers/audit-injection.md HIGH finding: a custom string
+      // docs/archive/audits/audit-injection.md HIGH finding: a custom string
       // attribute value is jsonb-stored — reject an embedded NUL here,
       // after any custom pattern (which might otherwise happen to allow
       // one through, e.g. a permissive `.*`), before it can ever reach
@@ -226,7 +226,7 @@ function sanitizePayload(value: unknown): unknown {
  * its own `extraKeys` via `for...in ctx.data` BEFORE the same merge step
  * runs and reports them (confirmed directly against the installed
  * zod@3.25.76 source) — `z.record()` has no equivalent pass. This is the
- * root cause of the JSON half of docs/superpowers/audit-injection.md's HIGH
+ * root cause of the JSON half of docs/archive/audits/audit-injection.md's HIGH
  * `__proto__` finding (the CSV half is csv.ts/import-row.ts's own
  * Object.create(null) fix).
  *

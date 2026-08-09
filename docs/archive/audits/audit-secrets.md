@@ -357,7 +357,7 @@ is the attribute bag (M1).
 - **Working tree clean.** The three `apps/api/test/zzprobe-secrets-*.spec.ts`
   probes and `apps/web/e2e/zzprobe-storage.spec.ts` were deleted after use. No
   committed file was modified; `git status` shows only this report,
-  `docs/superpowers/security-audit-input.md`, and other auditors' artifacts
+  `docs/archive/audits/security-audit-input.md`, and other auditors' artifacts
   (`apps/api/__probe/`, `zz-audit-injection-probe*.spec.ts`), which I left alone.
 - **Compose stack untouched.** `identity-manager-postgres-1` and
   `identity-manager-keycloak-1` were never restarted or reconfigured. All

@@ -63,7 +63,7 @@ export function parseCsv(content: string): ParsedCsv {
     // extraHeaders() (which works off the header STRING list, not this
     // object) still correctly counts it as an extra column. That mismatch
     // is what let a `__proto__` CSV column silently wipe a matched user's
-    // `attributes` to `{}` (docs/superpowers/audit-injection.md HIGH
+    // `attributes` to `{}` (docs/archive/audits/audit-injection.md HIGH
     // finding — the fourth recurrence of this defect class in this
     // project). A null-prototype object has no inherited __proto__ setter,
     // so the assignment below always creates a genuine own property

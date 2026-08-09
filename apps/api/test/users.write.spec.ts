@@ -104,7 +104,7 @@ const BOGUS_ID = '00000000-0000-0000-0000-000000000000'
  * Testcontainer, and every assertion is scoped to the specific
  * resource/org-unit each test created rather than to total table state.
  * Existing spec files are unaffected by this and are not changed for it —
- * see decision 3 in docs/superpowers/plans/2026-08-05-idp-milestone-3b-write-endpoints.md.
+ * see decision 3 in docs/archive/plans/2026-08-05-idp-milestone-3b-write-endpoints.md.
  */
 describe('user write endpoints (Milestone 3b, Task 2)', () => {
   const ctx = withTestDatabase()
@@ -336,7 +336,7 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
       expect(res.body.code).toBe('VALIDATION_FAILED')
     })
 
-    // docs/superpowers/audit-injection.md HIGH finding — the JSON half of
+    // docs/archive/audits/audit-injection.md HIGH finding — the JSON half of
     // the __proto__ silent-elision bug (the CSV half is covered in
     // imports.write.spec.ts). Pre-fix, `z.record(z.unknown())` silently
     // dropped a "__proto__" key WHILE PARSING (zod's own built-in
@@ -386,7 +386,7 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
       expect(await usersRepo().findByEmail(email)).toBeNull()
     })
 
-    // docs/superpowers/audit-injection.md HIGH finding: a JSON-escaped NUL
+    // docs/archive/audits/audit-injection.md HIGH finding: a JSON-escaped NUL
     // (Unicode code point 0) is legal JSON and passed every check that
     // existed pre-fix (body-parser, Zod's .min()/.max()), only failing once
     // it reached Postgres as a raw, non-DomainError exception — an unmapped
@@ -448,7 +448,7 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
       expect(rows[0].after?.username).toBe(target.username)
     })
 
-    // Finding M1 (docs/superpowers/audit-integrity.md): `displayName` is
+    // Finding M1 (docs/archive/audits/audit-integrity.md): `displayName` is
     // DERIVED from `patch.firstName ?? current.firstName` / `patch.lastName
     // ?? current.lastName` inside UsersRepository.update, from an UNLOCKED
     // `current` read — same lost-update mechanism as H4's attribute merge.

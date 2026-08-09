@@ -91,7 +91,7 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       providers: [
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         GroupsRepository,
-        // Findings M-1/M-2/L-2 (docs/superpowers/audit-authz.md):
+        // Findings M-1/M-2/L-2 (docs/archive/audits/audit-authz.md):
         // GroupsController now loads the target user for the ?userId= and
         // addMember scope checks — required here for DI resolution.
         UsersRepository,
@@ -177,7 +177,7 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       expect(rows[0].after?.orgUnitId).toBe(org.id)
     })
 
-    // Finding M-2 (docs/superpowers/audit-authz.md): decision 1 originally
+    // Finding M-2 (docs/archive/audits/audit-authz.md): decision 1 originally
     // let ANY actor holding group:create at ANY scope create a GLOBAL group
     // (orgUnitId omitted) with no assertCanIn check at all. That is now
     // gated behind a GLOBAL grant of group:create — see GroupsController
@@ -295,7 +295,7 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       expect(res.body.code).toBe('VALIDATION_FAILED')
     })
 
-    // docs/superpowers/audit-injection.md HIGH finding — same
+    // docs/archive/audits/audit-injection.md HIGH finding — same
     // z.record(z.unknown()) silent-elision bug as POST /users (see
     // users.write.spec.ts's identical regression test for the full
     // mechanism). Pre-fix this returned 201 with attributes: {}.
@@ -321,7 +321,7 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       expect(res.body.issues.join(' ')).toContain('__proto__')
     })
 
-    // docs/superpowers/audit-injection.md HIGH finding: a JSON-escaped NUL
+    // docs/archive/audits/audit-injection.md HIGH finding: a JSON-escaped NUL
     // is legal JSON and passed every pre-fix check, only failing once it
     // reached Postgres as an unmapped 500. Confirmed live on POST /groups.
     it('rejects a NUL character in "name" with 400 VALIDATION_FAILED naming the field, never an unmapped 500', async () => {
@@ -429,7 +429,7 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       expect(await auditRowsFor(ctx, group.id)).toHaveLength(0)
     })
 
-    // Finding M-2 (docs/superpowers/audit-authz.md) supersedes the brief's
+    // Finding M-2 (docs/archive/audits/audit-authz.md) supersedes the brief's
     // original contract ("a global group is writable by a scoped actor
     // holding the action"): a global group now requires a GLOBAL grant of
     // group:update, mirroring create — see `requireGroup`'s doc comment.
@@ -566,7 +566,7 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       expect(rows[1].after).toBeNull()
     })
 
-    // Finding M-2 (docs/superpowers/audit-authz.md) reverses this: ADDING a
+    // Finding M-2 (docs/archive/audits/audit-authz.md) reverses this: ADDING a
     // member now narrows on the member's own org unit too, not just the
     // group's — see GroupsController.addMember's doc comment for why
     // (SyncWorker pushes membership into real Keycloak groups, so "any
@@ -631,7 +631,7 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       expect(await auditRowsFor(ctx, group.id)).toHaveLength(0)
     })
 
-    // Finding M-2 (docs/superpowers/audit-authz.md): managing membership of
+    // Finding M-2 (docs/archive/audits/audit-authz.md): managing membership of
     // a GLOBAL group now requires a GLOBAL grant of group:manage_members
     // (this actor is merely SCOPED) — see `requireGroup`'s doc comment. This
     // test used to assert 201/200; it now pins the corrected 403 on the
@@ -773,7 +773,7 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       expect(await auditRowsFor(ctx, parent.id)).toHaveLength(0)
     })
 
-    // Finding M-1 (docs/superpowers/audit-authz.md) — the headline
+    // Finding M-1 (docs/archive/audits/audit-authz.md) — the headline
     // reproduction: the PARENT check above narrows correctly, but
     // `addChildGroup` never narrowed against the CHILD. An actor could
     // therefore nest a foreign, out-of-scope group under a group they
@@ -819,7 +819,7 @@ describe('group write endpoints (Milestone 3b, Task 3)', () => {
       expect(members.body).toEqual([])
     })
 
-    // Finding M-2 (docs/superpowers/audit-authz.md): managing a GLOBAL
+    // Finding M-2 (docs/archive/audits/audit-authz.md): managing a GLOBAL
     // parent's children now requires a GLOBAL grant of
     // group:manage_members, same as every other global-group mutation — see
     // `requireGroup`'s doc comment. This ALSO independently closes the

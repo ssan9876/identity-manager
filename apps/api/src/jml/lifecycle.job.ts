@@ -15,7 +15,7 @@ import { matchRules } from './rule-engine'
 
 /**
  * One due user this run could NOT action, and why — finding M5
- * (docs/superpowers/audit-integrity.md): before the `pending -> deactivated`
+ * (docs/archive/audits/audit-integrity.md): before the `pending -> deactivated`
  * transition fix (UsersRepository.ALLOWED_TRANSITIONS), a never-onboarded
  * leaver was skipped this way on EVERY run, forever, with the only trace a
  * `console.warn` nobody watching the process's stdout would ever see. That
@@ -110,7 +110,7 @@ export class LifecycleJob {
    * `InvalidTransitionError` is caught and skipped rather than aborting the
    * whole run: a benign race (the row moved on between the SELECT above and
    * this transaction) must never take down processing for every OTHER due
-   * user in the same pass. Finding M5 (docs/superpowers/audit-integrity.md):
+   * user in the same pass. Finding M5 (docs/archive/audits/audit-integrity.md):
    * a skip is still recorded into the returned report, not just logged —
    * see `LifecycleSkip`'s own doc comment for why silent skipping was itself
    * part of the finding, independent of the specific `pending ->

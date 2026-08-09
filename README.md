@@ -1,296 +1,76 @@
 # Identity Manager
 
-A single-tenant identity provider for one real organization: the system of
-record for users, org structure, groups, and lifecycle state. Postgres holds
-all identity data; Keycloak owns credentials, MFA, sessions, and SSO
-(OIDC/SAML) to downstream applications. The two never share write access to
-each other's domain — identity data flows one way, from this system outward.
-See `docs/superpowers/specs/2026-08-04-identity-provider-core-design.md` for
-the full design.
+A single-tenant identity provider for one real organisation: the system of record for
+people, org structure, groups, entitlements and lifecycle state.
 
-## Prerequisites
+Postgres holds all identity data. Keycloak owns credentials, MFA, sessions and SSO.
+Connectors push mastered identity outward into Active Directory, Entra ID, Google
+Workspace and a mail server. A React admin console is the surface an IT administrator
+works in.
 
-- Node.js 20+
-- pnpm 9+
-- Docker (for Postgres and Keycloak via Docker Compose)
-
-`pnpm setup:all` (below) checks all three itself and tells you exactly which
-one is missing rather than failing partway through.
+Identity flows one way — **outward**. Nothing downstream writes back.
 
 ## Quickstart
 
-Three commands, run in order from a clean clone, reach a browser session you
-can sign in to and use:
+Requires Node 20+, pnpm 9+, and Docker.
 
 ```bash
-pnpm setup:all         # start Postgres + Keycloak, install deps, migrate the database
-pnpm bootstrap:admin   # create your local admin account — the anti-lockout, safe to re-run
-pnpm dev               # start the API and the web console together
+pnpm setup:all         # Postgres + Keycloak in Docker, deps, migrations
+pnpm bootstrap:admin   # grant yourself access — without this, everything is 403
+pnpm dev               # API on :3000, console on :5173
 ```
 
-**Why `setup:all` and not `setup`.** `setup` is a genuine, unrelated pnpm
-built-in (`pnpm setup` — "Sets up pnpm" itself: it writes `PNPM_HOME`/`PATH`
-changes to *your shell profile*). A bare `pnpm setup` silently runs pnpm's
-own command instead of this project's script, every time, on every pnpm
-version this was checked against — and documenting "always type `run`"
-is not good enough for a command whose whole job is a frictionless first
-run. `setup:all` cannot collide: no pnpm built-in command name ever contains
-a colon, the same reason `bootstrap:admin` and `db:migrate` don't collide
-with anything either. All three quickstart commands above work exactly as
-written, with no `run` needed.
+Then open **http://localhost:5173** and sign in as `admin@example.com` /
+`dev_password_change_me`.
 
-### 1. `pnpm setup:all`
+Full walkthrough: **[docs/04-quickstart.md](docs/04-quickstart.md)**.
 
-- Runs preflight checks — Docker daemon reachable, ports `5432`/`8080`/`9000`/
-  `3000`/`5173` free, Node ≥20, pnpm ≥9 — and fails with a specific,
-  actionable message (never a stack trace) for whichever one isn't true. If
-  a port is already taken by something other than this project's own
-  Compose stack, it names the container or process holding it.
-- Starts the Compose stack (`docker compose up -d`) and waits for Postgres to
-  report healthy **and** for Keycloak's realm discovery endpoint to answer —
-  Keycloak takes 20-40 seconds to come up on a first start, and this step
-  exists specifically so nothing races ahead of it.
-- Copies `.env.example` → `.env` (the API's config, at the repo root) and
-  `apps/web/.env.example` → `apps/web/.env` (the web console's Vite config —
-  Vite only ever reads `.env` from its own project directory, never the repo
-  root) if they don't already exist. Never overwrites an existing `.env`.
-- Runs `pnpm install`.
-- Runs `db:migrate`, which applies the schema **and** provisions the runtime
-  database role — see "Database roles" below; this is not a one-line no-op
-  step.
+## Documentation
 
-Ends by printing exactly what to run next:
+**All documentation lives in [`docs/`](docs/). Start at
+[docs/README.md](docs/README.md).**
 
-```
-[setup] setup complete.
+| | |
+|---|---|
+| [01 — Overview](docs/01-overview.md) | What it is and what it does |
+| [02 — Architecture](docs/02-architecture.md) | Processes, request path, outbox, trust boundaries |
+| [03 — Data model](docs/03-data-model.md) | Every table and why it is shaped that way |
+| [04 — Quickstart](docs/04-quickstart.md) | Local development in three commands |
+| [05 — Installation](docs/05-installation.md) | Production install, Keycloak setup, TLS |
+| [06 — Configuration](docs/06-configuration.md) | Every environment variable and setting |
+| [07 — Admin guide](docs/07-admin-guide.md) | Using the console, with walkthroughs |
+| [08 — Authorization](docs/08-authorization.md) | Roles, actions, scope, privilege guards |
+| [09 — Connectors and sync](docs/09-connectors-and-sync.md) | AD, Entra, Google, mail, reconciliation |
+| [10 — API reference](docs/10-api-reference.md) | Every endpoint |
+| [11 — Operations](docs/11-operations.md) | CLIs, scheduling, monitoring, backups, playbooks |
+| [12 — Security model](docs/12-security.md) | What holds, what is enforced, what is not yet safe |
+| [13 — Development](docs/13-development.md) | Repo layout, tests, conventions |
+| [14 — Roadmap](docs/14-roadmap.md) | What exists, what is half-built, what is not built |
 
-Next steps:
-  1. pnpm run bootstrap:admin   (creates your local admin account — safe to re-run)
-  2. pnpm dev                   (starts the API and the web console together)
-  3. Open http://localhost:5173 and sign in with:
-       username: admin@example.com
-       password: dev_password_change_me
-```
+Design references: [product brief](docs/product-brief.md) ·
+[design system](docs/design-system.md). Historical specs, plans and audit findings are in
+[`docs/archive/`](docs/archive/) and are not authoritative.
 
-### 2. `pnpm run bootstrap:admin`
-
-Without this step, signing in gets you **403 on everything**. Authorization
-requires a local `users` row whose `username` matches your Keycloak
-`preferred_username`, plus a role grant — a fresh install has neither, and
-there is no path through the UI to fix it, because the UI needs exactly the
-permission you don't have yet. This command is the anti-lockout: it creates
-(or reuses) a local user for a given Keycloak username, activates it,
-creates a root org unit if the directory is empty, and grants it global
-`super_admin`.
+## Common commands
 
 ```bash
-pnpm run bootstrap:admin                    # defaults to admin@example.com, the seeded dev user
-pnpm run bootstrap:admin someone@else.com   # or bootstrap any other Keycloak username
-```
-
-**Idempotent** — run it as many times as you like. It reports what it did or
-what already existed, and a repeat run never fails or duplicates anything.
-
-It is a local operator script — like `db:migrate` — not an HTTP endpoint: it
-talks to the database directly and grants a privilege no request is ever
-allowed to grant itself. See "SECURITY STATUS" below.
-
-### 3. `pnpm dev`
-
-Starts the API and the web console together, with clearly labelled,
-interleaved output, e.g. `[api] ...` / `[web] ...`. Ctrl-C stops both.
-
-Open **http://localhost:5173** and sign in with the seeded dev credentials:
-
-- **username:** `admin@example.com`
-- **password:** `dev_password_change_me`
-
-You should land on a People list showing at least the admin user you just
-bootstrapped.
-
-## Deploying
-
-The Quickstart above is a **development** setup: it runs Vite's dev server and
-starts a throwaway Keycloak in Docker. For a real install — an LXC container, a
-VM, or bare metal, running natively under systemd against **a Keycloak you
-already operate** — see **[docs/deployment/lxc-install.md](docs/deployment/lxc-install.md)**.
-
-```bash
-# On a Proxmox host: creates an unprivileged container and installs into it.
-IDM_HOSTNAME=idm.lan \
-KEYCLOAK_ISSUER=https://kc.example.com/realms/identity-manager \
-bash scripts/proxmox-create-lxc.sh
-
-# Or on any Ubuntu 24.04 machine, from a checkout:
-bash scripts/install.sh
-```
-
-Then `scripts/keycloak-setup.sh` creates the realm and the three clients the
-application needs in your existing Keycloak, grants the sync service account
-exactly four `realm-management` roles, and mints a client secret.
-
-**Do not import `keycloak/realm-import/identity-manager-realm.json` into a real
-Keycloak.** That file is the development realm: it contains a user with the
-password `dev_password_change_me`, a client secret of
-`idm_sync_dev_secret_change_me`, and a password-grant test client — all
-committed to a public repository. `keycloak-setup.sh` builds the same realm
-through the Admin API with generated secrets and no seeded human user.
-
-Read "SECURITY STATUS" at the bottom of this file before pointing any of it at
-a network you care about.
-
-## Database roles
-
-Postgres access is split across **two roles**, not one — see
-`docs/superpowers/audit-integrity.md` finding H1 for the full attack this
-closes. `.env.example` documents both; the short version:
-
-| | `DATABASE_URL` (OWNER) | `RUNTIME_DATABASE_URL` (RUNTIME) |
-|---|---|---|
-| Who connects as it | `db:migrate` only | the API process, the SyncWorker, `reconcile`, `jml:lifecycle`, `smoke:dev`, `bootstrap:admin` |
-| Owns the schema | yes | no |
-| `CREATE` on schema `public` | yes | **no** |
-| DML on ordinary tables | yes | full SELECT/INSERT/UPDATE/DELETE |
-| DML on `audit_log` | yes | **SELECT/INSERT only** |
-
-Why two roles: a database role that both serves runtime traffic and owns
-its own schema can always defeat any DML trigger guarding a table it
-owns — one `CREATE OR REPLACE FUNCTION audit_log_append_only() ... RETURN
-NULL` silently disarms every trigger on it, and an `ALTER TABLE ... ALTER
-COLUMN ... TYPE ... USING ...` rewrites every row without firing a DML
-trigger at all. Splitting the roles turns "append-only" from a property
-the owner merely *chooses* to respect into one the runtime role is
-database-level **incapable** of violating: it cannot rewrite the guard
-because it does not own the function, and it cannot `UPDATE`/`DELETE`/
-`TRUNCATE` `audit_log` because those privileges were never granted to it.
-That privilege boundary and the append-only triggers (`db/migrate.ts`) are
-two *independent* mechanisms — defeating one alone is not enough.
-
-**How a deployer sets this up:** provision one Postgres login that will own
-the schema (superuser is fine for a dev/CI box; against a managed Postgres
-it needs at least `CREATEROLE` plus ownership/`CREATE` on the target
-database) and put its connection string in `DATABASE_URL`. Pick a **second**
-username/password for the runtime role — it does not need to exist in
-Postgres yet — and put that connection string in `RUNTIME_DATABASE_URL`.
-Running `db:migrate` (`apps/api/src/db/roles.ts`) then creates that second
-role if it doesn't exist (or re-asserts its password/attributes if it does)
-and grants it exactly the table above, every time migrations run — so
-rotating the runtime password is just editing `RUNTIME_DATABASE_URL` and
-re-running `db:migrate`. The application (`app.module.ts`'s `DB_CLIENT`
-provider) reads only `RUNTIME_DATABASE_URL` and has **no fallback** to
-`DATABASE_URL` — a deployment that forgets to set the runtime connection
-string fails to boot instead of silently running with owner privileges.
-
-## Running tests
-
-```bash
-pnpm verify                        # the full gate: typecheck, build both packages, the API suite
-pnpm verify:quick                  # typecheck + build only — no containers, fast enough for every commit
-pnpm test                          # unit + integration tests across all packages
-pnpm --filter @idm/api smoke:dev   # boots the real dev server and hits it over HTTP
+pnpm verify:quick                  # typecheck + build — run before every commit
+pnpm verify                        # the full gate, incl. the API suite
+pnpm test                          # unit + integration tests
 pnpm --filter @idm/web test:e2e    # Playwright end-to-end tests
+
+pnpm --filter @idm/api db:migrate                    # schema + runtime role grants
+pnpm --filter @idm/api jml:lifecycle                 # daily joiner/leaver transitions
+pnpm --filter @idm/api reconcile                     # Keycloak drift
+pnpm --filter @idm/api target-reconcile <target>     # one connector — dry run by default
 ```
 
-`pnpm test` runs each package's Postgres-backed tests against disposable
-Testcontainers, independent of the Compose stack. `smoke:dev` and the
-Playwright suite exercise the app the way a human would, against the running
-Compose stack.
+## Security status
 
-## Continuous integration
+**This build must not be exposed to untrusted users.** The adversarial security audit is
+incomplete: four dimensions ran and their findings were fixed, but two never ran and
+roughly twenty findings remain unverified. Installing on an internal or lab network is
+reasonable.
 
-This repository has no git remote, so a workflow file alone would protect
-nothing — `pnpm verify` is the gate that actually runs today, with no runner
-and no network dependency beyond Docker. It typechecks both packages
-(including `apps/api/scripts/`, previously outside the `tsc` program and
-never checked by anything), lints if a linter is configured, builds both
-packages, and runs the full ~756-test API suite against disposable
-Testcontainers — one command, one exit code, and it fails loudly on the first
-broken stage rather than continuing past it. Run `pnpm verify:quick`
-(typecheck + build, no containers) before every commit, and the full
-`pnpm verify` before anything that matters more.
-
-`.github/workflows/ci.yml` runs the identical `pnpm verify` gate on every
-push and pull request, plus the Playwright E2E suite against the Compose
-stack — ready for the day this repository has a remote to trigger it on.
-GitHub-hosted runners provide Docker out of the box, so both Testcontainers
-and `docker compose` work there unmodified. No step in that workflow uses
-`continue-on-error`: a job that cannot start its services is a failure, never
-a silent pass.
-
-## SECURITY STATUS
-
-**This build must not be deployed to a real network.**
-
-Every route — read and write alike — requires both a valid Keycloak-issued
-JWT **and** a role assignment that grants the specific action being
-performed (e.g. `user:read`, `user:update`, `role:assign`) — an
-unauthenticated request, or one from a principal whose roles don't grant the
-action, is rejected before a single query runs.
-
-Every route is also narrowed to the actor's org-unit **scope**, not just
-gated by the permission itself. Role assignments can themselves be scoped
-(e.g. `help_desk` limited to Sales): every list endpoint filters its results
-(and its `total`) to the actor's scope, and every single-resource read *and
-write* asserts the target is actually within that scope
-(`PermissionEngine.assertCanIn`) before acting on it — an out-of-scope but
-existing resource returns **403**, not 404 (the directory's existence is not
-secret; its contents are). A global role assignment (`scopeOrgUnitId: null`)
-still reaches everything, a group with `orgUnitId: null` is global — visible
-to and writable by any actor holding the relevant action regardless of their
-own scope — and an actor whose role grants an action at no reachable scope
-sees an empty page, never the unfiltered list.
-
-**Writes.** `POST`/`PATCH`/`DELETE` routes now exist for users (create,
-update, deactivate — **never** delete; `deactivated` is terminal, there is no
-route to remove a user), org units (create), groups (create, update,
-membership, nesting), and role assignments (grant, revoke). Every mutation
-runs inside one database transaction together with its audit row
-(`audit_log`, append-only at the database level by two independent
-mechanisms — see "Database roles" above: the runtime role's privileges
-don't extend to `UPDATE`/`DELETE`/`TRUNCATE` on it at all, and triggers
-reject those same statements for anyone who does hold them, e.g. the owner
-role): a rejected or failed write commits nothing and leaves no audit trace,
-and a successful one always leaves exactly one.
-
-**Role assignment is the most security-sensitive write in the system** —
-getting it wrong is privilege escalation, not merely disclosure — so
-granting or revoking a role is gated by three independent checks, all
-required, none subsuming another:
-1. Does the actor hold `role:assign` **anywhere** at all (`PermissionGuard`
-   — only `super_admin` does, in today's static role catalog)?
-2. May the actor grant *this specific role* at *this specific scope*
-   (`PrivilegeGuards.assertCanAssignRole`)? An actor may only grant a role
-   they themselves hold, at a scope their own holding covers — a SCOPED
-   holding can never produce a GLOBAL grant, the exact path that would turn
-   a departmental account into a domain-wide one.
-3. Does the target principal **outrank** the actor
-   (`PrivilegeGuards.assertCanModifyPrincipal`)? Independent of scope
-   entirely — a `help_desk` scoped to Sales must not be able to touch a
-   GLOBAL `super_admin` who happens to sit in Sales.
-
-Milestone 3a's and 3b's reviews established that rank and scope are
-independent and neither check subsumes the other — shipping only some of
-these three is the bug. Revoking a role requires the same three checks as
-granting it, evaluated against the grant being removed, so revocation cannot
-be used as a side door around assignment's own narrowing.
-
-**`pnpm run bootstrap:admin` bypasses all three checks above, deliberately.**
-It is a local operator script — like `db:migrate`, `reconcile` and
-`jml:lifecycle` — not an HTTP route, and it is not wired into the Nest
-application at all; nothing makes it reachable over the network. Anyone able
-to run it already holds `RUNTIME_DATABASE_URL` (or a shell on the box that
-has it), which is already enough to read and write every row in the
-directory directly — granting `super_admin` through this script adds no
-capability beyond what that access already implies, it just does it through
-the application's own repositories instead of raw SQL. It exists because a
-fresh install otherwise has no way to grant its first role at all: every
-grant path the API exposes requires the grantor to already hold
-`role:assign`, which nobody does yet on an empty database.
-
-Do not point this build at a real organization's data, and do not expose it
-beyond a local development environment: the comprehensive adversarial
-security audit planned for the end of this sub-project has not run yet.
-`pnpm verify` (see "Continuous integration" above) is the compile-time gate
-that protects this repository today; `.github/workflows/ci.yml` runs the same
-gate automatically, plus Playwright E2E, once this repository has a remote to
-push to.
+Read [docs/12-security.md](docs/12-security.md) before pointing this at a network you
+care about.

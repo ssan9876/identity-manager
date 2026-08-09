@@ -5,7 +5,7 @@ export interface OrgUnit {
   id: string
   name: string
   parentId: string | null
-  /** ltree path, e.g. "acme.sales.emea" — DESIGN.md: renders mono. */
+  /** ltree path, e.g. "acme.sales.emea" — docs/design-system.md: renders mono. */
   path: string
   createdAt: string
   updatedAt: string
@@ -21,7 +21,7 @@ export interface Page<T> {
 const PAGE_LIMIT = 100
 // Bounds the paging loop below at 10,000 org units even if something is
 // badly wrong with `total` (e.g. it changes between pages) — this is
-// reference data for a single organisation's directory (PRODUCT.md: "one
+// reference data for a single organisation's directory (docs/product-brief.md: "one
 // to a handful" of admins managing "a single organisation"), not a
 // collection that grows without bound, so this ceiling is generous, not
 // tight, and exists purely so a pathological response can never spin this
@@ -40,7 +40,7 @@ export function fetchOrgUnitsPage(
 
 /**
  * Pages through every org unit the caller can see. Used to build the
- * id -> path lookup the People list/detail render (DESIGN.md: org unit
+ * id -> path lookup the People list/detail render (docs/design-system.md: org unit
  * paths render mono) and to populate the People list's org-unit filter —
  * both need the FULL set, not one page, so this is the one place that
  * paging happens rather than each screen reimplementing it.

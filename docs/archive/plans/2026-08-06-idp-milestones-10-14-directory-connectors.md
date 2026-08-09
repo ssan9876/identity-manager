@@ -4,7 +4,7 @@
 
 **Goal:** Push mastered identity outward into on-prem Active Directory, Entra ID and Google Workspace, over one shared spine.
 
-**Architecture:** Per `docs/superpowers/specs/2026-08-06-directory-connectors-design.md` — outbound only, reconcile-to-desired-state, connectors never delete, service credentials from the environment only. The existing transactional outbox fans out one row per target; each target retries independently.
+**Architecture:** Per `docs/archive/specs/2026-08-06-directory-connectors-design.md` — outbound only, reconcile-to-desired-state, connectors never delete, service credentials from the environment only. The existing transactional outbox fans out one row per target; each target retries independently.
 
 **Tech Stack:** Existing spine plus `ldapts` (LDAPS), Microsoft Graph over `fetch`, Google Admin SDK over `fetch` with a service-account JWT. Testcontainers, Samba AD DC container, contract fakes for the two cloud APIs.
 

@@ -1,12 +1,12 @@
 /**
  * Shared component classes, consumed across every screen. Every value here
- * is a token from tokens.css — no ad-hoc colour or size. See DESIGN.md's
+ * is a token from tokens.css — no ad-hoc colour or size. See docs/design-system.md's
  * "Components" section for the contract each of these implements.
  *
- * A note on badge colour + contrast: DESIGN.md gives --warn/--warn-bg and
+ * A note on badge colour + contrast: docs/design-system.md gives --warn/--warn-bg and
  * --danger/--danger-bg as paired tokens, but verified contrast (see
  * task-2-report.md) shows --warn text directly on --warn-bg is only
- * ~3.4:1 — under the 4.5:1 body-text floor DESIGN.md itself requires.
+ * ~3.4:1 — under the 4.5:1 body-text floor docs/design-system.md itself requires.
  * Badges below therefore always render their WORD in --ink (>15:1 on any
  * of these pale fills) and reserve --warn/--danger for the background tint
  * and a small decorative dot — colour still marks the exception (the tint
@@ -130,7 +130,7 @@
 }
 
 /* Loading: replaces the label with a spinner, keeps the button's width
-   (DESIGN.md, explicit). The label stays in the layout (visibility, not
+   (docs/design-system.md, explicit). The label stays in the layout (visibility, not
    display) so width never jumps. */
 .btn[data-loading='true'] {
   cursor: progress;
@@ -180,7 +180,7 @@
 
 /* ---------------------------------------------------------------------
  * Status badges — word + shape, never colour alone. Active/synced render
- * with NO fill (DESIGN.md). See file header for the contrast reasoning
+ * with NO fill (docs/design-system.md). See file header for the contrast reasoning
  * behind always rendering the word in --ink.
  * ------------------------------------------------------------------- */
 
@@ -288,10 +288,10 @@
  * button, the results popup) is styled here.
  *
  * The popup renders through a portal at `position: fixed`, computed from
- * the trigger's own bounding rect — DESIGN.md bans `position: absolute`
+ * the trigger's own bounding rect — docs/design-system.md bans `position: absolute`
  * inside an `overflow` container (it clips); a portal additionally means
  * this never depends on an ancestor NOT establishing its own containing
- * block. --z-dropdown is the exact token DESIGN.md's z-index scale
+ * block. --z-dropdown is the exact token docs/design-system.md's z-index scale
  * reserves for this.
  * ------------------------------------------------------------------- */
 
@@ -675,7 +675,7 @@
 }
 
 /* ---------------------------------------------------------------------
- * Confirm dialog — native <dialog> + showModal(), the one place DESIGN.md
+ * Confirm dialog — native <dialog> + showModal(), the one place docs/design-system.md
  * says a modal earns its keep (a destructive confirmation). Centred, small,
  * unlike the full-height nav-dialog side panel.
  * ------------------------------------------------------------------- */
@@ -720,13 +720,13 @@
 }
 
 /* Deliberately no open/close animation — same reasoning as AppShell.css's
-   nav-dialog: DESIGN.md's own suggested reduced-motion fallback is
+   nav-dialog: docs/design-system.md's own suggested reduced-motion fallback is
    "typically ... an instant transition", and native showModal()/close() is
    already instant, correct and fully focus-managed without one. */
 
 /* ---------------------------------------------------------------------
  * Toasts — the result of an action, especially one with consequence
- * (DESIGN.md). Fixed bottom-right, stacked, auto-dismissing with an
+ * (docs/design-system.md). Fixed bottom-right, stacked, auto-dismissing with an
  * explicit close control (ToastProvider).
  * ------------------------------------------------------------------- */
 

@@ -49,14 +49,14 @@ const statusSchema = z
   .optional()
 
 // Milestone 8, Task 2: GET /users had no text search at all before this —
-// only status/orgUnitId, which cannot do PRODUCT.md's #1 job ("find a
+// only status/orgUnitId, which cannot do docs/product-brief.md's #1 job ("find a
 // person fast... search that survives hundreds of rows") on their own. No
 // `.min()` — an empty or whitespace-only term is treated as "no search"
 // by the trim-and-check below, never a 400: a debounced search box that
 // clears itself sends exactly this, and erroring on it would be hostile,
 // not helpful. `.max(255)` matches every other free-text field's ceiling
 // in this controller (jobTitle, location). noNulChar — same
-// docs/superpowers/audit-injection.md convention as every other free-text
+// docs/archive/audits/audit-injection.md convention as every other free-text
 // field; this value reaches a bound SQL parameter (UsersRepository's own
 // ILIKE filter), never spliced into query text, so this is defence in
 // depth/consistency, not a distinct vulnerability being closed here.
@@ -128,7 +128,7 @@ const isoDateSchema = z
 
 // noNulChar wraps every free-text field (never orgUnitId/managerId, already
 // UUID-constrained, or startDate/endDate, already ISO-date-regex-
-// constrained) — see docs/superpowers/audit-injection.md's HIGH
+// constrained) — see docs/archive/audits/audit-injection.md's HIGH
 // "JSON-escaped NUL" finding and safe-string.ts's own doc comment.
 const createUserBodySchema = z
   .object({
@@ -369,7 +369,7 @@ export class UsersController {
    * connection for `tx`; letting either check default to the pool would
    * check out a SECOND one for the lifetime of a query that runs while the
    * first is still held, which is finding C1
-   * (docs/superpowers/audit-integrity.md): 11 concurrent `PATCH /users/:id`
+   * (docs/archive/audits/audit-integrity.md): 11 concurrent `PATCH /users/:id`
    * was enough to exhaust a 10-connection pool and deadlock the whole API
    * process permanently. See test/pool-exhaustion.spec.ts for the
    * regression coverage.

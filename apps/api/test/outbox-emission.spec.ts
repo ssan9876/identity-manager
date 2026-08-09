@@ -397,7 +397,7 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
       expect(await totalOutboxCount(ctx)).toBe(before)
     })
 
-    // Finding M-2 (docs/superpowers/audit-authz.md) — representative case,
+    // Finding M-2 (docs/archive/audits/audit-authz.md) — representative case,
     // same reasoning as this file's header comment: audit-row and
     // outbox-event writes share the exact same transaction, so ONE
     // rejection test per NEW denial mechanism is enough to prove both halves
@@ -520,7 +520,7 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
       expect(await outboxEventsFor(ctx, 'membership', group.id)).toHaveLength(0)
     })
 
-    // Finding M-2 (docs/superpowers/audit-authz.md) — representative case
+    // Finding M-2 (docs/archive/audits/audit-authz.md) — representative case
     // for the MEMBER-side check specifically (the test above covers the
     // pre-existing GROUP-side check); groups.write.spec.ts's own test
     // already proves the audit-row side of this exact scenario.
@@ -620,7 +620,7 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
       expect(await totalOutboxCount(ctx)).toBe(before)
     })
 
-    // Finding M-1 (docs/superpowers/audit-authz.md) — representative case,
+    // Finding M-1 (docs/archive/audits/audit-authz.md) — representative case,
     // same reasoning as the M-2 test in the POST /groups block above:
     // groups.write.spec.ts's own M-1 test already proves the audit-row side
     // (and the read-amplification never opening up); this proves the

@@ -2,8 +2,8 @@
 
 Branch: `fix/audit-critical-pool-exhaustion`, continuing from `c8fb15c` (Wave
 A — pool-exhaustion deadlock) and `19ee90a` (Wave B — authorization scope
-checks). Fixes the three HIGH findings from `docs/superpowers/audit-
-injection.md` and the matching HIGH finding (H1) in `docs/superpowers/audit-
+checks). Fixes the three HIGH findings from `docs/archive/audits/audit-
+injection.md` and the matching HIGH finding (H1) in `docs/archive/audits/audit-
 secrets.md`, plus the two LOW findings from the same area. Every write
 handler touched threads `tx`, never the pool, into any check added inside an
 already-open transaction — the Wave A discipline holds throughout.
@@ -340,7 +340,7 @@ All counterfactuals restored; full suite re-verified green afterward.
   non-confirming `"not available"` message). Not one of the task's own
   explicitly enumerated "two ways, both needed" for this finding — flagged
   rather than silently left unaddressed.
-- `docs/superpowers/audit-integrity.md`'s MEDIUM finding (no explicit
+- `docs/archive/audits/audit-integrity.md`'s MEDIUM finding (no explicit
   row/file-size cap on `/imports/preview`+`/commit`, beyond Express's
   incidental 100 kB body limit) is untouched — out of this pass's
   INJECTION-only scope, and not one of the three HIGH findings this task

@@ -59,7 +59,7 @@ export class AttributeTargetMappingsRepository {
    * repository's read/write methods in this codebase follow (e.g.
    * UsersRepository.findById). `SyncWorker.reconcileUser` always passes its
    * own open transaction, never letting this take a second pool connection
-   * mid-transaction (finding C1, docs/superpowers/audit-integrity.md).
+   * mid-transaction (finding C1, docs/archive/audits/audit-integrity.md).
    */
   async listForTarget(
     target: ConnectorTarget,

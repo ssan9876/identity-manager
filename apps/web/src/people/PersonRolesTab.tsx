@@ -40,7 +40,7 @@ function ScopeLabel({ scopeOrgUnitId }: { scopeOrgUnitId: string | null }) {
 }
 
 /**
- * Progressive-disclosure grant form — never a modal (DESIGN.md). The scope
+ * Progressive-disclosure grant form — never a modal (docs/design-system.md). The scope
  * `<select>` is rebuilt from `grantableScopeFor(myAssignments, roleKey)`
  * every time `roleKey` changes, so it only ever offers Global (when a
  * qualifying holding of the caller's own is itself global) and org units

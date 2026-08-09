@@ -40,10 +40,10 @@ function MoonIcon({ className }: { className?: string }) {
 /**
  * The top-bar light/dark toggle — Milestone 9, Task 2. `prefers-color-scheme`
  * is the default signal (styles/tokens.css); this is the explicit override
- * DESIGN.md now calls for, and it persists (shell/theme.ts, localStorage) so
+ * docs/design-system.md now calls for, and it persists (shell/theme.ts, localStorage) so
  * a returning visit keeps the choice instead of reverting to the OS signal.
  *
- * DESIGN.md requires every interactive component ship all seven states
+ * docs/design-system.md requires every interactive component ship all seven states
  * (default, hover, focus, active, disabled, loading, error). For this one:
  *   - default / hover / focus-visible / active — plain `.btn--ghost` states,
  *     reused rather than reinvented (this IS a `.btn--ghost`).
@@ -69,7 +69,7 @@ function MoonIcon({ className }: { className?: string }) {
  *     session — the visible toggle never silently fails — but the choice
  *     will not survive a reload, so that is reported the same way every
  *     other consequential result in this console is reported: a toast
- *     (ToastProvider), not a state on the button itself. Mirrors DESIGN.md's
+ *     (ToastProvider), not a state on the button itself. Mirrors docs/design-system.md's
  *     own precedent for buttons — "surfaced via the surrounding message
  *     region, not the button itself."
  */

@@ -37,7 +37,7 @@ import { createPortal } from 'react-dom'
  * to accept a hand-typed, unvalidated-until-submit UUID).
  *
  * The popup renders `position: fixed`, through a `createPortal` to
- * `document.body` — DESIGN.md bans `position: absolute` inside an
+ * `document.body` — docs/design-system.md bans `position: absolute` inside an
  * `overflow` container (it clips), and a portal additionally sidesteps any
  * ancestor that establishes its own containing block (`transform`,
  * `contain`, …) now or in the future, which `position: fixed` alone would
@@ -78,7 +78,7 @@ export interface ComboboxProps<T> {
   getOptionId: (option: T) => string
   /** Plain-text label — becomes the input's displayed value once `option` is selected, and its accessible description via `aria-activedescendant`. */
   getOptionLabel: (option: T) => string
-  /** Rich rendering inside the listbox row — name first, secondary detail after, per DESIGN.md. */
+  /** Rich rendering inside the listbox row — name first, secondary detail after, per docs/design-system.md. */
   renderOption: (option: T) => React.ReactNode
   placeholder?: string
   noResultsText?: string

@@ -50,7 +50,7 @@ export const attributeCoreField = pgEnum('attribute_core_field', [
  * remote name." **Absence of a row means no propagation** — default-deny is
  * now structural (nothing to read, nothing to send) rather than a boolean
  * defaulting to `false`: see this project's binding constraint 2 ("Attribute
- * propagation is default-deny") and docs/superpowers/specs/2026-08-06-
+ * propagation is default-deny") and docs/archive/specs/2026-08-06-
  * directory-connectors-design.md's "Attribute propagation, generalised".
  * `enabled = false` on an EXISTING row means exactly the same thing as no
  * row at all — both are excluded identically by every read in

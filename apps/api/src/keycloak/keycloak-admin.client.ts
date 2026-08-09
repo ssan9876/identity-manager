@@ -189,7 +189,7 @@ export function buildSyncedAttributes(
     definitions.filter((definition) => definition.syncToKeycloak).map((definition) => definition.key),
   )
 
-  // Object.create(null), not {} — sweep from docs/superpowers/audit-
+  // Object.create(null), not {} — sweep from docs/archive/audits/audit-
   // injection.md's HIGH `__proto__` finding (see attribute-validator.ts's
   // rawAttributesSchema doc comment for the full root-cause writeup this
   // project has now been bitten by four times). Not reachable today (no

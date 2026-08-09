@@ -340,7 +340,7 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       expect(outboxRows[0].event_type).toBe('updated')
     })
 
-    // docs/superpowers/audit-injection.md HIGH finding: a JSON-escaped NUL
+    // docs/archive/audits/audit-injection.md HIGH finding: a JSON-escaped NUL
     // (Unicode code point 0) is legal JSON and passed every check that
     // existed pre-fix, only failing once it reached Postgres as a raw,
     // non-DomainError exception — an unmapped 500. Confirmed live on
@@ -458,7 +458,7 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       expect(res.body.issues.join(' ')).toContain('costCenter')
     })
 
-    // docs/superpowers/audit-injection.md HIGH finding — the JSON half of
+    // docs/archive/audits/audit-injection.md HIGH finding — the JSON half of
     // the __proto__ silent-elision bug, PATCH/merge variant. Pre-fix,
     // `z.record(z.unknown())` silently dropped the "__proto__" key WHILE
     // PARSING (zod's own built-in prototype-pollution defence in
@@ -577,7 +577,7 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       expect(reloaded?.attributes[editableKey]).toBe('New')
     })
 
-    // Finding H4 (docs/superpowers/audit-integrity.md, HIGH): the merge used
+    // Finding H4 (docs/archive/audits/audit-integrity.md, HIGH): the merge used
     // to read `current.attributes` with a PLAIN (unlocked) SELECT, compute
     // `{...current.attributes, ...attributePatch}`, and write that back —
     // a classic lost update under READ COMMITTED. Two concurrent requests
@@ -962,7 +962,7 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
 })
 
 /**
- * Finding H4's SECOND measured race (docs/superpowers/audit-integrity.md):
+ * Finding H4's SECOND measured race (docs/archive/audits/audit-integrity.md):
  * "self-service racing an admin edit" — `PATCH /self` (merge) concurrent
  * with `PATCH /users/:id` (wholesale replace) on the SAME user, each naming
  * a DIFFERENT attribute key. `UsersController.update`'s own wholesale
@@ -980,7 +980,7 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
  * SEPARATE, combined module wiring both controllers, since this needs two
  * genuinely different actors racing each other.
  */
-describe('PATCH /self racing PATCH /users/:id (finding H4, docs/superpowers/audit-integrity.md)', () => {
+describe('PATCH /self racing PATCH /users/:id (finding H4, docs/archive/audits/audit-integrity.md)', () => {
   const ctx = withTestDatabase()
   let app: INestApplication
   let orgUnitId: string

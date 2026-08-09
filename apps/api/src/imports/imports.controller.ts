@@ -80,7 +80,7 @@ export interface ImportCommitResponse {
   /**
    * Rows that matched an existing `employeeId` but whose resolved
    * `UpdateUserInput` was field-for-field identical to the current row —
-   * finding M4 (docs/superpowers/audit-integrity.md): re-running an
+   * finding M4 (docs/archive/audits/audit-integrity.md): re-running an
    * unchanged file used to still write a full round of no-op `user:update`
    * audit rows (`before` === `after`) and Keycloak sync events every time.
    * Counted separately from `updated`, which now means "the row genuinely
@@ -137,7 +137,7 @@ function domainErrorReasons(error: unknown): string[] {
  * rethrow: doing so aborts the whole `commit` request mid-loop, and the
  * caller never receives `batchId` — the only handle for auditing or
  * reversing whatever earlier rows in the SAME request already committed
- * (docs/superpowers/audit-injection.md HIGH finding — a NUL-encoding error
+ * (docs/archive/audits/audit-injection.md HIGH finding — a NUL-encoding error
  * on row 2 used to leave row 1 committed, row 3 never attempted, and return
  * a bare 500 with no way to identify what was written). Logged server-side
  * (this codebase's established best-effort `console.error` convention —
@@ -170,7 +170,7 @@ function attributesEqual(a: Record<string, unknown>, b: Record<string, unknown>)
 
 /**
  * True when applying `input` to `current` would change NOTHING — finding M4
- * (docs/superpowers/audit-integrity.md): "re-running the identical file
+ * (docs/archive/audits/audit-integrity.md): "re-running the identical file
  * updates rather than duplicates" held for user rows, but not for audit/
  * outbox rows, which grew by a full batch on every re-run even when every
  * field already matched. Only fields `input` actually NAMES are compared
@@ -225,7 +225,7 @@ async function appendManagerReason(
  *     `resolveRow` only, which performs reads alone (no user INSERT/UPDATE
  *     statement anywhere in that call graph, and no outbox event); the
  *     user-facing write path is exclusively inside `commit()`. The one
- *     deliberate exception, added for docs/superpowers/audit-secrets.md
+ *     deliberate exception, added for docs/archive/audits/audit-secrets.md
  *     finding H1, is a single append-only audit row per PREVIEW INVOCATION
  *     (actor, row count, timestamp — never per candidate row) so mass
  *     cross-scope probing through this endpoint is no longer silent — see
@@ -273,7 +273,7 @@ export class ImportsController {
    * active attribute definitions (fetched once per request, not once per
    * row, same batching rationale as SyncStateRepository).
    *
-   * Also enforces `this.config.maxRows` — finding M6 (docs/superpowers/
+   * Also enforces `this.config.maxRows` — finding M6 (docs/archive/audits/
    * audit-integrity.md): "the no row-count or file-size cap open item is
    * real, but the damage is bounded by something nobody chose" (express's
    * own accidental ~100 KiB body limit, which capped a request at roughly
@@ -342,7 +342,7 @@ export class ImportsController {
    *
    * The ONE exception is the invocation-level audit row written
    * immediately below, once `parseAndPrepare` has already succeeded —
-   * docs/superpowers/audit-secrets.md finding H1 (mirrored in
+   * docs/archive/audits/audit-secrets.md finding H1 (mirrored in
    * audit-injection.md): `resolveRow` performs globally UNSCOPED
    * `findByEmployeeId`/`findByEmail`/`findByUsername` lookups and reports
    * per-field mismatches as named reasons, so an actor holding
@@ -493,7 +493,7 @@ export class ImportsController {
           })
           created += 1
         } else if (isNoopUpdate(resolution.input, resolution.current)) {
-          // Finding M4 (docs/superpowers/audit-integrity.md): the resolved
+          // Finding M4 (docs/archive/audits/audit-integrity.md): the resolved
           // update would change nothing — skip the write (and both
           // records) entirely rather than writing a `before` === `after`
           // audit row and a no-op Keycloak sync event. `resolution.current`
@@ -632,7 +632,7 @@ export class ImportsController {
     definitions: AttributeDefinition[],
   ): Promise<RowResolution> {
     // Scope AND privilege are checked FIRST, before anything else about
-    // this row is computed or disclosed — docs/superpowers/audit-secrets.md
+    // this row is computed or disclosed — docs/archive/audits/audit-secrets.md
     // H1 (mirrored in audit-injection.md): resolveRow's own caller already
     // resolves `existing` via a GLOBALLY UNSCOPED findByEmployeeId lookup,
     // so an out-of-scope actor already learns "this employeeId exists
@@ -651,7 +651,7 @@ export class ImportsController {
     // about this specific row.
     const scopeReasons: string[] = []
     try {
-      // Finding L-3 (docs/superpowers/audit-authz.md): an UPDATE row is
+      // Finding L-3 (docs/archive/audits/audit-authz.md): an UPDATE row is
       // narrowed with 'user:update', not 'user:create' — this is the update
       // branch (resolveRow already matched an EXISTING user by employeeId;
       // see resolveCreateRow just below for the create branch, which
@@ -759,7 +759,7 @@ export class ImportsController {
     await appendManagerReason(this.users, row.managerId, reasons)
 
     // Residual half of the cross-scope enumeration oracle from fix wave C
-    // (docs/superpowers/fix-wave-c-report.md's own "Concerns" note,
+    // (docs/archive/audits/fix-wave-c-report.md's own "Concerns" note,
     // audit-secrets.md): `findByEmail`/`findByUsername` are GLOBAL,
     // unscoped lookups — the ROW's own target org unit passed the scope
     // check above, but the EXISTING colliding user they find can be a

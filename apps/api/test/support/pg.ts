@@ -10,7 +10,7 @@ import type { RuntimeRoleCredentials } from '../../src/db/roles'
 import * as schema from '../../src/db/schema/index'
 
 /**
- * Finding H1 (docs/superpowers/audit-integrity.md): fixed, not derived from
+ * Finding H1 (docs/archive/audits/audit-integrity.md): fixed, not derived from
  * anything per-file — safe because Testcontainers gives every file its OWN
  * throwaway Postgres CLUSTER (a separate container), so there is no
  * cross-file role-name collision to worry about, unlike a shared server

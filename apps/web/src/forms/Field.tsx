@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 
 /**
  * The one label+input+error/hint wrapper every form in this console renders
- * a field with — DESIGN.md's Forms contract verbatim: "labels above inputs,
+ * a field with — docs/design-system.md's Forms contract verbatim: "labels above inputs,
  * inline validation on blur, error text under the field naming the field."
  * Presentational only: the caller is responsible for wiring its own
  * `id`/`aria-invalid`/`aria-describedby` onto the actual control it passes

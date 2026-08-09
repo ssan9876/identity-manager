@@ -4,7 +4,7 @@ Branch: `fix/audit-critical-pool-exhaustion`, continuing from `c8fb15c` (Wave A 
 pool-exhaustion deadlock), `19ee90a` (Wave B — authorization scope checks),
 `abefeca` (Wave C — prototype elision, NUL handling, enumeration oracle), and
 `cfb5438` (Wave D — remaining INTEGRITY/CONCURRENCY findings). Closes finding
-H1 from `docs/superpowers/audit-integrity.md`: the audit log's append-only
+H1 from `docs/archive/audits/audit-integrity.md`: the audit log's append-only
 guarantee was enforced only by DML triggers, but the single database role
 (`idm`) that served runtime traffic also owned `audit_log` and was a Postgres
 superuser — so it could redefine or bypass the guard outright. The project

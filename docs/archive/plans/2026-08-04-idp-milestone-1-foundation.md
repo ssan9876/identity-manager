@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript, pnpm workspaces, NestJS, Drizzle ORM, Postgres 16 (`ltree`), Zod, Keycloak 26, React 18 + Vite, `react-oidc-context`, `jose`, Vitest, Testcontainers, Playwright.
 
-**Source spec:** `docs/superpowers/specs/2026-08-04-identity-provider-core-design.md`
+**Source spec:** `docs/archive/specs/2026-08-04-identity-provider-core-design.md`
 
 ## Global Constraints
 

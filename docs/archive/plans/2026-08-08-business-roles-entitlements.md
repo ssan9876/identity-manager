@@ -4,7 +4,7 @@
 
 **Goal:** Give the directory a declarative answer to *who should have what* — a business role owns a membership formula over user fields and a set of entitlements, and an engine reconciles the two continuously.
 
-**Architecture:** Per `docs/superpowers/specs/2026-08-08-business-roles-entitlements-design.md`. A pure evaluator (`user + roles → desired grants`) plus an impure reconciler that diffs against `group_user_members` and `user_target_accounts` and writes through existing repositories, inside one transaction with its audit row and outbox events. Nothing downstream of the outbox changes: `SyncWorker`, `DirectoryConnector` and the dead-letter path are untouched.
+**Architecture:** Per `docs/archive/specs/2026-08-08-business-roles-entitlements-design.md`. A pure evaluator (`user + roles → desired grants`) plus an impure reconciler that diffs against `group_user_members` and `user_target_accounts` and writes through existing repositories, inside one transaction with its audit row and outbox events. Nothing downstream of the outbox changes: `SyncWorker`, `DirectoryConnector` and the dead-letter path are untouched.
 
 **Tech Stack:** TypeScript, NestJS 10, Drizzle ORM 0.36, Postgres 16, Vitest 2, Testcontainers, React + Vite + Playwright for the console.
 
@@ -12,13 +12,13 @@
 
 ## Global Constraints
 
-- **Spec:** `docs/superpowers/specs/2026-08-08-business-roles-entitlements-design.md`. Its "Settled decisions — do not re-litigate" section governs every task below.
+- **Spec:** `docs/archive/specs/2026-08-08-business-roles-entitlements-design.md`. Its "Settled decisions — do not re-litigate" section governs every task below.
 - **Rules are DATA, never code.** No `eval`, no `new Function`, no bare `Function(...)`, no template interpolation of rule fields into anything executable, anywhere in `apps/api/src/business-roles/`. Task 6 adds the static source scan that proves it; do not weaken it.
 - **A role with zero conditions matches NOBODY.** Not vacuously everybody. This is the single most dangerous default in the design — it is a named, tested case, never an emergent property of a `reduce`.
 - **The reconciler only ever revokes rows whose `grant_source` is `business_role`.** A `manual` row is never touched by automation, in any code path.
 - **Offboarding never depends on role evaluation.** The existing unconditional disable-on-deactivate and `revoke-access` session kill stay exactly as they are. Role evaluation is a second belt, never the braces.
 - Every mutation stays permission-checked, scope-narrowed, audited **and** outboxed in one transaction. A rejected mutation writes zero audit rows and zero outbox events.
-- **Never open a second database connection inside an open transaction.** Everything takes the caller's `tx`. This project has deadlocked its own pool doing otherwise (finding C1, `docs/superpowers/audit-integrity.md`; guarded by `test/pool-exhaustion.spec.ts`).
+- **Never open a second database connection inside an open transaction.** Everything takes the caller's `tx`. This project has deadlocked its own pool doing otherwise (finding C1, `docs/archive/audits/audit-integrity.md`; guarded by `test/pool-exhaustion.spec.ts`).
 - Authorization is enforced in the API, never the UI.
 - `strict: true`. No `any`, no `@ts-ignore`, no `as` used to silence a structural check (see `authz/actions.ts`'s own note on how an `as` on an `any` expression checks nothing).
 - Any schema change commits its migration **and** `src/db/migrations/meta/`. Any `package.json` change commits `pnpm-lock.yaml`.
@@ -2136,7 +2136,7 @@ async reconcileUser(tx: DbHandle, userId: string, actorUserId: string | null, no
 
 Rules the implementation must honour:
 
-- **Everything runs on the caller's `tx`.** `listEnabledForEvaluation` currently uses the repository's injected `db`; give `BusinessRolesRepository` a `tx`-taking overload (or pass `tx` into it) so the reconciler never causes a second pool checkout while `tx` is open. This is finding C1 (`docs/superpowers/audit-integrity.md`), guarded by `test/pool-exhaustion.spec.ts` — a second connection here would deadlock the pool.
+- **Everything runs on the caller's `tx`.** `listEnabledForEvaluation` currently uses the repository's injected `db`; give `BusinessRolesRepository` a `tx`-taking overload (or pass `tx` into it) so the reconciler never causes a second pool checkout while `tx` is open. This is finding C1 (`docs/archive/audits/audit-integrity.md`), guarded by `test/pool-exhaustion.spec.ts` — a second connection here would deadlock the pool.
 - **Inserted group rows carry `grantSource: 'business_role'`, `grantedBy: actorUserId`, `grantedAt: now`.** Deletes are narrowed by `and(eq(userId), inArray(groupId, …), eq(grantSource, 'business_role'))` — the `grantSource` predicate goes in the SQL, not only in the JavaScript filter above it, so a concurrent hand-grant between read and write cannot be caught by the delete.
 - **One audit row per changed pass**, none for a no-op: `action: 'business_role.reconcile'`, `resourceType: 'user'`, `resourceId: userId`, `before`/`after` holding the two group/target sets. Use `AuditWriter.record(tx, entry)`.
 - **Emit the same outbox event the existing membership write already emits.** Read `apps/api/src/groups/groups.controller.ts`'s member add/remove handler and mirror its `OutboxWriter.record(tx, …)` call exactly — same `aggregateType`, same `eventType`, same payload shape. Do not invent a new event type; the whole point of approach A is that nothing downstream of the outbox learns anything new.

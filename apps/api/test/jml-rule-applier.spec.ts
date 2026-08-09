@@ -230,7 +230,7 @@ describe('RuleApplier (Milestone 7, Task 6)', () => {
       expect(await auditRowsFor(ctx, 'user', user.id)).toEqual([])
     })
 
-    // Finding H4 (docs/superpowers/audit-integrity.md): "the same shape
+    // Finding H4 (docs/archive/audits/audit-integrity.md): "the same shape
     // exists in JML set_attribute" — this method reads current.attributes,
     // merges, and writes back exactly like SelfServiceController.update did
     // pre-fix. Two rules (or the same rule re-triggered, or a concurrent

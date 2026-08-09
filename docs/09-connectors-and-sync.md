@@ -1,0 +1,287 @@
+# 09 — Connectors and sync
+
+## The model
+
+Every mutation writes an **outbox event** in the same transaction as the mutation. A
+background **sync worker** claims events and hands each to a **connector** for its
+target.
+
+A connector's job is narrow and total: given a fully-resolved desired state, make the
+target match it. Connectors never read Postgres. They receive plain data:
+
+```ts
+interface DesiredUser {
+  userId: string          // OUR user id — for targets that key on it (mail server)
+  username: string
+  email: string
+  firstName: string
+  lastName: string
+  enabled: boolean        // status === 'active'
+  status?: UserStatus     // full lifecycle status, for targets that need all four
+  attributes: Record<string, string[]>   // ALREADY filtered to this target's mappings
+  groups: readonly string[]              // flattened EFFECTIVE membership, as names
+  // ...plus target-gated fields: orgUnitPath, existingExternalId,
+  //    managedAttributeRemoteNames
+}
+```
+
+Three properties carry the design:
+
+- **`attributes` is pre-filtered per target.** A field with no `attribute_target_mappings`
+  row for this target never appears — structurally, regardless of what any other target
+  receives.
+- **`groups` is the flattened effective set**, already resolved from the nested local
+  DAG. Each connector maps that onto its own representation.
+- **`status` is optional and target-gated.** `enabled` collapses four states into two,
+  and for the mail target that is data loss, not lost fidelity: only `deactivated`
+  stamps the counterpart's `deactivated_at`, which starts its retention clock. Only
+  targets that need the distinction receive it.
+
+### Assert, never replay
+
+The worker never replays an event payload as a delta. It re-reads the current row from
+Postgres and asserts **full desired state**. A replayed, duplicated or out-of-order
+event therefore converges to the same place.
+
+### Correlate on immutable ids
+
+Each target's correlation lives in `external_identities` / `external_group_identities`,
+keyed on the target's own **immutable** id — AD `objectGUID`, Graph `id`, Google `id` —
+never a DN, a UPN, an email or a name. All of those move.
+
+Getting this wrong is not a cosmetic bug: a rename would become an orphan plus a new
+empty object.
+
+## The targets
+
+| Target | Users | Groups | Correlated by |
+|---|---|---|---|
+| `keycloak` | ✅ | flattened membership | Keycloak user id |
+| `active_directory` | ✅ | ✅ **native nesting** | `objectGUID` |
+| `entra_id` | ✅ | flattened via `$ref` | Graph `id` |
+| `google_workspace` | ✅ | flattened via Members API | Google `id` |
+| `mail_server` | ✅ | — | **our** `users.id` |
+| `echo` | ✅ | ✅ | in-repo, for testing the spine |
+
+### Keycloak
+
+The only target enabled by default, and the only one seeded by migration. Reached
+through the Admin REST API using the `KEYCLOAK_ADMIN_CLIENT_ID`/`_SECRET`
+client-credentials grant.
+
+Pushes the user's profile, `enabled` state, mapped attributes, and group membership
+(creating groups as needed). Also the target of the **synchronous** disable + session
+revocation on deactivation.
+
+The service account needs exactly four `realm-management` roles: `manage-users`,
+`query-users`, `view-users`, `query-groups`.
+
+### Active Directory
+
+LDAPS via `ldapts`. Configuration:
+
+| Key | Required | Notes |
+|---|---|---|
+| `url` | ✅ | Must be `ldaps://`. Plain `ldap://` is never accepted. |
+| `baseDN` | ✅ | e.g. `DC=corp,DC=example,DC=com` |
+| `bindDN` | ✅ | The service account's DN |
+| `credentialSecretName` | ✅ | Name of a `CONNECTOR_*` env var holding the bind password |
+| `caCertificate` | | PEM. Blank trusts the host's OS root store. |
+| `tlsServerName` | | SNI/verification override |
+| `allowInsecureTls` | | **The only** way certificate verification is relaxed. Off by default; keep it off outside a lab. |
+| `createMissingOrgUnits` | | Create OUs to match the org path |
+
+Defaults: 5s connect timeout, 15s operation timeout.
+
+**Native group nesting.** A group-to-group `member` edge can only be written once the
+child group has its own AD DN to point at — which requires knowing whether the child has
+ever successfully synced. `external_group_identities` is the only place that fact lives,
+which is what makes native nesting possible rather than flattening.
+
+Accounts are created as normal accounts with `ACCOUNTDISABLE` cleared or set from
+`enabled`. LDAP `modify` is a partial update: an attribute omitted from the request is
+left untouched, never cleared. That is why `managedAttributeRemoteNames` is passed — the
+connector must know which remote names it owns in order to clear one that has been
+unmapped, without touching anything it does not manage.
+
+### Entra ID
+
+Microsoft Graph v1.0, client-credentials against
+`https://login.microsoftonline.com`. Configuration: `tenantId`, `clientId`,
+`credentialSecretName`.
+
+Group membership uses `$ref` rather than a nested representation, so this connector
+receives the flattened effective set like Keycloak does.
+
+Graph's `PATCH` is a partial update with exactly the same semantics as LDAP `modify`,
+confirmed against Microsoft's own "Update user" documentation — so the same managed-name
+handling applies.
+
+Throttling: up to 4 retries honouring `Retry-After`, capped at a 30s wait, with a 2s
+fallback when no header is present. Tokens are cached with a 10s expiry safety margin.
+
+### Google Workspace
+
+Admin SDK Directory API, service account with **domain-wide delegation**.
+Configuration: `impersonatedAdminEmail` (the real Workspace admin the service account
+acts as), `domain`, and `credentialSecretName` naming the variable that holds the
+**full downloaded service-account key JSON** — not a bare private key.
+
+Scopes requested: `admin.directory.user`, `admin.directory.group`,
+`admin.directory.group.member`.
+
+`users.update` is a partial update ("fields set to null will be cleared"), the same
+shape as Graph and LDAP. Throttling matches Entra's: 4 retries, 30s cap, honouring
+quota-exceeded reasons.
+
+### Mail server
+
+The one target that is not a general-purpose directory. Configuration: `baseUrl` and
+`tokenSecretName`.
+
+It addresses a principal by **this system's own `users.id`** —
+`PUT /provisioning/identities/{external_id}` where that key is our uuid. Keying on the
+address is explicitly rejected by the counterpart's spec: keying on an immutable id is
+what makes a changed email a *rename* of an existing mailbox rather than an orphan plus
+a new empty one.
+
+It receives the full `status`, not just `enabled`, because only `deactivated` may stamp
+`deactivated_at` and start the retention clock. A suspension must never do that.
+
+Cross-host transport is documented in [11 — Operations](11-operations.md#mail-server-over-a-separate-host).
+
+Contract check:
+
+```bash
+MAIL_SERVER_BASE_URL=... MAIL_SMOKE_EMAIL=someone@a-hosted-domain \
+  pnpm --filter @idm/api smoke:mail
+```
+
+`MAIL_SMOKE_EMAIL` must be in a domain the mail server **already hosts**; it never
+auto-creates domains.
+
+### Echo
+
+An in-repo target that exercises the entire spine — registry, per-target dispatch,
+secret resolution, correlation writes — without any vendor protocol. It is a genuine
+`outbox_target` citizen, not a test-only bypass: the console's own end-to-end test
+configures it, dry-runs it, applies, and watches health go green through exactly the
+same code path AD and Entra use.
+
+## Enabling a target — the order matters
+
+1. **Configure** it (config + credential variable **name** + blast-radius settings).
+   Nothing has fanned out yet, because it is still disabled.
+2. **Set the `CONNECTOR_*` environment variable** on the host and restart the service.
+3. **Add attribute mappings.** Nothing propagates without them — absence of a row is the
+   default-deny.
+4. **Check health.** `not_configured` and `disabled` never attempt a live check;
+   `failing` tells you what went wrong.
+5. **Dry run** — `POST /connector-targets/:target/reconcile` with `dryRun: true`, or the
+   console's Dry run tab. Nothing is written anywhere. Read the plan.
+6. **Enable.** From now on, every mutation fans out to this target.
+7. **Apply a reconcile** to bring the existing population into line.
+
+Enabling before dry-running means the next mutation fans out to a target you have not
+proven you can reach.
+
+## Secrets
+
+`connector_targets.config` stores a secret's **name**, never its value. The value is
+resolved from the environment **at the point of use**, every time:
+
+- never cached beyond one call;
+- never written back to any table;
+- never returned by any endpoint;
+- never logged, and never included in an error message or stack trace.
+
+`resolveSecret` is the only function permitted to read one, and a connector may only
+resolve variables matching `^CONNECTOR_[A-Za-z0-9_]+$`. See
+[02 — Architecture](02-architecture.md#the-connector-secret-rule) for why that namespace
+is a security boundary rather than a convention.
+
+Two distinct failures:
+
+| Error | Meaning |
+|---|---|
+| `MissingSecretError` | The named variable is unset or empty. Set it and restart. |
+| `ForbiddenSecretNameError` | The name is outside the `CONNECTOR_*` namespace. Rename the variable. |
+
+An empty string counts as unset — `FOO=` in a `.env` file is almost always an accident,
+and treating it as present would let a connector "successfully" authenticate with
+nothing.
+
+## Health
+
+`GET /connector-targets` returns a health status per target:
+
+| Status | Live check? | Meaning |
+|---|---|---|
+| `not_configured` | no | No row. Nothing to reach. |
+| `disabled` | no | Configured but deliberately off. |
+| `failing` | yes | The check failed; `healthDetail` says why. |
+| `never_synced` | yes | Check passed, but nothing has ever synced successfully. |
+| `healthy` | yes | Check passed **and** there is a proven track record. |
+
+Five states, not three, because "configured but never successfully synced" must not
+read as healthy.
+
+`healthDetail` is guaranteed free of resolved secret values by the connector interface's
+own contract, proven by a sentinel-value test through this endpoint specifically.
+
+## Retries and dead letters
+
+| Setting | Value |
+|---|---|
+| Max attempts | 8 |
+| Backoff | exponential, base 2s, ceiling 10 min, jittered |
+| Idle poll | 5s |
+
+After the last attempt the event is **dead-lettered** (`status = 'failed'`) and appears
+at `GET /outbox/dead-letters` and in the console.
+
+Dead letters are **not retried over HTTP** — deliberately. Fix the cause, then run a
+reconciliation. That keeps "retry" from becoming an un-audited way to re-trigger
+arbitrary outbound calls.
+
+## Reconciliation and the blast-radius guard
+
+```bash
+pnpm --filter @idm/api reconcile                              # Keycloak drift
+pnpm --filter @idm/api target-reconcile <target>              # DRY RUN (default)
+pnpm --filter @idm/api target-reconcile <target> --apply
+pnpm --filter @idm/api target-reconcile <target> --apply --force
+```
+
+A run **halts** if it would mutate more than `blastRadiusThreshold` percent of the
+target's population **and** more than `blastRadiusFloor` principals in absolute terms.
+
+Both conditions are required, and the reason is scale. 20% of a ten-person directory is
+two people, so three unrelated ordinary changes — a hire, a transfer, a title change —
+would already halt a legitimate sync on a percentage alone. The floor lets a small real
+batch proceed at a scary-looking percentage while a large one still halts at a modest
+one.
+
+Defaults are 20% and 5, both tunable per target. `--force` overrides and is separately
+audited. Every reconcile invocation is audited, dry runs included, so "who ran this
+against this target, and what did it do" is always answerable.
+
+## Adding a new target
+
+1. Add the value to the `outbox_target` **and** `external_identity_system` pgEnums, in a
+   migration. Do **not** seed a `connector_targets` row in that same migration — Postgres
+   forbids using an enum value in the transaction that added it.
+2. Add it to `ALL_CONNECTOR_TARGETS` in `connectors/connector.ts`. That array is the
+   single source of truth; the union derives from it, and
+   `connector-target-catalog.spec.ts` asserts it matches the pgEnum in **both**
+   directions.
+3. Write the connector implementing `DirectoryConnector` (and `DirectoryGroupConnector`
+   if it supports native nesting). Read config from the `config` object; read the
+   credential only through `resolveSecret`.
+4. Register it in `ConnectorRegistry` — widen `ImplementedConnectorTarget` and the
+   `satisfies` literal together.
+5. Add its form fields to `TARGET_CONFIG_FIELDS` in the console.
+6. Add tests, including a sentinel-value secret-leak test.
+
+A target present in the wider union but absent from the registry fails **safely** rather
+than silently.

@@ -31,7 +31,7 @@ import { OutboxWriter } from '../outbox/outbox.writer'
 import { UsersRepository } from '../users/users.repository'
 import { GroupsRepository, type Group } from './groups.repository'
 
-// noNulChar wraps every free-text field — see docs/superpowers/audit-
+// noNulChar wraps every free-text field — see docs/archive/audits/audit-
 // injection.md's HIGH "JSON-escaped NUL" finding and safe-string.ts's own
 // doc comment.
 const createGroupBodySchema = z
@@ -109,7 +109,7 @@ export class GroupsController {
       // or a real user in no groups) is an empty page — not the full list.
       const userId = parseId(String(query.userId))
 
-      // L-2 (docs/superpowers/audit-authz.md): the user named by ?userId=
+      // L-2 (docs/archive/audits/audit-authz.md): the user named by ?userId=
       // must itself be reachable under user:read before their membership is
       // disclosed — otherwise this filter is an oracle: a Sales admin could
       // confirm an Engineering user's existence AND membership just by
@@ -176,7 +176,7 @@ export class GroupsController {
 
   /**
    * A group created with no `orgUnitId` is GLOBAL (decision 1). Superseded
-   * by finding M-2 (docs/superpowers/audit-authz.md): this method used to
+   * by finding M-2 (docs/archive/audits/audit-authz.md): this method used to
    * skip `assertCanIn` entirely for that case, on the reasoning that decision
    * 1 already lets any actor holding `group:update`/`group:manage_members`
    * anywhere freely manage an EXISTING global group, so letting any actor
@@ -310,7 +310,7 @@ export class GroupsController {
    * naturally includes its membership history.
    *
    * `addMember`, below, is the one exception to "the member is never
-   * scope-checked" (finding M-2, docs/superpowers/audit-authz.md): ADDING a
+   * scope-checked" (finding M-2, docs/archive/audits/audit-authz.md): ADDING a
    * member is what actually confers access (`SyncWorker` pushes membership
    * into real Keycloak groups — a downstream authorization primitive), so
    * the user being added must be reachable under `group:manage_members`
@@ -412,7 +412,7 @@ export class GroupsController {
    * transaction — no edge is inserted and no audit row is written, and
    * `DomainExceptionFilter` maps `CYCLE_DETECTED` to 409.
    *
-   * Finding M-1 (docs/superpowers/audit-authz.md): `requireGroup` above
+   * Finding M-1 (docs/archive/audits/audit-authz.md): `requireGroup` above
    * narrows only against the PARENT (`id`) — this is the one membership
    * mutation where that is not the whole scope question, because nesting
    * pulls an entire out-of-scope GROUP (and everything reachable under it)
@@ -524,7 +524,7 @@ export class GroupsController {
    *
    * `db` is forwarded into `assertCanIn` below, not just into
    * `this.groups.findById` — this is finding C1
-   * (docs/superpowers/audit-integrity.md): loading the group ON `tx` but
+   * (docs/archive/audits/audit-integrity.md): loading the group ON `tx` but
    * then checking scope against the POOL is exactly the bug the audit
    * reproduced through this method ("`requireGroup(..., tx)` loads the row
    * on `tx` but then calls `engine.assertCanIn` on the pool"), and it is
@@ -548,7 +548,7 @@ export class GroupsController {
       return group
     }
 
-    // GLOBAL group (orgUnitId === null). Finding M-2 (docs/superpowers/
+    // GLOBAL group (orgUnitId === null). Finding M-2 (docs/archive/audits/
     // audit-authz.md): decision 1's ORIGINAL rule — visible to and writable
     // by any actor holding `action` at ANY scope — is left exactly as-is for
     // READS (`group:read`; the default above): any scope holder may still

@@ -245,7 +245,7 @@ describe('GET /users', () => {
   })
 
   // Milestone 8, Task 2: GET /users had no text search before this — only
-  // status/orgUnitId, which cannot do PRODUCT.md's #1 job ("find a person
+  // status/orgUnitId, which cannot do docs/product-brief.md's #1 job ("find a person
   // fast... search that survives hundreds of rows") on their own.
   describe('search', () => {
     it('matches by username substring, case-insensitively, and narrows total to match', async () => {

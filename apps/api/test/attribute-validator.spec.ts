@@ -66,7 +66,7 @@ describe('validateAttributes', () => {
     })
   })
 
-  // docs/superpowers/audit-injection.md HIGH finding: a JSON-escaped NUL is
+  // docs/archive/audits/audit-injection.md HIGH finding: a JSON-escaped NUL is
   // legal JSON and passed every check that existed pre-fix, only failing
   // once it reached Postgres (a jsonb-stored attribute value) as a raw,
   // unmapped 500.

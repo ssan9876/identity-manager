@@ -48,7 +48,7 @@ const isoDateSchema = z
 // noNulChar wraps every free-text field below (never orgUnitId/managerId,
 // already UUID-constrained, or startDate/endDate, already ISO-date-regex-
 // constrained — neither shape can contain a NUL and pass) — see
-// docs/superpowers/audit-injection.md's HIGH "JSON-escaped NUL" finding and
+// docs/archive/audits/audit-injection.md's HIGH "JSON-escaped NUL" finding and
 // safe-string.ts's own doc comment for why this must be rejected here,
 // before a row can ever reach Postgres.
 const shapeSchema = z.object({

@@ -244,7 +244,7 @@ describe('LifecycleJob (Milestone 7, Task 7)', () => {
   })
 
   // =====================================================================
-  // Finding M5 (docs/superpowers/audit-integrity.md): a `pending` leaver
+  // Finding M5 (docs/archive/audits/audit-integrity.md): a `pending` leaver
   // (end_date passed before ever being activated) used to be silently
   // skipped, forever, on EVERY run — `pending -> deactivated` was not a
   // legal transition, so `changeStatus` threw `InvalidTransitionError`,

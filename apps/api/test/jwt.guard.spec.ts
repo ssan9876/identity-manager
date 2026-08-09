@@ -149,7 +149,7 @@ describe('JwtGuard rejects validly-signed tokens missing required identity claim
       .expect(401)
   })
 
-  // Finding M-3 (docs/superpowers/audit-authz.md): `preferred_username` was
+  // Finding M-3 (docs/archive/audits/audit-authz.md): `preferred_username` was
   // cast (`as string | undefined`) rather than validated, and `!username`
   // only rejects FALSY values — a non-string, truthy claim sailed straight
   // through into PermissionEngine.resolveActor's query, where Drizzle's

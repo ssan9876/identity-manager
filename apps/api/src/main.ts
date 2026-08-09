@@ -26,7 +26,7 @@ async function bootstrap(): Promise<void> {
   const env = loadEnv(process.env)
 
   // `bodyParser: false` + explicit `useBodyParser` calls below — finding M6
-  // (docs/superpowers/audit-integrity.md): letting Nest register its OWN
+  // (docs/archive/audits/audit-integrity.md): letting Nest register its OWN
   // default parser first (the ordinary `NestFactory.create(AppModule)` path
   // every other controller in this codebase implicitly relied on) leaves
   // express's accidental 100 KiB default in place; a SECOND parser

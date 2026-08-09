@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **Spec:** `docs/superpowers/specs/2026-08-07-mail-server-connector-implementation-design.md`. Counterpart contract: `D:\mail-server\docs\superpowers\specs\2026-08-06-idm-sync-design.md`.
+- **Spec:** `docs/archive/specs/2026-08-07-mail-server-connector-implementation-design.md`. Counterpart contract: `D:\mail-server\docs\superpowers\specs\2026-08-06-idm-sync-design.md`.
 - **No credential may ever appear in any payload this connector builds.** The counterpart schema is `extra="forbid"` and would reject one; assert it rather than assume it.
 - **Never log or persist a resolved secret.** Secrets resolve by name through `connectors/secrets.ts` `resolveSecret` only.
 - **A connector must never open its own database connection.** Every method runs inside `SyncWorker`'s open transaction; a second pool connection reproduces the pool-exhaustion deadlock guarded by `test/pool-exhaustion.spec.ts`.
@@ -807,7 +807,7 @@ export type FetchLike = (url: string, init: RequestInit) => Promise<Response>
  * The mail-server target — provisions mailboxes and mail-admin records on
  * the counterpart system at `D:\mail-server`, whose own receiving half is
  * already built and merged (its `feat/idm-sync-phase1`). Design:
- * docs/superpowers/specs/2026-08-07-mail-server-connector-implementation-design.md.
+ * docs/archive/specs/2026-08-07-mail-server-connector-implementation-design.md.
  *
  * NEVER sends a credential, in either direction. There is none to send —
  * Keycloak owns every credential here and does not release them — and the
@@ -1576,7 +1576,7 @@ git commit -m "feat(attributes): seed the four mail attribute definitions"
 
 **Files:**
 - Create: `D:\mail-server\docker\nginx\templates\20-provisioning.conf.template`
-- Create: `docs/deployment/mail-server-transport.md`
+- Create: `docs/11-operations.md`
 - Modify: `.env.example` (document `CONNECTOR_MAIL_SERVER_TOKEN`)
 
 **Interfaces:**
@@ -1629,7 +1629,7 @@ limit_req_zone $binary_remote_addr zone=provisioning:1m rate=30r/s;
 
 - [ ] **Step 2: Write the runbook**
 
-Create `docs/deployment/mail-server-transport.md` covering, in order: generating a WireGuard keypair on each host; the VPS as server (it holds the public IP) and this host as a peer dialing out with `PersistentKeepalive`; binding the nginx template above to the VPS's tunnel address; issuing a provisioning service token on the mail server (`POST /api/v1/idm/tokens`, superadmin JWT, raw token returned exactly once); putting that token in this repo's environment under `CONNECTOR_MAIL_SERVER_TOKEN`; and inserting the `connector_targets` row:
+Create `docs/11-operations.md` covering, in order: generating a WireGuard keypair on each host; the VPS as server (it holds the public IP) and this host as a peer dialing out with `PersistentKeepalive`; binding the nginx template above to the VPS's tunnel address; issuing a provisioning service token on the mail server (`POST /api/v1/idm/tokens`, superadmin JWT, raw token returned exactly once); putting that token in this repo's environment under `CONNECTOR_MAIL_SERVER_TOKEN`; and inserting the `connector_targets` row:
 
 ```sql
 INSERT INTO connector_targets (target, enabled, config)
@@ -1733,7 +1733,7 @@ Expected: three lines — health ok, upsert accepted, re-push accepted. A `422` 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add docs/deployment/mail-server-transport.md .env.example apps/api/scripts/smoke-mail.ts apps/api/package.json
+git add docs/11-operations.md .env.example apps/api/scripts/smoke-mail.ts apps/api/package.json
 git commit -m "feat(smoke): prove the mail provisioning contract against a real server"
 ```
 

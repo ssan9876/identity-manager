@@ -29,7 +29,7 @@ function parseOptionalTarget(raw: unknown): OutboxTarget | undefined {
 
 /**
  * Operator-facing visibility into the outbox's dead letters — the second
- * half of finding H3 (docs/superpowers/audit-integrity.md): the read model
+ * half of finding H3 (docs/archive/audits/audit-integrity.md): the read model
  * fix in `SyncStateRepository` closes the "looks synced, isn't" hole for a
  * REMOVAL specifically, but the audit's own fix direction separately calls
  * out that "there is no operator-facing view of dead letters at all" —

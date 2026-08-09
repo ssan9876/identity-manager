@@ -125,7 +125,7 @@ function TargetsTab() {
 /**
  * `/connectors` — Milestone 14, Task 9, the connector admin console's own
  * landing page. Two tabs, not two nav items — the same reasoning AuditPage
- * already established for Log/Dead letters (DESIGN.md's left nav is a fixed
+ * already established for Log/Dead letters (docs/design-system.md's left nav is a fixed
  * list with no slot for a second "Connectors" destination, and both tabs
  * here are gated behind the SAME `connector:read` permission): "Targets"
  * (enable/disable, health, last successful sync — links out to each

@@ -1,5 +1,5 @@
 /**
- * Secret resolution — decision 4 (docs/superpowers/specs/2026-08-06-
+ * Secret resolution — decision 4 (docs/archive/specs/2026-08-06-
  * directory-connectors-design.md): `connector_targets.config` stores a
  * secret's NAME, never its value. The value resolves from the environment
  * AT THE POINT OF USE, every time — never cached beyond one call, never

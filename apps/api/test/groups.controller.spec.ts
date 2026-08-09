@@ -61,7 +61,7 @@ describe('GET /groups', () => {
         // Task 1 adds OutboxWriter alongside it for the same reason.
         AuditWriter,
         OutboxWriter,
-        // Finding M-2/L-2 fix (docs/superpowers/audit-authz.md):
+        // Finding M-2/L-2 fix (docs/archive/audits/audit-authz.md):
         // GroupsController now loads the target user for the ?userId= scope
         // check and for addMember's member-scope check — required here
         // purely for DI resolution; this suite's actor is UNRESTRICTED_ACTOR

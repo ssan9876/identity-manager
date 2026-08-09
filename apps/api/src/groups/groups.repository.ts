@@ -242,7 +242,7 @@ export class GroupsRepository {
   // `db` is an OPTIONAL trailing handle, defaulting to the injected pooled
   // connection (`this.db`) - same contract as create/findById/update above.
   // Added for SyncWorker.syncEffectiveGroups (finding C1,
-  // docs/superpowers/audit-integrity.md), which now threads its open
+  // docs/archive/audits/audit-integrity.md), which now threads its open
   // transaction through here instead of defaulting to the pool.
   async listByIds(
     ids: string[],
@@ -333,7 +333,7 @@ export class GroupsRepository {
    * above. Widened for Milestone 11, Task 6's `SyncWorker.
    * buildDesiredGroupMemberExternalIds` (sync.worker.ts), which threads its
    * open transaction through here instead of defaulting to the pool —
-   * finding C1 (docs/superpowers/audit-integrity.md), the same reason
+   * finding C1 (docs/archive/audits/audit-integrity.md), the same reason
    * `listEffectiveUserMembers`/`listEffectiveGroupsForUser` were widened in
    * Milestone 4.
    */
@@ -498,7 +498,7 @@ export class GroupsRepository {
    * `db` is an OPTIONAL trailing handle, defaulting to the injected pooled
    * connection (`this.db`) - same contract as create/findById/update above.
    * Added for SyncWorker.reconcileGroup/reconcileMembership (finding C1,
-   * docs/superpowers/audit-integrity.md), which now thread their open
+   * docs/archive/audits/audit-integrity.md), which now thread their open
    * transaction through here instead of defaulting to the pool.
    *
    * `ORDER BY user_id` IS A DEADLOCK GUARD, not cosmetics (security audit).

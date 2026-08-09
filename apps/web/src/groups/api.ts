@@ -50,7 +50,7 @@ const ALL_GROUPS_PAGE_LIMIT = 100
 // Same ceiling and reasoning as org-units/api.ts's fetchAllOrgUnits: a
 // generous, not tight, bound purely so a pathological response can never
 // spin this loop forever — reference-scale data for "a single
-// organisation" (PRODUCT.md), not a collection expected to grow unbounded.
+// organisation" (docs/product-brief.md), not a collection expected to grow unbounded.
 const ALL_GROUPS_MAX_PAGES = 100
 
 /**

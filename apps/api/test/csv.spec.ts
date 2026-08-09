@@ -69,7 +69,7 @@ describe('parseCsv', () => {
     expect(result.rows).toHaveLength(2)
   })
 
-  // docs/superpowers/audit-injection.md HIGH finding: on an ordinary {},
+  // docs/archive/audits/audit-injection.md HIGH finding: on an ordinary {},
   // `row[header] = value` for header === '__proto__' invokes
   // Object.prototype's __proto__ ACCESSOR SETTER instead of creating an own
   // property — a silent no-op for a string value — so the cell's value

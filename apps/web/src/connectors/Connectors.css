@@ -1,7 +1,7 @@
 /**
  * Milestone 14, Task 9 — the connector admin console. Every value here is a
  * token from styles/tokens.css, consumed the same way every other feature's
- * own CSS file already does (DESIGN.md: "no ad-hoc colour or size").
+ * own CSS file already does (docs/design-system.md: "no ad-hoc colour or size").
  */
 
 .connectors-page__intro {
@@ -109,7 +109,7 @@
 
 /* Same visual language as .import-page__safety-note (ImportPage.css) —
    informational, never a warning: surface-sunken + border + muted ink,
-   never --warn/--danger, which DESIGN.md reserves for actual exceptions.
+   never --warn/--danger, which docs/design-system.md reserves for actual exceptions.
    This banner states an architectural FACT (no secret is ever stored
    here), not a caution. */
 .connector-config-form__secret-note {

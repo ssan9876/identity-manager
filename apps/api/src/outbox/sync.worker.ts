@@ -389,7 +389,7 @@ export class SyncWorker implements OnApplicationShutdown {
    * connector has to separately re-earn.
    *
    * FIRST ACTION, before any read: takes a per-user advisory lock scoped to
-   * the CALLER's transaction — finding H2 (docs/superpowers/audit-
+   * the CALLER's transaction — finding H2 (docs/archive/audits/audit-
    * integrity.md): `OutboxRepository.claimNext` enforces strict ordering
    * only per `(aggregate_type, aggregate_id)`, but a `user`, a `group` and a
    * `membership` event are three DIFFERENT aggregates that all fan into
@@ -552,7 +552,7 @@ export class SyncWorker implements OnApplicationShutdown {
     // task's own report — the identical reason this stayed lazy rather than
     // unconditional in the first place). Both reads go through `tx` — never
     // a second pool connection while this worker's own transaction is open
-    // (finding C1, docs/superpowers/audit-integrity.md).
+    // (finding C1, docs/archive/audits/audit-integrity.md).
     const mappings = await this.attributeTargetMappingsRepository.listForTarget(target, tx)
     const needsOrgUnit = target === 'active_directory' || mappings.some((mapping) => mapping.source === 'core')
     const orgUnit = needsOrgUnit ? await this.orgUnitsRepository.findById(user.orgUnitId, tx) : null
@@ -666,7 +666,7 @@ export class SyncWorker implements OnApplicationShutdown {
    * target.
    *
    * Takes `tx` and threads it into both `GroupsRepository` reads below —
-   * finding C1 (docs/superpowers/audit-integrity.md): this method runs from
+   * finding C1 (docs/archive/audits/audit-integrity.md): this method runs from
    * inside `reconcileUser`, itself always inside the worker's own open
    * transaction (the outer claim transaction, or the nested savepoint for a
    * fanned-out call — see `runOnce`'s doc comment). Defaulting either read
@@ -1003,7 +1003,7 @@ export class SyncWorker implements OnApplicationShutdown {
    *
    * Every read below threads `tx` — this runs from inside `reconcileAdStyleGroup`,
    * itself always inside the worker's own open transaction (finding C1,
-   * docs/superpowers/audit-integrity.md) — never a second pool connection.
+   * docs/archive/audits/audit-integrity.md) — never a second pool connection.
    */
   private async buildDesiredGroupMemberExternalIds(
     tx: DbHandle,

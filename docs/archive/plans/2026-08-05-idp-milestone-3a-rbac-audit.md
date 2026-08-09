@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript, NestJS 10, Drizzle ORM, Postgres 16 (`ltree`, triggers, recursive CTEs), Zod, Vitest, Testcontainers.
 
-**Source spec:** `docs/superpowers/specs/2026-08-04-identity-provider-core-design.md`
+**Source spec:** `docs/archive/specs/2026-08-04-identity-provider-core-design.md`
 **Builds on:** Milestone 1 (`f00a61c`) and Milestone 2 (`a391570`), both merged to `master`.
 
 ## Global Constraints

@@ -11,7 +11,7 @@ import { bootstrapAdmin, DEFAULT_BOOTSTRAP_USERNAME } from './bootstrap-admin'
  * deliberately kept out of the Nest DI graph and unreachable via HTTP.
  * Mirrors db/migrate-cli.ts, outbox/reconcile-cli.ts and
  * jml/lifecycle-cli.ts exactly: a plain `tsx` script, connected as the
- * RUNTIME role (finding H1, docs/superpowers/audit-integrity.md) — every
+ * RUNTIME role (finding H1, docs/archive/audits/audit-integrity.md) — every
  * write this makes (create a user, activate it, grant a role) is ordinary
  * DML the runtime role already holds; this is operationally part of "the
  * application," not a schema-owning migration step.

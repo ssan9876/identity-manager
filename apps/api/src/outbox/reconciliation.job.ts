@@ -182,7 +182,7 @@ export class ReconciliationJob {
   /**
    * Compares Keycloak's CURRENT representation of `user` against desired
    * state, reporting every axis that differs, ALONGSIDE the raw observed
-   * Keycloak state itself (`observed`) — finding M2 (docs/superpowers/
+   * Keycloak state itself (`observed`) — finding M2 (docs/archive/audits/
    * audit-integrity.md): `enqueueRepair` needs it verbatim as the audit
    * row's `before`, so it is threaded back out here rather than re-fetched
    * a second time. Returns `{ reasons: ['missing_in_keycloak'], observed:
@@ -254,7 +254,7 @@ export class ReconciliationJob {
    * `user`-aggregate event, never replaying this payload.
    *
    * ALSO writes an audit row, in the SAME transaction as the outbox event —
-   * finding M2 (docs/superpowers/audit-integrity.md): binding constraint 7
+   * finding M2 (docs/archive/audits/audit-integrity.md): binding constraint 7
    * requires every mutation be "audited AND outboxed in one transaction,"
    * and automated repair is still a change to identity state (the measured
    * repro: a suspended user manually re-enabled directly in Keycloak,

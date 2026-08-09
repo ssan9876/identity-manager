@@ -31,7 +31,7 @@ import {
  * `disabled`/`not_configured` (nothing to check) and `healthy` (checked and
  * has a proven track record) — the live `health()` check passed (the target
  * IS reachable and authenticates right now), but no principal has EVER
- * actually landed there, which is exactly the gap PRODUCT.md's own #2
+ * actually landed there, which is exactly the gap docs/product-brief.md's own #2
  * requirement calls "the worst outcome this product can produce" applied to
  * a whole target rather than one user.
  */

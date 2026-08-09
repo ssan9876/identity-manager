@@ -3,10 +3,10 @@
  * JS (useNavMode, shell/breakpoints.ts) via the .shell--full/--rail/
  * --disclosure modifier classes below — not a parallel set of @media
  * queries — so there is exactly one place (breakpoints.ts) that knows
- * where DESIGN.md's two nav breakpoints (1100px, 780px) are.
+ * where docs/design-system.md's two nav breakpoints (1100px, 780px) are.
  *
  * Grid, not flexbox, for the outer shell: a header row plus a nav-column/
- * content-column arrangement below it is genuinely 2D (DESIGN.md: "Grid
+ * content-column arrangement below it is genuinely 2D (docs/design-system.md: "Grid
  * for 2D. No Grid where flex-wrap suffices").
  */
 
@@ -221,7 +221,7 @@
 .nav-link:active {
   background: var(--border);
 }
-/* Current selection -> --primary (DESIGN.md: one of the three sanctioned
+/* Current selection -> --primary (docs/design-system.md: one of the three sanctioned
    uses of the brand colour, alongside primary actions and focus). */
 .nav-link--active {
   background: var(--surface-sunken);
@@ -245,7 +245,7 @@
 }
 
 /* ---------------------------------------------------------------------
- * Narrow-width disclosure — native <dialog>, per DESIGN.md ("Dropdowns
+ * Narrow-width disclosure — native <dialog>, per docs/design-system.md ("Dropdowns
  * use the native popover/<dialog> API or position: fixed — never
  * position: absolute inside an overflow container").
  * ------------------------------------------------------------------- */
@@ -274,7 +274,7 @@
   margin-bottom: var(--space-4);
 }
 
-/* Deliberately no open/close animation: DESIGN.md's own suggested
+/* Deliberately no open/close animation: docs/design-system.md's own suggested
    reduced-motion fallback is "typically ... an instant transition", and
    the cross-browser semantics of animating a <dialog>'s open/close state
    (@starting-style + allow-discrete) are new enough to be a real
@@ -283,7 +283,7 @@
    managed on every evergreen browser without any of that. */
 
 /* ---------------------------------------------------------------------
- * Content region — DESIGN.md: max-width 1440px, 24px gutters.
+ * Content region — docs/design-system.md: max-width 1440px, 24px gutters.
  * ------------------------------------------------------------------- */
 
 .shell__content {

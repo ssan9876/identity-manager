@@ -89,7 +89,7 @@ function instrumentPoolCheckouts(pool: Pool) {
 }
 
 /**
- * Regression coverage for docs/superpowers/audit-integrity.md finding C1
+ * Regression coverage for docs/archive/audits/audit-integrity.md finding C1
  * (CRITICAL): 11+ concurrent `PATCH /users/:id` used to permanently deadlock
  * the API process. `UsersController.update` opens `db.transaction(...)`
  * (one pooled connection for the whole callback) and then, inside it, called
@@ -108,11 +108,11 @@ function instrumentPoolCheckouts(pool: Pool) {
  * (`ctx.connectionUri`) so the app under test experiences the exact pool
  * shape a real deployment does. `connectionTimeoutMillis` is set shorter
  * than production's default (3s vs 5s) purely so the COUNTERFACTUAL run
- * (Part 1 reverted — see docs/superpowers/fix-wave-a-report.md) fails
+ * (Part 1 reverted — see docs/archive/audits/fix-wave-a-report.md) fails
  * within this file's own per-test timeout instead of needing a longer one;
  * it is still a genuinely finite value, exercising the same code path.
  */
-describe('pool exhaustion (finding C1, docs/superpowers/audit-integrity.md)', () => {
+describe('pool exhaustion (finding C1, docs/archive/audits/audit-integrity.md)', () => {
   const ctx = withTestDatabase()
   let app: INestApplication
   let appPool: Pool
@@ -220,7 +220,7 @@ describe('pool exhaustion (finding C1, docs/superpowers/audit-integrity.md)', ()
       // The headline regression assertion: on the pre-fix code this never
       // resolves at all within the test timeout below (see the
       // counterfactual run recorded in
-      // docs/superpowers/fix-wave-a-report.md) — 10 requests deadlock
+      // docs/archive/audits/fix-wave-a-report.md) — 10 requests deadlock
       // holding their transaction's one connection while starved of a
       // second, and the other 10 never even get their first.
       expect(responses.map((r) => r.status)).toEqual(Array(20).fill(200))

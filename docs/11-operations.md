@@ -1,0 +1,392 @@
+# 11 — Operations
+
+## Command reference
+
+Run from the repo root unless noted. On an installed host, prefix with the env file:
+
+```bash
+cd /opt/identity-manager
+sudo -u idm bash -c 'set -a && . .env && set +a && <command>'
+```
+
+### Workspace-level
+
+| Command | What it does |
+|---|---|
+| `pnpm setup:all` | Dev only — Compose stack, deps, env files, migrations |
+| `pnpm bootstrap:admin [username]` | Create/activate a local admin and grant global `super_admin`. Idempotent. |
+| `pnpm dev` | Run the API and console together |
+| `pnpm build` | Build both packages |
+| `pnpm typecheck` | Typecheck both packages |
+| `pnpm test` | All package tests |
+| `pnpm verify` | Full gate: typecheck → lint (if configured) → build → CSS token check → API suite |
+| `pnpm verify:quick` | Typecheck + build only — no containers |
+
+### API package (`pnpm --filter @idm/api …`)
+
+| Command | What it does |
+|---|---|
+| `db:migrate` | Apply migrations **and** provision/re-grant the runtime role |
+| `db:generate` | Generate a migration from schema changes (drizzle-kit) |
+| `reconcile` | Walk users, compare against Keycloak, report drift, enqueue corrections |
+| `target-reconcile <target> [--apply] [--force]` | Reconcile one connector target. **Dry run is the default.** |
+| `jml:lifecycle` | Apply date-driven joiner/leaver transitions and fire rules |
+| `smoke:dev` | Boot the real dev server and exercise it over HTTP |
+| `smoke:mail` | Contract check against a real mail server |
+| `e2e:cleanup` | Remove records left by the Playwright suite |
+| `start:dev` | API only, with `--watch` |
+
+### Web package (`pnpm --filter @idm/web …`)
+
+| Command | What it does |
+|---|---|
+| `dev` | Vite dev server on 5173 |
+| `build` | Typecheck + production bundle |
+| `test` | CSS design-token check |
+| `test:e2e` | Playwright suite |
+
+## Scheduled work
+
+There is **no scheduler in the process**. Both recurring jobs are on-demand scripts, so
+you own the cadence.
+
+### Lifecycle — run daily
+
+```bash
+pnpm --filter @idm/api jml:lifecycle
+```
+
+- Activates users whose `start_date` has arrived (`pending → active`).
+- Deactivates users whose `end_date` has passed.
+- Fires `start_date_reached` / `end_date_reached` rules for exactly the users it
+  transitioned.
+
+**Idempotent by construction**, not by a tracked flag: it re-derives "who is due" from
+queries whose `WHERE` clauses (`status = 'pending'`, `status <> 'deactivated'`) exclude
+anyone a prior run already handled. A second run the same day transitions nobody, writes
+no audit rows, and fires no rules.
+
+Rule-firing happens **inline** with each transition, so a user appears in that loop on
+the one run that actually transitions them — each date rule fires exactly once per user,
+ever, with no extra bookkeeping.
+
+It reports `skipped` — every due user it selected but could not transition, with a
+reason. **A clean run has an empty list.** Anything in it is a genuine race worth
+looking at.
+
+A systemd timer:
+
+```ini
+# /etc/systemd/system/idm-lifecycle.service
+[Unit]
+Description=Identity Manager lifecycle job
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=idm
+WorkingDirectory=/opt/identity-manager
+ExecStart=/bin/bash -lc 'set -a && . .env && set +a && pnpm --filter @idm/api jml:lifecycle'
+```
+
+```ini
+# /etc/systemd/system/idm-lifecycle.timer
+[Unit]
+Description=Run the Identity Manager lifecycle job daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+systemctl daemon-reload && systemctl enable --now idm-lifecycle.timer
+```
+
+### Reconciliation — run periodically, and after any incident
+
+```bash
+pnpm --filter @idm/api reconcile                          # Keycloak drift
+pnpm --filter @idm/api target-reconcile active_directory  # dry run first
+pnpm --filter @idm/api target-reconcile active_directory --apply
+```
+
+A queue cannot detect drift someone caused directly inside a target. Reconciliation is
+what catches a manually-disabled AD account or a group edited in the Keycloak console.
+
+## Monitoring
+
+### What to watch
+
+| Signal | How | Why it matters |
+|---|---|---|
+| **Dead letters** | `GET /outbox/dead-letters` | Something is not being delivered |
+| **Users with `syncState: failed`** | `GET /users?…` | Same, per person |
+| **Connector health** | `GET /connector-targets` | An enabled target that is `failing` |
+| **Outbox backlog** | `SELECT count(*) FROM outbox_events WHERE status = 'pending'` | Worker stalled or a target slow |
+| **Lifecycle skips** | Job stdout | A due transition did not happen |
+| **Service** | `systemctl status idm-api` | |
+
+A steadily growing `pending` count with no dead letters means the worker is not running
+— check `SYNC_WORKER_ENABLED` and that exactly one instance has it on.
+
+### Logs
+
+```bash
+journalctl -u idm-api -f
+journalctl -u idm-api -n 200 --no-pager
+```
+
+Secret values never appear in logs, errors or stack traces — a sentinel-value test
+enforces that.
+
+## Backup and restore
+
+Everything durable is in Postgres. Keycloak has its own state (credentials, sessions,
+realm configuration) and needs its own backup.
+
+```bash
+# Back up
+sudo -u postgres pg_dump -Fc identity_manager > idm-$(date +%F).dump
+
+# Restore into an empty database
+sudo -u postgres pg_restore -d identity_manager --clean --if-exists idm-2026-08-08.dump
+
+# Then re-assert the runtime role's grants
+sudo -u idm bash -c 'set -a && . .env && set +a && pnpm --filter @idm/api db:migrate'
+```
+
+**Always run `db:migrate` after a restore.** A restore may not carry the runtime role's
+grants; `db:migrate` re-asserts them every run. Verify:
+
+```sql
+\du idm_app
+SELECT privilege_type FROM information_schema.role_table_grants
+ WHERE grantee = 'idm_app' AND table_name = 'audit_log';
+-- expect SELECT and INSERT only
+```
+
+Note that `audit_log` is append-only, so a partial restore cannot be "corrected" by
+editing rows. Restore whole.
+
+## Rotating credentials
+
+### Runtime database password
+
+```bash
+sudo -u idm sed -i 's|^RUNTIME_DATABASE_URL=.*|RUNTIME_DATABASE_URL=postgres://idm_app:NEWPASS@localhost:5432/identity_manager|' .env
+sudo -u idm bash -c 'set -a && . .env && set +a && pnpm --filter @idm/api db:migrate'
+systemctl restart idm-api
+```
+
+`db:migrate` re-asserts the role's password from that URL — that is the whole rotation
+procedure.
+
+### Keycloak sync client secret
+
+```bash
+KEYCLOAK_URL=https://kc.example.com KC_ADMIN_USER=admin KC_ADMIN_PASS=... \
+  CONSOLE_URL=https://idm.example.com bash scripts/keycloak-setup.sh
+# put the printed secret into KEYCLOAK_ADMIN_CLIENT_SECRET in .env
+systemctl restart idm-api
+```
+
+### A connector credential
+
+Update the `CONNECTOR_*` variable and restart. Nothing is cached beyond a single call,
+but the process reads its environment at start.
+
+## Scaling out
+
+Run several API instances behind a load balancer, but set
+**`SYNC_WORKER_ENABLED=false`** on all but one. Multiple drains are technically safe
+(`FOR UPDATE SKIP LOCKED` plus per-user advisory locks), but per-`(aggregate, target)`
+ordering is enforced within a single claim query, so one drainer is the supported shape.
+
+Raise `DB_POOL_MAX` for a larger Postgres, or lower it when several instances share a
+small one.
+
+## Mail server over a separate host
+
+When the mail server runs on a public VPS and this system is internal, use a **WireGuard
+tunnel**. This is not defence in depth — it is the load-bearing control.
+
+The mail server's provisioning security argument is one sentence: *a leaked token is
+useless from outside*. That holds only because its provisioning routes are unreachable
+except on a private network, and its own spec notes that those routes carry no rate
+limiting because nginx's public block returns 404 first. Separate hosts means either
+recreating that private network or replacing the argument. WireGuard recreates it.
+
+Traffic is **outbound from this system** — it pushes, the mail server never calls back —
+so NAT on this side is fine.
+
+### 1. WireGuard
+
+The VPS is the server; this host dials out.
+
+```bash
+wg genkey | tee privatekey | wg pubkey > publickey   # on both hosts
+```
+
+```ini
+# VPS — /etc/wireguard/wg0.conf
+[Interface]
+Address = 10.8.0.1/24
+ListenPort = 51820
+PrivateKey = <vps-private-key>
+
+[Peer]
+PublicKey = <idm-public-key>
+AllowedIPs = 10.8.0.2/32
+```
+
+```ini
+# This host — /etc/wireguard/wg0.conf
+[Interface]
+Address = 10.8.0.2/24
+PrivateKey = <idm-private-key>
+
+[Peer]
+PublicKey = <vps-public-key>
+Endpoint = <vps-public-ip>:51820
+AllowedIPs = 10.8.0.1/32
+PersistentKeepalive = 25
+```
+
+`wg-quick up wg0` and `systemctl enable wg-quick@wg0` on both, then `ping -c1 10.8.0.1`
+from this host. Open `51820/udp` on the VPS firewall and **nothing else** for this.
+
+### 2. The provisioning listener
+
+Shipped in the mail-server repo as `20-provisioning.conf.template` plus the
+`docker-compose.provisioning.yml` overlay. The public server block keeps its
+`location ^~ /api/v1/provisioning { return 404; }` untouched — this is a separate
+listener, not a hole in the first one.
+
+nginx runs inside a container where the host's WireGuard address is not an interface at
+all, so it listens on a plain port and Docker restricts the address:
+
+```yaml
+services:
+  nginx:
+    ports:
+      - "${WIREGUARD_ADDRESS}:8081:8081"
+```
+
+Set `WIREGUARD_ADDRESS=10.8.0.1`, then bring the stack up **naming both files**:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.provisioning.yml up -d
+```
+
+The overlay is separate on purpose: an unset variable inside an inline port mapping
+collapses to `":8081:8081"`, which publishes provisioning on **every** interface,
+silently. A stack that never opts in cannot make that mistake.
+
+### 3. Verify the binding — every time
+
+```bash
+ss -lntp | grep -E ':(8081|8000|5432|6379)'
+```
+
+`8081` must show the tunnel address, never `0.0.0.0`. **Check the other three too, and
+expect them to be absent.** `docker-compose.override.yml` is a development file Compose
+auto-loads whenever no `-f` flags are given, and it publishes Postgres, Redis and the
+backend directly. Naming `-f` files suppresses it, which is why the command above is
+written that way and not as a bare `docker compose up -d`.
+
+### 4. This side
+
+```
+CONNECTOR_MAIL_SERVER_TOKEN=<issued once by the mail server, stored there as a hash>
+```
+
+Then configure the `mail_server` target with `baseUrl` pointing at the tunnel address
+and `tokenSecretName=CONNECTOR_MAIL_SERVER_TOKEN`. Dry-run before enabling, and confirm
+the contract:
+
+```bash
+MAIL_SERVER_BASE_URL=http://10.8.0.1:8081 MAIL_SMOKE_EMAIL=someone@a-hosted-domain \
+  pnpm --filter @idm/api smoke:mail
+```
+
+## Incident playbooks
+
+### "Nobody can sign in"
+
+1. `systemctl status idm-api` and `journalctl -u idm-api -n 50`.
+2. Is Keycloak up and its certificate valid? The API fetches JWKS over TLS; an expired
+   or untrusted certificate produces 401s on perfectly valid tokens.
+3. Did the console's URL change? `idm-console`'s `redirectUris` must match. Re-run
+   `keycloak-setup.sh`.
+4. Is the console being served over plain HTTP on a non-localhost host? Then the sign-in
+   button does nothing at all — see [05 — Installation](05-installation.md#tls--required-not-optional).
+
+### "One admin is locked out"
+
+`pnpm bootstrap:admin <their-keycloak-username>` — idempotent, and it grants global
+`super_admin`. Their Keycloak account must already exist.
+
+### "A deactivation did not take effect downstream"
+
+The local record and Keycloak revocation are independent of the queue. Check:
+
+1. `GET /users/:id` — is `status` actually `deactivated`?
+2. `GET /outbox/dead-letters?target=…` — did the event dead-letter?
+3. Fix the cause, then `target-reconcile <target> --apply`.
+
+The synchronous Keycloak revocation runs on the deactivate request itself; if it failed,
+the reconcile pass re-asserts `enabled` every time it runs.
+
+### "A reconcile halted on the blast-radius guard"
+
+That is the guard working. Read the report: `populationSize`, the change count, and the
+configured threshold and floor.
+
+- If the plan is **correct** (a genuinely large legitimate change), re-run with
+  `--force`. It is audited.
+- If the plan is **wrong**, do not force it. A large unexpected diff usually means a
+  configuration mistake — wrong `baseDN`, wrong domain, or an attribute mapping change
+  that reinterpreted every record.
+
+### "The outbox is backing up"
+
+1. Is the worker running? `SYNC_WORKER_ENABLED` should be `true` on exactly one
+   instance.
+2. `SELECT target, status, count(*) FROM outbox_events GROUP BY 1, 2;` — which target?
+3. Check that target's health. A slow or failing target with retries backs up its own
+   stream but must not block others; ordering is per `(aggregate, target)`.
+4. Disabling a target stops **new** fan-out to it. It does not clear the existing
+   backlog.
+
+## Useful queries
+
+```sql
+-- Outbox by target and status
+SELECT target, status, count(*) FROM outbox_events GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- Dead letters with their errors
+SELECT id, aggregate_type, aggregate_id, target, attempts, left(last_error, 120)
+  FROM outbox_events WHERE status = 'failed' ORDER BY id DESC LIMIT 50;
+
+-- Everything one import commit did
+SELECT action, resource_type, resource_id, created_at
+  FROM audit_log WHERE batch_id = '…' ORDER BY id;
+
+-- Who holds what, where
+SELECT u.username, ra.role_key, coalesce(ou.path::text, '(global)') AS scope
+  FROM role_assignments ra
+  JOIN users u ON u.id = ra.user_id
+  LEFT JOIN org_units ou ON ou.id = ra.scope_org_unit_id
+ ORDER BY u.username;
+
+-- Correlation state per target
+SELECT system, sync_state, count(*) FROM external_identities GROUP BY 1, 2;
+
+-- Users due for activation today
+SELECT id, username, start_date FROM users
+ WHERE status = 'pending' AND start_date <= current_date;
+```

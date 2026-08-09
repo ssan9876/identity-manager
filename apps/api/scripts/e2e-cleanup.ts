@@ -16,7 +16,7 @@ import { createDbClient } from '../src/db/client'
  * database the same way `scripts/smoke-dev.ts`'s own `seedActor().cleanup()`
  * already does for its one smoke-test fixture — raw `DELETE ... WHERE id =
  * $1`, connected as the RUNTIME role (`RUNTIME_DATABASE_URL` — finding H1,
- * docs/superpowers/audit-integrity.md) — generalized here to a whole batch
+ * docs/archive/audits/audit-integrity.md) — generalized here to a whole batch
  * of ids collected across an entire E2E run instead of one hand-tracked
  * fixture.
  *

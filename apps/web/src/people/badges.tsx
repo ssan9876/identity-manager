@@ -1,7 +1,7 @@
 import type { SyncState, UserStatus } from './api'
 
 /**
- * Status/sync badges — DESIGN.md: "word + optional shape, never colour
+ * Status/sync badges — docs/design-system.md: "word + optional shape, never colour
  * alone. Active is uncoloured." Both badges always render their word as
  * plain text in --ink (see styles/components.css's file header for why:
  * --warn text directly on --warn-bg measures under the 4.5:1 body-text
@@ -16,9 +16,9 @@ const STATUS_WORD: Record<UserStatus, string> = {
   deactivated: 'Deactivated',
 }
 
-// 'active' is the uncoloured norm (DESIGN.md). 'pending'/'suspended' are
-// reversible, in-flight states -> warn (DESIGN.md's own example: "pending,
-// sync in flight"). 'deactivated' is terminal -> danger (DESIGN.md's own
+// 'active' is the uncoloured norm (docs/design-system.md). 'pending'/'suspended' are
+// reversible, in-flight states -> warn (docs/design-system.md's own example: "pending,
+// sync in flight"). 'deactivated' is terminal -> danger (docs/design-system.md's own
 // example: "deactivate, destructive, sync failed").
 const STATUS_VARIANT: Record<UserStatus, 'neutral' | 'warn' | 'danger'> = {
   pending: 'warn',
@@ -49,9 +49,9 @@ export const SYNC_WORD: Record<SyncState, string> = {
   failed: 'Sync failed',
 }
 
-// 'synced' (healthy) mirrors 'active' — the norm, uncoloured. DESIGN.md's
+// 'synced' (healthy) mirrors 'active' — the norm, uncoloured. docs/design-system.md's
 // own examples name both the other two directly: "pending, sync in
-// flight" -> warn; "sync failed" -> danger. PRODUCT.md's #2 requirement
+// flight" -> warn; "sync failed" -> danger. docs/product-brief.md's #2 requirement
 // ("a user who looks healthy while their group sync dead-lettered is the
 // worst outcome this product can produce") is exactly why this is its own
 // badge, separate from account status, rather than folded into it.

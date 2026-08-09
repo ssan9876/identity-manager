@@ -1,7 +1,7 @@
 import type { ConnectorHealthStatus } from './api'
 
 /**
- * DESIGN.md: "word + optional shape, never colour alone. Active is
+ * docs/design-system.md: "word + optional shape, never colour alone. Active is
  * uncoloured." Applied here to a FIVE-state health model, not the usual
  * boolean — the task's own core requirement is that "configured but never
  * successfully synced" must not read as healthy, so `never_synced` gets its
@@ -9,7 +9,7 @@ import type { ConnectorHealthStatus } from './api'
  * (uncoloured, like "Active" elsewhere in this console) and `failing`
  * (danger, like "Sync failed"). `not_configured`/`disabled` are deliberate,
  * expected states — not exceptions — so they stay uncoloured too; the WORD
- * is what tells them apart from `healthy`, exactly as DESIGN.md requires
+ * is what tells them apart from `healthy`, exactly as docs/design-system.md requires
  * ("status is never conveyed by colour alone").
  */
 const HEALTH_WORD: Record<ConnectorHealthStatus, string> = {

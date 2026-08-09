@@ -1224,7 +1224,7 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
   })
 
   // =====================================================================
-  // Cross-aggregate races on the SAME user (finding H2, docs/superpowers/
+  // Cross-aggregate races on the SAME user (finding H2, docs/archive/audits/
   // audit-integrity.md): `OutboxRepository.claimNext` enforces strict
   // ordering only per `(aggregate_type, aggregate_id)`. A `user` event and a
   // `membership` event for the SAME user are two DIFFERENT aggregates, so

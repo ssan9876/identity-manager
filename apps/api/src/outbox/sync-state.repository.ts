@@ -30,7 +30,7 @@ type LatestAggregateEventRow = {
 /**
  * Same shape as `LatestAggregateEventRow`, plus `payload` — needed ONLY for
  * `membership`-aggregate rows (see `resolveForUsers`'s use of it below,
- * finding H3, docs/superpowers/audit-integrity.md): a `group`-aggregate
+ * finding H3, docs/archive/audits/audit-integrity.md): a `group`-aggregate
  * event's affected set is always "whoever is CURRENTLY an effective member",
  * but a `membership`-aggregate event additionally carries `payload.userId`/
  * `payload.childGroupId`, recorded by the controller at WRITE time, before
@@ -179,7 +179,7 @@ export class SyncStateRepository {
       }
     }
 
-    // Finding H3 (docs/superpowers/audit-integrity.md): mirrors
+    // Finding H3 (docs/archive/audits/audit-integrity.md): mirrors
     // SyncWorker.reconcileMembership's OWN affected-set computation exactly
     // — `payload.userId` names a direct add/remove's single affected user
     // DIRECTLY (still discoverable even after a removal deletes the edge);

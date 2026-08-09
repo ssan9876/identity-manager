@@ -502,7 +502,7 @@ and three other auditors are working against it concurrently. I did not boot the
 
 ## Environment left as found
 
-- `git status` on `master` shows only `docs/superpowers/security-audit-input.md` (pre-existing,
+- `git status` on `master` shows only `docs/archive/audits/security-audit-input.md` (pre-existing,
   untracked) and this file. No committed file was modified.
 - All probe code lived in `apps/api/__probe/` and has been deleted; the directory no longer exists.
 - Throwaway container `idm-audit-probe` (port 55432) removed.

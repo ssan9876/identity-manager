@@ -36,7 +36,7 @@ export type PermissionsState =
 /**
  * The console's ONE source of truth for "what can the signed-in caller do,"
  * backing every permission-gated nav item (AppShell) and, later, every
- * gated action button. PRODUCT.md: "The API is the authority. The UI hides
+ * gated action button. docs/product-brief.md: "The API is the authority. The UI hides
  * what you cannot do; it never decides it" — this hook exists to READ that
  * authority once per session, never to compute it.
  *

@@ -103,7 +103,7 @@ export class OutboxWriter {
    * This project has previously deadlocked its own connection pool by
    * opening a transaction and then calling something that checked out a
    * SECOND connection from the same pool while the first sat open (finding
-   * C1, docs/superpowers/audit-integrity.md; regression-guarded by
+   * C1, docs/archive/audits/audit-integrity.md; regression-guarded by
    * test/pool-exhaustion.spec.ts) — this method has no injected `DB_CLIENT`
    * at all (constructor takes nothing, exactly as before this task), so
    * there is no pool handle here it COULD reach for by mistake.

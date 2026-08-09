@@ -114,7 +114,7 @@ describe('parseImportRowShape', () => {
     expect(result.row.rawAttributes).toEqual({ costCenter: 'CC-1' })
   })
 
-  // docs/superpowers/audit-injection.md HIGH finding, second half: even
+  // docs/archive/audits/audit-injection.md HIGH finding, second half: even
   // after csv.ts stops dropping a "__proto__" header on the way INTO `raw`,
   // this function's own `rawAttributes[key] = trimmed` loop (previously
   // built on a plain {}) would silently drop it a SECOND time on the way

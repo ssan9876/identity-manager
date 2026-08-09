@@ -56,7 +56,7 @@ const SELF_EDITABLE_CORE_FIELDS = ['location'] as const
  * non-editable field is a 400 naming the field, never a silent drop" a
  * property of the schema, not a convention the handler has to remember.
  */
-// noNulChar — see docs/superpowers/audit-injection.md's HIGH "JSON-escaped
+// noNulChar — see docs/archive/audits/audit-injection.md's HIGH "JSON-escaped
 // NUL" finding (confirmed live on PATCH /self, which needs no role, so any
 // authenticated user can trigger it) and safe-string.ts's own doc comment.
 const selfUpdateBodySchema = z
@@ -271,7 +271,7 @@ export class SelfServiceController {
    * Milestone 8, Task 2 — the ONE new endpoint the admin console needs: the
    * caller's own effective actions, so the console can hide nav items and
    * screens the caller cannot use, without ever deciding authorization
-   * itself (PRODUCT.md: "The API is the authority. The UI hides what you
+   * itself (docs/product-brief.md: "The API is the authority. The UI hides what you
    * cannot do; it never decides it."). Lives here, not on a new controller,
    * for the exact same reason `GET /self`/`GET /self/groups` do: no `:id`
    * anywhere, so there is nothing for a caller to substitute another
@@ -336,7 +336,7 @@ export class SelfServiceController {
    *
    * Merging onto `current.attributes` uses `findByIdForUpdate`
    * (`SELECT ... FOR UPDATE`), not a plain read — finding H4
-   * (docs/superpowers/audit-integrity.md). A plain `SELECT` inside a
+   * (docs/archive/audits/audit-integrity.md). A plain `SELECT` inside a
    * transaction takes NO lock and gives no repeatable read under Postgres's
    * default READ COMMITTED: two concurrent `PATCH /self` calls could both
    * read the same starting `attributes`, both merge their own patch onto

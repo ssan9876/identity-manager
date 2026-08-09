@@ -92,7 +92,7 @@ test('creates a user, finds them in the list, deactivates them, and sees status/
   await expect(page.getByTestId('people-row')).toHaveCount(1)
   await expect(page.getByTestId('people-row-link')).toHaveText('E2E Created')
 
-  // Status/sync badges start uncoloured-active / pending-sync, per DESIGN.md.
+  // Status/sync badges start uncoloured-active / pending-sync, per docs/design-system.md.
   // `data-status`, not text — "Pending" (status) and "Sync pending" (sync
   // state) both contain the substring "pending", so a text-based match is
   // genuinely ambiguous between the two adjacent cells.
@@ -218,7 +218,7 @@ test('org units: creates a child under an existing unit and sees it in the tree 
   await expect(page.getByTestId('org-unit-detail-name')).toHaveText(childName)
   trackOrgUnit(idFromUrl(page))
   await expect(page.getByTestId('org-unit-detail-path')).toHaveClass(/mono/)
-  // ltree paths render mono (DESIGN.md), and a CHILD's path is its parent's
+  // ltree paths render mono (docs/design-system.md), and a CHILD's path is its parent's
   // path plus one more dot-separated segment.
   const childPath = await page.getByTestId('org-unit-detail-path').textContent()
   expect(childPath).toContain('.')

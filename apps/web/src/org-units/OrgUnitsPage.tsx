@@ -25,7 +25,7 @@ function ancestorIdsOf(id: string, byId: Map<string, OrgUnit>): string[] {
   return ancestors
 }
 
-/** Same ArrowUp/ArrowDown/Home/End row-to-row navigation as PeopleListPage's table (DESIGN.md: keyboard-navigable, beyond plain Tab order) — applied to tree links instead of table rows. */
+/** Same ArrowUp/ArrowDown/Home/End row-to-row navigation as PeopleListPage's table (docs/design-system.md: keyboard-navigable, beyond plain Tab order) — applied to tree links instead of table rows. */
 function handleTreeKeyDown(event: KeyboardEvent<HTMLDivElement>) {
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
   const container = event.currentTarget
@@ -50,7 +50,7 @@ function handleTreeKeyDown(event: KeyboardEvent<HTMLDivElement>) {
  * Name-only create form, reused for both a ROOT (`parentId` omitted) and a
  * CHILD (`parentId` set) — `POST /org-units` itself is the only thing that
  * tells the two apart (task-3-brief.md; see OrgUnitsController.create on the
- * API side). Progressive disclosure, never a modal (DESIGN.md bans "modal as
+ * API side). Progressive disclosure, never a modal (docs/design-system.md bans "modal as
  * first thought" — a create form is exactly the kind of action that should
  * stay inline).
  */
@@ -309,7 +309,7 @@ function OrgUnitDetailPane({
  * OrgUnitsContext.tsx) — so "a scoped operator sees only their subtree"
  * (task-3-brief.md) is already true of the DATA this screen renders. What
  * this screen adds is making that boundary LEGIBLE rather than silently
- * smaller than expected (PRODUCT.md: "without hitting an unexplained 403"):
+ * smaller than expected (docs/product-brief.md: "without hitting an unexplained 403"):
  * `isScopeLimited` below detects when the visible forest's own roots are
  * not true roots (their real parent exists but is outside what this actor
  * can see) and says so, and a direct link to an out-of-scope id explains

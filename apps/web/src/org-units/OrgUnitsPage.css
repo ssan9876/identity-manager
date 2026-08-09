@@ -16,7 +16,7 @@
   max-width: 68ch;
 }
 
-/* 2D layout (a fixed-width tree rail beside a flexible detail column) -> Grid, per DESIGN.md ("Grid for 2D"). min-width: 0 on both children for the
+/* 2D layout (a fixed-width tree rail beside a flexible detail column) -> Grid, per docs/design-system.md ("Grid for 2D"). min-width: 0 on both children for the
    same reason AppShell.css's own grid needs it (Task 2's own visual-pass
    finding): a grid item's default min-width is its content's intrinsic
    size, not 0, and this tree can run deep and wide enough to trigger the
