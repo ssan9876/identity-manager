@@ -2,12 +2,12 @@
 // `pnpm verify` / `pnpm verify:quick` — the gate that actually protects this
 // project TODAY.
 //
-// This repository has no git remote (see `.github/workflows/ci.yml`'s own
-// header comment) — a workflow file alone protects nothing until something
-// pushes to a remote that runs it. This script is CI's local twin: same
-// stages, same "any failure stops the run," runnable by a human before every
-// commit with no runner and no network dependency beyond what's already on
-// this machine (Docker, for the API suite's Testcontainers).
+// CI is live as of 2026-08-08 (`.github/workflows/ci.yml`; the repository now
+// has a remote and master is pushed). This script remains CI's local twin:
+// same stages, same "any failure stops the run," runnable by a human before
+// every commit with no runner and no network dependency beyond what's already
+// on this machine (Docker, for the API suite's Testcontainers) — so a failure
+// is caught before the push rather than after it.
 //
 // Two known defect classes motivated this (see
 // docs/archive/plans/2026-08-06-idp-milestone-9-ci-and-polish.md, Task 1):

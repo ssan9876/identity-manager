@@ -1,13 +1,11 @@
 # Continuous integration.
 #
-# This repository has no git remote yet (see `scripts/verify.mjs`'s own header
-# comment) — a workflow file alone protects nothing until something pushes to
-# a remote that actually runs it. `pnpm verify` (this workflow's centerpiece,
-# via the "Verify" step below) is the gate that already runs locally today;
-# this file is the same gate wired up for the day a remote exists, plus the
-# one thing local `verify` deliberately skips: the Playwright E2E suite,
-# which needs the full compose stack and a running dev server, not just
-# Testcontainers.
+# This workflow is LIVE as of 2026-08-08: the repository now has a remote
+# (github.com/ssan9876/identity-manager) and master has been pushed, so every
+# run below executes for real. `pnpm verify` (this workflow's centerpiece, via
+# the "Verify" step) is the same gate that runs locally, plus the one thing
+# local `verify` deliberately skips: the Playwright E2E suite, which needs the
+# full compose stack and a running dev server, not just Testcontainers.
 #
 # GitHub-hosted `ubuntu-latest` runners provide a working Docker daemon out of
 # the box, so both Testcontainers (inside `pnpm verify`'s API suite) and this
@@ -22,6 +20,15 @@ name: CI
 on:
   push:
   pull_request:
+
+# Finding CS-M5 (docs/archive/audits/audit-client-supply-chain.md). Without
+# this block GITHUB_TOKEN gets the repository default, which can be read/write
+# across contents, packages, actions, issues and pull-requests. This job only
+# typechecks, builds and tests: it needs to read the repo and nothing else.
+# `on: pull_request` (not pull_request_target) is deliberate and correct —
+# fork PRs run with no access to secrets. Keep it that way.
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -61,16 +68,29 @@ jobs:
       CONNECTOR_ECHO_CREDENTIAL: dev_echo_secret_change_me
 
     steps:
+      # Actions are pinned by commit SHA, not by tag: a tag is a movable
+      # pointer, so `@v4` runs whatever that tag points at today — compromise
+      # the action's repo or a maintainer account and this workflow silently
+      # changes. The trailing comment records the human-readable version each
+      # SHA corresponds to; bump both together (CS-M5).
+      #
+      # persist-credentials: false because checkout otherwise leaves
+      # GITHUB_TOKEN in .git/config for the rest of the job, and
+      # `pnpm install --frozen-lockfile` below runs dependency lifecycle
+      # scripts in that same directory (CS-H1). Nothing here pushes, so the
+      # credential has no reason to outlive the checkout step.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       # Must run before actions/setup-node's `cache: pnpm` below, which shells
       # out to `pnpm store path` to find what to cache.
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
           cache: 'pnpm'
@@ -88,7 +108,7 @@ jobs:
       # — the slow part — is skipped on a cache hit.
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
