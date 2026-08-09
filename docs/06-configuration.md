@@ -53,6 +53,7 @@ for why that namespace is load-bearing rather than a naming convention.
 |---|---|
 | `CONNECTOR_ECHO_CREDENTIAL` | The in-repo echo target, so the console's dry-run/apply flow has a real variable to name |
 | `CONNECTOR_MAIL_SERVER_TOKEN` | The mail server's provisioning API service token |
+| `CONNECTOR_KEYCLOAK_SSO_CLIENT_SECRET` | The `idm-sso-admin` client secret, for registering SSO applications. A **different** credential from `KEYCLOAK_ADMIN_CLIENT_SECRET`, resolved only by the `sso_app` code path |
 | `CONNECTOR_AD_BIND_PASSWORD` *(your choice of name)* | Active Directory bind password |
 | `CONNECTOR_ENTRA_CLIENT_SECRET` *(your choice of name)* | Entra ID client secret |
 | `CONNECTOR_GOOGLE_SERVICE_ACCOUNT_KEY` *(your choice of name)* | The **full** downloaded Google service-account key JSON, not a bare private key |

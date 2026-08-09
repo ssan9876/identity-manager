@@ -45,6 +45,15 @@ The complete catalog (`apps/api/src/authz/actions.ts`):
 | `audit:read` | The audit log and outbox dead letters |
 | `connector:read` | Connector target config and health |
 | `connector:manage` | Editing target config, attribute mappings, running reconciles |
+| `sso_app:read` | Reading registered SSO applications |
+| `sso_app:manage` | Registering, editing, enabling/disabling, minting client secrets |
+
+Both `sso_app` actions are **global grant only** and held by `super_admin` alone.
+Global-only because an application belongs to no org unit, so a scoped grant has
+nothing to narrow to — the same rule that already governs the audit log, dead letters,
+connector targets and attribute mappings. Deliberately not `user_admin`, which
+otherwise holds every create/update action here: minting OAuth clients is
+realm-security work, not people administration.
 
 ## Roles
 

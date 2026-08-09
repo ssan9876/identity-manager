@@ -173,6 +173,21 @@ Each shipped at least once and was caught late. Worth probing for recurrences.
 
 Verify these still hold before looking elsewhere.
 
+- **`manage-clients` is realm-wide, and the mitigation is application-level.**
+  Registering SSO applications requires `manage-clients`, which Keycloak does not scope
+  to "clients this principal created". A compromise of the `idm-sso-admin` credential
+  could therefore rewrite `idm-console`'s own `redirectUris` and harvest authorization
+  codes for the admin console itself. Two things reduce the blast radius and neither
+  eliminates it: the credential is separate from `idm-sync-service` (so the user and
+  group sync path does not hold the capability at all), and a reserved-client denylist
+  in `sso-apps/sso-app-validation.ts` refuses to register over `idm-console`,
+  `idm-api`, `idm-sync-service`, `idm-sso-admin` or Keycloak's own built-ins, with a
+  source scan asserting the list still names every client `keycloak-setup.sh` creates.
+  **That denylist is a guard in application code and is strictly weaker than the
+  structural boundaries elsewhere in this document.** The runtime database role cannot
+  violate append-only no matter what code runs; this list holds only as long as the
+  code consulting it is correct. Treat it as an open risk, not a solved problem.
+
 - **ReDoS in the attribute validator.** `new RegExp(rules.pattern)` compiles an
   unvalidated database-sourced pattern. Measured: `^(a+)+$` blocked the event loop for
   **96.7 seconds** on a 33-character input. Currently unreachable because

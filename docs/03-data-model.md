@@ -189,6 +189,39 @@ migrations run in one transaction on a fresh database — so the other targets s
 no row until something configures one. `WHERE enabled = true` treats "no row" and
 "disabled row" identically.
 
+## SSO applications
+
+### `sso_apps`
+
+A downstream application registered for single sign-on. THIS row is the system of
+record; the Keycloak client is a projection of it, asserted through the outbox like
+every other target.
+
+| Column | Notes |
+|---|---|
+| `client_id` | Unique. **Immutable after create** — downstream applications hard-code it |
+| `name`, `description` | |
+| `protocol` | `sso_app_protocol` enum; only value is `openid-connect` |
+| `public_client` | PKCE is forced on, and is not an editable field |
+| `redirect_uris`, `web_origins` | `text[]`; a wildcard is permitted only in the path |
+| `groups_claim` | Whether to assert the `groups` protocol mapper |
+| `enabled` | |
+
+Uniqueness on `client_id` is a database index, not merely a controller check: it is
+what every downstream application trusts, so a race must not be able to slip past it.
+
+### `external_sso_app_identities`
+
+Mirrors `external_group_identities` — `(app_id, system)` unique, reusing
+`external_identity_system` and `external_identity_sync_state`. `external_id` is the
+immutable UUID Keycloak assigns a client, **never `clientId`**. A Keycloak admin can
+rename `clientId` directly; correlating on it would turn that rename into an orphaned
+client plus a second, empty one on the next sync. Correlating on the UUID makes the
+same rename self-correcting.
+
+There is no delete for an application — no route, no repository method, no connector
+method. Disabling sets `enabled = false` here and on the Keycloak client.
+
 ## Custom attributes
 
 ### `attribute_definitions`

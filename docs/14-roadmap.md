@@ -148,6 +148,8 @@ Deliberate absences, not oversights:
 | Multi-tenancy | Single tenant, by design — no `tenant_id` anywhere |
 | Multi-forest / multi-domain AD | Explicitly out of scope; one domain per configured target |
 | SCIM inbound | Nothing writes into this system except its own API |
+| SAML applications | OIDC only. This is why Google Workspace SSO is still manual — Workspace federates over SAML |
+| Identity brokering | External IdPs federating *into* Keycloak is out of scope |
 | Segregation of duties, recertification campaigns, a request catalogue | All depend on business roles landing first — entitlements are what they operate on |
 
 ## Known limitations to plan around

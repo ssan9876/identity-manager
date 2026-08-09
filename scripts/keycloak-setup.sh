@@ -178,6 +178,45 @@ else
   ok "roles already granted"
 fi
 
+# --- idm-sso-admin: the credential that registers SSO application clients ---
+# A SEPARATE service account from idm-sync-service, deliberately. The sync
+# worker keeps exactly its four realm-management roles above and therefore
+# structurally CANNOT mint or alter an OIDC client; only this one holds
+# manage-clients. Same process, different credential -- the shape of the
+# two-database-role split, applied to Keycloak.
+#
+# manage-clients is realm-wide. Keycloak offers nothing finer-grained: it does
+# not scope to "clients this principal created", so a compromise of this
+# credential could rewrite idm-console's own redirectUris and harvest
+# authorization codes for the admin console itself. The mitigation is ours --
+# the reserved-client denylist in apps/api/src/sso-apps/sso-app-validation.ts,
+# asserted by a source scan against THIS script. That is an application-level
+# guard on an application-level credential and is strictly weaker than a
+# structural boundary. See docs/12-security.md.
+SSO_UUID="$(upsert_client idm-sso-admin "$(jq -n '{
+  clientId:"idm-sso-admin", enabled:true, protocol:"openid-connect",
+  publicClient:false, serviceAccountsEnabled:true,
+  standardFlowEnabled:false, directAccessGrantsEnabled:false,
+  description:"Service account that registers SSO application clients. Holds manage-clients and nothing else."
+}')")"
+
+info "granting manage-clients to the SSO admin service account"
+SSO_SA_USER_ID="$(api GET "/realms/$REALM/clients/$SSO_UUID/service-account-user" | jq -r .id)"
+SSO_WANTED='["manage-clients"]'
+SSO_AVAILABLE="$(api GET "/realms/$REALM/users/$SSO_SA_USER_ID/role-mappings/clients/$RM_UUID/available")"
+SSO_TO_ADD="$(jq -c --argjson want "$SSO_WANTED" '[.[] | select(.name as $n | $want | index($n))]' <<<"$SSO_AVAILABLE")"
+
+if [[ "$(jq 'length' <<<"$SSO_TO_ADD")" -gt 0 ]]; then
+  api POST "/realms/$REALM/users/$SSO_SA_USER_ID/role-mappings/clients/$RM_UUID" "$SSO_TO_ADD" >/dev/null
+  ok "granted: $(jq -r 'map(.name)|join(", ")' <<<"$SSO_TO_ADD")"
+else
+  ok "manage-clients already granted"
+fi
+
+info "generating a new idm-sso-admin client secret"
+SSO_SECRET="$(api POST "/realms/$REALM/clients/$SSO_UUID/client-secret" | jq -r .value)"
+[[ -n "$SSO_SECRET" && "$SSO_SECRET" != "null" ]] || die "failed to generate an idm-sso-admin client secret"
+
 # --- Fresh secret -----------------------------------------------------------
 # Always regenerated: the only other way to get here is the committed dev
 # secret, which is public.
@@ -193,6 +232,12 @@ echo "  KEYCLOAK_ISSUER=$KEYCLOAK_URL/realms/$REALM"
 echo "  KEYCLOAK_AUDIENCE=idm-api"
 echo "  KEYCLOAK_ADMIN_CLIENT_ID=idm-sync-service"
 echo "  KEYCLOAK_ADMIN_CLIENT_SECRET=$SECRET"
+echo
+echo "  CONNECTOR_KEYCLOAK_SSO_CLIENT_SECRET=$SSO_SECRET"
+echo
+echo "The second secret is only needed if you register SSO applications. It is"
+echo "resolved ONLY by the sso_app code path (connectors/secrets.ts enforces the"
+echo "CONNECTOR_ prefix); the user and group sync path never reads it."
 echo
 warn "Put that secret into .env, then: systemctl restart idm-api"
 echo
