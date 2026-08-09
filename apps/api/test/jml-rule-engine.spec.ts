@@ -293,6 +293,47 @@ describe('rule-engine: simulate (Milestone 7, Task 6) — writes nothing, previe
     expect(result).not.toBeInstanceOf(Promise)
   })
 
+  /**
+   * Finding INJ-INFO (docs/archive/audits/audit-injection.md, carried as an
+   * Item-10 residual). `simulate` never consulted `trigger`, while
+   * `matchRules` refuses any rule whose trigger is not in KNOWN_TRIGGERS —
+   * so a rule with a garbage trigger previewed as `wouldApply: true` against
+   * every matching user while being incapable of ever firing. A preview that
+   * asserts the opposite of the truth is worse than no preview.
+   *
+   * The user below MATCHES the condition, deliberately: that is the only
+   * case where the two behaviours differ, and a non-matching user would have
+   * reported `wouldApply: false` either way and proved nothing.
+   */
+  it('reports an unknown trigger as a skip, rather than previewing a rule that can never fire', () => {
+    const rule = makeRule({ trigger: 'user_promoted' as JmlRule['trigger'] })
+    const user = makeUser({ jobTitle: 'Engineer' })
+
+    const [effect] = simulate(rule, [user])
+
+    expect(effect!.wouldApply).toBe(false)
+    expect(effect!.skipReason).toBe('unknown_trigger')
+    expect(effect!.action).toBeNull()
+    expect(effect!.actionParams).toBeNull()
+    // Still one effect per user, with identity intact — the preview reports
+    // the refusal per person, it does not silently shorten the list.
+    expect(effect!.userId).toBe(user.id)
+    expect(effect!.username).toBe(user.username)
+  })
+
+  it('still previews a rule whose trigger is recognised but is not the one that would fire it', () => {
+    // The counterpart, so the fix cannot quietly become "simulate now
+    // requires a trigger match". `simulate` takes no trigger argument: it
+    // previews "if this rule fired", not "if this specific event happened".
+    const rule = makeRule({ trigger: 'end_date_reached' })
+    const user = makeUser({ jobTitle: 'Engineer' })
+
+    const [effect] = simulate(rule, [user])
+
+    expect(effect!.wouldApply).toBe(true)
+    expect(effect!.skipReason).toBeNull()
+  })
+
   it('reports an unknown action as a skip in the preview too, never a crash', () => {
     const rule = makeRule({ action: 'run_shell_command' as JmlRule['action'] })
     const user = makeUser({ jobTitle: 'Engineer' })
