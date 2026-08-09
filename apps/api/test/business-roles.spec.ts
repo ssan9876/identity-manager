@@ -10,6 +10,7 @@ import { groupUserMembers } from '../src/db/schema/group-members'
 import { groups } from '../src/db/schema/groups'
 import { orgUnits } from '../src/db/schema/org-units'
 import { users } from '../src/db/schema/users'
+import { OrganizationsRepository } from '../src/organizations/organizations.repository'
 import { OutboxWriter } from '../src/outbox/outbox.writer'
 import { type TestDatabase, withTestDatabase } from './support/pg'
 
@@ -32,6 +33,19 @@ const DEFINITION = {
 
 function reconciler(): RoleReconciler {
   return new RoleReconciler(new BusinessRolesRepository(ctx.db), new AuditWriter(), new OutboxWriter())
+}
+
+/**
+ * The `master` organization the organizations backfill migration creates.
+ * `organization_id` is NOT NULL on org_units/users/groups, and the fixtures
+ * below seed through raw inserts rather than the repositories that resolve
+ * it themselves (OrgUnitsRepository.createRoot, GroupsRepository.create), so
+ * they have to supply it. Every fixture row belongs to master: these tests
+ * predate multi-tenancy and assert nothing about org isolation.
+ */
+async function masterOrgId(ctx: TestDatabase): Promise<string> {
+  const master = await new OrganizationsRepository(ctx.db).findMaster()
+  return master.id
 }
 
 let reconcilerFixtureSeq = 0
@@ -65,15 +79,17 @@ async function seedRoleGrantingGroup(
   const seq = reconcilerFixtureSeq
   const matchingJobTitle = `Account Executive #${seq}`
   const actualJobTitle = options.jobTitle === 'Account Executive' ? matchingJobTitle : options.jobTitle
+  const organizationId = await masterOrgId(ctx)
 
   const [unit] = await ctx.db
     .insert(orgUnits)
-    .values({ name: `Reconciler Unit ${seq}`, path: `reconciler_root_${seq}` })
+    .values({ name: `Reconciler Unit ${seq}`, path: `reconciler_root_${seq}`, organizationId })
     .returning()
   const [user] = await ctx.db
     .insert(users)
     .values({
       status: 'active',
+      organizationId,
       primaryEmail: `reconciler-fixture-${seq}@example.com`,
       username: `reconciler-fixture-${seq}`,
       firstName: 'Fixture',
@@ -83,7 +99,7 @@ async function seedRoleGrantingGroup(
       orgUnitId: unit.id,
     })
     .returning()
-  const [group] = await ctx.db.insert(groups).values({ name: `Reconciler Group ${seq}` }).returning()
+  const [group] = await ctx.db.insert(groups).values({ name: `Reconciler Group ${seq}`, organizationId }).returning()
 
   const role = await repo().create({ name: `Reconciler Role ${seq}`, description: null })
   const definition = {
@@ -115,15 +131,17 @@ async function seedTwoRolesOneGroup(ctx: TestDatabase): Promise<{ userId: string
   const seq = reconcilerFixtureSeq
   const matchingJobTitle = `Account Executive #${seq}`
   const matchingLocation = `London #${seq}`
+  const organizationId = await masterOrgId(ctx)
 
   const [unit] = await ctx.db
     .insert(orgUnits)
-    .values({ name: `Reconciler Unit ${seq}`, path: `reconciler_root_${seq}` })
+    .values({ name: `Reconciler Unit ${seq}`, path: `reconciler_root_${seq}`, organizationId })
     .returning()
   const [user] = await ctx.db
     .insert(users)
     .values({
       status: 'active',
+      organizationId,
       primaryEmail: `reconciler-fixture-${seq}@example.com`,
       username: `reconciler-fixture-${seq}`,
       firstName: 'Fixture',
@@ -134,7 +152,7 @@ async function seedTwoRolesOneGroup(ctx: TestDatabase): Promise<{ userId: string
       orgUnitId: unit.id,
     })
     .returning()
-  const [group] = await ctx.db.insert(groups).values({ name: `Reconciler Group ${seq}` }).returning()
+  const [group] = await ctx.db.insert(groups).values({ name: `Reconciler Group ${seq}`, organizationId }).returning()
 
   const roleA = await repo().create({ name: `Reconciler Role ${seq}a`, description: null })
   const definitionA = {
