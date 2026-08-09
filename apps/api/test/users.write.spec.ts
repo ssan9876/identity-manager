@@ -590,6 +590,95 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
       expect(await totalAuditCount(ctx)).toBe(before)
     })
 
+    /**
+     * Finding INJ-L-1 (docs/archive/audits/audit-injection.md, carried as an
+     * Item-10 residual in carried-findings-verification.md). Wave C landed
+     * the NFC half of this finding's fix direction and not the other half:
+     * nothing rejected `Cf`-category characters, so the audit's own repro
+     * (`ad<U+202E>nimda`, `ad<U+200D>min`) still returned 201 and put a name
+     * into `displayName` — derived from firstName/lastName and shown to
+     * every user in the directory — that renders identically to another
+     * person's. Written with `String.fromCharCode`, never as a literal, so
+     * the character cannot be lost or "helpfully" stripped by an editor,
+     * a diff tool or a copy/paste on the way into this file.
+     *
+     * Both spellings are asserted because they fail for different reasons:
+     * the override REORDERS the glyphs after it, the joiner is simply
+     * invisible. NFC normalisation removes neither.
+     */
+    const RTL_OVERRIDE = String.fromCharCode(0x202e)
+    const ZERO_WIDTH_JOINER = String.fromCharCode(0x200d)
+
+    it('rejects a bidi override in firstName with 400 and writes no audit row', async () => {
+      const org = await makeOrgUnit('Bidi Root')
+      const actor = await makeActiveUser('creator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const before = await totalAuditCount(ctx)
+      const tag = nextTag()
+
+      const res = await request(app.getHttpServer())
+        .post('/users')
+        .send({
+          primaryEmail: `bidi-${tag}@example.com`,
+          username: `bidi-${tag}`,
+          firstName: `ad${RTL_OVERRIDE}nimda`,
+          lastName: 'Impostor',
+          orgUnitId: org.id,
+        })
+        .expect(400)
+
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+      expect(res.body.issues.join(' ')).toContain('firstName')
+      // SEC-L2: the response names the field, never echoes the value.
+      expect(res.body.issues.join(' ')).not.toContain(RTL_OVERRIDE)
+      expect(await totalAuditCount(ctx)).toBe(before)
+    })
+
+    it('rejects a zero-width joiner in username with 400', async () => {
+      const org = await makeOrgUnit('ZWJ Root')
+      const actor = await makeActiveUser('creator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const tag = nextTag()
+      const res = await request(app.getHttpServer())
+        .post('/users')
+        .send({
+          primaryEmail: `zwj-${tag}@example.com`,
+          username: `ad${ZERO_WIDTH_JOINER}min-${tag}`,
+          firstName: 'Zero',
+          lastName: 'Width',
+          orgUnitId: org.id,
+        })
+        .expect(400)
+
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+      expect(res.body.issues.join(' ')).toContain('username')
+    })
+
+    it('still accepts an ordinary accented name (the constraint is Cf, not non-ASCII)', async () => {
+      const org = await makeOrgUnit('Accent Root')
+      const actor = await makeActiveUser('creator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const tag = nextTag()
+      const res = await request(app.getHttpServer())
+        .post('/users')
+        .send({
+          primaryEmail: `accent-${tag}@example.com`,
+          username: `accent-${tag}`,
+          firstName: 'Zoë',
+          lastName: 'Núñez',
+          orgUnitId: org.id,
+        })
+        .expect(201)
+
+      expect(res.body.displayName).toBe('Zoë Núñez')
+    })
+
     it('rejects an unrecognized custom attribute by default (no active definitions exist)', async () => {
       const org = await makeOrgUnit('Attributes Root')
       const actor = await makeActiveUser('creator', org.id)
@@ -721,6 +810,35 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
       // Untouched fields carry through unchanged in both snapshots.
       expect(rows[0].before?.username).toBe(target.username)
       expect(rows[0].after?.username).toBe(target.username)
+    })
+
+    /**
+     * Finding INJ-L-1, PATCH half. `displayName` is recomputed from exactly
+     * these two fields, so PATCH is the cheaper way to plant an invisible
+     * override than a create is — it needs no new email, username or org
+     * unit, only `user:update` on someone who already exists. See the POST
+     * pair above and safe-string.ts's `noFormatChar` doc comment.
+     */
+    it('rejects a bidi override in a PATCHed firstName with 400 and leaves displayName untouched', async () => {
+      const org = await makeOrgUnit('Bidi Patch Root')
+      const actor = await makeActiveUser('updater', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      const target = await makeActiveUser('target', org.id)
+      currentUsername = actor.username
+
+      const before = await totalAuditCount(ctx)
+
+      const res = await request(app.getHttpServer())
+        .patch(`/users/${target.id}`)
+        .send({ firstName: `ad${String.fromCharCode(0x202e)}nimda` })
+        .expect(400)
+
+      expect(res.body.code).toBe('VALIDATION_FAILED')
+      expect(res.body.issues.join(' ')).toContain('firstName')
+      expect(await totalAuditCount(ctx)).toBe(before)
+
+      const reloaded = await usersRepo().findById(target.id)
+      expect(reloaded?.displayName).toBe(target.displayName)
     })
 
     // Finding M1 (docs/archive/audits/audit-integrity.md): `displayName` is

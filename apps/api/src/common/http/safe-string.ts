@@ -49,3 +49,79 @@ export function noNulChar<T extends z.ZodString>(schema: T) {
 export function containsNulChar(value: string): boolean {
   return value.includes(NUL)
 }
+
+/**
+ * Unicode general category `Cf` — "format" characters. Every one of these is
+ * INVISIBLE when rendered, and several actively reorder the glyphs around
+ * them: U+202A–U+202E (the bidi embeddings and overrides), U+2066–U+2069 (the
+ * bidi isolates), U+200B–U+200F (zero-width space/non-joiner/joiner and the
+ * left-to-right and right-to-left marks), plus U+00AD, U+2060–U+2064, U+FEFF
+ * and the rest of the category.
+ *
+ * Why this matters HERE and not merely as tidiness — finding INJ-L-1
+ * (docs/archive/audits/audit-injection.md, carried as an Item-10 residual in
+ * carried-findings-verification.md). `displayName` is DERIVED from
+ * `firstName`/`lastName` (UsersRepository.update) and shown directory-wide,
+ * in group rosters, audit rows and every person picker. An RTL override
+ * inside a name renders one account visually identical to another
+ * ("ad<U+202E>nimda" reads as "admin"), and a zero-width joiner splits a
+ * name into two rows that no human reviewer can tell apart. That is
+ * display-layer impersonation in a directory whose entire job is telling
+ * people apart. The audit's original repro created exactly these rows and got
+ * a 201 for each.
+ *
+ * This is the second half of INJ-L-1's fix direction ("normalise to NFC and
+ * reject `Cf`-category characters"). The NFC half landed already, on the one
+ * site that sets `username` (UsersRepository.create). NFC alone does not help
+ * here: none of these characters are removed or altered by any normalisation
+ * form — NFC composes and reorders, it does not strip formatting.
+ *
+ * DELIBERATE COST, named so the next reader can weigh it rather than
+ * rediscover it: U+200C ZWNJ and U+200D ZWJ are load-bearing orthography in
+ * Persian, Hindi and several other scripts, and rejecting the whole category
+ * rejects them too. The narrower alternative — bidi controls only
+ * (U+202A–U+202E, U+2066–U+2069, U+200E–U+200F) — leaves the zero-width
+ * characters, and those are precisely what produce two rows a reviewer reads
+ * as the same person. The whole category is rejected because this is an
+ * identity directory: a name that cannot be reproduced by looking at it is a
+ * worse failure here than a name that has to be spelled without a joiner.
+ * Changing this set is a review decision; it is one regex, in one place.
+ *
+ * Applied to `username`, `firstName`, `lastName` and `primaryEmail` — the
+ * four fields the finding names — on both write paths (POST/PATCH /users and
+ * the CSV import). NOT applied to `jobTitle`/`location`/free-text
+ * descriptions: those are not identity, nobody is impersonated by a job
+ * title, and the category contains characters legitimate prose may want.
+ */
+const FORMAT_CHAR = /\p{Cf}/u
+
+/**
+ * Wraps a string schema — a bare `ZodString` or an already-refined one such
+ * as `noNulChar(...)`'s result — and rejects any value containing a `Cf`
+ * character. Composed at the END of a field's chain, like `noNulChar`, so
+ * `.min()`/`.max()`/`.email()` still report their own specific messages
+ * first. The message deliberately does NOT echo the offending character or
+ * its code point back: it is invisible, so printing it is useless to the
+ * caller, and echoing a submitted value into a 4xx is the pattern finding
+ * SEC-L2 exists about.
+ *
+ * Typed over `z.ZodType<Output extends string, ...>` rather than
+ * `z.ZodString`, unlike `noNulChar`: it has to compose ON TOP of
+ * `noNulChar(...)`, whose result is a `ZodEffects`, not a `ZodString`. The
+ * `Output`/`Input` parameters are inferred and passed straight through, so
+ * `.optional()`/`.nullable()` still chain onto the result and the field's
+ * inferred type is unchanged.
+ */
+export function noFormatChar<Output extends string, Def extends z.ZodTypeDef, Input>(
+  schema: z.ZodType<Output, Def, Input>,
+) {
+  return schema.refine(
+    (value) => !containsFormatChar(value),
+    'must not contain invisible Unicode formatting characters (bidi controls, zero-width joiners)',
+  )
+}
+
+/** The primitive behind `noFormatChar`, for callers holding a plain string. */
+export function containsFormatChar(value: string): boolean {
+  return FORMAT_CHAR.test(value)
+}

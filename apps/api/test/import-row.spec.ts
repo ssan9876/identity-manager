@@ -76,6 +76,47 @@ describe('parseImportRowShape', () => {
     expect(result.issues.some((i) => i.includes('username'))).toBe(true)
   })
 
+  /**
+   * Finding INJ-L-1 (docs/archive/audits/audit-injection.md, carried as an
+   * Item-10 residual). `Cf`-category characters are invisible, and the bidi
+   * overrides reorder the glyphs around them, so a name carrying one renders
+   * identically to somebody else's — and `displayName` (derived from
+   * firstName/lastName) is shown directory-wide. The import path is the BULK
+   * way to plant them, so it carries the same constraint as POST /users.
+   *
+   * Built with `String.fromCharCode`, never as source literals: these
+   * characters do not survive editors, diffs and copy/paste reliably, and a
+   * test whose fixture silently lost its own payload would pass either way.
+   * Per-field cases rather than one combined row, so a partial regression
+   * (the constraint dropped from one field) cannot hide behind another
+   * field's failure.
+   */
+  const CF_CASES: ReadonlyArray<readonly [string, string]> = [
+    ['firstName', `ad${String.fromCharCode(0x202e)}nimda`],
+    ['lastName', `Smi${String.fromCharCode(0x200b)}th`],
+    ['username', `ad${String.fromCharCode(0x200d)}min`],
+    ['primaryEmail', `a${String.fromCharCode(0x200e)}dmin@example.com`],
+  ]
+
+  for (const [field, value] of CF_CASES) {
+    it(`rejects a Cf-category character in ${field}`, () => {
+      const result = parseImportRowShape({ ...VALID_RAW, [field]: value }, false)
+      expect(result.ok).toBe(false)
+      if (result.ok) throw new Error('expected failure')
+      expect(result.issues.some((issue) => issue.includes(field))).toBe(true)
+    })
+  }
+
+  it('accepts an accented name — the constraint is the Cf category, not non-ASCII', () => {
+    const result = parseImportRowShape(
+      { ...VALID_RAW, firstName: 'Zoë', lastName: 'Núñez' },
+      false,
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('expected ok')
+    expect(result.row.firstName).toBe('Zoë')
+  })
+
   it('rejects a malformed email', () => {
     const result = parseImportRowShape({ ...VALID_RAW, primaryEmail: 'not-an-email' }, false)
     expect(result.ok).toBe(false)

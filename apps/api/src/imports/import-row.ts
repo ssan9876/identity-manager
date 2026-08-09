@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { noNulChar } from '../common/http/safe-string'
+import { noFormatChar, noNulChar } from '../common/http/safe-string'
 
 /**
  * The columns every import row MUST supply. `employeeId` is required here
@@ -45,6 +45,15 @@ const isoDateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'must be an ISO date (YYYY-MM-DD)')
 
+// noFormatChar wraps the four IDENTITY fields (primaryEmail, username,
+// firstName, lastName) on top of noNulChar — finding INJ-L-1
+// (docs/archive/audits/audit-injection.md). The import path is the BULK way
+// to plant an invisible bidi override or zero-width joiner in a name that
+// `displayName` is derived from and the whole directory then reads, so it
+// gets the same constraint as POST /users; a row that fails it is reported
+// as an ordinary per-row validation failure, not a whole-file error. See
+// safe-string.ts's `noFormatChar` doc comment.
+//
 // noNulChar wraps every free-text field below (never orgUnitId/managerId,
 // already UUID-constrained, or startDate/endDate, already ISO-date-regex-
 // constrained — neither shape can contain a NUL and pass) — see
@@ -53,10 +62,12 @@ const isoDateSchema = z
 // before a row can ever reach Postgres.
 const shapeSchema = z.object({
   employeeId: noNulChar(z.string().min(1, 'required')),
-  primaryEmail: noNulChar(z.string().min(1, 'required').max(320).email('must be a well-formed email')),
-  username: noNulChar(z.string().min(1, 'required').max(128)),
-  firstName: noNulChar(z.string().min(1, 'required').max(128)),
-  lastName: noNulChar(z.string().min(1, 'required').max(128)),
+  primaryEmail: noFormatChar(
+    noNulChar(z.string().min(1, 'required').max(320).email('must be a well-formed email')),
+  ),
+  username: noFormatChar(noNulChar(z.string().min(1, 'required').max(128))),
+  firstName: noFormatChar(noNulChar(z.string().min(1, 'required').max(128))),
+  lastName: noFormatChar(noNulChar(z.string().min(1, 'required').max(128))),
   orgUnitId: z.string().min(1, 'required').uuid('must be a UUID'),
   jobTitle: noNulChar(z.string().max(255)).nullable(),
   managerId: z.string().uuid('must be a UUID').nullable(),

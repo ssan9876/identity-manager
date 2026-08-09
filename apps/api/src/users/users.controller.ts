@@ -40,7 +40,7 @@ import { DB_CLIENT } from '../common/db.token'
 import { ConflictError, NotFoundError, ValidationError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
-import { noNulChar } from '../common/http/safe-string'
+import { noFormatChar, noNulChar } from '../common/http/safe-string'
 import { type Page, parsePageQuery } from '../common/pagination'
 import * as schema from '../db/schema/index'
 import { groupUserMembers } from '../db/schema/group-members'
@@ -150,12 +150,21 @@ const isoDateSchema = z
 // UUID-constrained, or startDate/endDate, already ISO-date-regex-
 // constrained) — see docs/archive/audits/audit-injection.md's HIGH
 // "JSON-escaped NUL" finding and safe-string.ts's own doc comment.
+// noFormatChar on the four IDENTITY fields, and only those — finding
+// INJ-L-1 (docs/archive/audits/audit-injection.md, carried as an Item-10
+// residual in carried-findings-verification.md). `displayName` is derived
+// from firstName/lastName and shown directory-wide, so an invisible bidi
+// override or zero-width joiner inside one makes two accounts render
+// identically. See safe-string.ts's `noFormatChar` doc comment for the
+// category, the impersonation mechanism, and the deliberate i18n cost.
+// jobTitle/location keep noNulChar alone: nobody is impersonated by a job
+// title.
 const createUserBodySchema = z
   .object({
-    primaryEmail: noNulChar(z.string().min(1).max(320).email()),
-    username: noNulChar(z.string().min(1).max(128)),
-    firstName: noNulChar(z.string().min(1).max(128)),
-    lastName: noNulChar(z.string().min(1).max(128)),
+    primaryEmail: noFormatChar(noNulChar(z.string().min(1).max(320).email())),
+    username: noFormatChar(noNulChar(z.string().min(1).max(128))),
+    firstName: noFormatChar(noNulChar(z.string().min(1).max(128))),
+    lastName: noFormatChar(noNulChar(z.string().min(1).max(128))),
     orgUnitId: z.string().uuid(),
     employeeId: noNulChar(z.string().min(1).max(64)).optional(),
     jobTitle: noNulChar(z.string().min(1).max(255)).optional(),
@@ -174,8 +183,11 @@ const createUserBodySchema = z
 // milestone's PATCH surface.
 const updateUserBodySchema = z
   .object({
-    firstName: noNulChar(z.string().min(1).max(128)).optional(),
-    lastName: noNulChar(z.string().min(1).max(128)).optional(),
+    // noFormatChar for the same reason as the create schema above (INJ-L-1):
+    // these two are exactly what `displayName` is recomputed from, so a PATCH
+    // is the cheaper way to plant an invisible override than a create is.
+    firstName: noFormatChar(noNulChar(z.string().min(1).max(128))).optional(),
+    lastName: noFormatChar(noNulChar(z.string().min(1).max(128))).optional(),
     jobTitle: noNulChar(z.string().min(1).max(255)).nullable().optional(),
     employeeId: noNulChar(z.string().min(1).max(64)).nullable().optional(),
     managerId: z.string().uuid().nullable().optional(),
