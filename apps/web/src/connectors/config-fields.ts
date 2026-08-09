@@ -39,6 +39,38 @@ export interface ConfigFieldSpec {
  */
 export const TARGET_CONFIG_FIELDS: Record<ConnectorTarget, ConfigFieldSpec[]> = {
   keycloak: [],
+  // Sub-project 4. Mirrors `mail-server.connector.ts`'s own BASE_URL_KEY /
+  // TOKEN_SECRET_NAME_KEY (both required — `requiredString` throws without
+  // them) plus the one genuinely admin-facing behavioural switch. Its
+  // `requestTimeoutMs` is deliberately omitted for the same reason every
+  // other connector's timeout is: rarely tuned, and omitting a key here
+  // never destroys one already stored.
+  mail_server: [
+    {
+      key: 'baseUrl',
+      label: 'API base URL',
+      type: 'string',
+      required: true,
+      placeholder: 'http://mail.internal:8081/api/v1',
+      hint: 'The mail server admin API root. A trailing slash is trimmed.',
+    },
+    {
+      key: 'tokenSecretName',
+      label: 'API token environment variable',
+      type: 'secret-name',
+      required: true,
+      placeholder: 'CONNECTOR_MAIL_SERVER_TOKEN',
+    },
+    {
+      key: 'allowAdminProvisioning',
+      label: 'Provision mail administrators',
+      type: 'boolean',
+      required: false,
+      hint:
+        'When on, a person holding a domain_admin or superadmin business role is also ' +
+        'provisioned as an administrator of their own email domain. Off by default.',
+    },
+  ],
   echo: [
     {
       key: 'credentialSecretName',

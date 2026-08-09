@@ -1,4 +1,5 @@
 import { authorizedRequest, buildQuery } from '../api/client'
+import type { ConnectorTarget } from '../connectors/api'
 import type { Page } from '../org-units/api'
 
 /**
@@ -6,12 +7,13 @@ import type { Page } from '../org-units/api'
  * `payload` is whatever the mutation that enqueued this event recorded — see
  * DeadLettersTab.tsx for how each aggregate type's shape is read.
  *
- * `target` (Milestone 10, Task 1 — multi-target outbox; widened to add
- * `'echo'` in Task 2 — connectors/connector.ts's `ConnectorTarget`) mirrors
- * the API's own addition type-only, for now: today it is always `'keycloak'`
- * in practice (the only target `connector_targets` seeds as enabled by
- * default), so nothing here reads it yet — Milestone 14, Task 9 ("connector
- * console") is where the Dead letters table actually grows a Target column.
+ * `target` reuses the ONE `ConnectorTarget` union from connectors/api.ts
+ * rather than restating the list. It used to carry its own inline copy,
+ * which was missing `mail_server` and therefore mistyped the exact rows this
+ * view exists to show — see that union's own doc comment for the full
+ * finding. It is emphatically NOT always `'keycloak'` in practice: a real
+ * deployment enables several targets, and a dead letter from a non-Keycloak
+ * one is the normal case here, not a future one.
  */
 export interface DeadLetterEvent {
   id: number
@@ -19,7 +21,7 @@ export interface DeadLetterEvent {
   aggregateId: string
   eventType: string
   payload: Record<string, unknown>
-  target: 'keycloak' | 'active_directory' | 'entra_id' | 'google_workspace' | 'echo'
+  target: ConnectorTarget
   attempts: number
   lastError: string | null
   createdAt: string

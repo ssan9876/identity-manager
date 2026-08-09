@@ -1,7 +1,28 @@
 import { authorizedRequest } from '../api/client'
 
-/** Mirrors `ConnectorTarget` (apps/api/src/connectors/connector.ts). */
-export type ConnectorTarget = 'keycloak' | 'active_directory' | 'entra_id' | 'google_workspace' | 'echo'
+/**
+ * Mirrors `ALL_CONNECTOR_TARGETS` (apps/api/src/connectors/connector.ts).
+ *
+ * That module's doc comment records why a hand-copied list is dangerous:
+ * five of them went stale when `mail_server` was added and the type system
+ * could not see it, because a narrower literal list is perfectly assignable
+ * to a wider union. THIS list went stale the same way and for the same
+ * reason, and was fixed on 2026-08-08 — the observable damage was that the
+ * console could not list, configure, enable or DISABLE the live mail target
+ * at all, and `CONNECTOR_TARGET_LABEL[event.target]` rendered `undefined`
+ * for a mail_server dead letter.
+ *
+ * There is no shared package between the two apps, so unlike the API side
+ * this copy cannot derive from the source and must be updated BY HAND
+ * whenever a target is added. Check it whenever `outbox_target` grows.
+ */
+export type ConnectorTarget =
+  | 'keycloak'
+  | 'active_directory'
+  | 'entra_id'
+  | 'google_workspace'
+  | 'echo'
+  | 'mail_server'
 
 export const ALL_CONNECTOR_TARGETS: readonly ConnectorTarget[] = [
   'keycloak',
@@ -9,6 +30,7 @@ export const ALL_CONNECTOR_TARGETS: readonly ConnectorTarget[] = [
   'entra_id',
   'google_workspace',
   'echo',
+  'mail_server',
 ]
 
 export const CONNECTOR_TARGET_LABEL: Record<ConnectorTarget, string> = {
@@ -17,6 +39,7 @@ export const CONNECTOR_TARGET_LABEL: Record<ConnectorTarget, string> = {
   entra_id: 'Entra ID',
   google_workspace: 'Google Workspace',
   echo: 'Echo (in-repo test target)',
+  mail_server: 'Mail server',
 }
 
 /** Mirrors `CoreProfileField` (apps/api/src/connectors/attribute-mapping.ts). */
