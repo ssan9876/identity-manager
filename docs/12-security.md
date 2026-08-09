@@ -295,6 +295,17 @@ integrity check, into a root shell. Corepack verifies the digest; CI inherits it
 because `pnpm/action-setup` reads the same field. **Bump both together** or
 corepack fails with a hash mismatch — which is the intended failure.
 
+**The digest must be HEX, not the registry's base64.** npm publishes integrity
+as `sha512-<base64>`; corepack's `packageManager` field wants
+`+sha512.<128 hex chars>` and rejects anything else with *"Invalid package
+manager specification … expected a semver version"* — a message that names the
+wrong thing entirely and sends you looking at the version number. This was got
+wrong once here and only surfaced when installing on a real host; a local
+install with pnpm already activated did not re-validate the field. Produce the
+value with `sha512sum` on the published tarball, and prove it is the same
+artefact by converting hex to base64 and comparing against the registry
+integrity.
+
 - [ ] TLS on **both** the console and Keycloak. Without it, sign-in silently fails.
 - [ ] Do **not** import `keycloak/realm-import/identity-manager-realm.dev.json`. Use
       `keycloak-setup.sh`. That file is hardened against the accident — `.dev.json`
