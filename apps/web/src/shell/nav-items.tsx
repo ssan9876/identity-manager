@@ -93,6 +93,17 @@ function RolesIcon({ className }: { className?: string }) {
   )
 }
 
+/** A rule and what falls under it — a bracket over two rows, the shape of "everyone this describes gets this". Deliberately unlike RolesIcon's shield: admin roles are authority, business roles are a formula. */
+function BusinessRolesIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)}>
+      <path d="M3 4.5h5l1.5 2H17" />
+      <rect x="3" y="4.5" width="14" height="11" rx="1.5" />
+      <path d="M6.5 10h7M6.5 12.75h4" />
+    </svg>
+  )
+}
+
 function ImportIcon({ className }: { className?: string }) {
   return (
     <svg {...iconProps(className)}>
@@ -138,7 +149,23 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'people', label: 'People', path: '/people', group: 'directory', action: 'user:read', icon: PeopleIcon },
   { key: 'groups', label: 'Groups', path: '/groups', group: 'directory', action: 'group:read', icon: GroupsIcon },
   { key: 'org-units', label: 'Org units', path: '/org-units', group: 'directory', action: 'org_unit:read', icon: OrgUnitsIcon },
-  { key: 'roles', label: 'Roles', path: '/roles', group: 'access', action: 'role:assign', icon: RolesIcon },
+  // Relabelled from "Roles" (Milestone 17, Task 17). Label ONLY — the
+  // path, route and component are untouched. Two entries both reading
+  // "Roles" would be genuinely ambiguous, and the business-roles entry
+  // below is what creates that ambiguity, so fixing it belongs here.
+  { key: 'roles', label: 'Admin roles', path: '/roles', group: 'access', action: 'role:assign', icon: RolesIcon },
+  // `business_role:read` is held by user_admin/auditor/read_only, so the
+  // catalogue is visible to everyone who can meaningfully read access;
+  // every mutating control inside is gated separately on
+  // `business_role:manage`, which is super_admin's alone.
+  {
+    key: 'business-roles',
+    label: 'Business roles',
+    path: '/business-roles',
+    group: 'access',
+    action: 'business_role:read',
+    icon: BusinessRolesIcon,
+  },
   { key: 'import', label: 'Import', path: '/import', group: 'operations', action: 'user:create', icon: ImportIcon },
   { key: 'audit', label: 'Audit', path: '/audit', group: 'operations', action: 'audit:read', icon: AuditIcon },
   // Milestone 14, Task 9 — the connector admin console. `connector:read`
