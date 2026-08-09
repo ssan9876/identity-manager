@@ -32,5 +32,18 @@ export function targetsForAggregate(
   if (aggregateType === 'sso_app') {
     return enabledTargets.filter((target) => target === 'keycloak_sso')
   }
+  // An organization IS a Keycloak realm (Organizations milestone, Task 10).
+  // Realm lifecycle — create, enable, disable — is a server-level Keycloak
+  // call and nothing else in the catalog has an equivalent: Active
+  // Directory, Entra and Google have no realm concept, the mail server
+  // addresses principals by OUR user id and knows nothing about tenancy, and
+  // `keycloak_sso` speaks only about applications. So this narrows to
+  // `keycloak` alone rather than to "every directory", which is a STRICTER
+  // filter than the `sso_app` branch above, not the same shape inverted —
+  // fanning an organization out to the directories would enqueue rows that
+  // every one of them would fail, retry and dead-letter.
+  if (aggregateType === 'organization') {
+    return enabledTargets.filter((target) => target === 'keycloak')
+  }
   return enabledTargets.filter((target) => target !== 'keycloak_sso')
 }

@@ -12,6 +12,13 @@ describe('targetsForAggregate', () => {
     expect(targetsForAggregate('sso_app', EVERY_TARGET)).toEqual(['keycloak_sso'])
   })
 
+  it('sends an organization event to keycloak and nowhere else', () => {
+    // Organizations milestone, Task 10. An organization IS a Keycloak realm;
+    // no other target in the catalog has a realm concept. A STRICTER filter
+    // than the sso_app branch, not the same one inverted.
+    expect(targetsForAggregate('organization', EVERY_TARGET)).toEqual(['keycloak'])
+  })
+
   it.each(['user', 'group', 'membership', 'org_unit'] as const)(
     'never sends a %s event to keycloak_sso',
     (aggregateType) => {
@@ -36,6 +43,10 @@ describe('targetsForAggregate', () => {
       'keycloak',
       'mail_server',
     ])
+  })
+
+  it('gives an organization nothing when keycloak is not enabled', () => {
+    expect(targetsForAggregate('organization', ['active_directory', 'mail_server'])).toEqual([])
   })
 
   it('classifies every aggregate type in the catalog', () => {

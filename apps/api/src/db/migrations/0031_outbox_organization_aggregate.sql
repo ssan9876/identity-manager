@@ -1,0 +1,28 @@
+-- Milestone: organizations multi-tenancy, Task 10 — `organization` becomes a
+-- first-class outbox aggregate.
+--
+-- Alone in this migration on purpose, and doing nothing but widening the
+-- enum. Postgres forbids USING a value added by `ALTER TYPE ... ADD VALUE`
+-- inside the transaction that added it, and drizzle applies every pending
+-- migration in ONE transaction — so on a fresh database this statement and
+-- any hypothetical `INSERT INTO outbox_events (aggregate_type) VALUES
+-- ('organization')` would be in the same transaction and the insert would
+-- fail. This file therefore inserts nothing; the first `organization` row is
+-- written at RUNTIME by `POST /organizations` (Task 12), long after this
+-- transaction has committed. Migration 0017 records the same trap for
+-- `outbox_target`/`external_identity_system`, and connector-targets.ts's doc
+-- comment writes out the reasoning at length.
+--
+-- RE-RUNNABLE, like everything from 0027 onward: test/migrate.spec.ts rewinds
+-- the ledger to 0027's journal `when` and replays this whole tail against a
+-- POPULATED schema, so a second pass over this file must not error. `ADD
+-- VALUE IF NOT EXISTS` is what makes that true — without it the replay dies
+-- with `enum label "organization" already exists`. (0029 and 0030 use
+-- `IF NOT EXISTS`/duplicate_object guards for the same reason; this is the
+-- enum-shaped version of the same rule.)
+--
+-- Deliberately NOT hand-written apart from the generator: `drizzle-kit
+-- generate` produced exactly this statement without the guard, the guard is
+-- the only edit, and meta/0031_snapshot.json is the generator's own output
+-- kept verbatim so the next `generate` sees no drift.
+ALTER TYPE "public"."outbox_aggregate_type" ADD VALUE IF NOT EXISTS 'organization';
