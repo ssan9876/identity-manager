@@ -192,6 +192,24 @@ attempts, next retry, error. A "Blocked by group" section when non-empty. The
 `SyncBadge` in the page header becomes a link to the tab, putting a red badge one
 click from its reason.
 
+## Found while planning: the console's own target list is stale
+
+`apps/web/src/connectors/api.ts:4` hard-codes a five-value `ConnectorTarget`
+union that is missing `mail_server`, and `apps/web/src/audit/outbox-api.ts:22`
+carries a second copy of the same stale list. This is the identical defect the
+API already fixed and left a standing instruction about
+(`connectors/connector.ts:22-35`: five hand-copied lists went stale when
+`mail_server` was added, "do not reintroduce a literal list of targets
+anywhere") — the web simply never got the same treatment, because there is no
+shared package between the two apps to enforce it.
+
+Consequences today: the connectors console cannot list, configure, enable or
+**disable** the mail target at all, and `CONNECTOR_TARGET_LABEL[event.target]`
+resolves to `undefined` for a `mail_server` dead letter — which is exactly the
+dead letter this whole document is about. Fixing it is a prerequisite for the
+sync panel rendering the real incident correctly, so it is in scope here rather
+than deferred.
+
 ## Out of scope
 
 - **No retry action.** Unsticking a dead letter remains `ReconciliationJob`'s job
