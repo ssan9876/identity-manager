@@ -380,11 +380,34 @@ Two traps worth knowing, both of which made a working fix look broken:
       repository has no git remote", which is no longer true — `origin` is
       `github.com/ssan9876/identity-manager`, and `.github/workflows/ci.yml`
       will now actually run.
-- [ ] **Two bare `task-2-report.md` citations remain** in
-      `apps/api/test/connector-secrets.spec.ts:45` and
-      `apps/web/e2e/theme.spec.ts:19`, pointing at a file that exists nowhere.
-      Other `.superpowers/` citations are a deliberate gitignored-ledger
-      convention and are fine; these two are not.
+- [x] **Two bare `task-2-report.md` citations removed** from
+      `apps/api/test/connector-secrets.spec.ts` and
+      `apps/web/e2e/theme.spec.ts`, which pointed at a file that exists at
+      no path relative to them. Other `.superpowers/`-qualified citations
+      are a deliberate gitignored-ledger convention and are fine.
+      **Done** (`fix/security-residuals`): both removed rather than
+      repointed — the ledger is gitignored and absent from a fresh worktree,
+      so no path written here could be verified. Each comment now stands on
+      something in this repository instead: connector-secrets.spec.ts on its
+      own in-suite `assertNoLeak` meta-test (the nested "assertNoLeak is not
+      a vacuous check" describe block), theme.spec.ts on
+      `apps/web/src/styles/tokens.css`, whose header records the computation
+      method, the ratios it corrected inline, and the full
+      `.superpowers/...` path onward to the complete table.
+- [ ] **Four more bare report citations survive** — the "two" above was an
+      undercount. Grepping `task-2-report` also hits
+      `apps/web/src/attributes/AttributeField.tsx:100`,
+      `apps/web/src/self-service/SelfServicePage.tsx:58` and `:110` (the
+      latter also cites a bare `task-3-report.md`), and
+      `apps/web/src/styles/components.css:8` — all bare filenames, the same
+      defect. NOT fixed here: `.superpowers/sdd/` holds several milestone
+      directories and the ledger is absent from the worktree, so which
+      report each one means cannot be checked from the repository, and
+      guessing a path is the exact failure being removed. The self-service
+      and components.css ones read as Milestone 9 Task 2
+      (`.superpowers/sdd/2026-08-06-idp-milestone-9-ci-and-polish/`, the
+      directory tokens.css and docs/design-system.md both name);
+      AttributeField's is genuinely ambiguous. Needs someone with the ledger.
 - [ ] **`stash@{0}` is superseded** — "WIP on feat/user-activate…". Its four
       files became `c3524c6` and `a734538`, which are 66 lines further along.
       Droppable.
