@@ -27,6 +27,13 @@
 --      given keys";
 --   3. it writes the manager FK as a bare `ON DELETE set null`. See the
 --      note on that constraint below for why that one is not survivable.
+--
+-- Every step below is written to be RE-RUNNABLE. Drizzle only applies a
+-- migration whose journal `when` exceeds the newest `created_at` in its
+-- ledger, so this never re-runs in production — but test/migrate.spec.ts
+-- deliberately rewinds that ledger to prove 0027's guard fires, which
+-- re-runs everything after 0027 as well. `IF NOT EXISTS` and the
+-- duplicate_object guards (the shape 0025 already uses) keep that honest.
 -- The resulting SCHEMA is identical to what `db:generate` produces from the
 -- Drizzle schema in this same commit (the drift check is clean), with the
 -- single documented exception of the manager FK's column list.
@@ -61,12 +68,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS "groups_id_organization_key" ON "groups" USING
 -- group). Added nullable, backfilled, then set NOT NULL — the same
 -- three-step shape 0025 used, and the reason this file is hand-written.
 -- ---------------------------------------------------------------------------
-ALTER TABLE "group_user_members" ADD COLUMN "organization_id" uuid;--> statement-breakpoint
+ALTER TABLE "group_user_members" ADD COLUMN IF NOT EXISTS "organization_id" uuid;--> statement-breakpoint
 UPDATE "group_user_members" m SET "organization_id" = g."organization_id"
   FROM "groups" g WHERE g."id" = m."group_id";--> statement-breakpoint
 ALTER TABLE "group_user_members" ALTER COLUMN "organization_id" SET NOT NULL;--> statement-breakpoint
 
-ALTER TABLE "group_group_members" ADD COLUMN "organization_id" uuid;--> statement-breakpoint
+ALTER TABLE "group_group_members" ADD COLUMN IF NOT EXISTS "organization_id" uuid;--> statement-breakpoint
 UPDATE "group_group_members" m SET "organization_id" = g."organization_id"
   FROM "groups" g WHERE g."id" = m."parent_group_id";--> statement-breakpoint
 ALTER TABLE "group_group_members" ALTER COLUMN "organization_id" SET NOT NULL;--> statement-breakpoint
@@ -83,9 +90,13 @@ ALTER TABLE "group_group_members" ALTER COLUMN "organization_id" SET NOT NULL;--
 -- ---------------------------------------------------------------------------
 
 -- A user's org unit must be in the user's own organization.
-ALTER TABLE "users" ADD CONSTRAINT "users_org_unit_organization_fk"
+DO $$ BEGIN
+ ALTER TABLE "users" ADD CONSTRAINT "users_org_unit_organization_fk"
   FOREIGN KEY ("org_unit_id","organization_id")
-  REFERENCES "public"."org_units"("id","organization_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+  REFERENCES "public"."org_units"("id","organization_id") ON DELETE restrict ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
 
 -- A user's manager likewise.
 --
@@ -100,43 +111,79 @@ ALTER TABLE "users" ADD CONSTRAINT "users_org_unit_organization_fk"
 -- the one documented place where this file's SQL is deliberately narrower
 -- than the schema declaration, and the real behaviour is pinned by
 -- test/organizations.isolation.spec.ts.
-ALTER TABLE "users" ADD CONSTRAINT "users_manager_organization_fk"
+DO $$ BEGIN
+ ALTER TABLE "users" ADD CONSTRAINT "users_manager_organization_fk"
   FOREIGN KEY ("manager_id","organization_id")
-  REFERENCES "public"."users"("id","organization_id") ON DELETE SET NULL ("manager_id") ON UPDATE no action;--> statement-breakpoint
+  REFERENCES "public"."users"("id","organization_id") ON DELETE SET NULL ("manager_id") ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
 
 -- A group's org unit. NULL org_unit_id means a global group and passes.
-ALTER TABLE "groups" ADD CONSTRAINT "groups_org_unit_organization_fk"
+DO $$ BEGIN
+ ALTER TABLE "groups" ADD CONSTRAINT "groups_org_unit_organization_fk"
   FOREIGN KEY ("org_unit_id","organization_id")
-  REFERENCES "public"."org_units"("id","organization_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+  REFERENCES "public"."org_units"("id","organization_id") ON DELETE restrict ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
 
 -- An org unit's parent. A mis-set parent_id would otherwise graft one
 -- tenant's whole subtree under another's, and because scope filtering is
 -- path-based every ancestor-scoped read would then cross the boundary.
-ALTER TABLE "org_units" ADD CONSTRAINT "org_units_parent_organization_fk"
+DO $$ BEGIN
+ ALTER TABLE "org_units" ADD CONSTRAINT "org_units_parent_organization_fk"
   FOREIGN KEY ("parent_id","organization_id")
-  REFERENCES "public"."org_units"("id","organization_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+  REFERENCES "public"."org_units"("id","organization_id") ON DELETE restrict ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
 
 -- The edges' own organization, plus both endpoints pinned to it. CASCADE
 -- matches the single-column FKs these sit alongside: deleting a group or a
 -- user has always removed its membership rows, and a composite FK with a
 -- different action would quietly change that.
-ALTER TABLE "group_user_members" ADD CONSTRAINT "group_user_members_organization_id_organizations_id_fk"
-  FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "group_user_members" ADD CONSTRAINT "gum_group_organization_fk"
+DO $$ BEGIN
+ ALTER TABLE "group_user_members" ADD CONSTRAINT "group_user_members_organization_id_organizations_id_fk"
+  FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "group_user_members" ADD CONSTRAINT "gum_group_organization_fk"
   FOREIGN KEY ("group_id","organization_id")
-  REFERENCES "public"."groups"("id","organization_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "group_user_members" ADD CONSTRAINT "gum_user_organization_fk"
+  REFERENCES "public"."groups"("id","organization_id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "group_user_members" ADD CONSTRAINT "gum_user_organization_fk"
   FOREIGN KEY ("user_id","organization_id")
-  REFERENCES "public"."users"("id","organization_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+  REFERENCES "public"."users"("id","organization_id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
 
 -- Nesting cannot cross a tenant boundary either — a nested group grants its
 -- parent's members everything the child grants, so one cross-tenant edge
 -- here is a silent privilege bridge between two tenants.
-ALTER TABLE "group_group_members" ADD CONSTRAINT "group_group_members_organization_id_organizations_id_fk"
-  FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "group_group_members" ADD CONSTRAINT "ggm_parent_organization_fk"
+DO $$ BEGIN
+ ALTER TABLE "group_group_members" ADD CONSTRAINT "group_group_members_organization_id_organizations_id_fk"
+  FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "group_group_members" ADD CONSTRAINT "ggm_parent_organization_fk"
   FOREIGN KEY ("parent_group_id","organization_id")
-  REFERENCES "public"."groups"("id","organization_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "group_group_members" ADD CONSTRAINT "ggm_child_organization_fk"
+  REFERENCES "public"."groups"("id","organization_id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "group_group_members" ADD CONSTRAINT "ggm_child_organization_fk"
   FOREIGN KEY ("child_group_id","organization_id")
   REFERENCES "public"."groups"("id","organization_id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
