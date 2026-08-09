@@ -20,7 +20,7 @@ import OrgUnitsPage from './org-units/OrgUnitsPage'
 import RolesCatalogPage from './roles/RolesCatalogPage'
 import SelfServicePage from './self-service/SelfServicePage'
 import AppShell from './shell/AppShell'
-import { BRAND } from './brand'
+import { BRAND, BrandLockup, BrandMark } from './brand'
 import { keycloakIssuer } from './auth/oidc-config'
 import { ToastProvider } from './shell/ToastProvider'
 import './SignInGate.css'
@@ -117,34 +117,73 @@ export default function App() {
 
   if (auth.isLoading) {
     return (
-      <main className="signin-gate">
-        <p className="signin-gate--loading">Loading…</p>
+      <main className="signin-gate signin-gate--centred">
+        <div className="signin-gate__loading">
+          <BrandLockup />
+          <p className="signin-gate__loading-text" role="status">
+            Checking your session…
+          </p>
+        </div>
       </main>
     )
   }
 
   if (!auth.isAuthenticated) {
     return (
+      /*
+       * The one Committed surface in an otherwise Restrained product: a
+       * drenched brand panel beside the actual sign-in card. This screen
+       * is the only moment the console is a BRAND rather than a tool —
+       * nobody is mid-task here, they are arriving — so it is also the
+       * only place --brand-panel and the display type steps are allowed.
+       * Under 900px the two columns stack and the panel becomes a compact
+       * header band; it is never hidden, because it carries the <h1>.
+       */
       <main className="signin-gate">
-        <div className="signin-gate__panel">
-          <h1 className="text-title">{BRAND.name}</h1>
-          <p className="signin-gate__hint">Sign in with your organisation account to continue.</p>
-          <button type="button" className="btn btn--primary" onClick={() => void startSignIn()}>
-            Sign in
-          </button>
-          {signInFailure !== null && (
-            <div className="signin-gate__error" role="alert">
-              <p>
-                Could not reach the sign-in service at <code>{keycloakIssuer}</code>.
-              </p>
-              <p>
-                If it uses a self-signed certificate, open that address in this browser
-                once and accept the certificate, then try again.
-              </p>
-              <p className="signin-gate__error-detail">{signInFailure}</p>
-            </div>
-          )}
-        </div>
+        <section className="signin-gate__brand">
+          <h1 className="signin-gate__wordmark">
+            <BrandLockup size="lg" />
+          </h1>
+          <p className="signin-gate__tagline">{BRAND.tagline}</p>
+          <ul className="signin-gate__points">
+            <li>One record per person, from the first day to the last.</li>
+            <li>Roles and group membership that follow the org, not a ticket.</li>
+            <li>Every change written down, and pushed to the systems that matter.</li>
+          </ul>
+          {/* Purely ornamental: the mark, oversized and set at low opacity,
+              bleeding off the corner. aria-hidden by default (BrandMark),
+              pointer-events off, and it never overlaps live text. */}
+          <BrandMark className="signin-gate__watermark" />
+        </section>
+
+        <section className="signin-gate__panel">
+          <div className="signin-gate__card">
+            <h2 className="signin-gate__heading">Sign in</h2>
+            <p className="signin-gate__hint">
+              Use your organisation account. {BRAND.name} does not hold your password —
+              your identity provider does.
+            </p>
+            <button
+              type="button"
+              className="btn btn--primary signin-gate__submit"
+              onClick={() => void startSignIn()}
+            >
+              Sign in
+            </button>
+            {signInFailure !== null && (
+              <div className="signin-gate__error" role="alert">
+                <p>
+                  Could not reach the sign-in service at <code>{keycloakIssuer}</code>.
+                </p>
+                <p>
+                  If it uses a self-signed certificate, open that address in this browser
+                  once and accept the certificate, then try again.
+                </p>
+                <p className="signin-gate__error-detail">{signInFailure}</p>
+              </div>
+            )}
+          </div>
+        </section>
       </main>
     )
   }
