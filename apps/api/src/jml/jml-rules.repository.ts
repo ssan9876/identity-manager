@@ -1,10 +1,11 @@
-import { Inject, Injectable } from '@nestjs/common'
+import { Inject, Injectable, Optional } from '@nestjs/common'
 import { and, eq, isNotNull } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { DB_CLIENT } from '../common/db.token'
 import { NotFoundError, ValidationError } from '../common/errors'
 import * as schema from '../db/schema/index'
 import { jmlRules } from '../db/schema/jml-rules'
+import { OrganizationsRepository } from '../organizations/organizations.repository'
 import type { JmlActionType, JmlConditionOperator, JmlTrigger } from './rule-engine'
 
 /**
@@ -23,6 +24,13 @@ import type { JmlActionType, JmlConditionOperator, JmlTrigger } from './rule-eng
 export interface JmlRule {
   id: string
   name: string
+  /**
+   * The tenant this rule belongs to (organizations milestone, Task 5).
+   * Exposed on the read shape because `listEnabledByTrigger` takes it as a
+   * REQUIRED argument — a caller holding a rule must be able to see which
+   * organization it came from without a second query.
+   */
+  organizationId: string
   enabled: boolean
   trigger: string
   conditionField: string
@@ -62,15 +70,30 @@ export interface CreateJmlRuleInput {
  */
 @Injectable()
 export class JmlRulesRepository {
-  constructor(@Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>) {}
+  constructor(
+    @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
+    // OPTIONAL with a raw fallback — the same shape OrgUnitsRepository,
+    // GroupsRepository and BusinessRolesRepository use for this dependency.
+    @Optional()
+    @Inject(OrganizationsRepository)
+    private readonly organizations: OrganizationsRepository = new OrganizationsRepository(db),
+  ) {}
 
   async create(
     input: CreateJmlRuleInput,
     db: NodePgDatabase<typeof schema> = this.db,
   ): Promise<JmlRule> {
+    // Milestone: organizations multi-tenancy, Task 5. `organization_id` is
+    // NOT NULL; rules are seeded through this repository only (there is no
+    // HTTP CRUD) and nothing can yet name a target organization, so a new
+    // rule falls back to master exactly as OrgUnitsRepository.createRoot
+    // does. Resolved on the caller's handle, never a second pooled
+    // connection (finding C1).
+    const master = await this.organizations.findMaster(db)
     const [row] = await db
       .insert(jmlRules)
       .values({
+        organizationId: master.id,
         name: input.name,
         trigger: input.trigger,
         conditionField: input.conditionField,
@@ -102,15 +125,30 @@ export class JmlRulesRepository {
    * re-checks `enabled` itself (defense in depth — see its own doc comment),
    * so this method returning a stale or overly-broad set is never a
    * correctness hazard, only a wasted evaluation.
+   *
+   * The ORGANIZATION filter is a different matter and is NOT an
+   * optimisation: `matchRules` does not — and cannot — re-check it, because
+   * a `JmlRule` carries no notion of the user it is being matched against.
+   * A rule leaking across the tenant boundary here would let one tenant's
+   * admin `deactivate` another tenant's staff. It is therefore the LEADING,
+   * REQUIRED parameter, so that omitting it is a compile error rather than
+   * a silent widening (Milestone: organizations multi-tenancy, Task 5).
    */
   async listEnabledByTrigger(
+    organizationId: string,
     trigger: JmlTrigger,
     db: NodePgDatabase<typeof schema> = this.db,
   ): Promise<JmlRule[]> {
     const rows = await db
       .select()
       .from(jmlRules)
-      .where(and(eq(jmlRules.enabled, true), eq(jmlRules.trigger, trigger)))
+      .where(
+        and(
+          eq(jmlRules.organizationId, organizationId),
+          eq(jmlRules.enabled, true),
+          eq(jmlRules.trigger, trigger),
+        ),
+      )
     return rows as JmlRule[]
   }
 

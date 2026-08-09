@@ -11,6 +11,11 @@ function makeRule(overrides: Partial<JmlRule> = {}): JmlRule {
   return {
     id: `rule-${ruleSeq}`,
     name: `Rule ${ruleSeq}`,
+    // Task 5 of the organizations milestone put a tenant on every rule.
+    // `matchRules` never reads it — tenant scoping happens one level up, in
+    // JmlRulesRepository.listEnabledByTrigger — so any stable value serves
+    // this pure-function suite.
+    organizationId: 'org-fixture',
     enabled: true,
     trigger: 'user_attribute_changed',
     conditionField: 'jobTitle',

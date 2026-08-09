@@ -13,6 +13,7 @@ import {
   varchar,
 } from 'drizzle-orm/pg-core'
 import { groups } from './groups'
+import { organizations } from './organizations'
 import { outboxTarget } from './outbox-events'
 import { users } from './users'
 
@@ -55,6 +56,25 @@ export const businessRoles = pgTable(
     name: varchar('name', { length: 255 }).notNull(),
     description: text('description'),
 
+    /**
+     * Milestone: organizations multi-tenancy, Task 5. A role is a formula
+     * plus a set of entitlements, evaluated against every user the engine
+     * can see — so without a tenant it is, the moment a second organization
+     * exists, one admin's formula granting inside another admin's
+     * directory. Backfilled to master for every pre-existing row (0030).
+     *
+     * ON DELETE RESTRICT, like org_units/users/groups: CASCADE would remove
+     * the formulas while leaving every entitlement they had already granted
+     * in place, with nothing left to explain or revoke them.
+     *
+     * This column is what `listEnabledForEvaluation` filters on, and it is a
+     * REQUIRED parameter there rather than an optional one precisely because
+     * a forgotten filter on this path is a cross-tenant grant.
+     */
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'restrict' }),
+
     enabled: boolean('enabled').notNull().default(false),
 
     /**
@@ -73,9 +93,18 @@ export const businessRoles = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    nameIdx: uniqueIndex('business_roles_name_idx').on(table.name),
-    // The reconciler's hot read: every enabled role, on every evaluation.
-    enabledIdx: index('business_roles_enabled_idx').on(table.enabled),
+    // Per ORGANIZATION since Task 5, exactly as 0028 did for
+    // users.username and groups.name: a global unique name means whichever
+    // tenant onboards "Engineering Standard Access" first permanently
+    // denies it to every other, and the 409 that denies it is an existence
+    // oracle across the tenant boundary. The index NAME is unchanged —
+    // BusinessRolesRepository.translateWriteError matches that exact string
+    // to turn a 23505 into a ConflictError.
+    nameIdx: uniqueIndex('business_roles_name_idx').on(table.organizationId, table.name),
+    // The reconciler's hot read: every enabled role IN ONE ORGANIZATION, on
+    // every evaluation. organization_id leads because it is the first
+    // discriminator once more than one tenant exists.
+    enabledIdx: index('business_roles_enabled_idx').on(table.organizationId, table.enabled),
   }),
 )
 

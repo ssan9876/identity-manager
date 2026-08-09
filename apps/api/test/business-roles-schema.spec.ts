@@ -108,7 +108,13 @@ describe('business role tables (Milestone 15, Task 2)', () => {
   })
 
   it('a new role is disabled, undrafted and unsimulated', async () => {
-    const [role] = await ctx.db.insert(businessRoles).values({ name: 'Sales AE' }).returning()
+    const [role] = await ctx.db
+      .insert(businessRoles)
+      // organization_id is NOT NULL since Task 5 of the organizations
+      // milestone, and this raw insert bypasses BusinessRolesRepository.create
+      // (which derives master itself), so the fixture supplies it.
+      .values({ name: 'Sales AE', organizationId: await masterOrganizationId(ctx.db) })
+      .returning()
 
     expect(role.enabled).toBe(false)
     expect(role.draftDefinition).toBeNull()
@@ -117,7 +123,13 @@ describe('business role tables (Milestone 15, Task 2)', () => {
   })
 
   it('a grant must set exactly one of group_id / target, matching its kind', async () => {
-    const [role] = await ctx.db.insert(businessRoles).values({ name: 'Check constraint' }).returning()
+    const [role] = await ctx.db
+      .insert(businessRoles)
+      // organization_id is NOT NULL since Task 5 of the organizations
+      // milestone, and this raw insert bypasses BusinessRolesRepository.create
+      // (which derives master itself), so the fixture supplies it.
+      .values({ name: 'Check constraint', organizationId: await masterOrganizationId(ctx.db) })
+      .returning()
 
     // group_membership with no group_id
     await expect(
@@ -137,7 +149,13 @@ describe('business role tables (Milestone 15, Task 2)', () => {
   })
 
   it('an exception requires a reason', async () => {
-    const [role] = await ctx.db.insert(businessRoles).values({ name: 'Reason required' }).returning()
+    const [role] = await ctx.db
+      .insert(businessRoles)
+      // organization_id is NOT NULL since Task 5 of the organizations
+      // milestone, and this raw insert bypasses BusinessRolesRepository.create
+      // (which derives master itself), so the fixture supplies it.
+      .values({ name: 'Reason required', organizationId: await masterOrganizationId(ctx.db) })
+      .returning()
 
     await expect(
       ctx.db.execute(sql`

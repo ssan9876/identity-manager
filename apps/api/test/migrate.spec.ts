@@ -37,10 +37,15 @@ describe('runMigrations', () => {
       expect(orgUnit.rows).toHaveLength(1)
 
       await ctx.ownerPool.query(
+        // organization_id is NOT NULL since 0030 (organizations milestone,
+        // Task 5). Derived with a subselect, exactly like the org unit
+        // above — this fixture is a raw insert that bypasses
+        // JmlRulesRepository.create and therefore its own master lookup.
         `INSERT INTO jml_rules (name, trigger, condition_field, condition_operator,
-                                condition_value, action, action_params)
+                                condition_value, action, action_params, organization_id)
          VALUES ('stranded group rule', 'user_created', 'jobTitle', 'equals',
-                 '"Engineer"'::jsonb, 'add_to_group', '{"groupId":"x"}'::jsonb)`,
+                 '"Engineer"'::jsonb, 'add_to_group', '{"groupId":"x"}'::jsonb,
+                 (SELECT id FROM organizations WHERE is_master))`,
       )
 
       // Drizzle applies only migrations whose journal `when` is greater than
