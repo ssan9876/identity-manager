@@ -125,6 +125,29 @@ describe('JwtGuard rejects validly-signed tokens missing required identity claim
     await localJwks?.stop()
   })
 
+  /**
+   * Finding SEC-L4 (docs/archive/audits/carried-findings-verification.md).
+   * jose enforces `exp` only when the claim is present, so before
+   * `requiredClaims: ['exp']` a validly signed token that simply omitted it
+   * was accepted and never expired. Keycloak always sets `exp`; this proves
+   * the guard no longer depends on that being true.
+   */
+  it('rejects a validly signed token that carries no "exp" claim', async () => {
+    const token = await localJwks.signToken(
+      {
+        aud: 'idm-api',
+        sub: 'a-real-subject-id',
+        preferred_username: 'someone@example.com',
+      },
+      { omitExpiry: true },
+    )
+
+    await request(app.getHttpServer())
+      .get('/me')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(401)
+  })
+
   it('rejects a token with no "sub" claim', async () => {
     const token = await localJwks.signToken({
       aud: 'idm-api',

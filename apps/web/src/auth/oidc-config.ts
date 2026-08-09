@@ -52,6 +52,16 @@ export const oidcConfig: AuthProviderProps = {
   userStore: new WebStorageStateStore({ store: window.sessionStorage }),
 
   /**
+   * Finding SEC-L1. `stateStore` is SEPARATE from `userStore` and defaults
+   * to `localStorage`, so leaving it unset persisted the PKCE
+   * `code_verifier` and the `nonce` across browser restarts — long-lived
+   * on-disk artefacts of an in-flight login that should not outlive the
+   * tab that started it. Setting both to sessionStorage keeps the whole
+   * auth surface in one storage tier rather than two.
+   */
+  stateStore: new WebStorageStateStore({ store: window.sessionStorage }),
+
+  /**
    * Finding CS-L2. Defaults to `false`, which leaves the refresh token relying
    * on Keycloak's session teardown rather than being explicitly revoked. This
    * does NOT and cannot revoke an already-issued access token: that is a

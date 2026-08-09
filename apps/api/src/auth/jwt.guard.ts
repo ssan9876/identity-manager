@@ -66,6 +66,12 @@ export class JwtGuard implements CanActivate {
         // Explicit allowlist. Never accept "none", and never let the token
         // choose its own verification algorithm.
         algorithms: ['RS256'],
+        // Finding SEC-L4 (docs/archive/audits/carried-findings-verification.md).
+        // jose only enforces `exp` when the claim is PRESENT — a validly
+        // signed token that simply omits it was accepted and never expired.
+        // Keycloak always sets `exp`, so this is defence in depth against a
+        // future issuer (or a mis-scoped client) that does not.
+        requiredClaims: ['exp'],
       })
 
       const subject = payload.sub

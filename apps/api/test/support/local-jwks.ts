@@ -44,13 +44,20 @@ export async function startLocalJwks(): Promise<LocalJwks> {
   return {
     issuer,
 
-    async signToken(claims: JWTPayload): Promise<string> {
-      return new SignJWT(claims)
+    /**
+     * `omitExpiry` exists for one test: JwtGuard passes
+     * `requiredClaims: ['exp']` to `jwtVerify`, and jose only enforces `exp`
+     * when the claim is PRESENT — so proving a token without one is rejected
+     * needs a token this helper would otherwise always give an `exp`
+     * (finding SEC-L4). Default is unchanged for every other caller.
+     */
+    async signToken(claims: JWTPayload, options?: { omitExpiry?: boolean }): Promise<string> {
+      const base = new SignJWT(claims)
         .setProtectedHeader({ alg: 'RS256', kid: KID })
         .setIssuedAt()
         .setIssuer(issuer)
-        .setExpirationTime('5m')
-        .sign(privateKey as KeyLike)
+      const signer = options?.omitExpiry === true ? base : base.setExpirationTime('5m')
+      return signer.sign(privateKey as KeyLike)
     },
 
     stop: () =>
