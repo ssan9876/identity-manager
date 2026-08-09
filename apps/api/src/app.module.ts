@@ -36,6 +36,7 @@ import {
 } from './keycloak/keycloak-admin.client'
 import { OrgUnitsController } from './org-units/org-units.controller'
 import { OrgUnitsRepository } from './org-units/org-units.repository'
+import { OrganizationsRepository } from './organizations/organizations.repository'
 import { OutboxController } from './outbox/outbox.controller'
 import { OutboxRepository } from './outbox/outbox.repository'
 import { OutboxWriter } from './outbox/outbox.writer'
@@ -129,6 +130,7 @@ import { UsersRepository } from './users/users.repository'
     AttributeTargetMappingsRepository,
     OrgUnitsRepository,
     GroupsRepository,
+    OrganizationsRepository,
     PermissionEngine,
     PermissionGuard,
     PrivilegeGuards,

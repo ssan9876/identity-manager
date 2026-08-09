@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common'
+import { Inject, Injectable, Optional } from '@nestjs/common'
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type { AttributeDefinition, ValidationRules } from '../attributes/attribute-validator'
@@ -9,6 +9,8 @@ import * as schema from '../db/schema/index'
 import { groupGroupMembers, groupUserMembers } from '../db/schema/group-members'
 import { groups } from '../db/schema/groups'
 import { users } from '../db/schema/users'
+import { OrganizationsRepository } from '../organizations/organizations.repository'
+import { requireOrgUnitOrganization } from '../org-units/org-units.repository'
 
 export interface Group {
   id: string
@@ -69,7 +71,18 @@ const GROUP_GRAPH_LOCK_ID = 0x1d3a_0001
 
 @Injectable()
 export class GroupsRepository {
-  constructor(@Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>) {}
+  constructor(
+    @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
+    // OPTIONAL, defaulting to a raw instance bound to the same `db` — same
+    // pattern OrgUnitsRepository uses for the identical dependency (see its
+    // own constructor doc comment). Keeps every existing single-argument
+    // `new GroupsRepository(db)` call site across the test suite compiling
+    // unchanged, while real Nest DI (AppModule) hands this the SAME managed
+    // OrganizationsRepository instance every other provider gets.
+    @Optional()
+    @Inject(OrganizationsRepository)
+    private readonly organizations: OrganizationsRepository = new OrganizationsRepository(db),
+  ) {}
 
   /**
    * `create`, `findById`, `update`, `addUser`, `removeUser`, `addChildGroup`
@@ -83,6 +96,17 @@ export class GroupsRepository {
    * the SAME connection as the audit write.
    */
   async create(input: CreateGroupInput, db: NodePgDatabase<typeof schema> = this.db): Promise<Group> {
+    // A GLOBAL group (no org unit) belongs to master — preserving exactly
+    // today's behaviour that global groups are platform-wide, since a
+    // per-tenant global group is not something this phase introduces.
+    // Otherwise, derived from the target org unit, same as every other
+    // write this constraint touches: never a parameter threaded in from a
+    // caller.
+    const organizationId =
+      input.orgUnitId === undefined
+        ? (await this.organizations.findMaster(db)).id
+        : await requireOrgUnitOrganization(db, input.orgUnitId)
+
     try {
       const [row] = await db
         .insert(groups)
@@ -90,6 +114,7 @@ export class GroupsRepository {
           name: input.name,
           description: input.description ?? null,
           orgUnitId: input.orgUnitId ?? null,
+          organizationId,
           attributes: input.attributes ?? {},
         })
         .returning()

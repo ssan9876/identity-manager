@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { describe, expect, it } from 'vitest'
 import {
@@ -10,6 +10,7 @@ import {
 import { connectorTargets } from '../src/db/schema/connector-targets'
 import { grantSource } from '../src/db/schema/grant-source'
 import * as schema from '../src/db/schema/index'
+import { organizations } from '../src/db/schema/organizations'
 import { orgUnits } from '../src/db/schema/org-units'
 import { provisioningMode, userTargetAccounts } from '../src/db/schema/user-target-accounts'
 import { users } from '../src/db/schema/users'
@@ -19,14 +20,27 @@ const ctx = withTestDatabase()
 
 let fixtureSeq = 0
 
+// This suite inserts directly via `db.insert(...)`, bypassing
+// OrgUnitsRepository/UsersRepository (and therefore their organization_id
+// derivation) entirely — so, like every other raw-insert test fixture, it
+// resolves master itself. There is only ever one organization in Phase 1.
+async function masterOrganizationId(db: NodePgDatabase<typeof schema>): Promise<string> {
+  const [master] = await db.select({ id: organizations.id }).from(organizations).where(eq(organizations.isMaster, true))
+  if (master === undefined) {
+    throw new Error('no master organization exists')
+  }
+  return master.id
+}
+
 async function insertUser(
   db: NodePgDatabase<typeof schema>,
   overrides: { username?: string; jobTitle?: string | null; location?: string | null } = {},
 ): Promise<string> {
   fixtureSeq += 1
+  const organizationId = await masterOrganizationId(db)
   const [unit] = await db
     .insert(orgUnits)
-    .values({ name: `Unit ${fixtureSeq}`, path: `root${fixtureSeq}` })
+    .values({ name: `Unit ${fixtureSeq}`, path: `root${fixtureSeq}`, organizationId })
     .returning()
 
   const username = overrides.username ?? `fixture${fixtureSeq}`
@@ -42,6 +56,7 @@ async function insertUser(
       jobTitle: overrides.jobTitle ?? null,
       location: overrides.location ?? null,
       orgUnitId: unit.id,
+      organizationId,
     })
     .returning()
 
