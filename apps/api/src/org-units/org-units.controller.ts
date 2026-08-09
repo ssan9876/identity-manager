@@ -7,7 +7,7 @@ import { PermissionEngine } from '../authz/permission.engine'
 import { PermissionGuard, type AuthorizedRequest } from '../authz/permission.guard'
 import { RequirePermission } from '../authz/require-permission.decorator'
 import { DB_CLIENT } from '../common/db.token'
-import { ForbiddenError, NotFoundError } from '../common/errors'
+import { NotFoundError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
 import { type Page, parsePageQuery } from '../common/pagination'
@@ -22,7 +22,15 @@ import { OrgUnitsRepository, type OrgUnit } from './org-units.repository'
 const createOrgUnitBodySchema = z
   .object({
     name: noNulChar(z.string().min(1).max(255)),
-    parentId: z.string().uuid().optional(),
+    // REQUIRED since organizations landed (multi-tenancy milestone, Task 7).
+    // A root org unit is the thing an ORGANIZATION owns — exactly one, and
+    // creating the organization is what creates it (Task 12). A root made
+    // through this endpoint would have to invent an organization to belong
+    // to, which in Phase 1 means silently landing in master: a second
+    // tenant's admin could create a root inside the platform tenant's
+    // directory and nothing in the schema would object, because the row
+    // itself is perfectly valid. There is therefore no route that makes one.
+    parentId: z.string().uuid(),
   })
   .strict()
 
@@ -98,45 +106,33 @@ export class OrgUnitsController {
   }
 
   /**
-   * A CHILD (`parentId` present) is scoped by the PARENT exactly like every
-   * other write in this milestone: `assertCanIn(actor, 'org_unit:create',
-   * parentId)` — does this actor's grant cover the org unit the new one
-   * would live under?
+   * Every org unit this endpoint creates is a CHILD, and is scoped by its
+   * PARENT exactly like every other write in this milestone:
+   * `assertCanIn(actor, 'org_unit:create', parentId)` — does this actor's
+   * grant cover the org unit the new one would live under?
    *
-   * A ROOT (`parentId` omitted) has no parent to scope against, so that
-   * pairing does not apply. Per the brief, creating one instead requires a
-   * GLOBAL grant of `org_unit:create`. `scopePathsFor` returning exactly
-   * `null` IS that check: `null` means every assignment granting this actor
-   * `org_unit:create` is unrestricted (see PermissionEngine.scopePathsFor's
-   * doc comment); anything else — including `[]` — means every assignment
-   * the actor holds for this action is scoped to something, and nothing
-   * scoped can authorize a resource that has no containing scope at all.
-   * This is intentionally NOT the same rule as GroupsController.create's
-   * global-group case: an org-unit root has no "anyone holding the action
-   * anywhere may manage it" counterpart (decision 1) to be consistent with,
-   * so there is nothing inconsistent about gating it more tightly.
+   * The ROOT branch is GONE (organizations multi-tenancy, Task 7). It used
+   * to accept `parentId: undefined` and gate it on a global grant of
+   * `org_unit:create`, which was the right rule while a root belonged to
+   * nothing. It is the wrong rule now: a root belongs to an ORGANIZATION,
+   * which owns exactly one, and the only thing that may create one is
+   * creating the organization. `OrgUnitsRepository.createRoot` deliberately
+   * SURVIVES — it is the method organization creation calls (Task 12) — but
+   * it is no longer reachable from HTTP.
+   *
+   * The global-grant check went with it rather than being kept "just in
+   * case": Zod now rejects a missing `parentId` before the handler runs, so
+   * a surviving check would be dead code that reads like a live control.
    */
   @Post()
   @RequirePermission('org_unit:create')
   async create(@Body() body: unknown, @Req() request: AuthorizedRequest): Promise<OrgUnit> {
     const parsed = parseBody(createOrgUnitBodySchema, body)
 
-    if (parsed.parentId === undefined) {
-      const scopePaths = await this.engine.scopePathsFor(request.actor, 'org_unit:create')
-      if (scopePaths !== null) {
-        throw new ForbiddenError(
-          'creating a root org unit requires a global grant of org_unit:create',
-        )
-      }
-    } else {
-      await this.engine.assertCanIn(request.actor, 'org_unit:create', parsed.parentId)
-    }
+    await this.engine.assertCanIn(request.actor, 'org_unit:create', parsed.parentId)
 
     return this.db.transaction(async (tx) => {
-      const unit =
-        parsed.parentId === undefined
-          ? await this.orgUnits.createRoot(parsed.name, tx)
-          : await this.orgUnits.createChild(parsed.parentId, parsed.name, tx)
+      const unit = await this.orgUnits.createChild(parsed.parentId, parsed.name, tx)
 
       await this.auditWriter.record(tx, {
         actorUserId: request.actor.userId,

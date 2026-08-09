@@ -47,12 +47,15 @@ function handleTreeKeyDown(event: KeyboardEvent<HTMLDivElement>) {
 }
 
 /**
- * Name-only create form, reused for both a ROOT (`parentId` omitted) and a
- * CHILD (`parentId` set) — `POST /org-units` itself is the only thing that
- * tells the two apart (task-3-brief.md; see OrgUnitsController.create on the
- * API side). Progressive disclosure, never a modal (docs/design-system.md bans "modal as
- * first thought" — a create form is exactly the kind of action that should
- * stay inline).
+ * Name-only create form for a CHILD org unit.
+ *
+ * It used to serve a ROOT too, with `parentId` omitted. Since Task 7 of the
+ * organizations milestone a root comes only from creating an ORGANIZATION,
+ * which owns exactly one — the API has no route that makes one, so this
+ * form no longer offers it and `parentId` is required. Progressive
+ * disclosure, never a modal (docs/design-system.md bans "modal as first
+ * thought" — a create form is exactly the kind of action that should stay
+ * inline).
  */
 function CreateOrgUnitForm({
   parentId,
@@ -60,8 +63,8 @@ function CreateOrgUnitForm({
   onCreated,
   onCancel,
 }: {
-  parentId?: string
-  parentName?: string
+  parentId: string
+  parentName: string
   onCreated: (unit: OrgUnit) => void
   onCancel: () => void
 }) {
@@ -87,16 +90,12 @@ function CreateOrgUnitForm({
     } catch (cause) {
       setSubmitting(false)
       if (cause instanceof ApiError && cause.status === 403) {
-        // The server's own message for the two 403 shapes here is already
-        // specific (OrgUnitsController.create: "creating a root org unit
-        // requires a global grant of org_unit:create" for the root case; a
-        // generic "not permitted: org_unit:create" for a scoped child) —
         // task-3-brief.md's scope-legibility requirement, applied to the
         // create action itself: name the boundary rather than a bare 403.
+        // Only ONE 403 shape reaches here now that the root case is gone —
+        // a scoped actor reaching outside their `org_unit:create` grant.
         setError(
-          parentId === undefined
-            ? cause.message
-            : `You don't have permission to add units under ${parentName ?? 'this org unit'} — it's outside what your org_unit:create grant covers.`,
+          `You don't have permission to add units under ${parentName} — it's outside what your org_unit:create grant covers.`,
         )
       } else {
         setError(cause instanceof ApiError ? cause.message : 'Could not create this org unit.')
@@ -328,7 +327,6 @@ export default function OrgUnitsPage() {
   const canCreateOrgUnit = permissions.status === 'ready' && permissions.actions.has('org_unit:create')
 
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const [showCreateRoot, setShowCreateRoot] = useState(false)
   const [directFetch, setDirectFetch] = useState<
     { id: string; status: 'loading' } | { id: string; status: 'error'; httpStatus?: number; message: string } | null
   >(null)
@@ -465,28 +463,16 @@ export default function OrgUnitsPage() {
       <div className="org-units-page__layout">
         <div className="org-units-page__tree-panel">
           <div className="org-units-page__tree-header">
+            {/*
+              "Add root org unit" used to live here. Removed with Task 7 of
+              the organizations milestone: a root belongs to an
+              organization, which owns exactly one and creates it as part of
+              creating the organization, so this button could only ever
+              produce a 400. A child is still added from the unit's own
+              detail panel, where there is a parent to add it under.
+            */}
             <h2 className="text-title">Tree</h2>
-            {canCreateOrgUnit && !showCreateRoot && (
-              <button
-                type="button"
-                className="btn btn--secondary"
-                onClick={() => setShowCreateRoot(true)}
-                data-testid="add-root-org-unit"
-              >
-                Add root org unit
-              </button>
-            )}
           </div>
-
-          {showCreateRoot && (
-            <CreateOrgUnitForm
-              onCreated={(unit) => {
-                handleOrgUnitCreated(unit)
-                setShowCreateRoot(false)
-              }}
-              onCancel={() => setShowCreateRoot(false)}
-            />
-          )}
 
           {orgUnits.status === 'loading' ? (
             <ul className="org-tree" aria-hidden="true">
@@ -505,8 +491,10 @@ export default function OrgUnitsPage() {
             <div className="empty-state">
               <h3>No org units yet</h3>
               <p>
-                Org units form the tree people and groups are placed in.
-                {canCreateOrgUnit ? ' Add the first one to get started.' : ' Ask an administrator to add one.'}
+                Org units form the tree people and groups are placed in. The top of that tree
+                belongs to an organization and is created with it; everything below is added
+                from its parent.{' '}
+                {canCreateOrgUnit ? '' : 'Ask an administrator if you need access to one.'}
               </p>
             </div>
           ) : (

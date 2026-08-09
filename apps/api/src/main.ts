@@ -4,7 +4,9 @@ import type { NestExpressApplication } from '@nestjs/platform-express'
 import { AppModule } from './app.module'
 import { DomainExceptionFilter } from './common/domain-exception.filter'
 import { payloadTooLargeMiddleware } from './common/http/payload-too-large.middleware'
+import { DB_CLIENT } from './common/db.token'
 import { loadEnv } from './config/env'
+import { adoptMasterRealm } from './organizations/master-organization'
 import { SyncWorker } from './outbox/sync.worker'
 
 /**
@@ -45,6 +47,17 @@ async function bootstrap(): Promise<void> {
   app.enableCors({ origin: ['http://localhost:5173'], credentials: true })
   app.useGlobalFilters(new DomainExceptionFilter())
   app.enableShutdownHooks()
+
+  // Milestone: organizations multi-tenancy, Task 6. BEFORE `listen`, so that
+  // an issuer naming a realm other than the one master is bound to refuses
+  // to serve traffic rather than serving it wrongly. Makes no Keycloak call
+  // — master's realm already exists; this only records which one it is.
+  //
+  // Here rather than in a Nest lifecycle hook for the same reason
+  // `SyncWorker.start()` is here: initialising AppModule in a test must
+  // have no side effect on any database.
+  await adoptMasterRealm(app.get(DB_CLIENT), env.keycloakIssuer)
+
   await app.listen(env.port)
 
   if (env.syncWorkerEnabled) {

@@ -149,7 +149,9 @@ describe('JmlRulesRepository (Milestone 7, Tasks 5 & 6)', () => {
 
       const stillDisabled = await repo().create(ruleInput({ trigger: 'start_date_reached' }))
 
-      const results = await repo().listEnabledByTrigger('start_date_reached')
+      // Organization-scoped since Task 5 of the organizations milestone;
+      // `create` puts every rule in master.
+      const results = await repo().listEnabledByTrigger(target.organizationId, 'start_date_reached')
       const ids = results.map((r) => r.id)
 
       expect(ids).toContain(target.id)

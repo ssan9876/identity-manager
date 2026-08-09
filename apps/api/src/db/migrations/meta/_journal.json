@@ -211,6 +211,13 @@
       "when": 1786299526521,
       "tag": "0029_organizations_composite_fks",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1786300895222,
+      "tag": "0030_organizations_roles_rules",
+      "breakpoints": true
     }
   ]
 }

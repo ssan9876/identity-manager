@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common'
+import { Inject, Injectable, Optional } from '@nestjs/common'
 import { and, asc, eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { DB_CLIENT } from '../common/db.token'
@@ -12,6 +12,7 @@ import {
 import * as schema from '../db/schema/index'
 import { orgUnits } from '../db/schema/org-units'
 import { users } from '../db/schema/users'
+import { OrganizationsRepository } from '../organizations/organizations.repository'
 import { hashDefinition, parseDefinition } from './draft'
 import type { EvaluableRole, EvaluableUser } from './role-evaluator'
 
@@ -46,7 +47,18 @@ function translateWriteError(error: unknown): never {
 
 @Injectable()
 export class BusinessRolesRepository {
-  constructor(@Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>) {}
+  constructor(
+    @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
+    // OPTIONAL, defaulting to a raw instance bound to the same `db` — the
+    // pattern OrgUnitsRepository and GroupsRepository already use for this
+    // exact dependency, and what keeps every existing single-argument
+    // `new BusinessRolesRepository(db)` in the test suite compiling while
+    // real Nest DI hands this the SAME managed instance every other
+    // provider gets.
+    @Optional()
+    @Inject(OrganizationsRepository)
+    private readonly organizations: OrganizationsRepository = new OrganizationsRepository(db),
+  ) {}
 
   /**
    * Every write below takes an OPTIONAL trailing `db` handle defaulting to
@@ -62,7 +74,20 @@ export class BusinessRolesRepository {
     input: { name: string; description: string | null },
     db: NodePgDatabase<typeof schema> = this.db,
   ): Promise<BusinessRoleRow> {
-    const [row] = await db.insert(businessRoles).values(input).returning().catch(translateWriteError)
+    // Milestone: organizations multi-tenancy, Task 5. `organization_id` is
+    // NOT NULL and there is no API surface yet that can name a target
+    // organization (Task 12), so a new role falls back to master exactly
+    // like OrgUnitsRepository.createRoot and GroupsRepository.create's
+    // global-group case. Resolved on the CALLER's handle, never a second
+    // pooled connection — BusinessRolesController always has a transaction
+    // open when this runs (finding C1, guarded by
+    // test/pool-exhaustion.spec.ts).
+    const master = await this.organizations.findMaster(db)
+    const [row] = await db
+      .insert(businessRoles)
+      .values({ ...input, organizationId: master.id })
+      .returning()
+      .catch(translateWriteError)
     return row
   }
 
@@ -288,10 +313,16 @@ export class BusinessRolesRepository {
    * to see BEFORE publishing. Ordered by `username`, which is unique and
    * which nothing in reconciliation ever writes, so the offset walk cannot
    * skip or repeat a row behind its own back.
+   *
+   * Scoped to ONE organization (Task 5), and required rather than optional
+   * for the same reason `listEnabledForEvaluation` is: a simulation report
+   * that counted another tenant's people would both leak that tenant's
+   * headcount and mis-state the diff the admin is about to publish.
    */
   async listEvaluableUsers(
     db: NodePgDatabase<typeof schema>,
     page: { limit: number; offset: number },
+    organizationId: string,
   ): Promise<(EvaluableUser & { username: string })[]> {
     return db
       .select({
@@ -306,6 +337,7 @@ export class BusinessRolesRepository {
       })
       .from(users)
       .innerJoin(orgUnits, eq(users.orgUnitId, orgUnits.id))
+      .where(eq(users.organizationId, organizationId))
       .orderBy(asc(users.username))
       .limit(page.limit)
       .offset(page.offset)
@@ -325,9 +357,30 @@ export class BusinessRolesRepository {
    * connection from the same pool while the first sat open (finding C1,
    * docs/archive/audits/audit-integrity.md; regression-guarded by
    * test/pool-exhaustion.spec.ts).
+   *
+   * Milestone: organizations multi-tenancy, Task 5 — `organizationId` is a
+   * REQUIRED, LEADING parameter, not an optional filter and not a trailing
+   * one a caller can drop. This is the query that decides what a role is
+   * allowed to grant, so a caller that forgets the tenant does not merely
+   * over-fetch: it evaluates one tenant's formulas against another
+   * tenant's people. Making it the first argument means the compiler, not
+   * a reviewer, is what catches the omission.
+   *
+   * The database is a second line of defence rather than the first: a
+   * cross-tenant GROUP grant would be rejected by `gum_user_organization_fk`
+   * (Task 4) when the membership edge is written, but a cross-tenant
+   * TARGET-ACCOUNT grant has no such guard — `user_target_accounts` carries
+   * no organization — so filtering here is the only thing standing in front
+   * of it.
    */
-  async listEnabledForEvaluation(db: NodePgDatabase<typeof schema> = this.db): Promise<EvaluableRole[]> {
-    const roles = await db.select().from(businessRoles).where(eq(businessRoles.enabled, true))
+  async listEnabledForEvaluation(
+    organizationId: string,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<EvaluableRole[]> {
+    const roles = await db
+      .select()
+      .from(businessRoles)
+      .where(and(eq(businessRoles.organizationId, organizationId), eq(businessRoles.enabled, true)))
     return Promise.all(roles.map((role) => this.loadDefinition(role.id, role.name, db)))
   }
 

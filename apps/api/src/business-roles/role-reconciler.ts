@@ -159,7 +159,13 @@ export class RoleReconciler {
     now: Date,
   ): Promise<ReconcileOutcome> {
     const user = await this.loadEvaluableUser(tx, userId)
-    const roles = await this.roles.listEnabledForEvaluation(tx)
+    // Task 5 of the organizations milestone: the roles considered are the
+    // ones belonging to THIS USER's organization. Taken from the user, never
+    // from the actor — the actor may be a platform operator sitting in
+    // master while acting on another tenant's person, and evaluating
+    // master's formulas against that person is exactly the cross-tenant
+    // grant this scoping exists to prevent.
+    const roles = await this.roles.listEnabledForEvaluation(user.organizationId, tx)
     const evaluation = evaluateRoles(user, roles, now)
 
     // Refusal writes NOTHING — not a partial grant, not a partial revoke.
@@ -412,7 +418,7 @@ export class RoleReconciler {
    */
   async explainUser(db: ReadHandle, userId: string, now: Date): Promise<Justification> {
     const user = await this.loadEvaluableUser(db, userId)
-    const roles = await this.roles.listEnabledForEvaluation(db)
+    const roles = await this.roles.listEnabledForEvaluation(user.organizationId, db)
     const evaluation = evaluateRoles(user, roles, now)
 
     if (!evaluation.evaluable) {
@@ -468,10 +474,17 @@ export class RoleReconciler {
    * transaction at all — passes the pooled handle. Widening here is what
    * lets both share one query; nothing about the query itself differs.
    */
-  private async loadEvaluableUser(db: ReadHandle, userId: string): Promise<EvaluableUser> {
+  private async loadEvaluableUser(
+    db: ReadHandle,
+    userId: string,
+  ): Promise<EvaluableUser & { organizationId: string }> {
     const [row] = await db
       .select({
         id: users.id,
+        // NOT part of `EvaluableUser` — no condition may name it, and
+        // widening the evaluator's input type would invite one to. It is
+        // carried alongside purely to pick WHICH roles are in play (Task 5).
+        organizationId: users.organizationId,
         status: users.status,
         jobTitle: users.jobTitle,
         location: users.location,

@@ -64,15 +64,17 @@ export function fetchOrgUnit(accessToken: string, id: string): Promise<OrgUnit> 
 }
 
 /**
- * Mirrors `createOrgUnitBodySchema` on the API side exactly:
- * `parentId` omitted creates a ROOT (requires a GLOBAL `org_unit:create`
- * grant — `OrgUnitsController.create` 403s otherwise, a case
- * OrgUnitsPage surfaces per Task 3's scope-legibility requirement, not a
- * distinction this client type needs to encode itself).
+ * Mirrors `createOrgUnitBodySchema` on the API side exactly.
+ *
+ * `parentId` is REQUIRED (organizations multi-tenancy, Task 7): a ROOT org
+ * unit is the thing an ORGANIZATION owns — exactly one, created by creating
+ * the organization — so the API has no route that makes one and this client
+ * must not offer to. Omitting it used to mean "create a root"; today it
+ * would simply be a 400.
  */
 export interface CreateOrgUnitInput {
   name: string
-  parentId?: string
+  parentId: string
 }
 
 export function createOrgUnit(accessToken: string, input: CreateOrgUnitInput): Promise<OrgUnit> {

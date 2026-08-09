@@ -721,20 +721,26 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
       const tag = nextTag()
       const res = await request(app.getHttpServer())
         .post('/org-units')
-        .send({ name: `Root ${tag}` })
+        // A CHILD: since Task 7 of the organizations milestone there is no
+        // route that creates a root — one comes only from creating an
+        // organization. The event under test is unchanged either way.
+        .send({ name: `Child ${tag}`, parentId: bootstrap.id })
         .expect(201)
 
       const events = await outboxEventsFor(ctx, 'org_unit', res.body.id)
       expect(events).toHaveLength(1)
       expect(events[0].event_type).toBe('created')
       expect(events[0].payload.action).toBe('org_unit:create')
-      expect(events[0].payload.name).toBe(`Root ${tag}`)
+      expect(events[0].payload.name).toBe(`Child ${tag}`)
     })
 
-    it('rejects creating a ROOT for a SCOPED actor with 403 and emits no outbox event', async () => {
+    it('rejects a root org unit with 400 and emits no outbox event', async () => {
+      // Was a 403 (a root required a GLOBAL grant); since Task 7 a root has
+      // no route at all, so this is a 400 for every actor. Either way the
+      // property under test is the same: a rejected write emits nothing.
       const root = await makeOrgUnit('No Root For Scoped')
       const actor = await makeActiveUser('scoped-creator', root.id)
-      await grant(actor.id, 'super_admin', root.id) // SCOPED — no parent to scope against
+      await grant(actor.id, 'super_admin', root.id)
       currentUsername = actor.username
 
       const before = await totalOutboxCount(ctx)
@@ -742,8 +748,8 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
       const res = await request(app.getHttpServer())
         .post('/org-units')
         .send({ name: `Should Not Exist ${nextTag()}` })
-        .expect(403)
-      expect(res.body.code).toBe('FORBIDDEN')
+        .expect(400)
+      expect(res.body.code).toBe('VALIDATION_FAILED')
 
       expect(await totalOutboxCount(ctx)).toBe(before)
     })

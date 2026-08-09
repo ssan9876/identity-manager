@@ -652,7 +652,10 @@ export class BusinessRolesController {
    * excluded person as gaining access they will not get.
    */
   private async runSimulation(
-    role: EvaluableRole,
+    // Carries `organizationId` as well as the evaluable shape: a simulation
+    // walks a POPULATION, and since Task 5 of the organizations milestone
+    // that population is the role's own tenant, not the whole directory.
+    role: EvaluableRole & { organizationId: string },
     draft: RoleDefinition,
     now: Date,
   ): Promise<SimulationReport> {
@@ -680,7 +683,11 @@ export class BusinessRolesController {
 
     let offset = 0
     for (;;) {
-      const page = await this.roles.listEvaluableUsers(this.db, { limit: PAGE_SIZE, offset })
+      const page = await this.roles.listEvaluableUsers(
+        this.db,
+        { limit: PAGE_SIZE, offset },
+        role.organizationId,
+      )
       if (page.length === 0) break
 
       for (const user of page) {

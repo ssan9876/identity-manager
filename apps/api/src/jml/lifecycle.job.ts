@@ -1,9 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common'
+import { eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { AuditWriter } from '../audit/audit.writer'
 import { DB_CLIENT } from '../common/db.token'
 import { InvalidTransitionError, NotFoundError } from '../common/errors'
 import * as schema from '../db/schema/index'
+import { users as usersTable } from '../db/schema/users'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
 import { revokeKeycloakAccessBestEffort } from '../keycloak/revoke-access'
 import { OutboxWriter } from '../outbox/outbox.writer'
@@ -254,12 +256,41 @@ export class LifecycleJob {
     return { transitioned: deactivated, skipped }
   }
 
-  /** Evaluates and applies every enabled rule for `trigger` against `user`; returns how many actions were applied. */
+  /**
+   * Evaluates and applies every enabled rule for `trigger` against `user`;
+   * returns how many actions were applied.
+   *
+   * Milestone: organizations multi-tenancy, Task 5 — only rules belonging to
+   * the USER's OWN organization are in play. The organization is read here
+   * rather than taken from `User` because `User` deliberately does not carry
+   * it: that interface is what `snapshotUser` and the users API response
+   * shape are built from, and widening it would push `organizationId` into
+   * HTTP responses as a side effect of a JML change (the response-shape
+   * decision belongs to Task 12 — see the organizations TODO's carry-forward
+   * finding). One extra indexed primary-key lookup per transitioned user,
+   * on a job that already runs one transaction per user, is the cheaper
+   * side of that trade.
+   *
+   * No transaction is open here — `activateDueUsers`/`deactivateDueUsers`
+   * each close theirs before returning — so using the pooled handle cannot
+   * check out a second connection under an open one (finding C1).
+   */
   private async fireTriggerRules(
     trigger: 'start_date_reached' | 'end_date_reached',
     user: User,
   ): Promise<number> {
-    const rules = await this.rulesRepository.listEnabledByTrigger(trigger)
+    const [row] = await this.db
+      .select({ organizationId: usersTable.organizationId })
+      .from(usersTable)
+      .where(eq(usersTable.id, user.id))
+      .limit(1)
+    if (row === undefined) {
+      // The user was deleted between their transition and this call. Firing
+      // nothing is right; inventing an organization to fire against is not.
+      throw new NotFoundError('user', user.id)
+    }
+
+    const rules = await this.rulesRepository.listEnabledByTrigger(row.organizationId, trigger)
     const matches = matchRules(rules, user, trigger)
 
     let applied = 0

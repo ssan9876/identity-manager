@@ -314,7 +314,9 @@ describe('the publish gate (Milestone 17, Task 7)', () => {
     await repo().recordSimulation(off.id, hashDefinition(parseDefinition(DEFINITION)))
     await repo().publish(off.id)
 
-    const roles = await repo().listEnabledForEvaluation()
+    // Scoped to the role's own organization since Task 5 of the
+    // organizations milestone; `create` puts every role in master.
+    const roles = await repo().listEnabledForEvaluation(on.organizationId)
 
     expect(roles.map((r) => r.id)).toEqual([on.id])
     expect(roles[0].grants).toEqual([expect.objectContaining({ target: 'keycloak' })])

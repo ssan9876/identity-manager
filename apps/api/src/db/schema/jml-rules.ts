@@ -8,6 +8,7 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core'
+import { organizations } from './organizations'
 
 // Milestone 7: joiner/mover/leaver automation. Every one of these three enums
 // is a CLOSED set, enforced by Postgres at the column level — but that alone
@@ -45,6 +46,16 @@ export const jmlRules = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     name: varchar('name', { length: 255 }).notNull(),
+
+    // Milestone: organizations multi-tenancy, Task 5. A rule's actions —
+    // `set_attribute` and `deactivate`, the two that survived 0027 — are
+    // taken AGAINST A PERSON, so an untenanted rule is one tenant's admin
+    // deactivating another tenant's staff. Backfilled to master for every
+    // pre-existing row (0030). ON DELETE RESTRICT, matching every other
+    // table that carries this column.
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'restrict' }),
 
     // Defaults FALSE, at the column level — Milestone 7, Task 6: a rule
     // cannot be enabled until it has been simulated at least once. The ONLY
@@ -99,6 +110,13 @@ export const jmlRules = pgTable(
     // Supports both JmlRulesRepository.listEnabledByTrigger (the read the
     // rule engine and the lifecycle job run on every pass) and a plain
     // "show me every enabled rule" scan.
-    enabledTriggerIdx: index('jml_rules_enabled_trigger_idx').on(table.enabled, table.trigger),
+    // organization_id LEADS since Task 5: listEnabledByTrigger now filters
+    // on the tenant first, and an index the query does not lead with is
+    // pure write cost. Name deliberately unchanged.
+    enabledTriggerIdx: index('jml_rules_enabled_trigger_idx').on(
+      table.organizationId,
+      table.enabled,
+      table.trigger,
+    ),
   }),
 )
