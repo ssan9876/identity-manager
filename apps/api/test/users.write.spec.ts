@@ -1,4 +1,5 @@
 import { type CanActivate, type ExecutionContext, type INestApplication } from '@nestjs/common'
+import { and, eq } from 'drizzle-orm'
 import { Reflector } from '@nestjs/core'
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
@@ -19,6 +20,10 @@ import { OutboxWriter } from '../src/outbox/outbox.writer'
 import { SyncDetailRepository } from '../src/outbox/sync-detail.repository'
 import { SyncStateRepository } from '../src/outbox/sync-state.repository'
 import { BusinessRolesRepository } from '../src/business-roles/business-roles.repository'
+import { OrganizationsRepository } from '../src/organizations/organizations.repository'
+import { hashDefinition, parseDefinition } from '../src/business-roles/draft'
+import { groupUserMembers } from '../src/db/schema/group-members'
+import { groups } from '../src/db/schema/groups'
 import { RoleReconciler } from '../src/business-roles/role-reconciler'
 import { UsersController } from '../src/users/users.controller'
 import { UsersRepository, type User } from '../src/users/users.repository'
@@ -215,6 +220,184 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
   // =======================================================================
   // POST /users
   // =======================================================================
+  /**
+   * Milestone 17, Task 9 — the reconciler running on a REAL user write, over
+   * HTTP, through the controller's own transaction. business-roles.spec.ts
+   * proves `reconcileUser` correct in isolation; these prove it is actually
+   * WIRED IN. Before Task 9 the reconciler was not registered in
+   * app.module.ts at all, so every one of these would have found no
+   * membership at all while the unit tests stayed green.
+   */
+  describe('business-role re-evaluation on user writes (Milestone 17, Task 9)', () => {
+    /**
+     * A published, enabled role granting a group to whoever's jobTitle equals
+     * a value UNIQUE to this call. Unique because `withTestDatabase()` starts
+     * one container per FILE and never truncates between `it` blocks: a
+     * shared literal would let this role match other tests' users and vice
+     * versa, which is exactly what produced a spurious "expected 1, got 5"
+     * in this project before.
+     */
+    async function seedRole(): Promise<{ groupId: string; jobTitle: string }> {
+      const tag = nextTag()
+      const jobTitle = `Reevaluated Engineer ${tag}`
+      // `organization_id` is NOT NULL on groups (the organizations backfill);
+      // GroupsRepository.create resolves master itself, but this raw insert
+      // has to supply it.
+      const organizationId = (await new OrganizationsRepository(ctx.db).findMaster()).id
+      const [group] = await ctx.db
+        .insert(groups)
+        .values({ name: `Reevaluated Group ${tag}`, organizationId })
+        .returning()
+
+      const repo = new BusinessRolesRepository(ctx.db)
+      const role = await repo.create({ name: `Reevaluated Role ${tag}`, description: null })
+      const definition = {
+        conditions: [{ field: 'jobTitle', operator: 'equals', value: jobTitle }],
+        grants: [{ kind: 'group_membership', groupId: group.id, target: null }],
+      }
+      await repo.saveDraft(role.id, definition)
+      await repo.recordSimulation(role.id, hashDefinition(parseDefinition(definition)))
+      await repo.publish(role.id)
+      await repo.setEnabled(role.id, true)
+
+      return { groupId: group.id, jobTitle }
+    }
+
+    async function membershipsFor(userId: string): Promise<Array<{ groupId: string; grantSource: string }>> {
+      const rows = await ctx.db
+        .select()
+        .from(groupUserMembers)
+        .where(eq(groupUserMembers.userId, userId))
+      return rows.map((r) => ({ groupId: r.groupId, grantSource: r.grantSource }))
+    }
+
+    it('POST /users grants a matching role’s group in the same transaction as the create', async () => {
+      const org = await makeOrgUnit('Reeval Create Root')
+      const actor = await makeActiveUser('reeval-creator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const { groupId, jobTitle } = await seedRole()
+      const tag = nextTag()
+
+      const res = await request(app.getHttpServer())
+        .post('/users')
+        .send({
+          primaryEmail: `reeval-${tag}@example.com`,
+          username: `reeval-${tag}`,
+          firstName: 'Re',
+          lastName: 'Eval',
+          orgUnitId: org.id,
+          jobTitle,
+        })
+        .expect(201)
+
+      expect(await membershipsFor(res.body.id)).toEqual([
+        { groupId, grantSource: 'business_role' },
+      ])
+    })
+
+    it('PATCH /users/:id grants when a jobTitle change makes the person match', async () => {
+      const org = await makeOrgUnit('Reeval Patch Root')
+      const actor = await makeActiveUser('reeval-patcher', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const { groupId, jobTitle } = await seedRole()
+      const tag = nextTag()
+
+      const created = await request(app.getHttpServer())
+        .post('/users')
+        .send({
+          primaryEmail: `reeval-patch-${tag}@example.com`,
+          username: `reeval-patch-${tag}`,
+          firstName: 'Re',
+          lastName: 'Patch',
+          orgUnitId: org.id,
+          jobTitle: 'Something Else Entirely',
+        })
+        .expect(201)
+
+      expect(await membershipsFor(created.body.id)).toEqual([])
+
+      await request(app.getHttpServer())
+        .patch(`/users/${created.body.id}`)
+        .send({ jobTitle })
+        .expect(200)
+
+      expect(await membershipsFor(created.body.id)).toEqual([
+        { groupId, grantSource: 'business_role' },
+      ])
+    })
+
+    it('PATCH revokes the role-derived row when the person stops matching — access follows the mover', async () => {
+      const org = await makeOrgUnit('Reeval Revoke Root')
+      const actor = await makeActiveUser('reeval-revoker', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const { jobTitle } = await seedRole()
+      const tag = nextTag()
+
+      const created = await request(app.getHttpServer())
+        .post('/users')
+        .send({
+          primaryEmail: `reeval-revoke-${tag}@example.com`,
+          username: `reeval-revoke-${tag}`,
+          firstName: 'Re',
+          lastName: 'Revoke',
+          orgUnitId: org.id,
+          jobTitle,
+        })
+        .expect(201)
+      expect(await membershipsFor(created.body.id)).toHaveLength(1)
+
+      await request(app.getHttpServer())
+        .patch(`/users/${created.body.id}`)
+        .send({ jobTitle: 'Moved On' })
+        .expect(200)
+
+      expect(await membershipsFor(created.body.id)).toEqual([])
+    })
+
+    it('a PATCH touching no re-evaluation field leaves an existing role-derived row alone', async () => {
+      const org = await makeOrgUnit('Reeval Untouched Root')
+      const actor = await makeActiveUser('reeval-untouched', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      currentUsername = actor.username
+
+      const { groupId, jobTitle } = await seedRole()
+      const tag = nextTag()
+
+      const created = await request(app.getHttpServer())
+        .post('/users')
+        .send({
+          primaryEmail: `reeval-untouched-${tag}@example.com`,
+          username: `reeval-untouched-${tag}`,
+          firstName: 'Re',
+          lastName: 'Untouched',
+          orgUnitId: org.id,
+          jobTitle,
+        })
+        .expect(201)
+
+      // `employeeId` is PATCH-able but is NOT in REEVALUATION_FIELDS, so this
+      // write skips the reconciler entirely — the membership must survive
+      // untouched rather than being revoked and re-granted. (Deliberately not
+      // `displayName`: that is derived, not on the PATCH surface at all, and
+      // the .strict() schema 400s it — which would prove nothing about
+      // re-evaluation.)
+      await request(app.getHttpServer())
+        .patch(`/users/${created.body.id}`)
+        .send({ employeeId: `E-${nextTag()}` })
+        .expect(200)
+
+      expect(await membershipsFor(created.body.id)).toEqual([
+        { groupId, grantSource: 'business_role' },
+      ])
+    })
+  })
+
   describe('POST /users', () => {
     it('creates a user for an in-scope actor and writes exactly one audit row', async () => {
       const org = await makeOrgUnit('Create Root')
