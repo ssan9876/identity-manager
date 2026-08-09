@@ -8,9 +8,10 @@ import {
 } from 'react'
 import { useAuth } from 'react-oidc-context'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { BRAND, BrandLockup } from '../brand'
 import { GroupsProvider } from '../groups/GroupsContext'
 import { OrgUnitsProvider } from '../org-units/OrgUnitsContext'
-import { NAV_ITEMS } from './nav-items'
+import { NAV_GROUP_LABELS, NAV_GROUP_ORDER, NAV_ITEMS } from './nav-items'
 import { useSelfPermissions, type Action } from './permissions'
 import { ThemeToggle } from './ThemeToggle'
 import { useNavMode } from './useMediaQuery'
@@ -61,6 +62,42 @@ function isNavItemActive(pathname: string, itemPath: string): boolean {
   return pathname === itemPath || pathname.startsWith(`${itemPath}/`)
 }
 
+/**
+ * A search icon and the keyboard hint that goes with it. Both are
+ * decorative (`aria-hidden`) — the input's own <label> and `title` already
+ * carry the meaning to assistive tech, and the shortcut hint is a
+ * discoverability affordance for sighted pointer users, not information.
+ */
+function SearchIcon() {
+  return (
+    <svg
+      className="topbar__search-icon"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <circle cx="8.75" cy="8.75" r="5.25" />
+      <path d="M12.6 12.6 16.5 16.5" />
+    </svg>
+  )
+}
+
+/**
+ * The signed-in identity renders as a chip: a monogram disc plus the
+ * username. The monogram is DERIVED from the username, never stored — this
+ * console has no avatar concept and inventing one would be a feature, not
+ * a polish pass. Two characters max; three starts to look like a word.
+ */
+function monogramOf(username: string | undefined): string {
+  if (username === undefined || username.length === 0) return '?'
+  const parts = username.replace(/[^a-zA-Z0-9]+/g, ' ').trim().split(/\s+/).filter((x) => x.length > 0)
+  if (parts.length >= 2) return (parts[0]![0]! + parts[1]![0]!).toUpperCase()
+  return username.slice(0, 2).toUpperCase()
+}
+
 function NavList({ variant, onNavigate }: { variant: 'full' | 'rail' | 'dialog'; onNavigate?: () => void }) {
   const perms = useSelfPermissions()
   const location = useLocation()
@@ -87,26 +124,57 @@ function NavList({ variant, onNavigate }: { variant: 'full' | 'rail' | 'dialog';
     return <p className="nav__message">No sections available for your account.</p>
   }
 
+  function renderItem(item: (typeof NAV_ITEMS)[number]) {
+    const active = isNavItemActive(location.pathname, item.path)
+    return (
+      <li key={item.key}>
+        <Link
+          to={item.path}
+          onClick={onNavigate}
+          className={`nav-link${active ? ' nav-link--active' : ''}`}
+          aria-current={active ? 'page' : undefined}
+          title={variant === 'rail' ? item.label : undefined}
+        >
+          <item.icon className="nav-link__icon" />
+          <span className={variant === 'rail' ? 'sr-only' : 'nav-link__label'}>{item.label}</span>
+        </Link>
+      </li>
+    )
+  }
+
+  /*
+   * Eight flat links read as a list of features; three named groups read
+   * as a product with a shape. The icon rail has no room for a heading —
+   * one would either truncate to noise or force the rail past the 64px
+   * docs/design-system.md allows — so in `rail` the grouping survives as
+   * SPACING between runs of icons and the label is dropped from the
+   * accessibility tree too (each link still carries its own name via
+   * .sr-only, which is what a screen reader reads in that mode).
+   *
+   * A group whose every item was filtered out by GET /self/permissions
+   * renders nothing at all: an auditor never sees an empty "Directory"
+   * heading advertising links they cannot use.
+   */
   return (
-    <ul className="nav__list" aria-label="Primary">
-      {visibleItems.map((item) => {
-        const active = isNavItemActive(location.pathname, item.path)
+    <div className="nav__groups">
+      {NAV_GROUP_ORDER.map((group) => {
+        const items = visibleItems.filter((item) => item.group === group)
+        if (items.length === 0) return null
+        const labelId = `nav-group-${group}`
         return (
-          <li key={item.key}>
-            <Link
-              to={item.path}
-              onClick={onNavigate}
-              className={`nav-link${active ? ' nav-link--active' : ''}`}
-              aria-current={active ? 'page' : undefined}
-              title={variant === 'rail' ? item.label : undefined}
-            >
-              <item.icon className="nav-link__icon" />
-              <span className={variant === 'rail' ? 'sr-only' : 'nav-link__label'}>{item.label}</span>
-            </Link>
-          </li>
+          <div className="nav__group" key={group}>
+            {variant !== 'rail' && (
+              <h2 className="nav__group-label" id={labelId}>
+                {NAV_GROUP_LABELS[group]}
+              </h2>
+            )}
+            <ul className="nav__list" aria-labelledby={variant === 'rail' ? undefined : labelId}>
+              {items.map(renderItem)}
+            </ul>
+          </div>
         )
       })}
-    </ul>
+    </div>
   )
 }
 
@@ -246,14 +314,15 @@ export default function AppShell() {
             </button>
           )}
 
-          <Link to="/people" className="topbar__brand">
-            Identity Manager
+          <Link to="/people" className="topbar__brand" aria-label={`${BRAND.name} — home`}>
+            <BrandLockup />
           </Link>
 
           <form className="topbar__search-form" role="search" onSubmit={handleSearchSubmit}>
             <label htmlFor="global-search" className="sr-only">
               Search people
             </label>
+            <SearchIcon />
             <input
               ref={searchInputRef}
               id="global-search"
@@ -263,19 +332,31 @@ export default function AppShell() {
               title="Search people (Ctrl+K / Cmd+K)"
               data-testid="global-search"
             />
+            <kbd className="topbar__search-hint" aria-hidden="true">
+              ⌘K
+            </kbd>
           </form>
 
           <div className="topbar__identity">
             <ThemeToggle />
-            <Link to="/self" data-testid="topbar-my-profile">
+            <Link className="topbar__profile-link" to="/self" data-testid="topbar-my-profile">
               My Profile
             </Link>
-            <span>
-              Signed in as <strong data-testid="signed-in-as">{username}</strong>
+            <span className="topbar__divider" aria-hidden="true" />
+            <span className="topbar__user">
+              <span className="topbar__monogram" aria-hidden="true">
+                {monogramOf(username)}
+              </span>
+              <span className="topbar__user-text">
+                <span className="topbar__user-caption">Signed in as</span>
+                <strong className="topbar__user-name" data-testid="signed-in-as">
+                  {username}
+                </strong>
+              </span>
             </span>
             <button
               type="button"
-              className="btn btn--secondary"
+              className="btn btn--secondary btn--sm"
               data-loading={signingOut ? 'true' : undefined}
               disabled={signingOut}
               onClick={() => void handleSignOut()}
@@ -320,7 +401,7 @@ export default function AppShell() {
             }}
           >
             <div className="nav-dialog__header">
-              <span className="text-title">Menu</span>
+              <BrandLockup />
               <button type="button" className="btn btn--ghost" onClick={closeMenu}>
                 Close
               </button>

@@ -16,7 +16,10 @@
   grid-template-columns: var(--nav-width) 1fr;
   grid-template-areas: 'topbar topbar' 'nav content';
   min-height: 100vh;
-  background: var(--bg);
+  /* The ground, not the content surface. Panels, tables and cards sit ON
+     this at --panel; the difference between the two is what gives the
+     console depth instead of one undifferentiated sheet. */
+  background: var(--canvas);
   /* Prevent the whole page from scrolling horizontally when inner content
      (the People table, mainly) is wider than a narrow viewport — every
      grid item below additionally gets min-width: 0, since a grid item's
@@ -50,10 +53,14 @@
   grid-area: topbar;
   display: flex;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-3);
   height: var(--topbar-height);
   padding: 0 var(--space-4);
-  background: var(--surface);
+  /* Chrome sits on --panel and the content ground on --canvas — the top
+     bar and left nav read as one continuous frame around a recessed
+     work area, rather than three surfaces that happen to be the same
+     colour. */
+  background: var(--panel);
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
@@ -67,32 +74,110 @@
 
 .topbar__brand {
   flex: none;
-  font-weight: 700;
-  font-size: var(--text-base);
-  color: var(--ink);
   text-decoration: none;
-  white-space: nowrap;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  margin-left: calc(var(--space-2) * -1);
+  transition: background-color var(--motion-duration-fast) var(--motion-ease);
 }
+.topbar__brand:hover {
+  background: var(--surface-sunken);
+}
+
+/* ---------------------------------------------------------------------
+ * Global search — the field, its leading glyph and the shortcut hint are
+ * one composed control, so the form itself is the positioning context and
+ * the input carries padding on both sides to clear them. Both ornaments
+ * are pointer-transparent: clicking either still lands in the field.
+ * ------------------------------------------------------------------- */
 
 .topbar__search-form {
+  position: relative;
+  display: flex;
+  align-items: center;
   flex: 1 1 auto;
   min-width: 0;
-  max-width: 28rem;
+  max-width: 26rem;
+  margin-left: var(--space-2);
 }
 
-.topbar__search-input {
+/* `.input.topbar__search-input`, not `.topbar__search-input`: see this
+   file's note below on cascade order — an equally-specific rule in
+   styles/components.css is injected LATER and would otherwise win. */
+.input.topbar__search-input {
   width: 100%;
+  height: 2.125rem;
+  padding: 0 3rem 0 var(--space-8);
+  background: var(--surface-sunken);
+  border-color: transparent;
+  border-radius: var(--radius-md);
 }
+/* Focus lifts the field out of the bar onto its own surface — the search
+   is the one control here that becomes a mode, and it should look like
+   one. */
+.input.topbar__search-input:focus {
+  background: var(--bg);
+  border-color: var(--border-strong);
+}
+
+.topbar__search-icon {
+  position: absolute;
+  left: var(--space-3);
+  width: 1rem;
+  height: 1rem;
+  color: var(--ink-subtle);
+  pointer-events: none;
+}
+
+.topbar__search-hint {
+  position: absolute;
+  right: var(--space-2);
+  padding: 0.0625rem var(--space-2);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--ink-subtle);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+}
+/* Once the field has focus the shortcut has done its job and the hint is
+   just clutter sitting where the caret will end up. */
+.input.topbar__search-input:focus ~ .topbar__search-hint {
+  opacity: 0;
+}
+
+/* ---------------------------------------------------------------------
+ * Identity cluster
+ * ------------------------------------------------------------------- */
 
 .topbar__identity {
   display: flex;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-3);
   margin-left: auto;
   flex: none;
   font-size: var(--text-sm);
   color: var(--ink-muted);
   white-space: nowrap;
+}
+
+.topbar__divider {
+  width: 1px;
+  height: 1.5rem;
+  background: var(--border);
+  flex: none;
+}
+
+.topbar__profile-link {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+  transition:
+    background-color var(--motion-duration-fast) var(--motion-ease),
+    color var(--motion-duration-fast) var(--motion-ease);
 }
 
 .topbar__identity a {
@@ -101,7 +186,50 @@
 }
 .topbar__identity a:hover {
   color: var(--primary);
-  text-decoration: underline;
+  background: var(--surface-sunken);
+}
+
+.topbar__user {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Derived initials, not an avatar system — see AppShell.tsx's monogramOf.
+   --primary-soft is the brand wash, so this reads as "you" without
+   spending the saturated brand colour on a decorative disc. */
+.topbar__monogram {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-pill);
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.topbar__user-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+  min-width: 0;
+}
+.topbar__user-caption {
+  font-size: var(--text-xs);
+  color: var(--ink-subtle);
+}
+.topbar__user-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 14rem;
 }
 
 /* ---------------------------------------------------------------------
@@ -164,13 +292,40 @@
    cluster on one 48px row — the "My Profile" text link is the least
    critical (it's also reachable via /self directly, and duplicated by the
    nav once Task 3 adds a proper account area); hide it first. */
+/* The bar sheds ornament before it sheds function, in this order:
+   the ⌘K hint (pointer affordance for a shortcut that still works), then
+   the "Signed in as" caption and the My Profile link (both duplicated
+   elsewhere — /self is in reach from the monogram's own row and from a
+   typed URL), then the search field itself. The monogram survives longest
+   because at that width it is the only thing left saying WHO is signed
+   in. */
+@media (max-width: 1180px) {
+  .topbar__search-hint {
+    display: none;
+  }
+  .input.topbar__search-input {
+    padding-right: var(--space-3);
+  }
+}
+@media (max-width: 1024px) {
+  .topbar__user-caption {
+    display: none;
+  }
+  .topbar__user-name {
+    max-width: 10rem;
+  }
+}
 @media (max-width: 860px) {
-  .topbar__identity a[data-testid='topbar-my-profile'] {
+  .topbar__identity a[data-testid='topbar-my-profile'],
+  .topbar__divider {
     display: none;
   }
 }
 @media (max-width: 640px) {
   .topbar__search-form {
+    display: none;
+  }
+  .topbar__user-text {
     display: none;
   }
 }
@@ -182,16 +337,35 @@
 
 .nav {
   grid-area: nav;
-  background: var(--surface);
+  background: var(--panel);
   border-right: 1px solid var(--border);
-  padding: var(--space-4) var(--space-2);
+  padding: var(--space-5) var(--space-3) var(--space-6);
   overflow-y: auto;
+}
+
+.nav__groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
 }
 
 .nav__list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 0.125rem;
+}
+
+/* Section heading, not a decorative eyebrow: three of them, each naming a
+   real division of the product, sized down and set in --ink-subtle so
+   they organise the list without competing with it. Held to 4.5:1 like
+   any other text (--ink-subtle is the placeholder floor token). */
+.nav__group-label {
+  padding: 0 var(--space-3) var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-subtle);
 }
 
 .nav__message {
@@ -201,18 +375,19 @@
 }
 
 .nav-link {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   color: var(--ink-muted);
   text-decoration: none;
   font-size: var(--text-base);
   font-weight: 500;
   transition:
-    background-color var(--motion-duration) var(--motion-ease),
-    color var(--motion-duration) var(--motion-ease);
+    background-color var(--motion-duration-fast) var(--motion-ease),
+    color var(--motion-duration-fast) var(--motion-ease);
 }
 .nav-link:hover {
   background: var(--surface-sunken);
@@ -221,17 +396,32 @@
 .nav-link:active {
   background: var(--border);
 }
-/* Current selection -> --primary (docs/design-system.md: one of the three sanctioned
-   uses of the brand colour, alongside primary actions and focus). */
+/* Current selection -> the brand wash plus the brand ink (docs/design-system.md:
+   one of the three sanctioned uses of the brand colour, alongside primary
+   actions and focus). A filled shape, deliberately NOT a left border —
+   side-stripe accents are banned, and a full tinted pill reads as "this
+   row is the current one" more directly anyway. */
 .nav-link--active {
-  background: var(--surface-sunken);
+  background: var(--primary-soft);
   color: var(--primary);
   font-weight: 600;
+}
+.nav-link--active:hover {
+  background: var(--primary-soft-hover);
+  color: var(--primary);
 }
 .nav-link__icon {
   flex: none;
   width: 1.25rem;
   height: 1.25rem;
+  /* The icon carries the current state a half-step ahead of the label —
+     at rest it is quieter than its own text, which keeps a column of
+     eight glyphs from reading as noise. */
+  opacity: 0.85;
+}
+.nav-link--active .nav-link__icon,
+.nav-link:hover .nav-link__icon {
+  opacity: 1;
 }
 .nav-link--skeleton {
   display: flex;
@@ -240,8 +430,22 @@
   padding: var(--space-2) var(--space-3);
 }
 
+/* In the rail the group heading is dropped (see AppShell.tsx's NavList)
+   and the grouping survives purely as the gap between runs of icons —
+   plus a hairline, so the split is legible rather than merely felt. */
+.shell--rail .nav {
+  padding-inline: var(--space-2);
+}
 .shell--rail .nav-link {
   justify-content: center;
+  padding-inline: 0;
+}
+.shell--rail .nav__group + .nav__group {
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+.shell--rail .nav__groups {
+  gap: var(--space-3);
 }
 
 /* ---------------------------------------------------------------------
@@ -261,8 +465,8 @@
   border-right: 1px solid var(--border);
   border-radius: 0;
   padding: var(--space-4);
-  background: var(--bg);
-  box-shadow: var(--shadow-md);
+  background: var(--panel);
+  box-shadow: var(--shadow-lg);
 }
 .nav-dialog::backdrop {
   background: var(--backdrop);
@@ -293,5 +497,13 @@
 .shell__content-inner {
   max-width: var(--content-max-width);
   margin: 0 auto;
-  padding: var(--content-gutter);
+  /* More air above the page title than beside it: the content column
+     already has the nav's edge and the viewport edge defining its sides,
+     but nothing separating it from the top bar except this. */
+  padding: var(--space-7) var(--content-gutter) var(--space-10);
+}
+@media (max-width: 779px) {
+  .shell__content-inner {
+    padding: var(--space-5) var(--space-4) var(--space-8);
+  }
 }

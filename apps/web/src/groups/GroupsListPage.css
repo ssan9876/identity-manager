@@ -1,6 +1,3 @@
-.groups-list__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-5);
-}
+/* Header shape comes from `.page-header` (styles/components.css), shared
+   with People and every other list screen — nothing page-specific left to
+   say here beyond that. */

@@ -123,8 +123,14 @@ export default function GroupsListPage() {
 
   return (
     <div className="groups-list">
-      <div className="groups-list__header">
-        <h1 className="text-title">Groups</h1>
+      <div className="page-header groups-list__header">
+        <div className="page-header__text">
+          <h1 className="text-title">Groups</h1>
+          <p className="page-header__subtitle">
+            Collections people belong to — and, through nesting, the collections those
+            collections belong to. Membership is what most downstream systems actually read.
+          </p>
+        </div>
         {canCreate && (
           <Link to="/groups/new" className="btn btn--primary" data-testid="create-group-link">
             Create group

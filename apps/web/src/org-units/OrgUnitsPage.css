@@ -1,9 +1,4 @@
-.org-units-page__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-4);
-}
+/* Header shape comes from `.page-header` (styles/components.css). */
 
 .org-units-page__scope-note {
   padding: var(--space-3) var(--space-4);
@@ -38,9 +33,18 @@
 }
 
 .org-units-page__tree-panel {
+  background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
   padding: var(--space-4);
+  position: sticky;
+  top: 0;
+}
+@media (max-width: 860px) {
+  .org-units-page__tree-panel {
+    position: static;
+  }
 }
 
 .org-units-page__tree-header {
@@ -110,9 +114,12 @@
   text-decoration: underline;
 }
 .org-tree__link--selected {
-  background: var(--surface-sunken);
+  background: var(--primary-soft);
   color: var(--primary);
   font-weight: 600;
+}
+.org-tree__link--selected:hover {
+  background: var(--primary-soft-hover);
 }
 
 /* ---------------------------------------------------------------------
@@ -153,7 +160,7 @@
   gap: var(--space-3);
   padding: var(--space-4);
   margin-bottom: var(--space-4);
-  background: var(--surface);
+  background: var(--surface-sunken);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
 }

@@ -3,7 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Identity Manager</title>
+    <!--
+      Placeholder only. The real product name lives in ONE place —
+      src/brand/index.tsx's BRAND.name — and src/main.tsx writes it into
+      document.title before the first render. This tag cannot import that
+      module (it is parsed before any bundle exists), so it is the single
+      hand-synced copy: if BRAND.name changes, change this line too. It is
+      only ever visible for the few milliseconds before the bundle boots.
+    -->
+    <title>Keystone</title>
     <!--
       Pre-paint theme resolution — Milestone 9, Task 2. Synchronous (no
       type="module", no defer/async) and placed before any stylesheet, so it

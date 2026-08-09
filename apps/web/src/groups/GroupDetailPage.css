@@ -61,8 +61,8 @@
 .group-member-add,
 .group-nested__add {
   margin-top: var(--space-5);
-  padding: var(--space-4);
-  background: var(--surface);
+  padding: var(--space-5);
+  background: var(--surface-sunken);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   max-width: 28rem;
@@ -70,6 +70,7 @@
 
 .group-member-add__results {
   margin-top: var(--space-2);
+  background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   max-height: 14rem;
@@ -95,7 +96,7 @@
   border-bottom: none;
 }
 .group-member-add__result:hover {
-  background: var(--surface-sunken);
+  background: var(--primary-soft);
 }
 
 .group-member-add__actions,

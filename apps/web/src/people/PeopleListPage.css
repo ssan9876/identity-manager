@@ -1,16 +1,22 @@
-.people-list__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-5);
-}
+/* The header shape itself now comes from `.page-header`
+   (styles/components.css) — every list screen uses the same one. Only
+   what is specific to this page stays here. */
 
+/* The filter row is a real toolbar sitting on its own raised surface,
+   above the table rather than floating on the page ground. That is what
+   makes the table read as the RESULT of the filters instead of a second
+   unrelated block. */
 .people-list__filters {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
   gap: var(--space-4);
   margin-bottom: var(--space-4);
+  padding: var(--space-4);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
 }
 
 .people-list__search-field {

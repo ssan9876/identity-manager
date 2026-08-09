@@ -1,58 +1,244 @@
-/* The pre-authentication gate — the one screen outside the admin shell, so
-   it gets its own tiny stylesheet rather than borrowing shell/AppShell.css. */
+/*
+ * The pre-authentication gate — the one screen outside the admin shell,
+ * and the one Committed surface in an otherwise Restrained product. It
+ * gets its own stylesheet rather than borrowing shell/AppShell.css.
+ *
+ * Two columns: a drenched brand panel and the sign-in card. Under 900px
+ * they stack, and the panel shrinks to a header band rather than
+ * disappearing — it carries the page's <h1>, so hiding it would leave the
+ * document headingless.
+ *
+ * Every colour here is a token. The panel's own ink pair
+ * (--brand-panel-ink / --brand-panel-ink-muted) exists precisely because
+ * --ink is invisible on --brand-panel; see styles/tokens.css.
+ */
 
 .signin-gate {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
   min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--surface);
+  background: var(--canvas);
 }
+
+.signin-gate--centred {
+  grid-template-columns: 1fr;
+  place-items: center;
+}
+
+/* ---------------------------------------------------------------------
+ * Brand panel
+ * ------------------------------------------------------------------- */
+
+.signin-gate__brand {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-6);
+  padding: var(--space-10) clamp(var(--space-7), 7vw, 5.5rem);
+  background: var(--brand-panel);
+  color: var(--brand-panel-ink);
+}
+
+.signin-gate__wordmark {
+  position: relative;
+  font-weight: 600;
+}
+
+.signin-gate__tagline {
+  position: relative;
+  max-width: 22ch;
+  font-size: var(--text-2xl);
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+  color: var(--brand-panel-ink);
+}
+
+.signin-gate__points {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 46ch;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--brand-panel-line);
+  font-size: var(--text-base);
+  line-height: 1.55;
+  color: var(--brand-panel-ink-muted);
+  text-wrap: pretty;
+}
+
+/* Oversized mark, bled off the bottom-right corner. Decoration, and
+   confined to the one surface allowed any: low enough opacity that it
+   never competes with the text, and it sits behind everything above
+   (which all carry position: relative for exactly that reason). */
+.signin-gate__watermark {
+  position: absolute;
+  right: -6%;
+  bottom: -14%;
+  width: 60%;
+  max-width: 26rem;
+  height: auto;
+  color: var(--brand-panel-ink);
+  opacity: 0.06;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------------
+ * Sign-in card
+ * ------------------------------------------------------------------- */
 
 .signin-gate__panel {
   display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-8) var(--space-6);
+}
+
+.signin-gate__card {
+  width: min(24rem, 100%);
+  display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: stretch;
   gap: var(--space-4);
   padding: var(--space-8);
-  background: var(--bg);
+  background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  min-width: 20rem;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+.signin-gate__heading {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  letter-spacing: -0.014em;
+  color: var(--ink);
 }
 
 .signin-gate__hint {
   color: var(--ink-muted);
   font-size: var(--text-base);
+  line-height: 1.55;
+  text-wrap: pretty;
 }
 
-.signin-gate--loading {
-  color: var(--ink-muted);
-  font-size: var(--text-base);
+/* `.btn.signin-gate__submit` for the same cascade reason documented in
+   shell/AppShell.css: styles/components.css is injected after every
+   feature stylesheet, so `.btn { height: 2.25rem }` would otherwise beat
+   an equally-specific rule here. */
+.btn.signin-gate__submit {
+  height: 2.75rem;
+  margin-top: var(--space-2);
+  font-size: var(--text-md);
 }
 
 /* Shown when signinRedirect() rejects — see App.tsx's startSignIn. Before
    this existed the failure was swallowed by `void` and the button looked
    dead, so there was nothing on screen to style. */
 .signin-gate__error {
-  margin-top: 1rem;
-  padding: 0.75rem;
+  margin-top: var(--space-2);
+  padding: var(--space-4);
   border: 1px solid var(--danger);
   background: var(--danger-bg);
-  color: var(--danger);
-  border-radius: 4px;
-  font-size: 0.85rem;
+  /* The word does the work; --danger is held to the border and the tint,
+     because --danger text on --danger-bg does not clear 4.5:1 (the same
+     finding components.css records for badges). */
+  color: var(--ink);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: 1.5;
   text-align: left;
+}
+
+.signin-gate__error p + p {
+  margin-top: var(--space-2);
 }
 
 .signin-gate__error code {
   overflow-wrap: anywhere;
+  font-family: var(--font-mono);
 }
 
 .signin-gate__error-detail {
-  margin-top: 0.5rem;
-  opacity: 0.75;
-  font-family: ui-monospace, monospace;
-  font-size: 0.78rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
   overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------------
+ * Session check — the brief moment before we know whether there is a
+ * session. A lockup and a line, not a spinner: this resolves in one
+ * round trip and a spinner would only announce that something might be
+ * wrong.
+ * ------------------------------------------------------------------- */
+
+.signin-gate__loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.signin-gate__loading-text {
+  color: var(--ink-muted);
+  font-size: var(--text-base);
+  animation: signin-gate-breathe 1.8s var(--motion-ease) infinite;
+}
+
+@keyframes signin-gate-breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .signin-gate__loading-text {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+/* ---------------------------------------------------------------------
+ * Stacked — the panel becomes a header band. Never display: none: it
+ * holds the <h1>.
+ * ------------------------------------------------------------------- */
+
+@media (max-width: 900px) {
+  .signin-gate {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .signin-gate__brand {
+    gap: var(--space-4);
+    padding: var(--space-8) var(--space-6);
+  }
+  .signin-gate__tagline {
+    font-size: var(--text-lg);
+    max-width: none;
+  }
+  /* The proof points are supporting copy for a wide, empty column; on a
+     phone they push the actual sign-in control below the fold. */
+  .signin-gate__points {
+    display: none;
+  }
+  .signin-gate__watermark {
+    width: 40%;
+    bottom: -30%;
+  }
+  .signin-gate__panel {
+    padding: var(--space-7) var(--space-4) var(--space-8);
+    align-items: flex-start;
+  }
+  .signin-gate__card {
+    padding: var(--space-6);
+    box-shadow: var(--shadow-md);
+  }
 }
