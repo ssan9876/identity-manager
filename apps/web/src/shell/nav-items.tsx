@@ -102,6 +102,17 @@ function ConnectorsIcon({ className }: { className?: string }) {
   )
 }
 
+function ApplicationsIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)}>
+      <rect x="2.5" y="4" width="15" height="12" rx="2" />
+      <path d="M2.5 8h15" />
+      <circle cx="5" cy="6" r="0.5" fill="currentColor" />
+      <path d="M7 12h6" />
+    </svg>
+  )
+}
+
 export const NAV_ITEMS: NavItem[] = [
   { key: 'people', label: 'People', path: '/people', action: 'user:read', icon: PeopleIcon },
   { key: 'groups', label: 'Groups', path: '/groups', action: 'group:read', icon: GroupsIcon },
@@ -113,4 +124,8 @@ export const NAV_ITEMS: NavItem[] = [
   // gates visibility exactly like every other item here: super_admin and
   // auditor see it, nobody else does (authz/actions.ts).
   { key: 'connectors', label: 'Connectors', path: '/connectors', action: 'connector:read', icon: ConnectorsIcon },
+  // SSO applications. `sso_app:read` is held by super_admin ALONE — not
+  // auditor, unlike connectors — so this item is invisible to everyone
+  // else, matching who can actually act on it.
+  { key: 'applications', label: 'Applications', path: '/applications', action: 'sso_app:read', icon: ApplicationsIcon },
 ]
