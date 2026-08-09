@@ -77,9 +77,6 @@ export class RuleApplier {
   private readonly handlers: Record<JmlActionType, ActionHandler> = Object.assign(
     Object.create(null) as Record<JmlActionType, ActionHandler>,
     {
-      add_to_group: (rule, userId, actionParams) => this.applyAddToGroup(rule, userId, actionParams),
-      remove_from_group: (rule, userId, actionParams) =>
-        this.applyRemoveFromGroup(rule, userId, actionParams),
       set_attribute: (rule, userId, actionParams) => this.applySetAttribute(rule, userId, actionParams),
       deactivate: (rule, userId, actionParams) => this.applyDeactivate(rule, userId, actionParams),
     } satisfies Record<JmlActionType, ActionHandler>,
@@ -95,88 +92,6 @@ export class RuleApplier {
 
     const handler = this.handlers[matched.action]
     return handler({ id: matched.ruleId, name: matched.ruleName }, userId, matched.actionParams)
-  }
-
-  /**
-   * `resourceType`/`resourceId` on the audit row are the GROUP's, not the
-   * user's — same anchor `GroupsController.addMember` already uses for a
-   * human-driven add (see its own doc comment: membership is a fact about
-   * the group's roster). `GroupsRepository.addUser` is itself idempotent
-   * (`onConflictDoNothing`), so re-applying this action for a user already
-   * in the group writes a fresh audit/outbox row but changes no membership
-   * state — acceptable here because, like every JML action, this is only
-   * ever reached via a trigger firing (see LifecycleJob), and a trigger only
-   * fires once per idempotent script run (see that job's own doc comment on
-   * why re-running it writes no new rows).
-   */
-  private async applyAddToGroup(
-    rule: { id: string; name: string },
-    userId: string,
-    actionParams: Record<string, unknown>,
-  ): Promise<ApplyResult> {
-    const parsed = groupActionParamsSchema.safeParse(actionParams)
-    if (!parsed.success) {
-      console.warn(`[jml] rule ${rule.id} ("${rule.name}") add_to_group actionParams invalid — skipped`)
-      return { applied: false, skippedReason: 'invalid_action_params' }
-    }
-    const { groupId } = parsed.data
-
-    await this.db.transaction(async (tx) => {
-      await this.groups.addUser(groupId, userId, tx)
-
-      await this.auditWriter.record(tx, {
-        actorUserId: null,
-        action: 'jml:add_to_group',
-        resourceType: 'group',
-        resourceId: groupId,
-        before: null,
-        after: { groupId, userId, ruleId: rule.id, ruleName: rule.name },
-      })
-
-      await this.outboxWriter.record(tx, {
-        aggregateType: 'membership',
-        aggregateId: groupId,
-        eventType: 'membership_changed',
-        payload: { groupId, userId, action: 'jml:add_to_group', ruleId: rule.id },
-      })
-    })
-
-    return { applied: true }
-  }
-
-  private async applyRemoveFromGroup(
-    rule: { id: string; name: string },
-    userId: string,
-    actionParams: Record<string, unknown>,
-  ): Promise<ApplyResult> {
-    const parsed = groupActionParamsSchema.safeParse(actionParams)
-    if (!parsed.success) {
-      console.warn(`[jml] rule ${rule.id} ("${rule.name}") remove_from_group actionParams invalid — skipped`)
-      return { applied: false, skippedReason: 'invalid_action_params' }
-    }
-    const { groupId } = parsed.data
-
-    await this.db.transaction(async (tx) => {
-      await this.groups.removeUser(groupId, userId, tx)
-
-      await this.auditWriter.record(tx, {
-        actorUserId: null,
-        action: 'jml:remove_from_group',
-        resourceType: 'group',
-        resourceId: groupId,
-        before: { groupId, userId, ruleId: rule.id, ruleName: rule.name },
-        after: null,
-      })
-
-      await this.outboxWriter.record(tx, {
-        aggregateType: 'membership',
-        aggregateId: groupId,
-        eventType: 'membership_changed',
-        payload: { groupId, userId, action: 'jml:remove_from_group', ruleId: rule.id },
-      })
-    })
-
-    return { applied: true }
   }
 
   /**

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { AuditWriter } from '../src/audit/audit.writer'
+import { attributeDefinitions } from '../src/db/schema/attribute-definitions'
 import { InvalidTransitionError } from '../src/common/errors'
 import { GroupsRepository } from '../src/groups/groups.repository'
 import { JmlRulesRepository } from '../src/jml/jml-rules.repository'
@@ -180,16 +181,41 @@ describe('LifecycleJob (Milestone 7, Task 7)', () => {
   })
 
   describe('firing start_date_reached / end_date_reached rules', () => {
-    it('applies an enabled start_date_reached rule\'s action for a newly-activated joiner', async () => {
-      const group = await groupsRepo().create({ name: `Onboarding Group ${nextTag()}` })
+    // Milestone 19, Task 16. These three used JML's group-granting action
+    // purely as an OBSERVABLE effect of a rule firing. That action is gone —
+    // business roles own desired group membership now, so a JML rule granting
+    // one would be a second writer the reconciler revokes on its next pass.
+    // The observable is now an attribute the rule sets. What is under test is
+    // unchanged: the lifecycle job fires an ENABLED rule for the right
+    // trigger, and does not fire a disabled one.
+    async function seedAttributeKey(label: string): Promise<string> {
+      const key = `jml_${nextTag()}`
+      await ctx.db.insert(attributeDefinitions).values({
+        key,
+        label,
+        dataType: 'string',
+        required: false,
+        appliesTo: 'user',
+        isActive: true,
+      })
+      return key
+    }
+
+    async function attributeOf(userId: string, key: string): Promise<unknown> {
+      const reloaded = await usersRepo().findById(userId)
+      return (reloaded?.attributes as Record<string, unknown> | undefined)?.[key]
+    }
+
+    it("applies an enabled start_date_reached rule's action for a newly-activated joiner", async () => {
+      const key = await seedAttributeKey('Onboarded')
       const rule = await rulesRepo().create({
         name: `Auto-onboard ${nextTag()}`,
         trigger: 'start_date_reached',
         conditionField: 'status', // status is 'active' by the time the rule fires (post-transition)
         conditionOperator: 'equals',
         conditionValue: 'active',
-        action: 'add_to_group',
-        actionParams: { groupId: group.id },
+        action: 'set_attribute',
+        actionParams: { key, value: 'yes' },
       })
       await rulesRepo().markSimulated(rule.id)
       await rulesRepo().setEnabled(rule.id, true)
@@ -198,19 +224,22 @@ describe('LifecycleJob (Milestone 7, Task 7)', () => {
 
       await makeJob().run()
 
-      expect(await groupsRepo().listDirectUserMembers(group.id)).toContain(user.id)
+      expect(await attributeOf(user.id, key)).toBe('yes')
     })
 
-    it('applies an enabled end_date_reached rule\'s action for a newly-deactivated leaver', async () => {
-      const group = await groupsRepo().create({ name: `Offboarding Group ${nextTag()}` })
+    it("applies an enabled end_date_reached rule's action for a newly-deactivated leaver", async () => {
+      const key = await seedAttributeKey('Offboard review')
       const rule = await rulesRepo().create({
         name: `Auto-offboard ${nextTag()}`,
         trigger: 'end_date_reached',
         conditionField: 'status',
         conditionOperator: 'equals',
         conditionValue: 'deactivated',
-        action: 'add_to_group', // tags leavers into a review group; deliberately not 'deactivate' — that already happened via the direct end_date path, see LifecycleJob's own doc comment.
-        actionParams: { groupId: group.id },
+        // Deliberately not 'deactivate' — that already happened via the direct
+        // end_date path (see LifecycleJob's own doc comment). Observing a
+        // SECOND, distinct effect is what proves the trigger fired afterwards.
+        action: 'set_attribute',
+        actionParams: { key, value: 'pending' },
       })
       await rulesRepo().markSimulated(rule.id)
       await rulesRepo().setEnabled(rule.id, true)
@@ -219,19 +248,19 @@ describe('LifecycleJob (Milestone 7, Task 7)', () => {
 
       await makeJob().run()
 
-      expect(await groupsRepo().listDirectUserMembers(group.id)).toContain(user.id)
+      expect(await attributeOf(user.id, key)).toBe('pending')
     })
 
     it('a disabled rule never fires from the lifecycle job either', async () => {
-      const group = await groupsRepo().create({ name: `Disabled Rule Group ${nextTag()}` })
+      const key = await seedAttributeKey('Never set')
       const rule = await rulesRepo().create({
         name: `Disabled ${nextTag()}`,
         trigger: 'start_date_reached',
         conditionField: 'status',
         conditionOperator: 'equals',
         conditionValue: 'active',
-        action: 'add_to_group',
-        actionParams: { groupId: group.id },
+        action: 'set_attribute',
+        actionParams: { key, value: 'should-not-appear' },
       })
       // Deliberately NOT simulated/enabled.
 
@@ -239,7 +268,7 @@ describe('LifecycleJob (Milestone 7, Task 7)', () => {
       await makeJob().run()
 
       expect(rule.enabled).toBe(false)
-      expect(await groupsRepo().listDirectUserMembers(group.id)).not.toContain(user.id)
+      expect(await attributeOf(user.id, key)).toBeUndefined()
     })
   })
 

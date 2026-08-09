@@ -1,3 +1,4 @@
+import type { JmlActionType } from '../src/jml/rule-engine'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { AuditWriter } from '../src/audit/audit.writer'
 import { attributeDefinitions } from '../src/db/schema/attribute-definitions'
@@ -128,62 +129,43 @@ describe('RuleApplier (Milestone 7, Task 6)', () => {
     }
   }
 
-  describe('add_to_group', () => {
-    it('adds the user to the group, writing an audit row with a null actor and one membership outbox event', async () => {
-      const group = await groupsRepo().create({ name: `RA Group ${nextTag()}` })
-      const user = await makeActiveUser()
+  /**
+   * Milestone 19, Task 16. `add_to_group`/`remove_from_group` were removed —
+   * business roles own desired group membership now, so a JML rule granting
+   * one would be a second writer the reconciler would revoke on its next
+   * pass. The two `describe` blocks that used to live here tested those
+   * handlers; they are replaced by this, which asserts the removal is
+   * ENFORCED rather than merely that the code is gone.
+   *
+   * The cast is the whole point: Postgres cannot `DROP VALUE`, so the
+   * `jml_action` enum still has both labels and a stored row really can come
+   * back carrying one. This reproduces that row shape exactly.
+   */
+  describe('the removed group actions', () => {
+    for (const action of ['add_to_group', 'remove_from_group'] as const) {
+      it(`refuses a stored "${action}" rule: skipped as unknown, writing nothing`, async () => {
+        const group = await groupsRepo().create({ name: `RA Removed ${nextTag()}` })
+        const user = await makeActiveUser()
+        const auditBefore = await totalAuditCount(ctx)
+        const outboxBefore = await totalOutboxCount(ctx)
 
-      const result = await applier().apply(
-        matched({ action: 'add_to_group', actionParams: { groupId: group.id } }),
-        user.id,
-      )
+        const result = await applier().apply(
+          matched({
+            action: action as unknown as JmlActionType,
+            actionParams: { groupId: group.id },
+          }),
+          user.id,
+        )
 
-      expect(result.applied).toBe(true)
-      expect(await groupsRepo().listDirectUserMembers(group.id)).toContain(user.id)
-
-      const auditRows = await auditRowsFor(ctx, 'group', group.id)
-      expect(auditRows).toHaveLength(1)
-      expect(auditRows[0]!.action).toBe('jml:add_to_group')
-      expect(auditRows[0]!.actor_user_id).toBeNull()
-
-      const outboxRows = await outboxRowsFor(ctx, 'membership', group.id)
-      expect(outboxRows).toHaveLength(1)
-      expect(outboxRows[0]!.event_type).toBe('membership_changed')
-    })
-
-    it('invalid actionParams (missing groupId) is skipped, not crashed, and writes nothing', async () => {
-      const user = await makeActiveUser()
-      const auditBefore = await totalAuditCount(ctx)
-      const outboxBefore = await totalOutboxCount(ctx)
-
-      const result = await applier().apply(matched({ action: 'add_to_group', actionParams: {} }), user.id)
-
-      expect(result.applied).toBe(false)
-      expect(result.skippedReason).toBe('invalid_action_params')
-      expect(await totalAuditCount(ctx)).toBe(auditBefore)
-      expect(await totalOutboxCount(ctx)).toBe(outboxBefore)
-    })
-  })
-
-  describe('remove_from_group', () => {
-    it('removes the user from the group, writing an audit row with a null actor and one membership outbox event', async () => {
-      const group = await groupsRepo().create({ name: `RA Remove Group ${nextTag()}` })
-      const user = await makeActiveUser()
-      await groupsRepo().addUser(group.id, user.id)
-
-      const result = await applier().apply(
-        matched({ action: 'remove_from_group', actionParams: { groupId: group.id } }),
-        user.id,
-      )
-
-      expect(result.applied).toBe(true)
-      expect(await groupsRepo().listDirectUserMembers(group.id)).not.toContain(user.id)
-
-      const auditRows = await auditRowsFor(ctx, 'group', group.id)
-      expect(auditRows).toHaveLength(1)
-      expect(auditRows[0]!.action).toBe('jml:remove_from_group')
-      expect(auditRows[0]!.actor_user_id).toBeNull()
-    })
+        expect(result.applied).toBe(false)
+        expect(result.skippedReason).toBe('unknown_action')
+        // Nothing granted, and no audit or outbox row invented for an action
+        // this binary no longer implements.
+        expect(await groupsRepo().listDirectUserMembers(group.id)).not.toContain(user.id)
+        expect(await totalAuditCount(ctx)).toBe(auditBefore)
+        expect(await totalOutboxCount(ctx)).toBe(outboxBefore)
+      })
+    }
   })
 
   describe('set_attribute', () => {

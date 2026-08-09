@@ -75,12 +75,12 @@ describe('JmlRulesRepository (Milestone 7, Tasks 5 & 6)', () => {
         ruleInput({
           conditionOperator: 'in',
           conditionValue: ['Engineer', 'Manager'],
-          action: 'add_to_group',
-          actionParams: { groupId: '11111111-1111-1111-1111-111111111111' },
+          action: 'set_attribute',
+          actionParams: { key: 'costCenter', value: 'CC-42' },
         }),
       )
       expect(rule.conditionValue).toEqual(['Engineer', 'Manager'])
-      expect(rule.actionParams).toEqual({ groupId: '11111111-1111-1111-1111-111111111111' })
+      expect(rule.actionParams).toEqual({ key: 'costCenter', value: 'CC-42' })
     })
   })
 
