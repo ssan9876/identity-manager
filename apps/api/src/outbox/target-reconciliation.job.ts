@@ -9,7 +9,7 @@ import { connectorTargets } from '../db/schema/connector-targets'
 import * as schema from '../db/schema/index'
 import { type Group, GroupsRepository } from '../groups/groups.repository'
 import { type User, UsersRepository, type UserStatus } from '../users/users.repository'
-import { SyncWorker } from './sync.worker'
+import { SyncWorker, type TargetProvisioning } from './sync.worker'
 
 // Every status, not just 'active' — mirrors `ReconciliationJob`'s own
 // `ALL_USER_STATUSES` (outbox/reconciliation.job.ts) exactly, and for the
@@ -302,6 +302,23 @@ export interface TargetReconciliationReport {
  * connector sees this job behave byte-for-byte as it did before this task
  * (zero groups ever contribute to a population/count that was always
  * user-only for that target).
+ *
+ * PROVISIONING MODE (Milestone 18, Task 15). Desired state now includes
+ * "should this account exist at all". On an `all_users` target — the
+ * default, and every target until an operator deliberately opts one in —
+ * nothing below changes at all. On an `entitled_only` target, a user holding
+ * no `user_target_accounts` row has a desired state of DISABLED, so an
+ * account they still have is planned for a disable rather than quietly
+ * skipped; skipping is what leaves a live account nobody manages. The
+ * entitlement set is read ONCE per run (`SyncWorker.loadTargetProvisioning`)
+ * and threaded into `buildDesiredUser`, so this job's plan and the apply
+ * phase behind it cannot disagree about who should have an account.
+ *
+ * THE BLAST-RADIUS GUARD IS EXACTLY WHY IT EXISTS. Flipping a populated
+ * target to `entitled_only` before any role grants accounts makes the whole
+ * directory's desired state "disabled" — the guard halts that run and
+ * reports it instead of executing it, and NOTHING reaches the target.
+ * test/business-role-sync.spec.ts asserts precisely that.
  */
 @Injectable()
 export class TargetReconciliationJob {
@@ -331,6 +348,26 @@ export class TargetReconciliationJob {
 
     const { thresholdPercent, floor } = await this.loadBlastRadiusConfig(target)
 
+    // MILESTONE 18, TASK 15 — this target's provisioning mode and, when it
+    // is `entitled_only`, the FULL set of users entitled to an account in
+    // it, read ONCE for the whole run rather than once per user (see
+    // `SyncWorker.loadTargetProvisioning`'s own doc comment). Its own short
+    // transaction, opened and committed before the population walk starts —
+    // the identical connection discipline `planForUser` documents, for the
+    // identical finding-C1 reason: `UsersRepository.list` below reads via
+    // the pool and must never do so while a transaction of this job's sits
+    // open.
+    //
+    // Read at the START of the run and used for every user in it, so one
+    // run plans against ONE consistent answer. An entitlement granted
+    // mid-walk is picked up by the next run — which is the same
+    // eventual-consistency contract every other input to this job already
+    // has, and far better than a walk whose first half and second half
+    // disagree about who should have an account.
+    const provisioning = await this.db.transaction(async (tx) =>
+      this.syncWorker.loadTargetProvisioning(tx, target),
+    )
+
     const toMutate: PlannedPrincipal[] = []
     let populationSize = 0
 
@@ -344,7 +381,7 @@ export class TargetReconciliationJob {
 
         for (const user of page) {
           populationSize += 1
-          const operations = await this.planForUser(user, target)
+          const operations = await this.planForUser(user, target, provisioning)
           if (operations.length > 0) {
             toMutate.push({ userId: user.id, username: user.username, operations })
           }
@@ -536,11 +573,48 @@ export class TargetReconciliationJob {
    * at the scale this project's own pool-exhaustion regression test
    * exercises.
    */
-  private async planForUser(user: User, target: ConnectorTarget): Promise<ConnectorOperation[]> {
+  private async planForUser(
+    user: User,
+    target: ConnectorTarget,
+    provisioning: TargetProvisioning,
+  ): Promise<ConnectorOperation[]> {
     return this.db.transaction(async (tx) => {
-      const desired = await this.syncWorker.buildDesiredUser(tx, user, target)
+      // MILESTONE 18, TASK 15 — `provisioning` is threaded into
+      // `buildDesiredUser` rather than left for it to resolve per user: the
+      // answer is identical either way (that method falls back to a
+      // single-user read of the same two tables), this just pays for it once
+      // per RUN instead of once per user while walking an entire directory.
+      // Desired state for an unentitled user on an `entitled_only` target is
+      // therefore `enabled: false` — "should this account exist at all" is
+      // part of the desired state this job corrects toward, so an unentitled
+      // user is planned for a DISABLE rather than quietly skipped, which
+      // would leave a live account nobody manages.
+      const desired = await this.syncWorker.buildDesiredUser(tx, user, target, provisioning)
       const connector = await this.connectorRegistry.resolve(target, tx)
-      return connector.plan(desired)
+      const operations = await connector.plan(desired)
+
+      const entitled = provisioning.mode === 'all_users' || provisioning.entitledUserIds.has(user.id)
+      if (entitled) {
+        return operations
+      }
+
+      // CREATE is dropped for an unentitled user, and only CREATE. A
+      // connector reports `create` when the principal does not exist in the
+      // target at all — and bringing an account into existence, even a
+      // disabled one, is the one thing an unentitled user's desired state
+      // definitively does NOT include. Every other operation is kept,
+      // including the `disable` a connector reports for an account that
+      // exists and is currently enabled: that is precisely the correction
+      // this task exists to make.
+      //
+      // Note what this is NOT: it is not "skip unentitled users". An
+      // unentitled user who HAS an account is planned (and disabled); an
+      // unentitled user with no account produces an empty plan because
+      // there is genuinely nothing to correct, not because they were
+      // filtered out of the walk. They are still counted in
+      // `populationSize`, so the blast-radius arithmetic still sees the
+      // whole directory.
+      return operations.filter((operation) => operation.kind !== 'create')
     })
   }
 

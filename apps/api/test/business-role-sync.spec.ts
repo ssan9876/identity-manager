@@ -16,6 +16,8 @@ import { RoleReconciler } from '../src/business-roles/role-reconciler'
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import type { ConnectorTarget } from '../src/connectors/connector'
+import { ConnectorRegistry } from '../src/connectors/connector-registry'
+import { EchoConnector } from '../src/connectors/echo.connector'
 import { businessRoleConditions } from '../src/db/schema/business-roles'
 import { groups } from '../src/db/schema/groups'
 import { orgUnits } from '../src/db/schema/org-units'
@@ -30,6 +32,11 @@ import { OutboxWriter } from '../src/outbox/outbox.writer'
 import { SyncDetailRepository } from '../src/outbox/sync-detail.repository'
 import { SyncStateRepository } from '../src/outbox/sync-state.repository'
 import { SyncWorker } from '../src/outbox/sync.worker'
+import {
+  type PlannedPrincipal,
+  TargetReconciliationJob,
+  type TargetReconciliationReport,
+} from '../src/outbox/target-reconciliation.job'
 import { UsersController } from '../src/users/users.controller'
 import { UsersRepository } from '../src/users/users.repository'
 import { type TestDatabase, withTestDatabase } from './support/pg'
@@ -161,7 +168,7 @@ async function configureTargets(spec: Partial<Record<ConnectorTarget, Provisioni
          VALUES ($1, true, $2, $3::jsonb)
        ON CONFLICT (target) DO UPDATE
          SET enabled = true, provisioning_mode = EXCLUDED.provisioning_mode, config = EXCLUDED.config`,
-      [target, mode, JSON.stringify(target === 'echo' ? { credentialSecretName: 'ECHO_TEST_SECRET' } : {})],
+      [target, mode, JSON.stringify(target === 'echo' ? { credentialSecretName: 'CONNECTOR_BR_SYNC_ECHO_SECRET' } : {})],
     )
   }
 }
@@ -609,5 +616,205 @@ describe('offboarding is independent of role evaluation (settled decision 8)', (
     } finally {
       await roleRepo().setEnabled(roleId, false)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Task 15 — target reconciliation respects the mode
+// ---------------------------------------------------------------------------
+
+/**
+ * MILESTONE 18, TASK 15 — `TargetReconciliationJob` against the REAL
+ * `EchoConnector` (never a mock: it is a genuine `DirectoryConnector`, the
+ * same one target-reconciliation.spec.ts drives) and a real Postgres.
+ *
+ * ONE `EchoConnector` for the whole block, deliberately — it stands in for
+ * "the external directory", whose state persists across runs. That is what
+ * makes "this user already has an account there" a real precondition rather
+ * than a mocked one: `plan()` diffs against what `apply()` genuinely
+ * recorded (see echo.connector.ts's own `lastAppliedByUsername` doc
+ * comment).
+ *
+ * `reconcile()` walks EVERY user in the database, and this file's earlier
+ * tests leave plenty behind. So every assertion here is scoped to the user
+ * this test seeded (`planFor`), and the blast-radius config is set
+ * deliberately extreme per test — lenient enough to structurally never trip,
+ * or strict enough to trip on anything — so accumulated population can never
+ * flip a verdict either way.
+ */
+describe('target reconciliation and provisioning mode (Milestone 18, Task 15)', () => {
+  const ECHO_SECRET_NAME = 'CONNECTOR_BR_SYNC_ECHO_SECRET'
+  let echo: EchoConnector
+  let job: TargetReconciliationJob
+
+  beforeAll(() => {
+    process.env[ECHO_SECRET_NAME] = 'br-sync-echo-secret'
+    const keycloak = new KeycloakAdminClient(UNREACHABLE_KEYCLOAK)
+    echo = new EchoConnector()
+    const registry = new ConnectorRegistry(keycloak, echo)
+    const worker = new SyncWorker(
+      ctx.db,
+      new OutboxRepository(),
+      new UsersRepository(ctx.db),
+      new GroupsRepository(ctx.db),
+      keycloak,
+      undefined,
+      registry,
+    )
+    job = new TargetReconciliationJob(new UsersRepository(ctx.db), registry, worker, new AuditWriter(), ctx.db)
+  })
+
+  afterAll(() => {
+    delete process.env[ECHO_SECRET_NAME]
+  })
+
+  /**
+   * The echo `connector_targets` row, with EXPLICIT blast-radius config and
+   * an explicit provisioning mode — nothing here relies on schema defaults,
+   * since this file's population accumulates across tests. `credentialSecretName`
+   * is required by `EchoConnector` exactly as a real vendor connector requires
+   * a bind password.
+   */
+  async function configureEcho(
+    mode: ProvisioningMode,
+    blastRadius: { thresholdPercent: number; floor: number } = { thresholdPercent: 100, floor: 1_000_000 },
+  ): Promise<void> {
+    await ctx.pool.query(
+      `INSERT INTO connector_targets (target, enabled, provisioning_mode, config, blast_radius_threshold, blast_radius_floor)
+         VALUES ('echo', true, $1, $2::jsonb, $3, $4)
+       ON CONFLICT (target) DO UPDATE
+         SET enabled = true, provisioning_mode = $1, config = $2::jsonb,
+             blast_radius_threshold = $3, blast_radius_floor = $4`,
+      [
+        mode,
+        JSON.stringify({ credentialSecretName: ECHO_SECRET_NAME }),
+        blastRadius.thresholdPercent,
+        blastRadius.floor,
+      ],
+    )
+  }
+
+  function planFor(report: TargetReconciliationReport, userId: string): PlannedPrincipal | undefined {
+    return report.toMutate.find((planned) => planned.userId === userId)
+  }
+
+  function applyCallsFor(username: string): number {
+    return echo.calls.filter((call) => call.method === 'apply' && call.desired?.username === username).length
+  }
+
+  async function usernameOf(userId: string): Promise<string> {
+    const user = await new UsersRepository(ctx.db).findById(userId)
+    return user!.username
+  }
+
+  it('on an all_users target the job behaves exactly as today', async () => {
+    await configureEcho('all_users')
+    const userId = await insertUser()
+
+    const result = await job.reconcile('echo', { dryRun: true })
+
+    // A user the target has never seen is planned for a create — unchanged
+    // from before this task, and the whole point of `all_users` being the
+    // default.
+    expect(planFor(result, userId)?.operations.map((operation) => operation.kind)).toEqual(['create'])
+  })
+
+  it('on an entitled_only target, an unentitled user WITH an account is planned for DISABLE, not skipped', async () => {
+    // Skipping would leave a live account nobody manages. "Should this
+    // account exist at all" is part of the desired state the job corrects
+    // toward, so an unentitled user's desired state is disabled.
+    await configureEcho('all_users')
+    const userId = await insertUser()
+    const username = await usernameOf(userId)
+
+    // Give them a real, enabled account in the target first — this is the
+    // "populated target an operator is about to migrate" case.
+    await job.reconcile('echo')
+    expect(applyCallsFor(username)).toBe(1)
+
+    await configureEcho('entitled_only')
+    const result = await job.reconcile('echo', { dryRun: true })
+
+    expect(planFor(result, userId)?.operations.map((operation) => operation.kind)).toContain('disable')
+  })
+
+  it('an unentitled user the target has NEVER provisioned is planned for nothing — never a create', async () => {
+    // The other half of "not skipped": there is genuinely nothing to correct
+    // for someone who has no account, and bringing one into existence — even
+    // a disabled one — is the one thing an unentitled user's desired state
+    // definitively does not include. They are still WALKED (they count
+    // toward populationSize), just found to be already converged.
+    await configureEcho('entitled_only')
+    const userId = await insertUser()
+
+    const result = await job.reconcile('echo', { dryRun: true })
+
+    expect(planFor(result, userId)).toBeUndefined()
+    expect(result.populationSize).toBeGreaterThan(0)
+  })
+
+  it('an entitled user on an entitled_only target is planned normally', async () => {
+    await configureEcho('entitled_only')
+    const userId = await insertUser()
+    await ctx.db.insert(userTargetAccounts).values({ userId, target: 'echo', grantSource: 'business_role' })
+
+    const result = await job.reconcile('echo', { dryRun: true })
+
+    const kinds = planFor(result, userId)?.operations.map((operation) => operation.kind)
+    expect(kinds).toEqual(['create'])
+    expect(kinds).not.toContain('disable')
+  })
+
+  it('the entitled user is enabled and the unentitled one disabled in the SAME run', async () => {
+    // Plan and apply agree because both go through the one
+    // `buildDesiredUser` — the property that stops "what the dry run showed"
+    // and "what the sync asserted" from drifting apart.
+    await configureEcho('entitled_only')
+    const entitledId = await insertUser()
+    const unentitledId = await insertUser()
+    await ctx.db.insert(userTargetAccounts).values({ userId: entitledId, target: 'echo', grantSource: 'business_role' })
+
+    await job.reconcile('echo')
+
+    const entitledName = await usernameOf(entitledId)
+    const entitledApply = echo.calls.find(
+      (call) => call.method === 'apply' && call.desired?.username === entitledName,
+    )
+    expect(entitledApply?.desired?.enabled).toBe(true)
+    // The unentitled user has no account here at all, so nothing was applied
+    // for them — no account was created just to disable it.
+    expect(applyCallsFor(await usernameOf(unentitledId))).toBe(0)
+  })
+
+  it('the blast-radius guard HALTS a mode flip made before any entitlement was granted', async () => {
+    // This is exactly why the guard exists. Flipping a populated target to
+    // entitled_only before any role grants accounts makes the whole
+    // directory's desired state "disabled"; the run must halt and report,
+    // never execute.
+    await configureEcho('all_users')
+    const userIds = [await insertUser(), await insertUser(), await insertUser()]
+    await job.reconcile('echo')
+    const usernames = await Promise.all(userIds.map(usernameOf))
+    const appliesBefore = usernames.map(applyCallsFor)
+
+    // Strict enough that any handful of genuine changes trips it.
+    await configureEcho('entitled_only', { thresholdPercent: 1, floor: 0 })
+    const result = await job.reconcile('echo')
+
+    expect(result.halted).toBe(true)
+    expect(result.overridden).toBe(false)
+    expect(result.blastRadius.tripped).toBe(true)
+    expect(result.appliedCount).toBe(0)
+    // The plan is still reported, so an operator can see exactly what would
+    // have happened...
+    expect(result.toMutate.length).toBeGreaterThan(0)
+    for (const userId of userIds) {
+      expect(planFor(result, userId)?.operations.map((operation) => operation.kind)).toContain('disable')
+    }
+    // ...and ZERO operations reached the target.
+    expect(usernames.map(applyCallsFor)).toEqual(appliesBefore)
+
+    // Leave the catalog lenient again for anything that runs after this.
+    await configureEcho('all_users')
   })
 })
