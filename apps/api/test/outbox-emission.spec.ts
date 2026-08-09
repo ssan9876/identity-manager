@@ -194,6 +194,18 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
     return usersRepo().changeStatus(created.id, 'active')
   }
 
+  /** Left at the `pending` the column defaults to — see the identical helper in users.write.spec.ts. */
+  async function makePendingUser(role: string, orgUnitId: string): Promise<User> {
+    const tag = nextTag()
+    return usersRepo().create({
+      primaryEmail: `${role}-${tag}@example.com`,
+      username: `${role}-${tag}`,
+      firstName: 'Test',
+      lastName: 'User',
+      orgUnitId,
+    })
+  }
+
   async function grant(userId: string, roleKey: RoleKey, scopeOrgUnitId?: string | null) {
     return rolesRepo().assign({ userId, roleKey, scopeOrgUnitId })
   }
@@ -352,6 +364,39 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
       expect(res.body.code).toBe('INVALID_TRANSITION')
 
       expect(await outboxEventsFor(ctx, 'user', target.id)).toHaveLength(1)
+    })
+  })
+
+  // =======================================================================
+  // POST /users/:id/activate -> user/status_changed (same type as deactivate)
+  // =======================================================================
+  describe('POST /users/:id/activate', () => {
+    it('emits exactly one user/status_changed outbox event carrying active', async () => {
+      const org = await makeOrgUnit('Activate Root')
+      const actor = await makeActiveUser('activator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      const target = await makePendingUser('target', org.id)
+      currentUsername = actor.username
+
+      await request(app.getHttpServer()).post(`/users/${target.id}/activate`).expect(200)
+
+      const events = await outboxEventsFor(ctx, 'user', target.id)
+      expect(events).toHaveLength(1)
+      expect(events[0].event_type).toBe('status_changed')
+      expect(events[0].payload.action).toBe('user:activate')
+      expect(events[0].payload.status).toBe('active')
+    })
+
+    it('emits no outbox event when the transition is rejected', async () => {
+      const org = await makeOrgUnit('Activate Reject Root')
+      const actor = await makeActiveUser('activator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      const target = await makeActiveUser('target', org.id)
+      currentUsername = actor.username
+
+      await request(app.getHttpServer()).post(`/users/${target.id}/activate`).expect(409)
+
+      expect(await outboxEventsFor(ctx, 'user', target.id)).toHaveLength(0)
     })
   })
 

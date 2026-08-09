@@ -179,6 +179,23 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
     return usersRepo().changeStatus(created.id, 'active')
   }
 
+  /**
+   * Left at the `pending` the column defaults to — deliberately NOT run
+   * through `changeStatus`, unlike `makeActiveUser` above. This is the
+   * state every newly created person is really in, and the one
+   * POST /users/:id/activate exists to move them out of.
+   */
+  async function makePendingUser(role: string, orgUnitId: string): Promise<User> {
+    const tag = nextTag()
+    return usersRepo().create({
+      primaryEmail: `${role}-${tag}@example.com`,
+      username: `${role}-${tag}`,
+      firstName: 'Test',
+      lastName: 'User',
+      orgUnitId,
+    })
+  }
+
   async function grant(userId: string, roleKey: RoleKey, scopeOrgUnitId?: string | null) {
     return rolesRepo().assign({ userId, roleKey, scopeOrgUnitId })
   }
@@ -686,6 +703,144 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
 
       const res = await request(app.getHttpServer())
         .post(`/users/${BOGUS_ID}/deactivate`)
+        .expect(404)
+      expect(res.body.code).toBe('NOT_FOUND')
+    })
+  })
+
+  // =======================================================================
+  // POST /users/:id/activate
+  // =======================================================================
+  describe('POST /users/:id/activate', () => {
+    it('activates a pending user and writes exactly one audit row', async () => {
+      const org = await makeOrgUnit('Activate Root')
+      const actor = await makeActiveUser('activator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      const target = await makePendingUser('target', org.id)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .post(`/users/${target.id}/activate`)
+        .expect(200)
+      expect(res.body.status).toBe('active')
+
+      const rows = await auditRowsFor(ctx, target.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].action).toBe('user:activate')
+      expect(rows[0].before?.status).toBe('pending')
+      expect(rows[0].after?.status).toBe('active')
+    })
+
+    it('activates a suspended user', async () => {
+      const org = await makeOrgUnit('Activate Suspended Root')
+      const actor = await makeActiveUser('activator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      const target = await makeActiveUser('target', org.id)
+      await usersRepo().changeStatus(target.id, 'suspended')
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .post(`/users/${target.id}/activate`)
+        .expect(200)
+      expect(res.body.status).toBe('active')
+
+      const rows = await auditRowsFor(ctx, target.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].before?.status).toBe('suspended')
+    })
+
+    it('returns 409 INVALID_TRANSITION for a deactivated user and writes no audit row', async () => {
+      const org = await makeOrgUnit('Activate Terminal Root')
+      const actor = await makeActiveUser('activator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      const target = await makeActiveUser('target', org.id)
+      currentUsername = actor.username
+
+      await request(app.getHttpServer()).post(`/users/${target.id}/deactivate`).expect(200)
+      expect(await auditRowsFor(ctx, target.id)).toHaveLength(1)
+
+      const res = await request(app.getHttpServer())
+        .post(`/users/${target.id}/activate`)
+        .expect(409)
+      expect(res.body.code).toBe('INVALID_TRANSITION')
+      expect(res.body.message).toContain('terminal')
+
+      // Still exactly the one deactivate row — the reactivation attempt
+      // rolled back cleanly and left no trace.
+      expect(await auditRowsFor(ctx, target.id)).toHaveLength(1)
+    })
+
+    it('returns 409 INVALID_TRANSITION for an already-active user', async () => {
+      const org = await makeOrgUnit('Activate Idempotent Root')
+      const actor = await makeActiveUser('activator', org.id)
+      await grant(actor.id, 'user_admin', org.id)
+      const target = await makeActiveUser('target', org.id)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .post(`/users/${target.id}/activate`)
+        .expect(409)
+      expect(res.body.code).toBe('INVALID_TRANSITION')
+
+      expect(await auditRowsFor(ctx, target.id)).toHaveLength(0)
+    })
+
+    it('rejects an actor holding only user:update with 403 and writes no audit row', async () => {
+      const org = await makeOrgUnit('Activate Permission Root')
+      const actor = await makeActiveUser('helper', org.id)
+      await grant(actor.id, 'help_desk', org.id) // user:update, NOT user:activate
+      const target = await makePendingUser('target', org.id)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .post(`/users/${target.id}/activate`)
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await auditRowsFor(ctx, target.id)).toHaveLength(0)
+    })
+
+    it('rejects activating an out-of-scope user with 403 and writes no audit row', async () => {
+      const root = await makeOrgUnit('Activate Scope Root')
+      const scopeOrg = await makeChildOrgUnit(root.id, 'In Scope')
+      const otherOrg = await makeChildOrgUnit(root.id, 'Out Of Scope')
+      const actor = await makeActiveUser('scoped-activator', scopeOrg.id)
+      await grant(actor.id, 'user_admin', scopeOrg.id)
+      const target = await makePendingUser('target', otherOrg.id)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .post(`/users/${target.id}/activate`)
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await auditRowsFor(ctx, target.id)).toHaveLength(0)
+    })
+
+    it('blocks a user_admin from activating a super_admin even in scope (privilege guard)', async () => {
+      const org = await makeOrgUnit('Activate Privilege Root')
+      const admin = await makeActiveUser('admin', org.id)
+      await grant(admin.id, 'user_admin', org.id)
+      const boss = await makePendingUser('boss', org.id)
+      await grant(boss.id, 'super_admin', null)
+      currentUsername = admin.username
+
+      const res = await request(app.getHttpServer())
+        .post(`/users/${boss.id}/activate`)
+        .expect(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+
+      expect(await auditRowsFor(ctx, boss.id)).toHaveLength(0)
+    })
+
+    it('returns 404 for a well-formed but nonexistent user id', async () => {
+      const org = await makeOrgUnit('Activate Missing Root')
+      const actor = await makeActiveUser('activator', org.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .post(`/users/${BOGUS_ID}/activate`)
         .expect(404)
       expect(res.body.code).toBe('NOT_FOUND')
     })

@@ -442,6 +442,88 @@ export class UsersController {
   }
 
   /**
+   * The only path to `active` from an administrator's hands. `LifecycleJob`
+   * reaches the same status automatically for a `pending` user whose
+   * `start_date` has arrived; this exists for the person created without
+   * one, who would otherwise sit disabled in every connected directory
+   * forever with no console affordance to fix it (see
+   * docs/archive/specs/2026-08-08-user-activate-endpoint-design.md).
+   *
+   * Same load-inside-the-transaction, pair-both-checks shape as `update`
+   * and `deactivate` — including passing `tx` explicitly into both checks,
+   * for the same finding-C1 reason (see `update`'s doc comment). 200, not
+   * the POST-default 201: this acts on an existing resource.
+   *
+   * Deliberately does NOT check `current.status` first. `changeStatus`
+   * decides transition legality in ONE atomic conditional UPDATE and
+   * reports an accurate reason on zero rows (`deactivated is terminal ...`
+   * / `cannot transition from active to active`), both of which already
+   * map to 409 via INVALID_TRANSITION. A pre-check here would be a second,
+   * racy authority on the same question — exactly what changeStatus's own
+   * doc comment exists to prevent.
+   *
+   * Deliberately does NOT call Keycloak inline, unlike `deactivate`. That
+   * handler is synchronous because a deactivated user holding a live
+   * session is a security exposure that cannot wait for the outbox; the
+   * failure mode of a slow activation is a person who cannot sign in yet,
+   * which is the state they were already in. The `status_changed` event
+   * below is the whole propagation mechanism, and `ReconciliationJob`
+   * converges on the same result independently.
+   *
+   * Deliberately does NOT fire `start_date_reached` JML rules. Firing
+   * trigger rules is `LifecycleJob`'s job, not a hand-click's — the same
+   * reason `deactivate` does not fire `end_date_reached` rules.
+   */
+  @Post(':id/activate')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('user:activate')
+  async activate(
+    @Param('id') rawId: string,
+    @Req() request: AuthorizedRequest,
+  ): Promise<UserWithSyncState> {
+    const id = parseId(rawId)
+
+    const updated = await this.db.transaction(async (tx) => {
+      const current = await this.users.findById(id, tx)
+      if (current === null) {
+        throw new NotFoundError('user', id)
+      }
+
+      await this.engine.assertCanIn(request.actor, 'user:activate', current.orgUnitId, tx)
+      await this.privileges.assertCanModifyPrincipal(request.actor, current.id, tx)
+
+      const updated = await this.users.changeStatus(id, 'active', tx)
+
+      await this.auditWriter.record(tx, {
+        actorUserId: request.actor.userId,
+        action: 'user:activate',
+        resourceType: 'user',
+        resourceId: id,
+        before: snapshotUser(current),
+        after: snapshotUser(updated),
+      })
+
+      // Same 'status_changed' type deactivate emits — the connectors read
+      // `enabled` off the payload's status either way, so no new event type
+      // and no migration. See DesiredUser's own doc comment.
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'user',
+        aggregateId: id,
+        eventType: 'status_changed',
+        payload: { ...snapshotUser(updated), action: 'user:activate' },
+      })
+
+      return updated
+    })
+
+    // Always 'pending' the instant after this commits (no worker runs
+    // inline), but resolved rather than assumed — same contract as every
+    // other user-returning route in this controller.
+    const syncState = await this.syncStates.resolveForUser(id)
+    return this.attachSyncState(updated, syncState)
+  }
+
+  /**
    * The only path to `deactivated`, which is terminal — there is no DELETE
    * route for users, ever (see UsersRepository.changeStatus's doc comment).
    * Same load-inside-the-transaction, pair-both-checks shape as `update`
