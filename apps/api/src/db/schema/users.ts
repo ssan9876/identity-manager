@@ -1,6 +1,7 @@
 import {
   type AnyPgColumn,
   date,
+  foreignKey,
   index,
   jsonb,
   pgEnum,
@@ -98,5 +99,42 @@ export const users = pgTable(
       .where(sql`${table.employeeId} IS NOT NULL`),
     orgUnitIdx: index('users_org_unit_idx').on(table.orgUnitId),
     organizationIdx: index('users_organization_idx').on(table.organizationId),
+    // Milestone: organizations multi-tenancy, Task 4. The referenceable
+    // target for the membership edges' composite FKs (group-members.ts) and
+    // for this table's own self-referencing manager FK below — see
+    // org-units.ts for why the surrogate PK is not enough on its own.
+    idOrganizationKey: uniqueIndex('users_id_organization_key').on(
+      table.id,
+      table.organizationId,
+    ),
+    // A user's org unit must be in the user's own organization. This is the
+    // load-bearing constraint of the whole milestone: organization_id is
+    // DERIVED from the org unit at write time (UsersRepository.create), so
+    // application code cannot produce a mismatch today — but a CSV import, a
+    // connector write-back, a future endpoint or a plain bug could, and the
+    // failure mode is one tenant reading another's directory. Belongs in the
+    // database, where nothing can route around it.
+    orgUnitOrganizationFk: foreignKey({
+      name: 'users_org_unit_organization_fk',
+      columns: [table.orgUnitId, table.organizationId],
+      foreignColumns: [orgUnits.id, orgUnits.organizationId],
+    }).onDelete('restrict'),
+    // A user's manager likewise. NULL manager_id passes under MATCH SIMPLE,
+    // which is the wanted behaviour — most people have no manager recorded.
+    //
+    // The hand-written migration spells the referential action as
+    // `ON DELETE SET NULL (manager_id)` — a COLUMN LIST, Postgres 15+ —
+    // which drizzle's `onDelete('set null')` cannot express. That deviation
+    // is deliberate and load-bearing: organization_id is NOT NULL, so a
+    // column-list-less SET NULL would try to null it too and every manager
+    // deletion would fail with a not-null violation instead of orphaning
+    // the report the way users_manager_id_users_id_fk always has. The real
+    // behaviour is pinned by test/organizations.isolation.spec.ts
+    // ('deleting a manager nulls only manager_id').
+    managerOrganizationFk: foreignKey({
+      name: 'users_manager_organization_fk',
+      columns: [table.managerId, table.organizationId],
+      foreignColumns: [table.id, table.organizationId],
+    }).onDelete('set null'),
   }),
 )

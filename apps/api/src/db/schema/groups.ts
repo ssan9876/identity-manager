@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import {
+  foreignKey,
   index,
   jsonb,
   pgTable,
@@ -53,5 +54,22 @@ export const groups = pgTable(
     ),
     orgUnitIdx: index('groups_org_unit_idx').on(table.orgUnitId),
     organizationIdx: index('groups_organization_idx').on(table.organizationId),
+    // Milestone: organizations multi-tenancy, Task 4. The referenceable
+    // target for the membership edges' composite FKs (group-members.ts) —
+    // see org-units.ts for why the surrogate PK is not enough on its own.
+    idOrganizationKey: uniqueIndex('groups_id_organization_key').on(
+      table.id,
+      table.organizationId,
+    ),
+    // A group's org unit must be in the group's own organization. NULL
+    // org_unit_id — a GLOBAL group — passes under MATCH SIMPLE, which is
+    // exactly the wanted behaviour: global groups still exist, they are
+    // just global WITHIN one organization (their organization_id is master
+    // for every pre-existing row; see GroupsRepository.create).
+    orgUnitOrganizationFk: foreignKey({
+      name: 'groups_org_unit_organization_fk',
+      columns: [table.orgUnitId, table.organizationId],
+      foreignColumns: [orgUnits.id, orgUnits.organizationId],
+    }).onDelete('restrict'),
   }),
 )

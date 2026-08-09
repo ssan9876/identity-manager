@@ -1,5 +1,6 @@
 import {
   type AnyPgColumn,
+  foreignKey,
   index,
   pgTable,
   timestamp,
@@ -38,5 +39,25 @@ export const orgUnits = pgTable(
     pathGist: index('org_units_path_gist').using('gist', table.path),
     pathUnique: uniqueIndex('org_units_path_unique').on(table.path),
     organizationIdx: index('org_units_organization_idx').on(table.organizationId),
+    // Milestone: organizations multi-tenancy, Task 4. A composite foreign
+    // key can only reference a UNIQUE key over exactly the referenced pair —
+    // the surrogate primary key alone is not enough, even though `id` is
+    // already unique on its own. This index exists solely to be that
+    // referenceable target for the FKs below and in users.ts/groups.ts.
+    idOrganizationKey: uniqueIndex('org_units_id_organization_key').on(
+      table.id,
+      table.organizationId,
+    ),
+    // An org unit's parent must live in the SAME organization. Without this,
+    // a single mis-set parent_id silently grafts one tenant's whole subtree
+    // under another's — and because scope filtering is path-based, every
+    // ancestor-scoped read would then walk straight across the tenant
+    // boundary. MATCH SIMPLE (the default) lets a NULL parent_id pass,
+    // which is what a root org unit needs.
+    parentOrganizationFk: foreignKey({
+      name: 'org_units_parent_organization_fk',
+      columns: [table.parentId, table.organizationId],
+      foreignColumns: [table.id, table.organizationId],
+    }).onDelete('restrict'),
   }),
 )

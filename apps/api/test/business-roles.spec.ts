@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import { AuditWriter } from '../src/audit/audit.writer'
 import { BusinessRolesRepository } from '../src/business-roles/business-roles.repository'
@@ -344,7 +344,15 @@ describe('RoleReconciler (Milestone 17, Task 8)', () => {
 
   it('NEVER revokes a manual row, even when no role justifies it', async () => {
     const { userId, groupId } = await seedRoleGrantingGroup(ctx, { jobTitle: 'Manager' })
-    await ctx.db.insert(groupUserMembers).values({ groupId, userId, grantSource: 'manual' })
+    // organizationId is derived from the GROUP, exactly as
+    // GroupsRepository.addUser and RoleReconciler do (Task 4 of the
+    // organizations milestone) — the edge belongs to the group's tenant.
+    await ctx.db.insert(groupUserMembers).values({
+      groupId,
+      userId,
+      grantSource: 'manual',
+      organizationId: sql`(SELECT organization_id FROM groups WHERE id = ${groupId})`,
+    })
 
     await ctx.db.transaction((tx) => reconciler().reconcileUser(tx, userId, null, new Date()))
 
@@ -355,7 +363,15 @@ describe('RoleReconciler (Milestone 17, Task 8)', () => {
 
   it('leaves a manual row alone even when a role also wants it, and the row survives the role ceasing to match', async () => {
     const { userId, groupId } = await seedRoleGrantingGroup(ctx, { jobTitle: 'Account Executive' })
-    await ctx.db.insert(groupUserMembers).values({ groupId, userId, grantSource: 'manual' })
+    // organizationId is derived from the GROUP, exactly as
+    // GroupsRepository.addUser and RoleReconciler do (Task 4 of the
+    // organizations milestone) — the edge belongs to the group's tenant.
+    await ctx.db.insert(groupUserMembers).values({
+      groupId,
+      userId,
+      grantSource: 'manual',
+      organizationId: sql`(SELECT organization_id FROM groups WHERE id = ${groupId})`,
+    })
 
     await ctx.db.transaction((tx) => reconciler().reconcileUser(tx, userId, null, new Date()))
     await ctx.db.update(users).set({ jobTitle: 'Manager' }).where(eq(users.id, userId))
@@ -520,7 +536,12 @@ async function seedDeactivatedUserInRoleGroup(
   await repo().setEnabled(role.id, true)
 
   // The row a sweep that skips non-active users would leave behind forever.
-  await ctx.db.insert(groupUserMembers).values({ groupId: group.id, userId: user.id, grantSource: 'business_role' })
+  await ctx.db.insert(groupUserMembers).values({
+    groupId: group.id,
+    userId: user.id,
+    grantSource: 'business_role',
+    organizationId: sql`(SELECT organization_id FROM groups WHERE id = ${group.id})`,
+  })
 
   return { deactivatedUserId: user.id, groupId: group.id, roleId: role.id }
 }
