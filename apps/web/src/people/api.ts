@@ -1,4 +1,5 @@
 import { authorizedRequest, buildQuery } from '../api/client'
+import type { ConnectorTarget } from '../connectors/api'
 import type { Page } from '../org-units/api'
 
 /** Re-exported from groups/api.ts, their natural home as of Milestone 8, Task 4 — see that module's own doc comment on `Group`/`fetchGroupsForUser` for why. */
@@ -161,3 +162,56 @@ export function deactivatePerson(accessToken: string, id: string): Promise<Perso
   return authorizedRequest<Person>(`/users/${id}/deactivate`, accessToken, { method: 'POST' })
 }
 
+/**
+ * Mirrors `UserSyncLatestEvent` (apps/api/src/outbox/sync-detail.repository.ts).
+ * `lastError` is `null` whenever the caller lacks a GLOBAL `audit:read`
+ * grant — see `UserSyncDetail.errorDetailRedacted`, and do not read a null
+ * here as "there was no error".
+ */
+export interface UserSyncLatestEvent {
+  id: number
+  eventType: string
+  status: 'pending' | 'processing' | 'done' | 'failed'
+  attempts: number
+  createdAt: string
+  nextAttemptAt: string
+  lastError: string | null
+}
+
+export interface UserSyncTargetDetail {
+  target: ConnectorTarget
+  enabled: boolean
+  /** This one target's own state, before the worst-of aggregation that produces the badge. A not-applicable target (the connector had nothing to represent) reports `synced` with a null `externalId` — see the API-side field's doc comment for why there is no fourth value. */
+  state: SyncState
+  externalId: string | null
+  lastSyncedAt: string | null
+  latestEvent: UserSyncLatestEvent | null
+}
+
+export interface BlockingGroup {
+  groupId: string
+  groupName: string
+  target: ConnectorTarget
+  status: 'pending' | 'processing' | 'failed'
+  attempts: number
+}
+
+export interface UserSyncDetail {
+  /** The same value `Person.syncState` carries — computed once server-side, so this panel can never contradict the badge it explains. */
+  syncState: SyncState
+  targets: UserSyncTargetDetail[]
+  blockedByGroups: BlockingGroup[]
+  /** `true` when raw connector error text was withheld: the caller holds `user:read` but not a global `audit:read`. The UI must SAY so rather than render an empty error cell, which would read as "no error". */
+  errorDetailRedacted: boolean
+}
+
+/**
+ * `GET /users/:id/sync` — why this person's badge is the colour it is
+ * (2026-08-08 sync-diagnostics spec). Gated on the same `user:read` as the
+ * person record itself; the raw connector error string additionally requires
+ * a global `audit:read`, which the API enforces by nulling it rather than by
+ * refusing the request.
+ */
+export function fetchPersonSync(accessToken: string, id: string): Promise<UserSyncDetail> {
+  return authorizedRequest<UserSyncDetail>(`/users/${id}/sync`, accessToken)
+}

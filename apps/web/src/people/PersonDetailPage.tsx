@@ -10,14 +10,16 @@ import { useToast } from '../shell/ToastProvider'
 import { formatDateOnly, formatDateTime } from '../format'
 import { deactivatePerson, fetchGroupsForUser, fetchPeopleByIds, fetchPerson, type Group, type Person } from './api'
 import { StatusBadge, SYNC_WORD, SyncBadge } from './badges'
+import { PersonSyncTab } from './PersonSyncTab'
 import { PersonRolesTab } from './PersonRolesTab'
 import './PersonDetailPage.css'
 
-type TabKey = 'profile' | 'groups' | 'roles' | 'activity'
+type TabKey = 'profile' | 'groups' | 'roles' | 'sync' | 'activity'
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'profile', label: 'Profile' },
   { key: 'groups', label: 'Groups' },
   { key: 'roles', label: 'Roles' },
+  { key: 'sync', label: 'Sync' },
   { key: 'activity', label: 'Activity' },
 ]
 
@@ -210,6 +212,7 @@ export default function PersonDetailPage() {
     profile: null,
     groups: null,
     roles: null,
+    sync: null,
     activity: null,
   })
 
@@ -401,7 +404,16 @@ export default function PersonDetailPage() {
         </div>
         <div className="person-detail__meta">
           <StatusBadge status={person.status} />
-          <SyncBadge state={person.syncState} />
+          {/* A red badge is now one click from its reason — before the Sync
+              tab existed there was nowhere for it to lead. */}
+          <button
+            type="button"
+            className="badge-link"
+            onClick={() => activateTab('sync')}
+            aria-label={`${SYNC_WORD[person.syncState]} — show sync detail`}
+          >
+            <SyncBadge state={person.syncState} />
+          </button>
           <span className="mono cell-muted">{orgUnitPath ?? person.orgUnitId}</span>
           {person.status === 'deactivated' && person.deactivatedAt !== null && (
             <span className="cell-muted" data-testid="deactivated-at">
@@ -495,6 +507,17 @@ export default function PersonDetailPage() {
           </p>
         )}
       </div>
+      <div
+        id="panel-sync"
+        role="tabpanel"
+        aria-labelledby="tab-sync"
+        hidden={activeTab !== 'sync'}
+        tabIndex={0}
+        className="tabpanel"
+      >
+        <PersonSyncTab personId={person.id} />
+      </div>
+
       <div
         id="panel-activity"
         role="tabpanel"

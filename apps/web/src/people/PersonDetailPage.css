@@ -97,3 +97,59 @@
 .role-grant-toggle {
   margin-top: var(--space-2);
 }
+
+/* ---------------------------------------------------------------------
+ * Sync tab (2026-08-08 sync-diagnostics spec) — the per-target explanation
+ * behind a person's sync badge.
+ * ------------------------------------------------------------------- */
+
+.person-sync__intro,
+.person-sync__muted {
+  color: var(--ink-muted);
+  line-height: var(--line-height-normal);
+}
+.person-sync__intro {
+  margin-bottom: var(--space-4);
+  max-width: 60ch;
+}
+
+/* Seven columns do not fit a narrow viewport. The TABLE scrolls, never the
+ * page — a horizontally scrolling body detaches the header from the content
+ * and is the usual way a wide table breaks a layout. */
+.table-scroll {
+  overflow-x: auto;
+}
+
+.person-sync__blocked {
+  margin-top: var(--space-6);
+}
+.person-sync__blocked h3 {
+  margin-bottom: var(--space-2);
+}
+.person-sync__blocked p {
+  max-width: 60ch;
+}
+.person-sync__blocked ul {
+  margin-top: var(--space-3);
+  padding-left: var(--space-5);
+}
+.person-sync__blocked li {
+  margin-bottom: var(--space-2);
+}
+
+/* The header sync badge is now a control that opens the Sync tab, so it
+ * needs button semantics with none of the button chrome — and a visible
+ * focus ring, because it is newly reachable by keyboard. */
+.badge-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  line-height: 0;
+}
+.badge-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}

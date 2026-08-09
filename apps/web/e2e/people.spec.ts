@@ -202,3 +202,33 @@ test('the Person detail tabs are keyboard operable with arrow keys (WAI-ARIA tab
   await page.keyboard.press('ArrowLeft')
   await expect(page.getByRole('tab', { name: 'Groups' })).toHaveAttribute('aria-selected', 'true')
 })
+
+/**
+ * The Sync tab (2026-08-08 sync-diagnostics spec). Like every other test in
+ * this file, it asserts against whatever the dev environment happens to have
+ * seeded rather than building a fixture — so the claims are deliberately the
+ * ones that hold in ANY environment.
+ */
+test('the Sync tab lists a row per enabled connector target', async ({ page }) => {
+  await signIn(page)
+  await page.getByTestId('people-row-link').first().click()
+  await page.waitForURL(/\/people\/[0-9a-f-]{36}$/)
+
+  await page.getByRole('tab', { name: 'Sync' }).click()
+  await expect(page.getByTestId('person-sync-table')).toBeVisible()
+
+  // connector_targets seeds exactly one row — ('keycloak', enabled: true),
+  // see db/schema/connector-targets.ts — so Keycloak is present in every
+  // environment regardless of what else an operator has turned on.
+  await expect(page.getByTestId('person-sync-row').filter({ hasText: 'Keycloak' })).toHaveCount(1)
+})
+
+test('the header sync badge opens the Sync tab', async ({ page }) => {
+  await signIn(page)
+  await page.getByTestId('people-row-link').first().click()
+  await page.waitForURL(/\/people\/[0-9a-f-]{36}$/)
+
+  await page.getByRole('button', { name: /show sync detail/ }).click()
+  await expect(page.getByRole('tab', { name: 'Sync' })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByTestId('person-sync-table')).toBeVisible()
+})
