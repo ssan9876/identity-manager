@@ -135,6 +135,77 @@ Item 2 (run the full API suite) is done and green.
 
 ---
 
+## Security findings
+
+Two audits were sitting uncommitted in worktrees and are now merged:
+`docs/archive/audits/audit-client-supply-chain.md` (13 findings, console +
+supply chain) and `docs/archive/audits/carried-findings-verification.md` (44
+verified ledger rows). Read those for the full reasoning; this is only the
+state of each.
+
+### Closed
+
+| ID | What |
+|---|---|
+| CS-M1 | nginx dropped all three security headers on every console response. Fixed and verified against real nginx: 0 of 3 headers before, 3 of 3 after, including the SPA fall-through route. |
+| CS-M3 | No HSTS on the TLS vhost. Added. |
+| CS-M5 | CI ran with the default GITHUB_TOKEN scope, mutable action tags, and the token left on disk beside dependency lifecycle scripts. All three closed. |
+| CS-L1 | A failed sign-out was silent and the session survived. Now reported, driven by `auth.error` (a try/catch cannot see it), and `removeUser()` runs on the failure path. |
+| CS-L2 | `revokeTokensOnSignout` left at its `false` default. Set. |
+| SEC-L1 | PKCE `code_verifier`/`nonce` persisted in `localStorage`. Both stores are now sessionStorage. |
+| SEC-L2 | `POST /users`' 409 echoed the value back, confirming a cross-scope email/username against global unique indexes. Now non-confirming, with the two regression tests that were missing. |
+| SEC-L4 | `jwtVerify` did not require `exp`, so a signed token omitting it never expired. `requiredClaims: ['exp']`, with a test proven non-vacuous. |
+| INJ-H-1 residual | `config: z.record(...)` silently dropped a `__proto__` key. Replaced with the `z.unknown()` + explicit-validation shape `rawAttributesSchema` already documents. |
+| INJ-H-2 residual | `configPatchValueSchema` had no `noNulChar`, so a JSON-escaped NUL 500'd at the pg driver. Now a 400 at the boundary. |
+
+### Open, in the carried report's own priority order
+
+- [ ] **1. Bulk import's cap is ~7x the accidental one it replaced.** 5,000 rows
+      x ~10.4 ms ≈ 50 s of blocking on-request work, reachable by any holder of
+      `user:create`. Lower `IMPORT_MAX_ROWS`, batch the per-row lookups, or move
+      commit off the request path. **The item most likely to take a real
+      deployment down, and it is currently labelled "fixed".** Left alone here
+      because choosing between those three is a product decision, not a defect fix.
+- [ ] **3. The system-actor guarantee is stale.**
+      `POST /connector-targets/:target/reconcile` induces a directory-wide,
+      unscoped, per-entity-unaudited system write from an HTTP request. Thread the
+      acting `userId` into `TargetReconciliationJob.auditOverride`, and correct the
+      two doc comments and the `docs/12-security.md` bullet that currently tell a
+      reader this cannot happen.
+- [ ] **4. Attribute values land verbatim and permanently in the audit log**, with
+      no read control (`users.controller.ts:200`). The report says this must land
+      **before** any `attribute_definitions` write path does — and that write path
+      has now merged, so this is a live blocker rather than a follow-up.
+- [ ] **5. Enabling a propagation mapping retroactively exports withheld values**,
+      and is now reachable. Needs a confirmation step stating how many users' values
+      a new mapping will newly export. Interacts with item 4.
+- [ ] **6. Reconciliation cannot see Keycloak-only accounts, and nothing schedules
+      it.** `deploy/systemd/` has no reconciliation timer.
+- [ ] **7. `syncState` derivation degrades linearly** with unsettled aggregates, on
+      the directory's main list page.
+- [ ] **8. Committed dev fixtures are real, working, `sslRequired: "none"`
+      secrets.** Rename to `.dev.json`, set `sslRequired: "external"`, ship
+      `idm-test-client` disabled.
+- [ ] **CS-H1 (HIGH).** Dependency lifecycle scripts run unsandboxed as the service
+      user at every install and upgrade, and `corepack prepare pnpm@9` is unpinned
+      and integrity-unverified. The CI half is closed; the installer half is not.
+- [ ] **CS-M2.** No Content-Security-Policy. Blocked on one specific thing:
+      `index.html` carries an inline pre-paint theme script that must run before any
+      bundled JS exists, so a CSP needs that script's sha256 injected at build time.
+      An unverifiable hash would brick the console.
+- [ ] **CS-M4.** `scripts/install.sh` pipes a remote script into `bash` as root with
+      no pinning or checksum.
+- [ ] **CS-M6.** `vite@5.4.21` + `esbuild@0.21.5` dev-server advisories, unfixed on
+      the 5.x line. Developer workstations only, but this project's dev platform is
+      Windows, where the path-traversal case is live.
+- [ ] **CS-L3.** People's names and emails go into the URL query string, so they
+      land in browser history and nginx access logs in plaintext.
+- [ ] **Remaining item-10 residuals** — `Cf`-category Unicode in display names,
+      unknown `role_key` yielding an unmapped 500, admin-path audit `before`
+      snapshot unlocked, `effective-members` never re-narrowing,
+      `ConnectorTargetsRepository.upsert` lost update, `simulate()` ignoring
+      `rule.trigger`, no structured logger, inert JML triggers.
+
 ## Housekeeping
 
 - [ ] **`scripts/verify.mjs`'s header is out of date.** It states "This
