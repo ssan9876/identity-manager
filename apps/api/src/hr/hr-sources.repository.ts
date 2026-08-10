@@ -23,11 +23,13 @@ function translateWriteError(error: unknown): never {
 export interface CreateHrSourceInput {
   organizationId: string
   name: string
-  kind: 'csv_url'
+  kind: HrSource['kind']
   url: string
   authHeaderName: string | null
   authSecretName: string | null
   columnMapping: Record<string, string>
+  /** Kind-specific, non-secret settings — already validated for `kind` by the controller's `parseSourceConfig`. OPTIONAL because `csv_url`, the kind every pre-existing caller creates, has none; it defaults to the column's own `{}`. */
+  config?: Record<string, unknown>
   enabled?: boolean
   blastRadiusThreshold?: number
   blastRadiusFloor?: number
@@ -47,6 +49,7 @@ export interface UpdateHrSourceInput {
   url?: string
   auth?: { headerName: string; secretName: string } | null
   columnMapping?: Record<string, string>
+  config?: Record<string, unknown>
   enabled?: boolean
   blastRadiusThreshold?: number
   blastRadiusFloor?: number
@@ -112,6 +115,7 @@ export class HrSourcesRepository {
         // properties via CreateDataProperty — a genuine own "__proto__"
         // key survives the copy as data, never as a setter call.
         columnMapping: { ...input.columnMapping },
+        config: { ...(input.config ?? {}) },
         enabled: input.enabled ?? false,
         blastRadiusThreshold: input.blastRadiusThreshold,
         blastRadiusFloor: input.blastRadiusFloor,
@@ -131,6 +135,12 @@ export class HrSourcesRepository {
     }
     // Spread for the same null-prototype reason as `create` above.
     if (patch.columnMapping !== undefined) set.columnMapping = { ...patch.columnMapping }
+    // REPLACED wholesale, not merged — unlike `connector_targets.config`,
+    // whose merge semantics exist so an admin form can omit test-only keys.
+    // Here the whole config is one validated, kind-specific document
+    // (`parseSourceConfig`), and merging would let a stale `pagination` key
+    // survive a switch to `mode: 'none'`.
+    if (patch.config !== undefined) set.config = { ...patch.config }
     if (patch.enabled !== undefined) set.enabled = patch.enabled
     if (patch.blastRadiusThreshold !== undefined) set.blastRadiusThreshold = patch.blastRadiusThreshold
     if (patch.blastRadiusFloor !== undefined) set.blastRadiusFloor = patch.blastRadiusFloor

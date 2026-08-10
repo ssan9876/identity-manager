@@ -131,6 +131,21 @@ function AuditIcon({ className }: { className?: string }) {
 }
 
 /** Two nodes and a directional edge — this app pushing mastered identity outward to a directory backend (docs/product-brief.md's own sub-project framing), the same idea Milestone 14's console makes configurable and inspectable. */
+/** Two nodes feeding a centre node that fans out to three — the map's own shape: in, through, out. */
+function DataFlowsIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+      <circle cx="4" cy="7" r="1.6" />
+      <circle cx="4" cy="17" r="1.6" />
+      <circle cx="12" cy="12" r="2.2" />
+      <circle cx="20" cy="6" r="1.6" />
+      <circle cx="20" cy="12" r="1.6" />
+      <circle cx="20" cy="18" r="1.6" />
+      <path d="M5.5 7.6 10 11m-4.5 5.4L10 13m4.2-1.6h3.9m-3.6-1.3 3.6-3m-3.6 5.6 3.6 3" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 function ConnectorsIcon({ className }: { className?: string }) {
   return (
     <svg {...iconProps(className)}>
@@ -229,6 +244,17 @@ export const NAV_ITEMS: NavItem[] = [
   // gates visibility exactly like every other item here: super_admin and
   // auditor see it, nobody else does (authz/actions.ts).
   { key: 'connectors', label: 'Connectors', path: '/connectors', group: 'operations', action: 'connector:read', icon: ConnectorsIcon },
+  // The data-flow map. Immediately after Connectors and before HR sources
+  // because it is the OVERVIEW those two pages are the detail of, and gated
+  // on the same `connector:read`: it shows strictly less than either.
+  {
+    key: 'data-flows',
+    label: 'Data flows',
+    path: '/data-flows',
+    group: 'operations',
+    action: 'connector:read',
+    icon: DataFlowsIcon,
+  },
   // HR inbound feeds — pull-based sources feeding the import pipeline.
   // Gated on `connector:read`, exactly like Connectors above: super_admin
   // and auditor see it; every mutating control inside is additionally

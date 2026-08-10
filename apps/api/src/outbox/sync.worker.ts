@@ -104,6 +104,16 @@ const TARGETS_NEEDING_EXTERNAL_ID_CORRELATION: readonly OutboxTarget[] = [
   'entra_id',
   'google_workspace',
   'mail_server',
+  // Every SCIM slot. RFC 7643 §3.1 makes `id` service-assigned and
+  // IMMUTABLE while `userName` is mutable — so correlating on the name would
+  // mint a duplicate account the first time someone is renamed, the identical
+  // hazard AD/Entra/Google each named for their own key fields.
+  'scim_slack',
+  'scim_zoom',
+  'scim_atlassian',
+  'scim_box',
+  'scim_snowflake',
+  'scim_generic',
 ]
 
 /** Targets that additionally need every remote name ever mapped for them, so one whose mapping was just disabled can be actively CLEARED — see `DesiredUser.managedAttributeRemoteNames`'s own doc comment for why omitting a key is not enough against a partial-update API. Membership is unchanged by the split above. */
@@ -111,6 +121,18 @@ const TARGETS_NEEDING_MANAGED_ATTRIBUTE_NAMES: readonly OutboxTarget[] = [
   'active_directory',
   'entra_id',
   'google_workspace',
+  // Every SCIM slot: RFC 7644 §3.5.2 PATCH touches only the paths it names,
+  // exactly like Graph's PATCH and the Admin SDK's update, so a de-mapped
+  // remote name must be actively removed rather than merely omitted. (In
+  // `writeMode: 'put'` a SCIM write replaces the whole resource and
+  // self-clears — `ScimConnector.writeExisting` uses this list for the PATCH
+  // path and simply omits the attribute on the PUT path.)
+  'scim_slack',
+  'scim_zoom',
+  'scim_atlassian',
+  'scim_box',
+  'scim_snowflake',
+  'scim_generic',
 ]
 
 /**

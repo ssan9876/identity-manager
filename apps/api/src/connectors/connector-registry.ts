@@ -18,6 +18,7 @@ import { GoogleWorkspaceConnector } from './google-workspace.connector'
 import { KeycloakConnector } from './keycloak.connector'
 import { KeycloakSsoConnectorFactory } from './keycloak-sso.connector'
 import { MailServerConnector } from './mail-server.connector'
+import { ScimConnector } from './scim.connector'
 
 /** Builds a connector instance already bound to ITS target's current `connector_targets.config` (see `ConnectorRegistry.resolve`). */
 type ConnectorFactory = (config: Record<string, unknown>) => DirectoryConnector
@@ -44,6 +45,24 @@ type SsoConnectorFactory = (config: Record<string, unknown>) => SsoConnector
 // target that is not a general-purpose directory backend, and the first that
 // addresses a principal by THIS system's own user id rather than by an id of
 // its own (see `DesiredUser.userId`'s doc comment in connector.ts).
+// The SCIM slots widen this a FIFTH time. Unlike every widening before it,
+// this one adds SIX targets and ZERO adapter classes: `ScimConnector` serves
+// all of them, differing only by the config each slot's own
+// `connector_targets` row carries (see that class's own doc comment for why
+// slots rather than instances). `SCIM_TARGETS` below is the single list; the
+// union derives from it so a slot cannot be added to one and forgotten in the
+// other.
+export const SCIM_TARGETS = [
+  'scim_slack',
+  'scim_zoom',
+  'scim_atlassian',
+  'scim_box',
+  'scim_snowflake',
+  'scim_generic',
+] as const
+
+export type ScimTarget = (typeof SCIM_TARGETS)[number]
+
 type ImplementedConnectorTarget =
   | 'keycloak'
   | 'echo'
@@ -51,6 +70,7 @@ type ImplementedConnectorTarget =
   | 'entra_id'
   | 'google_workspace'
   | 'mail_server'
+  | ScimTarget
 
 // Milestone 13, Task 8 — the targets with a REAL `DirectoryGroupConnector`
 // implementation today: `active_directory` (Milestone 11, Task 6) and
@@ -111,6 +131,16 @@ type ImplementedSsoConnectorTarget = 'keycloak_sso'
  * target, extra target, wrong-shaped factory) while still preserving its own
  * precise inferred type for the `Object.assign` call.
  */
+
+/** One factory per SCIM slot, all binding the SAME shared connector instance to that slot's own config. Built from `SCIM_TARGETS` so the six entries cannot drift apart. */
+function scimFactories(connector: () => ScimConnector): Record<ScimTarget, ConnectorFactory> {
+  const entries = Object.create(null) as Record<ScimTarget, ConnectorFactory>
+  for (const target of SCIM_TARGETS) {
+    entries[target] = (config: Record<string, unknown>) => connector().configure(config)
+  }
+  return entries
+}
+
 @Injectable()
 export class ConnectorRegistry {
   private readonly factories: Record<ImplementedConnectorTarget, ConnectorFactory>
@@ -181,6 +211,18 @@ export class ConnectorRegistry {
     @Optional()
     @Inject(KeycloakAdminClientFactory)
     private readonly keycloakFactory: KeycloakAdminClientFactory | null = null,
+    // ONE ScimConnector instance shared by all six slots, rebound per
+    // resolve() to that slot's own config — the same
+    // `configure(config)`-rebinds-the-long-lived-instance shape every other
+    // real target uses. Safe because `configure` replaces the whole config
+    // snapshot and `getToken` re-validates its cached token against the
+    // freshly-bound identity, so one slot can never serve another's token
+    // (see `ScimConnector.getToken`).
+    //
+    // LAST in the list, deliberately: several tests construct this registry
+    // with POSITIONAL arguments, so inserting a parameter anywhere earlier
+    // silently rebinds theirs.
+    @Optional() @Inject(ScimConnector) private readonly scimConnector: ScimConnector = new ScimConnector(),
   ) {
     // Keycloak's OWN config source is unchanged by this task (still the
     // env-sourced KEYCLOAK_ADMIN_CONFIG token — see keycloak.connector.ts's
@@ -229,6 +271,13 @@ export class ConnectorRegistry {
         // `EntraIdConnector.getToken` already establishes.
         google_workspace: (config: Record<string, unknown>) => this.googleWorkspaceConnector.configure(config),
         mail_server: (config: Record<string, unknown>) => this.mailServerConnector.configure(config),
+        // Spread rather than six hand-written lines: the entries are
+        // identical by construction, and a hand-copied list is exactly the
+        // "catalog drift" defect connector.ts's own doc comment was written
+        // for. The `satisfies` below still checks the result covers the union
+        // exactly, so a slot added to SCIM_TARGETS and nowhere else fails to
+        // compile here.
+        ...scimFactories(() => this.scimConnector),
       } satisfies Record<ImplementedConnectorTarget, ConnectorFactory>,
     )
 

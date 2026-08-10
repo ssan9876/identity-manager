@@ -22,6 +22,16 @@ export const externalIdentitySystem = pgEnum('external_identity_system', [
   'google_workspace',
   'echo',
   'mail_server',
+  // The SCIM slots — see `outboxTarget`'s own comment. Present here for the
+  // same one-for-one reason every other value is: `SyncWorker` writes a
+  // correlation row using `event.target` directly as `system`, with no
+  // mapping table between the two enums.
+  'scim_slack',
+  'scim_zoom',
+  'scim_atlassian',
+  'scim_box',
+  'scim_snowflake',
+  'scim_generic',
   // Present so this enum stays one-for-one with `outboxTarget`, which the
   // comment above depends on. No row in THIS table will ever carry it —
   // `external_identities` correlates users, and `keycloak_sso` has none.

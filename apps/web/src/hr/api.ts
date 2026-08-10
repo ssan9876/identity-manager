@@ -10,16 +10,49 @@ export type HrRunOutcome =
   | 'committed'
   | 'committed_partial'
 
+/** Mirrors `hr_source_kind` (apps/api/src/db/schema/hr-sources.ts) — same by-hand caveat as `HrRunOutcome` above. */
+export type HrSourceKind = 'csv_url' | 'rest_json'
+
+export const HR_SOURCE_KIND_LABEL: Record<HrSourceKind, string> = {
+  csv_url: 'CSV over HTTPS',
+  rest_json: 'REST / JSON API',
+}
+
+/**
+ * The `rest_json` half of `HrSourceView.config`, mirroring `JsonFeedConfig`
+ * and `HrJsonPagination` (apps/api/src/hr/hr-feed.ts, hr-fetch.ts). A
+ * `csv_url` source's `config` is always `{}` — the API rejects any key on
+ * one, rather than accepting a setting that would do nothing.
+ */
+export type HrJsonPagination =
+  | { mode: 'none' }
+  | {
+      mode: 'page'
+      pageParam: string
+      startPage: number
+      sizeParam: string | null
+      pageSize: number | null
+      maxPages: number
+    }
+  | { mode: 'cursor'; nextPath: string; cursorParam: string | null; maxPages: number }
+
+export interface HrJsonFeedConfig {
+  recordsPath: string
+  pagination: HrJsonPagination
+}
+
 /** Mirrors `HrSourceView` (apps/api/src/hr/hr-sources.controller.ts). `authSecretName` is the NAME of a CONNECTOR_* environment variable — a reference, never a credential value; no credential is ever stored or returned by the API (see that view's own doc comment). */
 export interface HrSourceView {
   id: string
   organizationId: string
   name: string
-  kind: 'csv_url'
+  kind: HrSourceKind
   url: string
   authHeaderName: string | null
   authSecretName: string | null
   columnMapping: Record<string, string>
+  /** Kind-specific settings — `{}` for `csv_url`, an `HrJsonFeedConfig` for `rest_json`. */
+  config: Record<string, unknown>
   enabled: boolean
   blastRadiusThreshold: number
   blastRadiusFloor: number
@@ -69,10 +102,11 @@ export interface HrSourceAuth {
 export interface CreateHrSourceInput {
   organizationId: string
   name: string
-  kind: 'csv_url'
+  kind: HrSourceKind
   url: string
   auth: HrSourceAuth | null
   columnMapping: Record<string, string>
+  config?: Record<string, unknown>
 }
 
 export interface UpdateHrSourceInput {
@@ -80,6 +114,7 @@ export interface UpdateHrSourceInput {
   url?: string
   auth?: HrSourceAuth | null
   columnMapping?: Record<string, string>
+  config?: Record<string, unknown>
   enabled?: boolean
   blastRadiusThreshold?: number
   blastRadiusFloor?: number

@@ -165,6 +165,75 @@ describe('HR inbound sync (fetch -> preview -> commit)', () => {
     return rows[0].count
   }
 
+  /**
+   * The `rest_json` source kind end to end, through the SAME service, the
+   * same fetch seam and the same import pipeline as a CSV feed. What this
+   * proves is the property the kind dispatch exists for: once
+   * `FEED_LOADERS` has produced its CSV, nothing downstream can tell the
+   * two kinds apart — the preview, the guards, the commit and the audit
+   * rows are the CSV path's, unmodified.
+   */
+  it('reads a rest_json source through the same pipeline as csv, dropping unmapped fields', async () => {
+    const tag = nextTag()
+    fake.body = JSON.stringify({
+      data: {
+        items: [
+          {
+            employee: { id: `E-${tag}`, login: `user-${tag}` },
+            contact: { work: `${tag}@example.com` },
+            name: { given: 'Ada', family: 'Lovelace' },
+            unit: org.id,
+            compensation: { band: 'B9' },
+          },
+        ],
+      },
+    })
+
+    const source = await makeSource({
+      kind: 'rest_json',
+      url: 'https://hr.example.test/api/people',
+      config: { recordsPath: 'data.items', pagination: { mode: 'none' } },
+      columnMapping: {
+        'employee.id': 'employeeId',
+        'contact.work': 'primaryEmail',
+        'employee.login': 'username',
+        'name.given': 'firstName',
+        'name.family': 'lastName',
+        unit: 'orgUnitId',
+      },
+    })
+
+    const report = await service.run(source, { commit: true, actor })
+
+    expect(report.outcome).toBe('committed')
+    expect(report.commit).toMatchObject({ created: 1, failed: 0 })
+    expect(await userCountFor([`E-${tag}`])).toBe(1)
+
+    // The unmapped compensation subtree never crossed the boundary.
+    const { rows } = await ctx.pool.query<{ attributes: Record<string, unknown>; first_name: string }>(
+      'SELECT attributes, first_name FROM users WHERE employee_id = $1',
+      [`E-${tag}`],
+    )
+    expect(rows[0].first_name).toBe('Ada')
+    expect(rows[0].attributes).toEqual({})
+  })
+
+  /** A mapping that does not fit the feed is `preview_failed` — the feed was fetched fine. Mislabelling it `fetch_failed` would send an operator hunting for a network fault that does not exist. */
+  it('records a rest_json mapping that fits no record as preview_failed, not fetch_failed', async () => {
+    fake.body = JSON.stringify([{ employee: { id: 'E-1' } }])
+    const source = await makeSource({
+      kind: 'rest_json',
+      url: 'https://hr.example.test/api/people',
+      config: { recordsPath: '', pagination: { mode: 'none' } },
+      columnMapping: { 'employee.id': 'employeeId', 'nowhere.at.all': 'primaryEmail' },
+    })
+
+    await expect(service.run(source, { commit: false, actor })).rejects.toThrow(/absent from every record/)
+
+    const after = await sources.findById(source.id)
+    expect(after?.lastRunOutcome).toBe('preview_failed')
+  })
+
   it('fetches, maps, previews and commits — one batchId across every audit row, auth header delivered, secret confined to it', async () => {
     const tagA = nextTag()
     const tagB = nextTag()

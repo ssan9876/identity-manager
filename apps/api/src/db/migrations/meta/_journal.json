@@ -288,6 +288,20 @@
       "when": 1786620500000,
       "tag": "0040_hr_sources",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1786620600000,
+      "tag": "0041_hr_rest_json",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1786620700000,
+      "tag": "0042_scim_targets",
+      "breakpoints": true
     }
   ]
 }

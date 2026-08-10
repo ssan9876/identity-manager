@@ -31,6 +31,8 @@ import { EchoConnector } from './connectors/echo.connector'
 import { EntraIdConnector } from './connectors/entra-id.connector'
 import { GoogleWorkspaceConnector } from './connectors/google-workspace.connector'
 import { MailServerConnector } from './connectors/mail-server.connector'
+import { DataFlowsController } from './connectors/data-flows.controller'
+import { ScimConnector } from './connectors/scim.connector'
 import { loadEnv } from './config/env'
 import { createDbClient } from './db/client'
 import { GroupsController } from './groups/groups.controller'
@@ -92,6 +94,10 @@ import { UsersRepository } from './users/users.repository'
     // the attribute mapping editor (AttributeTargetMappingsController).
     ConnectorTargetsController,
     AttributeTargetMappingsController,
+    // The data-flow map: one read-only view over what the two controllers
+    // above already own, answering "what of ours goes where" in a single
+    // response. Same `connector:read` action, no new state.
+    DataFlowsController,
     // SSO application registration. Global-grant-only, super_admin only.
     SsoAppsController,
     // Milestone 17, Task 11 — the business-role admin API: the catalog, the
@@ -289,6 +295,11 @@ import { UsersRepository } from './users/users.repository'
     // `MailServerConnector` parameter needs a REAL registered provider to
     // resolve through DI, JS-level default or not.
     MailServerConnector,
+    // ONE provider serving all six SCIM slots — same property and same
+    // reason as every connector above: no network I/O at construction, and
+    // `ConnectorRegistry`'s own `ScimConnector` parameter needs a REAL
+    // registered provider to resolve through DI, JS-level default or not.
+    ScimConnector,
     ConnectorRegistry,
     KeycloakSsoConnectorFactory,
     SsoAppsRepository,

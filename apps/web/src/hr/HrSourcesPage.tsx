@@ -12,7 +12,11 @@ import {
   fetchHrSources,
   runHrSourcePreview,
   updateHrSource,
+  HR_SOURCE_KIND_LABEL,
+  type HrJsonFeedConfig,
+  type HrJsonPagination,
   type HrRunOutcome,
+  type HrSourceKind,
   type HrSourceRunView,
   type HrSourceView,
   type HrSyncReport,
@@ -156,6 +160,8 @@ function MappingEditor({
 
 interface SourceDraft {
   name: string
+  /** Fixed once created — the API does not accept a kind change, because a stored config validated for one kind is meaningless for the other. */
+  kind: HrSourceKind
   url: string
   authHeaderName: string
   authSecretName: string
@@ -163,11 +169,73 @@ interface SourceDraft {
   enabled: boolean
   blastRadiusThreshold: string
   blastRadiusFloor: string
+  // ---- rest_json only. Held as flat strings (the shape an <input> gives
+  // back) and assembled into the API's nested, closed-union config by
+  // `configFromDraft`; ignored entirely for a csv_url source, which the API
+  // requires to carry NO configuration at all.
+  recordsPath: string
+  paginationMode: HrJsonPagination['mode']
+  pageParam: string
+  sizeParam: string
+  pageSize: string
+  nextPath: string
+  cursorParam: string
+}
+
+const EMPTY_JSON_DRAFT = {
+  recordsPath: '',
+  paginationMode: 'none' as HrJsonPagination['mode'],
+  pageParam: 'page',
+  sizeParam: '',
+  pageSize: '',
+  nextPath: '',
+  cursorParam: '',
+}
+
+/**
+ * Draft -> the API's `config`. Returns `{}` for `csv_url` — the API rejects
+ * any key on one rather than accepting a setting that would silently do
+ * nothing, so sending the JSON fields "just in case" would be a 400.
+ *
+ * Blank optional inputs become `null`, not `''`: the server's union types
+ * them as nullable strings, and an empty string would be a real (invalid)
+ * parameter name rather than "not set".
+ */
+function configFromDraft(draft: SourceDraft): Record<string, unknown> {
+  if (draft.kind !== 'rest_json') return {}
+
+  let pagination: HrJsonPagination
+  if (draft.paginationMode === 'page') {
+    pagination = {
+      mode: 'page',
+      pageParam: draft.pageParam.trim(),
+      startPage: 1,
+      sizeParam: draft.sizeParam.trim() === '' ? null : draft.sizeParam.trim(),
+      pageSize: draft.pageSize.trim() === '' ? null : Number(draft.pageSize),
+      maxPages: 100,
+    }
+  } else if (draft.paginationMode === 'cursor') {
+    pagination = {
+      mode: 'cursor',
+      nextPath: draft.nextPath.trim(),
+      cursorParam: draft.cursorParam.trim() === '' ? null : draft.cursorParam.trim(),
+      maxPages: 100,
+    }
+  } else {
+    pagination = { mode: 'none' }
+  }
+
+  return { recordsPath: draft.recordsPath.trim(), pagination } satisfies HrJsonFeedConfig
 }
 
 function draftFrom(source: HrSourceView): SourceDraft {
+  // `config` is `Record<string, unknown>` over the wire; read it defensively
+  // rather than asserting the JSON shape onto a csv_url source's `{}`.
+  const config = source.config as Partial<HrJsonFeedConfig>
+  const pagination = config.pagination
   return {
     name: source.name,
+    kind: source.kind,
     url: source.url,
     authHeaderName: source.authHeaderName ?? '',
     authSecretName: source.authSecretName ?? '',
@@ -175,6 +243,14 @@ function draftFrom(source: HrSourceView): SourceDraft {
     enabled: source.enabled,
     blastRadiusThreshold: String(source.blastRadiusThreshold),
     blastRadiusFloor: String(source.blastRadiusFloor),
+    ...EMPTY_JSON_DRAFT,
+    recordsPath: typeof config.recordsPath === 'string' ? config.recordsPath : '',
+    paginationMode: pagination?.mode ?? 'none',
+    pageParam: pagination?.mode === 'page' ? pagination.pageParam : 'page',
+    sizeParam: pagination?.mode === 'page' ? (pagination.sizeParam ?? '') : '',
+    pageSize: pagination?.mode === 'page' && pagination.pageSize !== null ? String(pagination.pageSize) : '',
+    nextPath: pagination?.mode === 'cursor' ? pagination.nextPath : '',
+    cursorParam: pagination?.mode === 'cursor' ? (pagination.cursorParam ?? '') : '',
   }
 }
 
@@ -186,6 +262,17 @@ function draftValidationError(draft: SourceDraft): string | null {
   if (hasHeader !== hasSecret) return 'Auth header name and secret name go together — set both, or neither.'
   if (hasSecret && !/^CONNECTOR_[A-Za-z0-9_]+$/.test(draft.authSecretName.trim())) {
     return 'The secret name must name a CONNECTOR_* environment variable (e.g. CONNECTOR_HR_FEED_TOKEN).'
+  }
+  if (draft.kind === 'rest_json') {
+    if (draft.paginationMode === 'page' && draft.pageParam.trim() === '') {
+      return 'Page pagination needs the name of the page-number query parameter.'
+    }
+    if (draft.paginationMode === 'cursor' && draft.nextPath.trim() === '') {
+      return 'Cursor pagination needs the path to the next-page field in the response.'
+    }
+    if (draft.pageSize.trim() !== '' && draft.sizeParam.trim() === '') {
+      return 'A page size needs the name of the page-size query parameter to send it in.'
+    }
   }
   const threshold = Number(draft.blastRadiusThreshold)
   if (!Number.isInteger(threshold) || threshold < 1 || threshold > 100) {
@@ -309,6 +396,127 @@ function RunsTable({ runs }: { runs: HrSourceRunView[] }) {
  * through the `hr:sync` CLI (`--commit`), where dry-run is the default and
  * the operator owns the cadence — this page fetches, previews and reports.
  */
+
+/**
+ * The `rest_json` settings block, shared by the create and edit forms so the
+ * two cannot drift. Renders nothing for a `csv_url` source, which takes no
+ * configuration at all.
+ *
+ * `recordsPath` and the field paths are dot-paths into the response, matching
+ * the server's own `readPath` (apps/api/src/hr/hr-fetch.ts). The column
+ * mapping's SOURCE column is such a path for this kind — the hint says so
+ * rather than leaving an operator to infer it from a CSV-shaped label.
+ */
+function JsonFeedFields({
+  idPrefix,
+  draft,
+  onChange,
+}: {
+  idPrefix: string
+  draft: SourceDraft
+  onChange: (next: SourceDraft) => void
+}) {
+  if (draft.kind !== 'rest_json') return null
+
+  const recordsHint = 'Dot-path to the array of people in the response, e.g. data.items. Leave blank if the response is itself an array.'
+
+  return (
+    <>
+      <Field id={`${idPrefix}-records-path`} label="Records path" hint={recordsHint}>
+        <input
+          id={`${idPrefix}-records-path`}
+          className="input"
+          aria-describedby={fieldDescribedBy(`${idPrefix}-records-path`, null, recordsHint)}
+          value={draft.recordsPath}
+          onChange={(event) => onChange({ ...draft, recordsPath: event.target.value })}
+        />
+      </Field>
+      <Field id={`${idPrefix}-pagination-mode`} label="Pagination">
+        <select
+          id={`${idPrefix}-pagination-mode`}
+          className="input"
+          value={draft.paginationMode}
+          onChange={(event) =>
+            onChange({ ...draft, paginationMode: event.target.value as HrJsonPagination['mode'] })
+          }
+        >
+          <option value="none">None — one request</option>
+          <option value="page">Page number</option>
+          <option value="cursor">Cursor / next link</option>
+        </select>
+      </Field>
+      {draft.paginationMode === 'page' && (
+        <>
+          <Field id={`${idPrefix}-page-param`} label="Page parameter" required>
+            <input
+              id={`${idPrefix}-page-param`}
+              className="input"
+              value={draft.pageParam}
+              onChange={(event) => onChange({ ...draft, pageParam: event.target.value })}
+            />
+          </Field>
+          <Field id={`${idPrefix}-size-param`} label="Page-size parameter">
+            <input
+              id={`${idPrefix}-size-param`}
+              className="input"
+              value={draft.sizeParam}
+              onChange={(event) => onChange({ ...draft, sizeParam: event.target.value })}
+            />
+          </Field>
+          <Field id={`${idPrefix}-page-size`} label="Page size">
+            <input
+              id={`${idPrefix}-page-size`}
+              className="input"
+              inputMode="numeric"
+              value={draft.pageSize}
+              onChange={(event) => onChange({ ...draft, pageSize: event.target.value })}
+            />
+          </Field>
+        </>
+      )}
+      {draft.paginationMode === 'cursor' && (
+        <>
+          <Field
+            id={`${idPrefix}-next-path`}
+            label="Next-page path"
+            required
+            hint="Dot-path to the field naming the next page, e.g. meta.next."
+          >
+            <input
+              id={`${idPrefix}-next-path`}
+              className="input"
+              aria-describedby={fieldDescribedBy(
+                `${idPrefix}-next-path`,
+                null,
+                'Dot-path to the field naming the next page, e.g. meta.next.',
+              )}
+              value={draft.nextPath}
+              onChange={(event) => onChange({ ...draft, nextPath: event.target.value })}
+            />
+          </Field>
+          <Field
+            id={`${idPrefix}-cursor-param`}
+            label="Cursor parameter"
+            hint="Leave blank if the next-page field is a whole URL rather than a token."
+          >
+            <input
+              id={`${idPrefix}-cursor-param`}
+              className="input"
+              aria-describedby={fieldDescribedBy(
+                `${idPrefix}-cursor-param`,
+                null,
+                'Leave blank if the next-page field is a whole URL rather than a token.',
+              )}
+              value={draft.cursorParam}
+              onChange={(event) => onChange({ ...draft, cursorParam: event.target.value })}
+            />
+          </Field>
+        </>
+      )}
+    </>
+  )
+}
+
 export default function HrSourcesPage() {
   const auth = useAuth()
   const accessToken = auth.user?.access_token
@@ -326,6 +534,7 @@ export default function HrSourcesPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [createDraft, setCreateDraft] = useState<SourceDraft>({
     name: '',
+    kind: 'csv_url',
     url: '',
     authHeaderName: '',
     authSecretName: '',
@@ -333,6 +542,7 @@ export default function HrSourcesPage() {
     enabled: false,
     blastRadiusThreshold: '20',
     blastRadiusFloor: '5',
+    ...EMPTY_JSON_DRAFT,
   })
   const [createOrganizationId, setCreateOrganizationId] = useState('')
   const [createError, setCreateError] = useState<string | null>(null)
@@ -404,15 +614,17 @@ export default function HrSourcesPage() {
       const created = await createHrSource(accessToken, {
         organizationId: createOrganizationId,
         name: createDraft.name.trim(),
-        kind: 'csv_url',
+        kind: createDraft.kind,
         url: createDraft.url.trim(),
         auth,
         columnMapping: rowsToMapping(createDraft.mappingRows),
+        config: configFromDraft(createDraft),
       })
       showToast(`Created HR source "${created.name}". It starts disabled — preview it, then enable.`)
       setShowCreate(false)
       setCreateDraft({
         name: '',
+        kind: 'csv_url',
         url: '',
         authHeaderName: '',
         authSecretName: '',
@@ -420,6 +632,7 @@ export default function HrSourcesPage() {
         enabled: false,
         blastRadiusThreshold: '20',
         blastRadiusFloor: '5',
+        ...EMPTY_JSON_DRAFT,
       })
       reload()
       setSelectedId(created.id)
@@ -450,6 +663,7 @@ export default function HrSourcesPage() {
         url: editDraft.url.trim(),
         auth,
         columnMapping: rowsToMapping(editDraft.mappingRows),
+        config: configFromDraft(editDraft),
         enabled: editDraft.enabled,
         blastRadiusThreshold: Number(editDraft.blastRadiusThreshold),
         blastRadiusFloor: Number(editDraft.blastRadiusFloor),
@@ -563,15 +777,50 @@ export default function HrSourcesPage() {
                   onChange={(event) => setCreateDraft({ ...createDraft, name: event.target.value })}
                 />
               </Field>
-              <Field id="hr-new-url" label="Feed URL" required hint="An https:// URL serving CSV.">
+              <Field
+                id="hr-new-kind"
+                label="Kind"
+                hint="Fixed once created — a stored configuration validated for one kind means nothing for the other."
+              >
+                <select
+                  id="hr-new-kind"
+                  className="input"
+                  aria-describedby={fieldDescribedBy(
+                    'hr-new-kind',
+                    null,
+                    'Fixed once created — a stored configuration validated for one kind means nothing for the other.',
+                  )}
+                  value={createDraft.kind}
+                  onChange={(event) =>
+                    setCreateDraft({ ...createDraft, kind: event.target.value as HrSourceKind })
+                  }
+                >
+                  {(Object.keys(HR_SOURCE_KIND_LABEL) as HrSourceKind[]).map((kind) => (
+                    <option key={kind} value={kind}>
+                      {HR_SOURCE_KIND_LABEL[kind]}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field
+                id="hr-new-url"
+                label="Feed URL"
+                required
+                hint={createDraft.kind === 'rest_json' ? 'An https:// URL serving JSON.' : 'An https:// URL serving CSV.'}
+              >
                 <input
                   id="hr-new-url"
                   className="input"
-                  aria-describedby={fieldDescribedBy('hr-new-url', null, 'An https:// URL serving CSV.')}
+                  aria-describedby={fieldDescribedBy(
+                    'hr-new-url',
+                    null,
+                    createDraft.kind === 'rest_json' ? 'An https:// URL serving JSON.' : 'An https:// URL serving CSV.',
+                  )}
                   value={createDraft.url}
                   onChange={(event) => setCreateDraft({ ...createDraft, url: event.target.value })}
                 />
               </Field>
+              <JsonFeedFields idPrefix="hr-new" draft={createDraft} onChange={setCreateDraft} />
               <Field id="hr-new-auth-header" label="Auth header name" hint="e.g. Authorization. Leave both blank for an unauthenticated feed.">
                 <input
                   id="hr-new-auth-header"
@@ -706,6 +955,9 @@ export default function HrSourcesPage() {
                   onChange={(event) => setEditDraft({ ...editDraft, name: event.target.value })}
                 />
               </Field>
+              <Field id="hr-edit-kind" label="Kind">
+                <input id="hr-edit-kind" className="input" value={HR_SOURCE_KIND_LABEL[editDraft.kind]} readOnly disabled />
+              </Field>
               <Field id="hr-edit-url" label="Feed URL" required>
                 <input
                   id="hr-edit-url"
@@ -715,6 +967,7 @@ export default function HrSourcesPage() {
                   onChange={(event) => setEditDraft({ ...editDraft, url: event.target.value })}
                 />
               </Field>
+              <JsonFeedFields idPrefix="hr-edit" draft={editDraft} onChange={setEditDraft} />
               <Field id="hr-edit-auth-header" label="Auth header name">
                 <input
                   id="hr-edit-auth-header"
