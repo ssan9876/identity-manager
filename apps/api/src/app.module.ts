@@ -38,6 +38,7 @@ import { createDbClient } from './db/client'
 import { GroupsController } from './groups/groups.controller'
 import { GroupsRepository } from './groups/groups.repository'
 import { HealthController } from './health/health.controller'
+import { ReadinessController } from './health/readiness.controller'
 import { HrSourcesController } from './hr/hr-sources.controller'
 import { HrSourcesRepository } from './hr/hr-sources.repository'
 import { HrSyncService } from './hr/hr-sync.service'
@@ -76,6 +77,7 @@ import { UsersRepository } from './users/users.repository'
 @Module({
   controllers: [
     HealthController,
+    ReadinessController,
     MeController,
     UsersController,
     OrgUnitsController,
