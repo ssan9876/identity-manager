@@ -9,6 +9,7 @@
     "test": "pnpm -r test",
     "typecheck": "pnpm -r run typecheck",
     "build": "pnpm -r build",
+    "check:docs": "node scripts/extract-doc-facts.test.mjs && node scripts/check-docs.mjs",
     "verify": "node scripts/verify.mjs",
     "verify:quick": "node scripts/verify.mjs --quick",
     "setup:all": "node scripts/setup.mjs",

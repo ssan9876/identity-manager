@@ -45,7 +45,12 @@
 //                     drift that once shipped a live target the console could
 //                     not disable. Neither needs containers, so this stage
 //                     runs under --quick too.
-//   5. API suite   — `pnpm --filter @idm/api test` (vitest + Testcontainers,
+//   5. docs checks — `pnpm run check:docs`, which runs both the extractor
+//                     test (proving the fact base is sound) and the guard
+//                     (failing if documentation claims something the code
+//                     contradicts). Neither needs containers, so this stage
+//                     runs under --quick too.
+//   6. API suite   — `pnpm --filter @idm/api test` (vitest + Testcontainers,
 //                     ~756 tests, ~150s). SKIPPED by `--quick`: this is the
 //                     only stage that needs Docker containers, and the one
 //                     `verify:quick` exists to avoid for a fast pre-commit
@@ -128,6 +133,8 @@ async function main() {
   stage('build', 'pnpm', ['run', 'build'])
 
   stage('web checks', 'pnpm', ['--filter', '@idm/web', 'run', 'test'])
+
+  stage('docs checks', 'pnpm', ['run', 'check:docs'])
 
   if (quick) {
     log('--quick: skipping the API suite (needs Docker/Testcontainers).')
