@@ -9,12 +9,18 @@
 > dated 2026-08-08) — and their findings were fixed across five waves plus the
 > follow-up work in [Recently closed findings](#recently-closed-findings) below.
 >
-> Planned dimensions remain unrun and a number of findings are still unverified.
-> The specific count — *two dimensions never ran, roughly twenty findings
-> unverified* — is carried forward from the audit record
-> ([`archive/README.md`](archive/README.md)) and was **not independently re-counted
-> in this pass**. It predates the closures recorded below, so treat it as an upper
-> bound rather than a current figure.
+> Planned dimensions remain unrun and a number of findings are still unverified. The
+> only *total* on record is **six planned dimensions**, in
+> [14 — Roadmap](14-roadmap.md); five have now run, so **one** remains unrun. That
+> roadmap line also says "four of six ran", which is the same stale count corrected in
+> this banner — the arithmetic above is derived from a record that has itself drifted,
+> not from an independent re-count, and no enumeration of the planned dimensions by
+> *name* exists anywhere. [`archive/README.md`](archive/README.md) carries only the
+> older "two never ran" figure.
+>
+> The **~twenty unverified findings** figure is likewise carried forward from that
+> record and was **not re-counted in this pass**. It predates the closures below, so
+> treat it as an upper bound rather than a current figure.
 >
 > **Installing this on an internal or lab network is reasonable. Exposing it to
 > untrusted users is not, yet.** The full record is in [`archive/audits/`](archive/audits/).
@@ -196,11 +202,13 @@ defect is how the next person avoids reintroducing it.
 **What it was.** `attribute-validator.ts` called `new RegExp(rules.pattern)` on a
 pattern read straight out of `attribute_definitions.validation_rules` — admin-authored
 jsonb — and executed it against user input. A regex is a program, so this was the
-system running admin-supplied code against its own directory. Measured on the pre-fix
-code: `^(a+)+$` blocked the event loop for **12.5 seconds** on a 28-character input and
-**96.7 seconds** at 33 characters, cost doubling per added character. One Node process
-serves the whole API and drains the outbox, so that is a total outage, not a slow
-request.
+system running admin-supplied code against its own directory. **Re-measured** against
+the pre-fix code while fixing it (`6b75107`): `^(a+)+$` blocked the event loop for
+**12.5 seconds** on a 28-character input. The **96.7 seconds at 33 characters** quoted
+throughout this document is the *original audit's* figure, carried forward and not
+re-measured here; cost doubles per added character, so the two sit on the same curve.
+One Node process serves the whole API and drains the outbox, so either number is a total
+outage, not a slow request.
 
 **What closed it.** `6b75107` — *fix(security): close the attribute-validator ReDoS with
 a closed vocabulary*. Caller-supplied regex is gone entirely, replaced by
@@ -306,12 +314,20 @@ confirm it is still open.
   and `PermissionEngine.resolveActor` resolves it with
   `lower(users.username) = lower($1)` (`authz/permission.engine.ts:66`), failing closed
   on `status <> 'active'` (line 73).
-- **No *suspend* HTTP endpoint.** A user reaches `suspended` only through lifecycle
-  automation: the controller exposes no suspend route, and `PATCH /users/:id` does not
-  accept `status` at all — its `.strict()` body schema has no such key
-  (`users/users.controller.ts`, `updateUserBodySchema`). `activate` and `deactivate`
-  *do* exist as routes; this entry previously claimed no activate endpoint either, which
-  was wrong — see [Recently closed findings](#recently-closed-findings).
+- **Nothing in the application ever sets `suspended`.** There is no suspend route, and
+  `PATCH /users/:id` does not accept `status` at all — its `.strict()` body schema has no
+  such key (`users/users.controller.ts`, `updateUserBodySchema`). Nor does any background
+  path reach it: `UsersRepository.changeStatus` (`users/users.repository.ts:464`) is the
+  only writer of `users.status`, and every one of its seven callers passes `active` or
+  `deactivated` — `lifecycle.job.ts:154`/`:223`, `rule-applier.ts:226`,
+  `bulk-activate.job.ts:122`, `users.controller.ts:973`/`:1046`,
+  `bootstrap-admin.ts:156`. There is no JML `suspend` action. `active → suspended` is a
+  legal edge in `ALLOWED_TRANSITIONS` (`users/users.repository.ts:97`) with **no code
+  path that reaches it**, so today `suspended` is attainable only by direct SQL. Do not
+  plan compromised-account response around it: `deactivate` is the only mechanism the
+  application actually offers, and it is terminal. (`activate` and `deactivate` *do*
+  exist as routes; this entry previously claimed there was no activate endpoint either,
+  which was wrong — see [Recently closed findings](#recently-closed-findings).)
 - **Group-rename fan-out re-syncs only *current* effective members**; reconciliation is
   the backstop. Still true, and documented as a known limit in the code:
   `outbox/sync.worker.ts`, lines 1102-1140 — a user removed from the group in the same
@@ -381,8 +397,6 @@ It grants global `super_admin` while bypassing all four privilege checks, delibe
   all**: every grant path the API exposes requires the grantor to already hold
   `role:assign`, which nobody does on an empty database.
 
-## Hardening checklist for a real deployment
-
 ## Supply chain
 
 Finding CS-H1 was the highest-leverage exposure in this system: a malicious
@@ -440,6 +454,8 @@ install with pnpm already activated did not re-validate the field. Produce the
 value with `sha512sum` on the published tarball, and prove it is the same
 artefact by converting hex to base64 and comparing against the registry
 integrity.
+
+## Hardening checklist for a real deployment
 
 - [ ] TLS on **both** the console and Keycloak. Without it, sign-in silently fails.
 - [ ] Do **not** import `keycloak/realm-import/identity-manager-realm.dev.json`. Use
