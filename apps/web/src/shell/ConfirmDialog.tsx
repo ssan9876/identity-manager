@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 export interface ConfirmDialogProps {
   open: boolean
   title: string
-  /** The plain-language consequence statement — docs/design-system.md/task-3-brief.md want what WILL happen stated plainly, not just "are you sure?". */
+  /** The plain-language consequence statement — docs/design-system.md and Milestone 8's Task 3 (docs/archive/plans/2026-08-06-idp-milestone-8-admin-console.md: "a confirmation that states the consequence plainly") want what WILL happen stated plainly, not just "are you sure?". */
   children: ReactNode
   confirmLabel: string
   cancelLabel?: string

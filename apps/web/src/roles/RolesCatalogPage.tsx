@@ -6,8 +6,8 @@ import './RolesCatalogPage.css'
  * `/roles` — Milestone 8, Task 4. This nav destination (shell/nav-items.tsx,
  * Task 2) has held an honest "coming in a later task" placeholder since
  * Task 2 built the shell; THIS is that later task, so it earns a real
- * screen rather than staying a permanent dead end (docs/design-system.md/task-2-
- * brief.md: no dead links).
+ * screen rather than staying a permanent dead end (docs/design-system.md and
+ * Milestone 8's Task 2 brief: no dead links).
  *
  * Deliberately a static REFERENCE table, not a cross-directory "every role
  * assignment, for every person" browser: `role_assignments` has no list-all

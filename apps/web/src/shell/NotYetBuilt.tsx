@@ -1,5 +1,6 @@
 /**
- * An honest "coming in a later task" state — docs/design-system.md/task-2-brief.md:
+ * An honest "coming in a later task" state — docs/design-system.md ("empty
+ * states teach") and Milestone 8's Task 2 brief:
  * nav items with no screen behind them yet must stay visible (never a dead
  * link) and say plainly what they are and that they're not built yet,
  * rather than 404ing or silently doing nothing. Used both for whole nav
