@@ -8,11 +8,17 @@ systemd**. No Docker, so an LXC container can be **unprivileged with nesting off
 > The adversarial security audit for this build is **incomplete**. It has found and
 > closed real issues — three authorization gaps where holding a permission *anywhere*
 > satisfied a route governing the whole directory, and a catalog drift that made a
-> live outbound integration impossible to disable through the API. But two audit
-> dimensions never ran and roughly twenty findings are still unverified.
+> live outbound integration impossible to disable through the API. The only *total*
+> on record is **six planned dimensions**; five have now run — the fifth, the
+> client-side and supply-chain pass, landed 2026-08-08 in `22283b5` — so **one**
+> remains unrun. A number of findings are still unverified: the "roughly twenty"
+> figure comes from that same drifted record and was **not** re-counted, so treat it
+> as an upper bound rather than a current count.
 >
 > Installing this on an internal or lab network is reasonable. Exposing it to
-> untrusted users is not, yet. See [12 — Security model](12-security.md).
+> untrusted users is not, yet. See [12 — Security model](12-security.md), whose
+> banner carries the derivation and its caveats — including that no enumeration of
+> the planned dimensions by *name* exists anywhere.
 
 ## What you need
 
@@ -64,7 +70,9 @@ bash scripts/install.sh
    `apps/web/.env`.
 5. `pnpm install --frozen-lockfile` and `pnpm build`, asserting both bundles exist.
 6. Runs `db:migrate` — schema **and** runtime-role grants.
-7. Installs every unit in `deploy/systemd/` and enables `idm-api.service` plus each
+7. Installs every unit in `deploy/systemd/` — **seven today**: `idm-api.service`, plus
+   a `.service`/`.timer` pair each for backup, lifecycle and reconciliation — and
+   enables `idm-api.service` plus each
    timer it finds there — currently `idm-backup.timer` (daily `pg_dump`, 01:00),
    `idm-lifecycle.timer` (daily JML pass, 02:00) and `idm-reconcile.timer` (daily
    Keycloak reconciliation, 03:00). It enables the **timers**; the oneshot services
@@ -284,13 +292,13 @@ and leave HTTP/2 out.
 | Code | `/opt/identity-manager` |
 | Config | `/opt/identity-manager/.env` (0640, owned by `idm`) |
 | Service | `idm-api.service` — API **and** outbox worker in one process |
-| Timers | `idm-backup.timer` (01:00), `idm-lifecycle.timer` (02:00) and `idm-reconcile.timer` (03:00), each firing a oneshot service |
+| Timers | `idm-backup.timer` (01:00), `idm-lifecycle.timer` (02:00) and `idm-reconcile.timer` (03:00), each firing a oneshot service of the same name — seven units in `/etc/systemd/system/` in total |
 | Backups | `/var/backups/identity-manager` (0700, owned by `postgres`) — newest 7 scheduled and 7 pre-update dumps |
 | Web bundle | `/opt/identity-manager/apps/web/dist`, served by nginx |
 | nginx vhost | `/etc/nginx/sites-available/idm.conf` |
 | nginx log format | `/etc/nginx/conf.d/idm-log.conf` — defines `idm_noquery`, which the vhost references |
 | Database | local PostgreSQL 16, database `identity_manager` |
-| Logs | `journalctl -u idm-api -f`; the timers log under `-u idm-lifecycle` / `-u idm-reconcile`; nginx's own `/var/log/nginx/access.log` |
+| Logs | `journalctl -u idm-api -f`; the timers' jobs log under `-u idm-backup`, `-u idm-lifecycle` and `-u idm-reconcile` (their `SyslogIdentifier=`); nginx's own `/var/log/nginx/access.log` |
 
 **Two database roles, deliberately.** `idm_owner` owns the schema and is what migrations
 run as; `idm_app` is what the application runs as, and is created *by* the migration

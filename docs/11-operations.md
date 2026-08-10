@@ -19,8 +19,9 @@ sudo -u idm bash -c 'set -a && . .env && set +a && <command>'
 | `pnpm build` | Build both packages |
 | `pnpm typecheck` | Typecheck both packages |
 | `pnpm test` | All package tests |
-| `pnpm verify` | Full gate: typecheck → lint (if configured) → build → CSS token check → API suite |
-| `pnpm verify:quick` | Typecheck + build only — no containers |
+| `pnpm verify` | Full gate, in order: typecheck → lint (if configured) → build → web checks → docs checks → API suite. `scripts/verify.mjs` |
+| `pnpm verify:quick` | The same gate with the **API suite** skipped — everything up to and including the docs checks, and nothing needing Docker |
+| `pnpm check:docs` | Docs guard on its own: `scripts/extract-doc-facts.test.mjs` then `scripts/check-docs.mjs`. Fails when a document claims something the code contradicts. No containers |
 
 ### Installed-host scripts (run as root, on the machine)
 
@@ -29,7 +30,7 @@ sudo -u idm bash -c 'set -a && . .env && set +a && <command>'
 | `bash scripts/install.sh` | First install. See [05 — Installation](05-installation.md). |
 | `bash scripts/update.sh` | Upgrade in place — pull, rebuild, back up, migrate, **re-render `deploy/`**, restart, verify. See "Upgrading a deployed host" below. |
 | `bash scripts/keycloak-setup.sh` | Create/repair the realm, clients and the sync account. |
-| `sudo -u postgres bash scripts/backup.sh` | Take one database dump now and prune old ones. Normally driven by `idm-backup.timer`. See "Backup and restore" below. |
+| `sudo -u postgres bash scripts/backup.sh` | Take one database dump now and prune old ones. Normally driven by `idm-backup.timer`. Run by hand it has **no `.env`** — the timer's unit supplies `DATABASE_URL` through `EnvironmentFile=`, and the `postgres` user cannot read that file — so it falls back to the database name `identity_manager`. On a host whose `.env` names something else, pass `DB_NAME=<name>`. See "Backup and restore" below. |
 
 ### API package (`pnpm --filter @idm/api …`)
 
@@ -38,12 +39,21 @@ sudo -u idm bash -c 'set -a && . .env && set +a && <command>'
 | `db:migrate` | Apply migrations **and** provision/re-grant the runtime role |
 | `db:generate` | Generate a migration from schema changes (drizzle-kit) |
 | `reconcile` | Walk users, compare against Keycloak, report drift, enqueue corrections |
-| `target-reconcile <target> [--apply] [--force]` | Reconcile one connector target. **Dry run is the default.** |
+| `target-reconcile <target> [--apply] [--force]` | Reconcile one connector target. The target is **required** and must be a directory target — see [the target list](#which-targets-target-reconcile-accepts) below. **Dry run is the default.** |
+| `role-reconcile [<roleId>\|--role=<id>]` | Re-derive every user's business-role entitlements and grant/revoke to match, then report standing segregation-of-duties violations. With no argument it sweeps every **enabled** role; naming one narrows the log label, not the work. **No dry-run flag** — it only writes rows this database can derive again, and the preview that matters is the role's own *simulate* before publish. Exits non-zero if it *refused* any user (an unevaluable role), so a scheduled run shows up in the journal as a failure. |
+| `hr:sync <source> --actor=<username> [--commit] [--allow-partial] [--force]` | Pull one HR source (by id or name) through the import pipeline: preview, blast-radius check, then create/update people. **Dry run is the default** — `--commit` is the only thing that writes. `--actor` is **required** and resolves to a real active user, so the run holds exactly that person's authority and every audit row is attributed. |
 | `jml:lifecycle` | Apply date-driven joiner/leaver transitions and fire rules |
+| `activate (--all \| --org-unit=<uuid>) [--apply]` | Bulk-activate `pending` users, whole directory or one subtree and its descendants. **Dry run is the default**, and the scope must be typed — there is no way to mean "everyone" by omitting an argument. |
 | `smoke:dev` | Boot the real dev server and exercise it over HTTP |
 | `smoke:mail` | Contract check against a real mail server |
 | `e2e:cleanup` | Remove records left by the Playwright suite |
 | `start:dev` | API only, with `--watch` |
+
+**Passing flags.** A bare positional argument goes straight through
+(`pnpm --filter @idm/api target-reconcile echo`), but anything starting with `--` has to
+be forwarded past pnpm: `pnpm --filter @idm/api run activate -- --all --apply`. Each of
+these CLIs strips a literal `--` from its own argument list, so the extra separator is
+always safe to include.
 
 ### Web package (`pnpm --filter @idm/web …`)
 
@@ -51,7 +61,7 @@ sudo -u idm bash -c 'set -a && . .env && set +a && <command>'
 |---|---|
 | `dev` | Vite dev server on 5173 |
 | `build` | Typecheck + production bundle |
-| `test` | CSS design-token check |
+| `test` | Three static checks, no browser: CSS design-token check, connector-target catalog drift check (`check-connector-targets.mjs`, against the API's `ALL_CONNECTOR_TARGETS`), and the CSP hash check |
 | `test:e2e` | Playwright suite |
 
 ## Scheduled work
@@ -59,7 +69,9 @@ sudo -u idm bash -c 'set -a && . .env && set +a && <command>'
 There is **no scheduler in the process**. Every recurring job is a plain script driven by
 a systemd timer the installer sets up and enables for you — nothing to write by hand, and
 nothing to add to a crontab. Per-target reconciliation (`target-reconcile`) is the one
-exception and stays manual, deliberately; see below.
+exception and stays manual, deliberately; see below. `role-reconcile` and `hr:sync` ship
+**no unit at all** — there are seven files in `deploy/systemd/` and none of them is
+theirs — so if you want either on a cadence, the timer is yours to write.
 
 | Timer | Fires | What it does |
 |---|---|---|
@@ -71,8 +83,13 @@ The order is deliberate. The backup runs first so the night's restore point pred
 automated writes the other two make — which is what you want on the morning one of those
 passes turns out to be the problem.
 
+Three timers, three oneshot services behind them, and `idm-api.service` — **seven units**
+in `deploy/systemd/`, all seven rendered into `/etc/systemd/system/` by `install.sh` and
+`update.sh`.
+
 ```bash
 systemctl list-timers 'idm-*'   # all three, with next and last fire times
+ls /etc/systemd/system/idm-*    # all seven units, as installed
 ```
 
 ### Database backup — installed as a daily timer
@@ -197,8 +214,8 @@ pnpm --filter @idm/api reconcile
 **Per-target reconciliation stays manual**, and is deliberately not on a timer:
 
 ```bash
-pnpm --filter @idm/api target-reconcile active_directory  # dry run first
-pnpm --filter @idm/api target-reconcile active_directory --apply
+pnpm --filter @idm/api target-reconcile active_directory        # dry run first
+pnpm --filter @idm/api run target-reconcile active_directory -- --apply
 ```
 
 That is not an oversight. `target-reconcile` requires a target argument, applies nothing
@@ -207,6 +224,48 @@ Putting it on a timer would mean baking `--apply` into a unit file and — the f
 the guard tripped at 03:00 — `--force` after it, defeating the confirm-first design it
 was given on purpose. Run it by hand, dry run first, after a connector incident or a bulk
 change made at the target.
+
+#### Which targets `target-reconcile` accepts
+
+The catalog is **thirteen** values, closed and machine-checked: `ALL_CONNECTOR_TARGETS` in
+`apps/api/src/connectors/connector.ts` is the single source of truth, and
+`test/connector-target-catalog.spec.ts` asserts it matches the `outbox_target` and
+`external_identity_system` pgEnums in both directions.
+
+`target-reconcile` accepts **twelve** of them — `DIRECTORY_TARGETS`, which is the catalog
+minus `keycloak_sso`:
+
+| Target | Notes |
+|---|---|
+| `keycloak` | The identity provider itself. Also what the daily `reconcile` pass walks |
+| `active_directory` | LDAPS only |
+| `entra_id` | Microsoft Graph |
+| `google_workspace` | Directory API |
+| `mail_server` | The provisioning API — see "Mail server over a separate host" below |
+| `echo` | In-repo test target. Real, configurable and enable-able like any other; it exercises the spine without touching a live directory |
+| `scim_slack` | SCIM 2.0 |
+| `scim_zoom` | SCIM 2.0 |
+| `scim_atlassian` | SCIM 2.0 |
+| `scim_box` | SCIM 2.0 |
+| `scim_snowflake` | SCIM 2.0 |
+| `scim_generic` | SCIM 2.0 |
+
+Those six `scim_*` rows are **six target values sharing one adapter**
+(`apps/api/src/connectors/scim.connector.ts`) — the protocol is identical and only the
+base URL, the credential and the write mode differ. They are separate target values
+rather than rows of a single `scim` target because `(organization_id, target)` is
+`connector_targets`' primary key and `(user_id, system)` is unique in
+`external_identities`, so one configured instance per target value is load-bearing for
+the outbox and correlation design. Full detail in
+[09 — Connectors and sync](09-connectors-and-sync.md) and
+[06 — Configuration](06-configuration.md).
+
+The thirteenth, **`keycloak_sso`, is not accepted here** and it is not an oversight: it is
+a different interface family (`SsoConnector`) that registers OIDC and SAML *applications*
+and carries no principals at all, so there is nobody for a per-target reconcile to walk.
+It remains a first-class target everywhere principals are not involved — it is
+configurable, enable-able and disable-able, and an `sso_app` event can dead-letter under
+it like any other.
 
 ## Upgrading a deployed host
 
@@ -300,11 +359,15 @@ one does not need this document to change.
 Each check below corresponds to a failure this project has actually hit, and any
 of them failing exits non-zero with the rollback commands printed:
 
-- `idm-api` reaches `active` (waited for, up to 30s).
+- `idm-api` reaches `active` (polled once a second, up to 30s).
 - `/health` answers on `127.0.0.1:<port>` — isolating "the app is up" from
-  "nginx routes to it".
+  "nginx routes to it". Polled up to **60s**, not sampled once: `systemctl
+  is-active` reports a `Type=simple` unit as active the moment the process
+  forks, while Nest needs several more seconds to bind the port.
 - nginx answers **with the real `Host` header**, and the three security headers
-  are present in the response.
+  are present in the response. Polled up to **15s**, because `systemctl reload
+  nginx` returns as soon as the master accepts the signal while workers on the
+  previous config keep answering for a moment.
 - `/etc/nginx/conf.d/idm-log.conf` contains the `idm_noquery` format, i.e. the
   file is the current one rather than merely present.
 
@@ -386,8 +449,12 @@ journalctl -u idm-api -f
 journalctl -u idm-api -n 200 --no-pager
 ```
 
-Secret values never appear in logs, errors or stack traces — a sentinel-value test
-enforces that.
+Resolved **connector** secret values never appear in the journal. `test/connector-secrets.spec.ts`
+puts a unique sentinel into a `CONNECTOR_*` variable and asserts it appears in none of:
+the `connector_targets` config read, the `health()` body, the `apply()` body, the
+connector's own call log, a deliberately-thrown error, or anything written to the console
+during the whole block. That is the guarantee that is *tested* — it covers the credentials
+a connector resolves, not a blanket promise about every value the process ever holds.
 
 #### nginx's access log, and why it drops query strings
 
@@ -674,7 +741,7 @@ The local record and Keycloak revocation are independent of the queue. Check:
 
 1. `GET /users/:id` — is `status` actually `deactivated`?
 2. `GET /outbox/dead-letters?target=…` — did the event dead-letter?
-3. Fix the cause, then `target-reconcile <target> --apply`.
+3. Fix the cause, then `pnpm --filter @idm/api run target-reconcile <target> -- --apply`.
 
 The synchronous Keycloak revocation runs on the deactivate request itself; if it failed,
 the reconcile pass re-asserts `enabled` every time it runs.
