@@ -10,75 +10,162 @@ pnpm setup:all && pnpm bootstrap:admin && pnpm dev
 
 ## The workspace
 
-A pnpm workspace with two packages:
+A pnpm workspace (`pnpm-workspace.yaml`: `apps/*`) with two packages:
 
 | Package | Path | What |
 |---|---|---|
 | `@idm/api` | `apps/api` | NestJS API, sync worker, CLIs, migrations |
 | `@idm/web` | `apps/web` | React + Vite admin console |
 
-`tsconfig.base.json` at the root is extended by both. `apps/api/scripts/` is inside the
-API's `tsc` program — it was once outside it and therefore never typechecked by anything.
+`tsconfig.base.json` at the root is extended by both. `apps/api/tsconfig.json` includes
+`src/**/*`, `test/**/*` **and** `scripts/**/*` — the last was once outside the program and
+therefore never typechecked by anything.
 
 ## The verification gate
 
 **`pnpm verify` is the gate.** One command, one exit code, failing loudly on the first
-broken stage rather than continuing past it.
+broken stage rather than continuing past it. The stages are exactly the calls in
+`scripts/verify.mjs`'s `main()`:
 
-| Stage | What |
-|---|---|
-| `typecheck` | Both packages, including `apps/api/scripts/` |
-| `lint` | Runs if a linter is configured; logs and continues if none is |
-| `build` | Both packages |
-| `web tokens` | CSS design-token check (`apps/web/scripts/check-css-tokens.mjs`) |
-| `API suite` | The full Vitest suite against disposable Testcontainers |
+| Stage | Command | What |
+|---|---|---|
+| `typecheck` | `pnpm run typecheck` | Both packages, including `apps/api/scripts/` |
+| `lint` | `pnpm -r run lint` | **Only if an ESLint config file exists** at the repo root, `apps/api` or `apps/web`. None does today, so the stage logs a line and is skipped |
+| `build` | `pnpm run build` | Both packages — `tsc` emit for the API, `tsc -b && vite build` for the console |
+| `web checks` | `pnpm --filter @idm/web test` | All three of `apps/web/scripts/`: `check-css-tokens.mjs` (no raw colour outside `styles/tokens.css`), `check-connector-targets.mjs` (the console's hand-copied target catalogue against the API's `ALL_CONNECTOR_TARGETS`), `check-csp.mjs` (the served CSP against the served `index.html`; it exits 0 loudly when there is no build output) |
+| `docs checks` | `pnpm run check:docs` | The documentation guard — see below |
+| `API suite` | `pnpm --filter @idm/api test` | Vitest against disposable Testcontainers. **The only stage that needs Docker**, and the only one `--quick` skips |
 
 No stage is ever skipped silently on failure, and nothing uses `continue-on-error`.
 
 ```bash
-pnpm verify:quick   # typecheck + build only — no containers. Run before every commit.
+pnpm verify:quick   # everything except the API suite — no containers. Run before every commit.
 pnpm verify         # the whole gate. Run before anything that matters more.
 ```
 
-`.github/workflows/ci.yml` runs the identical gate on every push and pull request, plus
-the Playwright E2E suite against the Compose stack. GitHub-hosted runners provide Docker
-out of the box, so both Testcontainers and `docker compose` work there unmodified.
+> **`verify:quick` is not "typecheck + build only".** Its own startup line still says
+> that (`verify.mjs`'s `log()` call in `main()`), and the string is stale: `--quick`
+> guards exactly one `if`, around the API suite. Typecheck, build, web checks and docs
+> checks all run under `--quick`. Read the call sites, not the banner.
+
+`.github/workflows/ci.yml` runs `pnpm verify` — the identical gate — on every push and
+pull request, plus the Playwright E2E suite against the Compose stack. GitHub-hosted
+runners provide Docker out of the box, so both Testcontainers and `docker compose` work
+there unmodified.
+
+### The docs gate: `pnpm check:docs`
+
+```bash
+pnpm check:docs   # node scripts/extract-doc-facts.test.mjs && node scripts/check-docs.mjs
+```
+
+Two scripts. `extract-doc-facts.test.mjs` proves the fact base itself is sound (that the
+extractor still finds routes, all 13 connector targets, the CLI scripts) — a fact
+extractor that silently returns nothing would make every check below pass vacuously.
+`check-docs.mjs` then compares documentation against those facts and prints one block per
+problem, with the command to run and the fix.
+
+**What it checks — all of it:**
+
+| Check | Against |
+|---|---|
+| Every `docs/…` path cited from code resolves to a real file | the repo tree |
+| `docs/11-operations.md` names every operator CLI | `apps/api/package.json`'s scripts, filtered to `OPERATOR_CLIS` |
+| Four named documents each list all 13 connector targets | `ALL_CONNECTOR_TARGETS` in `apps/api/src/connectors/connector.ts` |
+| `docs/10-api-reference.md` documents every route the API exposes | the extracted route table |
+| …and documents no route that does not exist | ditto |
+| …and its "Routes that do not exist" table still describes routes that really are absent | ditto |
+
+**What it deliberately does not check.** Only mechanically verifiable claims. It reads
+tokens — a `METHOD /path`, a target name, a script name, a file path — and never prose.
+It would **not** have caught `docs/12-security.md` describing a ReDoS that had already
+been fixed: that needed a human reading a claim against an implementation, and no guard
+in this repo can do it.
+
+That narrowness is the design, and the script says so in its own header comment: a guard
+that is narrow and trusted beats one that is broad and noisy, because a noisy guard gets
+suppressed and then catches nothing. Two consequences worth knowing:
+
+- The target and CLI checks are substring matches (`body.includes(...)`), so they have
+  latent false negatives — `echo` is an English word, and `keycloak` is a prefix of
+  `keycloak_sso`.
+- Adding a check is cheap; adding a check that fires on something a human would call fine
+  is expensive. Prefer leaving a claim unguarded over guarding it approximately.
+
+`docs/.facts.json` is generated and gitignored. Regenerate it freely; never commit it.
 
 ## Testing
 
 ### API — Vitest + Testcontainers
 
-73 spec files under `apps/api/test/`, run against **disposable Postgres containers**,
+112 spec files under `apps/api/test/`, run against **disposable Postgres containers**,
 independent of the Compose stack.
 
+> ### Cap the fork pool, with **both** bounds
+>
+> ```bash
+> cd apps/api
+> pnpm vitest run --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3
+> ```
+>
+> **Uncapped, the suite starts a Testcontainers Postgres per spec file** and exhausts the
+> disk on an ordinary developer machine. The failures that follow are not real: dozens of
+> specs fail on container startup, and the run tells you nothing about your change.
+>
+> **`maxForks` alone does not work.** `minForks` defaults to the CPU count, so on any
+> machine with more cores than your cap the two conflict and Tinypool throws before a
+> single test runs:
+>
+> ```
+> RangeError: options.minThreads and options.maxThreads must not conflict
+> ```
+>
+> Vitest reports that as an unhandled error and then prints `Test Files  no tests`, which
+> reads like a filter that matched nothing. It is not a filter problem, and chasing it as
+> one costs a run. Pass **both** bounds, every time.
+>
+> The `test` script in `apps/api/package.json` is a bare `vitest run` and carries no cap,
+> so `pnpm --filter @idm/api test` and the `API suite` stage of `pnpm verify` both inherit
+> the uncapped default. To cap through pnpm, pass the flags after `--`:
+> `pnpm --filter @idm/api test -- --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3`.
+
+One file at a time, which is what you want most of the time:
+
 ```bash
-pnpm --filter @idm/api test
-pnpm --filter @idm/api test -- users.write.spec.ts
+cd apps/api
+pnpm vitest run --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=3 users.write.spec.ts
 ```
 
 Categories worth knowing:
 
 | Kind | Examples |
 |---|---|
-| Repository / integration | `users.repository`, `groups.repository`, `org-units.repository` |
+| Repository / integration | `users.repository`, `groups.repository`, `org-units.repository`, `sso-apps.repository` |
 | Controller / write path | `*.write.spec.ts`, `*.controller.spec.ts` |
 | Authorization | `permission.engine`, `permission.guard`, `privilege.guards`, `scope-narrowing`, `guard-coverage` |
 | Sync | `sync.worker`, `outbox-emission`, `outbox-multi-target`, `reconciliation`, `target-reconciliation`, `sync-state.repository` |
 | Connectors | one per target, plus `connector-registry`, `connector-secrets`, `connector-target-catalog` |
-| Invariants | `migrate`, `harness`, `app.module`, `dev-environment`, `pool-exhaustion`, `payload-too-large` |
+| Access model | `business-roles`, `business-role-evaluator`, `role-miner`, `sod`, `recertification`, `access-requests.controller`, `user-entitlements` |
+| Multi-tenancy | `organizations.isolation`, `organizations.uniqueness`, `master-organization`, `org-connector-targets` |
+| Inbound | `hr-feed`, `hr-json-feed`, `hr-sync`, `csv`, `import-row` |
+| Invariants | `migrate`, `harness`, `app.module`, `dev-environment`, `pool-exhaustion`, `payload-too-large.middleware` |
 
 **Structural tests you must not break:**
 
-- **`guard-coverage.spec.ts`** — every controller carries `JwtGuard`, and unless listed
-  as authentication-only, `PermissionGuard` with `@RequirePermission` on every route. A
-  new controller without guards fails the suite.
+- **`guard-coverage.spec.ts`** — every controller carries `JwtGuard`, and unless named in
+  its `OPEN_BY_DESIGN` or `AUTHENTICATION_ONLY` sets, `PermissionGuard` with
+  `@RequirePermission` on every route. A new controller without guards fails the suite,
+  and adding an exemption means adding your controller to a list someone will read.
 - **`connector-target-catalog.spec.ts`** — `ALL_CONNECTOR_TARGETS` matches the
   `outbox_target` pgEnum in **both** directions.
-- **`jml-rule-engine.spec.ts`** and **`business-role-evaluator.spec.ts`** — static source
-  scans proving rules and role conditions are data, never code (no `eval`, no `Function`,
-  no dynamic dispatch on rule content).
-- **`connector-secrets.spec.ts`** — seeds a sentinel value into the environment and
-  greps every response, log line and thrown error for it.
+- **`jml-rule-engine.spec.ts`** and **`business-role-evaluator.spec.ts`** — behavioural
+  specs that each also carry a static source scan over their own module directory
+  (`src/jml`, `src/business-roles`), failing on any `eval(`, `new Function(` or bare
+  `Function(`. Rules and role conditions are data, never code.
+- **`connector-secrets.spec.ts`** — seeds a sentinel value into the environment and greps
+  every response, log line and thrown error for it.
+- **`migrate.spec.ts`** — replays the migration chain, so from 0027 on every migration
+  must be re-runnable. Enum and column DDL needs `IF NOT EXISTS`.
 - **`no-password-input.spec.ts`** (E2E) — scans the console source for password inputs.
 
 ### Console — Playwright
@@ -87,9 +174,10 @@ Categories worth knowing:
 pnpm --filter @idm/web test:e2e
 ```
 
-Runs against the Compose stack, signing in as a real Keycloak user. Suites: `login`,
-`people`, `people-write`, `person-picker`, `groups`, `import`, `audit`, `connectors`,
-`self-service`, `theme`, `no-password-input`.
+Runs against the Compose stack, signing in as a real Keycloak user. The 14 suites under
+`apps/web/e2e/`: `audit`, `business-roles`, `connectors`, `groups`, `import`, `login`,
+`no-password-input`, `organizations`, `people`, `people-write`, `person-picker`,
+`self-service`, `sso-apps`, `theme`.
 
 `pnpm --filter @idm/api e2e:cleanup` removes records the suite left behind.
 
@@ -117,6 +205,9 @@ pnpm --filter @idm/api smoke:mail   # mail server contract check
 
 ### Rules that will bite you
 
+- **Every migration must be re-runnable.** `migrate.spec.ts` replays the chain, so from
+  0027 onward `CREATE TYPE`, `ALTER TYPE ... ADD VALUE`, `ALTER TABLE ... ADD COLUMN` and
+  friends need `IF NOT EXISTS` (or the `DO $$ ... EXCEPTION` equivalent).
 - **Never use an enum value in the same migration that adds it.** Postgres rejects
   `unsafe use of new value of enum type`, and drizzle applies every pending migration in
   **one** transaction — so on a fresh database (every Testcontainer, every new deploy)
@@ -150,6 +241,9 @@ pnpm --filter @idm/api smoke:mail   # mail server contract check
 7. **Throw `DomainError` subclasses**, never raw HTTP exceptions. Anything else is a bug
    and correctly becomes a 500.
 8. **Add tests**, including the rejection paths — out of scope, outranked, malformed.
+9. **Document it** in [10 — API reference](10-api-reference.md) as a `` `METHOD /path` ``
+   token. `check-docs.mjs` fails the build if you do not, and fails it again if you
+   document a path that does not exist.
 
 ## Adding a connector target
 
@@ -165,7 +259,7 @@ The rules most likely to catch you out:
 
 - **Semantic tokens only.** Screens never reference light or dark directly, and never a
   raw colour. `styles/tokens.css` is the only file that knows two palettes exist —
-  enforced by `check-css-tokens.mjs`, which is a `pnpm verify` stage.
+  enforced by `check-css-tokens.mjs`, which is part of `pnpm verify`'s `web checks` stage.
 - **Every interactive component ships all seven states**: default, hover, focus, active,
   disabled, loading, error. Shipping half is not shipping.
 - **Active carries no colour.** Most of a directory is active; colouring the norm is
@@ -183,6 +277,11 @@ The rules most likely to catch you out:
   navigation that action often triggers.
 - **The API is the authority.** Gate UI on `GET /self/permissions`; never decide
   authorization client-side.
+- **Add a target to the console's catalogue by hand.** `apps/web/src/connectors/api.ts`
+  hand-writes `ConnectorTarget`, `ALL_CONNECTOR_TARGETS` and `CONNECTOR_TARGET_LABEL`;
+  there is no shared package. `check-connector-targets.mjs` is what stops that copy
+  drifting — it exists because it once did, shipping a live target the console could not
+  disable.
 - Motion is 150–200ms `ease-out`, and every animation needs a
   `prefers-reduced-motion: reduce` alternative.
 
@@ -207,7 +306,8 @@ scrollbars, reinvented form controls.
 
 ## Working with git
 
-Current branch: `feat/business-roles-entitlements`. Main branch: `master`.
+The main branch is `master`. Branch off it for feature work; `pnpm verify` runs the same
+gate locally that CI runs on the push.
 
 Run `pnpm verify:quick` before every commit and `pnpm verify` before anything that
 matters more.
