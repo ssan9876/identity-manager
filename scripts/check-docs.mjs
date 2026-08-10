@@ -22,6 +22,18 @@ const OPERATOR_CLIS = [
   'target-reconcile', 'role-reconcile', 'jml:lifecycle', 'hr:sync',
 ]
 
+/**
+ * Documents whose connector-target lists present themselves as complete.
+ * A target missing from one of these is a target an operator does not learn
+ * exists — which on 2026-08-10 was six of thirteen, every SCIM application.
+ */
+const TARGET_LIST_DOCS = [
+  'docs/03-data-model.md',
+  'docs/06-configuration.md',
+  'docs/09-connectors-and-sync.md',
+  'docs/11-operations.md',
+]
+
 export function checkDocs(repoRoot) {
   const facts = extractFacts(repoRoot)
   const problems = []
@@ -54,6 +66,25 @@ export function checkDocs(repoRoot) {
             '    remove it from OPERATOR_CLIS in scripts/check-docs.mjs and say why.',
         )
       }
+    }
+  }
+
+  // 3. Every document presenting a complete target list must name every
+  //    target. Checked per document rather than repo-wide: "mentioned
+  //    somewhere in docs/" is not the same as "listed where a reader looks".
+  for (const rel of TARGET_LIST_DOCS) {
+    const full = join(repoRoot, rel)
+    if (!existsSync(full)) continue
+    const body = read(full)
+    const missing = facts.connectorTargets.filter((t) => !body.includes(t))
+    if (missing.length > 0) {
+      problems.push(
+        `${rel} lists connector targets but omits ${missing.length} of ${facts.connectorTargets.length}:\n` +
+          `      ${missing.join(', ')}\n` +
+          '    The canonical list is ALL_CONNECTOR_TARGETS in apps/api/src/connectors/connector.ts.\n' +
+          '    If this document deliberately covers only some targets, remove it from\n' +
+          '    TARGET_LIST_DOCS in scripts/check-docs.mjs and say why in a comment.',
+      )
     }
   }
 
