@@ -692,28 +692,38 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: `scripts/check-docs.mjs` CLI from Tasks 2–4.
 - Produces: a `docs checks` stage in the verify pipeline; `pnpm check:docs` at the root.
 
-- [ ] **Step 1: Add the root script**
+- [ ] **Step 1: Add the root scripts**
 
 In `package.json`, alongside the existing scripts:
 
 ```json
-    "check:docs": "node scripts/check-docs.mjs",
+    "check:docs": "node scripts/extract-doc-facts.test.mjs && node scripts/check-docs.mjs",
 ```
+
+Both, chained. The extractor test is what proves the fact base is right, and the
+guard is only as trustworthy as the facts it reads — an extractor that silently
+returned `[]` would make every check pass while proving nothing. A test nothing
+runs is a file, not a test.
 
 - [ ] **Step 2: Add the verify stage**
 
 In `scripts/verify.mjs`, immediately after the `web checks` stage at line ~130:
 
 ```js
-  stage('docs checks', 'node', ['scripts/check-docs.mjs'])
+  stage('docs checks', 'pnpm', ['run', 'check:docs'])
 ```
+
+Placed after `web checks` and **before** the `if (quick)` branch, so it runs
+under `verify:quick` as well as the full gate. A docs check that only runs in
+the container-backed full gate would rarely run at all.
 
 Update the numbered stage list in that file's header doc block to include it, matching how `web checks` is described there.
 
 - [ ] **Step 3: Run the stage in isolation**
 
 Run: `pnpm check:docs`
-Expected: whatever the guard currently reports — pass by now if Tasks 2–4 are complete.
+Expected: `extract-doc-facts: ALL PASS`, then the guard's verdict — passing by
+now if Tasks 2–4 are complete.
 
 - [ ] **Step 4: Confirm it runs inside verify**
 
