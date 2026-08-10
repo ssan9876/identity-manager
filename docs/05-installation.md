@@ -64,10 +64,14 @@ bash scripts/install.sh
    `apps/web/.env`.
 5. `pnpm install --frozen-lockfile` and `pnpm build`, asserting both bundles exist.
 6. Runs `db:migrate` — schema **and** runtime-role grants.
-7. Installs `idm-api.service` and enables it, plus the two scheduled jobs —
+7. Installs every unit in `deploy/systemd/` and enables `idm-api.service` plus each
+   timer it finds there — currently `idm-backup.timer` (daily `pg_dump`, 01:00),
    `idm-lifecycle.timer` (daily JML pass, 02:00) and `idm-reconcile.timer` (daily
    Keycloak reconciliation, 03:00). It enables the **timers**; the oneshot services
-   behind them are never enabled directly. See
+   behind them are never enabled directly. Both the render and the enable are by glob
+   rather than by name, so a release that adds a timer reaches fresh installs and
+   upgraded hosts alike. It also creates `/var/backups/identity-manager` (0700, owned
+   by `postgres`) for the dumps to land in. See
    [11 — Operations](11-operations.md#scheduled-work).
 8. Generates a self-signed certificate if running HTTPS and none was supplied,
    configures nginx to serve the bundle and proxy `/api`, and reloads it.
@@ -280,7 +284,8 @@ and leave HTTP/2 out.
 | Code | `/opt/identity-manager` |
 | Config | `/opt/identity-manager/.env` (0640, owned by `idm`) |
 | Service | `idm-api.service` — API **and** outbox worker in one process |
-| Timers | `idm-lifecycle.timer` (02:00) and `idm-reconcile.timer` (03:00), each firing a oneshot service |
+| Timers | `idm-backup.timer` (01:00), `idm-lifecycle.timer` (02:00) and `idm-reconcile.timer` (03:00), each firing a oneshot service |
+| Backups | `/var/backups/identity-manager` (0700, owned by `postgres`) — newest 7 scheduled and 7 pre-update dumps |
 | Web bundle | `/opt/identity-manager/apps/web/dist`, served by nginx |
 | nginx vhost | `/etc/nginx/sites-available/idm.conf` |
 | nginx log format | `/etc/nginx/conf.d/idm-log.conf` — defines `idm_noquery`, which the vhost references |

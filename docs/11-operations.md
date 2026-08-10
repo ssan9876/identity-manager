@@ -29,6 +29,7 @@ sudo -u idm bash -c 'set -a && . .env && set +a && <command>'
 | `bash scripts/install.sh` | First install. See [05 — Installation](05-installation.md). |
 | `bash scripts/update.sh` | Upgrade in place — pull, rebuild, back up, migrate, **re-render `deploy/`**, restart, verify. See "Upgrading a deployed host" below. |
 | `bash scripts/keycloak-setup.sh` | Create/repair the realm, clients and the sync account. |
+| `sudo -u postgres bash scripts/backup.sh` | Take one database dump now and prune old ones. Normally driven by `idm-backup.timer`. See "Backup and restore" below. |
 
 ### API package (`pnpm --filter @idm/api …`)
 
@@ -55,10 +56,52 @@ sudo -u idm bash -c 'set -a && . .env && set +a && <command>'
 
 ## Scheduled work
 
-There is **no scheduler in the process**. Both recurring jobs are plain scripts driven by
-systemd timers the installer sets up and enables for you — nothing to write by hand, and
+There is **no scheduler in the process**. Every recurring job is a plain script driven by
+a systemd timer the installer sets up and enables for you — nothing to write by hand, and
 nothing to add to a crontab. Per-target reconciliation (`target-reconcile`) is the one
 exception and stays manual, deliberately; see below.
+
+| Timer | Fires | What it does |
+|---|---|---|
+| `idm-backup.timer` | 01:00 daily | `pg_dump` into `/var/backups/identity-manager`, then prune |
+| `idm-lifecycle.timer` | 02:00 daily | Joiner activation, leaver deactivation |
+| `idm-reconcile.timer` | 03:00 daily | Keycloak drift detection and repair |
+
+The order is deliberate. The backup runs first so the night's restore point predates the
+automated writes the other two make — which is what you want on the morning one of those
+passes turns out to be the problem.
+
+```bash
+systemctl list-timers 'idm-*'   # all three, with next and last fire times
+```
+
+### Database backup — installed as a daily timer
+
+Postgres holds every durable thing this system knows, including an append-only
+`audit_log` that by design cannot be reconstructed after the fact. Until this timer
+existed the only `pg_dump` anywhere on a host was the pre-update one `scripts/update.sh`
+takes, so the newest backup on a dead host was from whenever somebody last chose to
+upgrade — and the recovery story was "reinstall and re-enter everyone".
+
+`scripts/install.sh` installs `idm-backup.service` and `idm-backup.timer` from
+`deploy/systemd/` in the same loop as the other units, and enables the **timer**.
+
+```bash
+systemctl list-timers idm-backup.timer      # confirm it is armed
+systemctl start idm-backup.service          # take one dump now
+journalctl -u idm-backup -n 20              # what the last dump did
+ls -l /var/backups/identity-manager         # the dumps themselves
+```
+
+It fires at 01:00 daily with `Persistent=true` (a host powered off at 01:00 takes the
+missed dump on next boot) and up to five minutes of jitter. It runs
+`scripts/backup.sh` **as the `postgres` user**, not as `idm`: the dump goes over
+Postgres' local peer authentication, and the `idm_app` runtime role deliberately does not
+hold the privileges a whole-database dump needs. The unit is confined by
+`ProtectSystem=strict` with a single writable path, `/var/backups/identity-manager`.
+
+See "Backup and restore" below for where the files land, how many are kept, and how to
+restore one.
 
 ### Lifecycle — installed as a daily timer
 
@@ -188,6 +231,7 @@ the console appears to break with no error anywhere.
 | `REPO_BRANCH=<branch>` | Branch to pull. Defaults to the checked-out branch. |
 | `SKIP_DB_BACKUP=1` | Skip the pre-migration `pg_dump`. |
 | `BACKUP_DIR=<path>` | Where that dump lands. Default `/var/backups/identity-manager`. |
+| `BACKUP_KEEP=<n>` | Pre-update dumps to keep; older ones are deleted after a successful dump. Default 7. Scheduled dumps are counted separately — see "Backup and restore". |
 | `DEBUG=1` | `set -x`. |
 
 It refuses rather than guesses: a host with no `.env`, no unit or no vhost is
@@ -340,7 +384,68 @@ and PKCE-bound; the change here is only that it is no longer retained on disk.
 ## Backup and restore
 
 Everything durable is in Postgres. Keycloak has its own state (credentials, sessions,
-realm configuration) and needs its own backup.
+realm configuration) and needs its own backup — **nothing here backs Keycloak up.**
+
+### What an installed host does on its own
+
+Two things write dumps into `/var/backups/identity-manager`, and they are counted and
+pruned separately:
+
+| Filename | Written by | When |
+|---|---|---|
+| `<db>-<UTC stamp>-scheduled.sql.gz` | `idm-backup.timer` → `scripts/backup.sh` | 01:00 daily |
+| `<db>-<UTC stamp>-pre-update.sql.gz` | `scripts/update.sh` | Before every migration |
+
+The directory is `0700` and owned by `postgres`; each dump is `0600`. Treat it as
+sensitive — one file is every name, email address and entitlement in the system.
+
+**Retention: the newest 7 of each kind, set by `BACKUP_KEEP`.** Seven is one week of
+daily restore points, which covers a corruption nobody noticed until Monday, and it bounds
+the directory at a size you can reason about instead of one that grows for as long as the
+host lives. The two kinds are pruned against separate counts on purpose: a single combined
+count would let an afternoon of upgrades evict every scheduled backup, and the file you
+want when a host dies is exactly the one a burst of unrelated activity would delete first.
+
+Both scripts read `BACKUP_KEEP` and `BACKUP_DIR` from the environment:
+
+```bash
+sudo BACKUP_KEEP=14 bash scripts/update.sh          # keep 14 pre-update dumps
+sudo systemctl edit idm-backup.service              # keep 14 scheduled ones
+# [Service]
+# Environment="BACKUP_KEEP=14"
+```
+
+Changing `BACKUP_DIR` for the timer needs a matching `ReadWritePaths=` in the same
+drop-in — the unit runs under `ProtectSystem=strict`, so an un-listed directory is
+read-only and the dump fails. **These dumps are on the same disk as the database.** They
+survive a bad migration, not a dead disk; copy them somewhere else if that matters.
+
+### Restoring one
+
+These are **plain gzipped SQL**, not custom-format archives, so `psql` restores them and
+`pg_restore` does not. Plain SQL also means no `--clean`: the dump only knows how to
+create objects, so it has to go into an empty database or every `CREATE` collides.
+
+```bash
+# Newest scheduled dump on the host
+ls -t /var/backups/identity-manager/*-scheduled.sql.gz | head -1
+
+# Stop the API first — dropdb fails while anything holds a connection
+sudo systemctl stop idm-api
+
+sudo -u postgres dropdb identity_manager
+sudo -u postgres createdb -O idm_app identity_manager
+gunzip -c /var/backups/identity-manager/identity_manager-20260810T010000Z-scheduled.sql.gz \
+  | sudo -u postgres psql -v ON_ERROR_STOP=1 identity_manager
+
+# Re-assert the runtime role's grants (see below), then:
+sudo systemctl start idm-api
+```
+
+`ON_ERROR_STOP=1` is not optional. Without it `psql` reports each failed statement and
+carries on to the end, exiting 0 — a half-restored database that claims success.
+
+### By hand
 
 ```bash
 # Back up

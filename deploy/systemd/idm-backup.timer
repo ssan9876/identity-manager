@@ -1,0 +1,29 @@
+[Unit]
+Description=Daily identity-manager database backup
+Documentation=file://@REPO_ROOT@/docs/11-operations.md
+
+[Timer]
+# 01:00 local time, an hour BEFORE idm-lifecycle.timer's 02:00. The order is
+# deliberate rather than merely tidy: a nightly dump is only useful as a
+# known-good state to go back to, and taking it ahead of the night's automated
+# writes — lifecycle transitions at 02:00, reconciliation repairs at 03:00 —
+# means the restore point predates whatever those passes did. That is precisely
+# what you want on the morning one of those passes turns out to be the problem.
+OnCalendar=*-*-* 01:00:00
+
+# A host powered off at 01:00 takes the missed dump on next boot instead of
+# silently skipping a night. A backup timer that skips quietly is worse than no
+# timer at all: it still reads as armed in `systemctl list-timers`, so the gap
+# is only discovered during a restore.
+Persistent=true
+
+# pg_dump takes a consistent snapshot and writes to a filename stamped with the
+# time it actually ran, so nothing downstream depends on the exact minute. The
+# jitter matches the other timers and avoids a thundering herd of dumps if
+# several hosts ever share one database server.
+RandomizedDelaySec=300
+
+Unit=idm-backup.service
+
+[Install]
+WantedBy=timers.target

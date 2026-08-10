@@ -31,6 +31,7 @@
 #   REPO_BRANCH        branch to pull (default: the checked-out branch)
 #   SKIP_DB_BACKUP=1   do not pg_dump before migrating
 #   BACKUP_DIR         default /var/backups/identity-manager
+#   BACKUP_KEEP        pre-update dumps to keep (default 7)
 #   DEBUG=1            set -x
 # ============================================================================
 set -Eeuo pipefail
@@ -50,6 +51,17 @@ ENV_FILE="$REPO_ROOT/.env"
 NGINX_VHOST=/etc/nginx/sites-available/idm.conf
 UNIT_FILE=/etc/systemd/system/idm-api.service
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/identity-manager}"
+
+# Nothing used to remove these, so every upgrade this host ever ran left a dump
+# behind for good. That does not fail when the disk fills; it fails the NEXT
+# upgrade, at the exact moment the dump is the only way back from a
+# forward-only migration. Seven matches scripts/backup.sh — see there for why.
+BACKUP_KEEP="${BACKUP_KEEP:-7}"
+# Validated rather than trusted: this number is the only thing standing between
+# the prune loop and an empty backup directory, so BACKUP_KEEP=0 or a typo like
+# BACKUP_KEEP=7d must not be read as "delete every dump".
+[[ "$BACKUP_KEEP" =~ ^[1-9][0-9]*$ ]] \
+  || die "BACKUP_KEEP must be a positive integer, got '$BACKUP_KEEP'"
 
 # Set as soon as the pull has happened, so the ERR trap can print an accurate
 # rollback. Empty before that, which is exactly when there is nothing to undo.
@@ -221,17 +233,50 @@ su -s /bin/bash "$IDM_USER" -c "cd '$REPO_ROOT' && pnpm build" >/dev/null
 ok "built API and console"
 
 # --- Database ---------------------------------------------------------------
+# Keep the newest $BACKUP_KEEP dumps of ONE kind and delete the rest.
+#
+# Per kind, not per directory: the pre-update dumps and the scheduled dailies
+# idm-backup.timer takes share $BACKUP_DIR, and a single combined count would
+# let an afternoon of upgrades evict every scheduled backup. The file you want
+# when a host dies is exactly the one a burst of unrelated activity would
+# delete first.
+#
+# Ordering comes from the shell's glob sort rather than mtime: the names carry
+# an ISO-8601 UTC stamp whose lexical order IS its chronological order, and
+# that survives being copied off the box — mtime does not.
+prune_dumps() {
+  local kind="$1"
+  local -a dumps=()
+  shopt -s nullglob
+  dumps=("$BACKUP_DIR/${DB_NAME}-"*"-${kind}.sql.gz")
+  shopt -u nullglob
+  local excess=$(( ${#dumps[@]} - BACKUP_KEEP ))
+  (( excess > 0 )) || return 0
+  rm -f -- "${dumps[@]:0:excess}"
+  info "pruned $excess old ${kind} dump(s), keeping the newest $BACKUP_KEEP"
+}
+
 # Before migrating, not after: migrations in this repository are forward-only
 # and there are no down-migrations, so this dump is the only way back.
 if [[ "${SKIP_DB_BACKUP:-0}" != "1" ]]; then
   info "backing up the database"
-  install -d -m 0700 "$BACKUP_DIR"
+  # Owned by postgres, not root: idm-backup.service writes its scheduled dumps
+  # into this same directory as the postgres user, under ProtectSystem=strict
+  # with no way to create it itself. `install -d` re-applies owner and mode to
+  # a directory that already exists, so this also migrates hosts installed
+  # before the backup timer existed. 0700 keeps it to postgres and root.
+  install -d -m 0700 -o postgres -g postgres "$BACKUP_DIR"
   DB_NAME="$(sed -n 's#^DATABASE_URL=.*/\([^/?]*\).*#\1#p' "$ENV_FILE" | head -1)"
   DB_NAME="${DB_NAME:-identity_manager}"
   BACKUP_FILE="$BACKUP_DIR/${DB_NAME}-$(date -u +%Y%m%dT%H%M%SZ)-pre-update.sql.gz"
-  su - postgres -c "pg_dump --no-owner '$DB_NAME'" | gzip >"$BACKUP_FILE"
-  chmod 0600 "$BACKUP_FILE"
+  su - postgres -c "pg_dump --no-owner '$DB_NAME'" | gzip >"$BACKUP_FILE.part"
+  chmod 0600 "$BACKUP_FILE.part"
+  # Renamed only once pg_dump AND gzip have both exited 0 (pipefail). A dump
+  # truncated by a full disk carrying the final name does not merely look like
+  # a backup — retention below would count it as one of the ones worth keeping.
+  mv "$BACKUP_FILE.part" "$BACKUP_FILE"
   ok "dumped to $BACKUP_FILE"
+  prune_dumps pre-update
 else
   warn "SKIP_DB_BACKUP=1 — no dump taken; forward-only migrations have no way back"
 fi
