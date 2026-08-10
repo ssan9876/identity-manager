@@ -55,6 +55,22 @@ Import rows are capped by `IMPORT_MAX_ROWS` (1,000 default → 400).
 
 No authentication. → `{ "status": "ok" }`
 
+### `GET /health/ready`
+
+No authentication — the probes that call it (a shell script with curl, a systemd unit,
+a kubelet) hold no token.
+
+Readiness, deliberately a **different** question from liveness: checks that the
+database answers a trivial query and that the applied-migration ledger is not behind
+the migration journal this build ships. → **200**
+`{ "status": "ready", "checks": { "database": "ok", "migrations": "ok" } }`; **503**
+`{ "status": "not_ready", "checks": {...} }` otherwise. `database` ∈ `ok` ·
+`unreachable`. `migrations` ∈ `ok` · `pending` · `unknown`.
+
+Deliberately does **not** check outbound connectors (Keycloak, SCIM/Entra/Google/AD
+targets) or outbox depth — an outage there must not take this service out of rotation
+for routes that never touch it.
+
 ---
 
 ## Session
@@ -71,8 +87,8 @@ Auth only. Echoes verified JWT claims: `{ subject, username, email }`.
 
 ## Users
 
-`GET`/`POST` on `/users`; `PATCH` and deactivate on `/users/:id`. All user-returning
-routes respond with the same shape — the user record plus a derived
+`GET /users`, `POST /users`, `PATCH /users/:id` and deactivate on `/users/:id`. All
+user-returning routes respond with the same shape — the user record plus a derived
 `syncState: "pending" | "synced" | "failed"`.
 
 ### `GET /users` — `user:read`
@@ -90,6 +106,36 @@ Scope narrows both `items` and `total`.
 ### `GET /users/:id` — `user:read`
 
 404 if it does not exist; **403** if it exists outside your scope.
+
+### `GET /users/:id/sync` — `user:read`
+
+Per-target sync detail behind the `syncState` field every user-returning route already
+carries — for each connector target: state, attempts, next retry, timestamps, the
+external id, and `lastError`.
+
+`lastError` is **redacted** (`errorDetailRedacted: true`, and every `lastError`
+nulled) unless the caller **also** holds a **global** grant of `audit:read` — the raw
+target error string can name internal hosts or directory paths, so a `user:read`
+holder alone learns *that* a target failed and how many times, never the vendor's
+error text.
+
+### `GET /users/:id/entitlements` — `user:read`
+
+Every group membership and target account this user holds, each with where it came
+from (`grantSource`, `grantedBy`, `grantedAt`) and — for role-derived rows — which
+enabled business roles justify it **right now**. `justifiedBy` is computed live on
+every request and never stored, so it cannot go stale.
+
+`justifiedBy` is three-valued: a non-empty list names the roles holding it open; `[]`
+means nothing currently justifies the row (a genuine finding for a `business_role`
+row, the normal state for a `manual` one); `null` means the role engine could not be
+evaluated at all, so nobody can say. A `manual` row always reports `justifiedBy: []`,
+even when a role would also want it — a human granted it by hand and the reconciler
+never revokes it.
+
+`unevaluable` is non-null, naming the role and reason, when the engine refused —
+the rows are still returned even then, since they are facts in Postgres and this is
+the screen an operator opens *because* something is wrong.
 
 ### `POST /users` — `user:create`
 
@@ -150,7 +196,7 @@ Commits the local transaction, then **synchronously** disables the Keycloak acco
 revokes its sessions before returning. A failure there does not fail the request — the
 queued outbox event is the durability fallback.
 
-`deactivated` is terminal. **There is no `DELETE /users/:id`.**
+`deactivated` is terminal. **There is no `DELETE` on `/users/:id`.**
 
 ---
 
@@ -310,6 +356,178 @@ A cycle is `409 CYCLE_DETECTED` and writes no audit row. Self-nesting is rejecte
 database `CHECK`.
 
 ### `DELETE /groups/:id/child-groups/:childId` — `group:manage_members`
+
+---
+
+## Business roles
+
+The admin API for business roles: the catalog, the draft → simulate → publish gate,
+the enable/disable kill switch, per-person exceptions, segregation-of-duties (SoD)
+conflicts, and role mining.
+
+**Global grant only on every mutating route.** A business role belongs to no org
+unit, so a scoped grant has nothing to narrow to — the same posture as connector
+targets, HR sources, SSO applications, and the audit log. Read routes are **not**
+global-gated (a role's conditions and grants *describe* access, they do not confer
+it) — **except** `GET /business-roles/mining/recommendations`, which reads the
+entire directory's manual memberships and requires `business_role:manage` held
+globally even though it is a GET.
+
+| Route | Action | Notes |
+|---|---|---|
+| `GET /business-roles` | `business_role:read` | |
+| `POST /business-roles` | `business_role:manage` **(global)** | New role is disabled and undrafted by construction |
+| `GET /business-roles/:id` | `business_role:read` | |
+| `PATCH /business-roles/:id` | `business_role:manage` **(global)** | `name`, `description` only |
+| `PUT /business-roles/:id/draft` | `business_role:manage` **(global)** | Replaces `draft_definition` wholesale; clears any prior simulation |
+| `POST /business-roles/:id/simulate` | `business_role:manage` **(global)** | Dry run over the whole directory; commits nothing but the simulation record |
+| `POST /business-roles/:id/publish` | `business_role:manage` **(global)** | Refuses unless simulated against this exact draft; sweeps affected users afterward |
+| `POST /business-roles/:id/enable` | `business_role:manage` **(global)** | Sweeps immediately |
+| `POST /business-roles/:id/disable` | `business_role:manage` **(global)** | A revocation, not a pause — sweeps immediately |
+| `PUT /business-roles/:id/requestable` | `business_role:manage` **(global)** | Publishes into (or withdraws from) the self-service catalogue; grants/revokes nothing |
+| `POST /business-roles/:id/exceptions` | `business_role:manage` **(global)** | Per-person include/exclude override; re-evaluates that one user in the same transaction |
+| `DELETE /business-roles/:id/exceptions/:userId` | `business_role:manage` **(global)** | Mirrors `POST .../exceptions` |
+| `GET /business-roles/conflicts` | `business_role:read` | Every SoD conflict, retired ones included |
+| `POST /business-roles/conflicts` | `business_role:manage` **(global)** | Defines a conflicting pair; changes nobody's access |
+| `GET /business-roles/conflicts/violations` | `business_role:read` | Detective report: who currently holds both roles of an enabled pair |
+| `PATCH /business-roles/conflicts/:conflictId` | `business_role:manage` **(global)** | `reason` only — the pair is immutable |
+| `POST /business-roles/conflicts/:conflictId/enable` | `business_role:manage` **(global)** | Retire/restore; there is no delete |
+| `POST /business-roles/conflicts/:conflictId/disable` | `business_role:manage` **(global)** | |
+| `GET /business-roles/mining/recommendations` | `business_role:manage` **(global)** | Read-only, but requires the global manage grant — see above |
+| `POST /business-roles/mining/drafts` | `business_role:manage` **(global)** | Adopts a recommendation as a new disabled role plus a pre-filled draft |
+
+There is no `DELETE` on `/business-roles/:id`.
+
+---
+
+## Access requests
+
+The self-service access-request catalogue: browse requestable roles, ask for one
+with a justification, cancel your own pending ask, and — for the resolved
+approver — an inbox with one-click approve/deny.
+
+**Authentication only**, like `/self` — an ordinary employee holds no admin role
+and no permission grant, yet requesting access and deciding a direct report's
+request are exactly their job. Authorization is per-route instead:
+
+- the requester is always the authenticated caller — no route accepts a
+  requester/subject id anywhere;
+- cancelling requires being the request's own requester, and only while pending;
+- deciding requires being the request's resolved approver, or holding a
+  **global** grant of `business_role:manage`;
+- nobody decides their own request, checked before either of the above.
+
+### `GET /access-requests/catalogue`
+
+Requestable **and** enabled roles in the caller's own organization.
+
+### `GET /access-requests/mine`
+
+The caller's own request history.
+
+### `GET /access-requests/inbox`
+
+Pending requests whose resolved approver is the caller. `{ "requests": [] }` for
+someone who manages nobody and holds no admin role — a normal 200.
+
+### `POST /access-requests`
+
+```json
+{ "businessRoleId": "…uuid…", "justification": "…", "requestedExpiresAt": null }
+```
+
+`justification` is required. A role outside the caller's catalogue is a 404
+indistinguishable from one that does not exist.
+
+### `POST /access-requests/:id/cancel`
+
+Cancels the caller's **own** pending request. Someone else's request — even a
+real id — is a 404, not a 403.
+
+### `POST /access-requests/:id/approve`
+
+```json
+{ "comment": null }
+```
+
+Writes a business-role **include exception** (the request id plus the
+justification as its reason, the requested expiry as its expiry) and
+re-reconciles the subject in the same transaction. A refusal (an unevaluable
+role) rolls the approval back — **409**, never a 200 for an approval that
+silently did nothing.
+
+### `POST /access-requests/:id/deny`
+
+```json
+{ "comment": null }
+```
+
+State → denied. No exception, no reconciliation.
+
+There is no delete route — requests end in a terminal state.
+
+---
+
+## Recertification
+
+Access-recertification campaigns: create a draft, open it (which snapshots the
+review set), close it, and read progress. The reviewer surface — "my pending
+items", decide — is separate: reviewers are ordinary managers who may hold no
+role in the catalog at all.
+
+**Campaign routes require a global grant of `recert:manage`** for every
+mutation (a campaign belongs to no org unit and its review set spans the whole
+directory) and `recert:read` for reads. **Review routes are authentication
+only** and identity-based: the caller must be the item's resolved reviewer, or
+hold a global `recert:manage` grant — and nobody reviews their own access,
+checked first, unconditionally.
+
+### `GET /recert-campaigns` — `recert:read`
+
+### `POST /recert-campaigns` — `recert:manage` **(global)**
+
+```json
+{ "name": "…", "scopeRoleIds": null, "reviewerStrategy": "manager_of_subject", "dueDate": null }
+```
+
+A new campaign is a **draft** by construction.
+
+### `GET /recert-campaigns/:id` — `recert:read`
+
+The campaign plus its items.
+
+### `POST /recert-campaigns/:id/open` — `recert:manage` **(global)**
+
+Snapshots the review set into `recert_items`, in the same transaction as the
+draft → open transition. Formula-derived membership is reviewed **per role**
+(one decision covers the formula); include-exceptions are reviewed **per
+person**. An unevaluable role refuses the whole open.
+
+### `POST /recert-campaigns/:id/close` — `recert:manage` **(global)**
+
+Terminal. Undecided items stay `pending` forever and leave every reviewer's
+queue.
+
+### `GET /recert/my-reviews`
+
+Auth only. The caller's pending items on open campaigns, filtered to
+`reviewer_user_id = caller` in SQL.
+
+### `POST /recert/items/:id/decide`
+
+Auth only, identity-based.
+
+```json
+{ "decision": "certified", "comment": null }
+```
+
+`decision` ∈ `certified` · `revoked_requested`. `certified` records the
+attestation and touches nothing else. `revoked_requested` on an
+include-exception item expires that exception and re-reconciles the subject in
+the same transaction — a reconciler refusal rolls the whole decision back.
+`revoked_requested` on a role-formula item performs **no revocation**; it
+records the finding and points the operator at the role's own
+draft → simulate → publish path.
 
 ---
 
@@ -492,6 +710,74 @@ Every invocation is audited, dry runs included.
 
 ---
 
+## HR sources
+
+CRUD-minus-delete over inbound HR feeds, a run-history view, and "run preview now".
+There is deliberately no `DELETE` route — a source that has run is named by
+append-only audit rows, so it is disabled instead.
+
+**Authorization follows connector targets exactly:** reads need `connector:read`;
+every mutating route (and the run-preview route, which fetches from an
+admin-configured URL with a resolved credential and walks the directory) needs
+`connector:manage` held **globally** — an HR feed is organization-wide
+infrastructure.
+
+### `GET /hr-sources` — `connector:read`
+
+### `GET /hr-sources/:id` — `connector:read`
+
+### `GET /hr-sources/:id/runs` — `connector:read`
+
+The append-only `hr_source:sync` audit rows for this source, newest first — the
+durable ledger behind the source row's own `lastRun*` fields, which only ever show
+the latest run.
+
+### `POST /hr-sources` — `connector:manage` **(global)**
+
+```json
+{
+  "organizationId": "…uuid…",
+  "name": "Workday export",
+  "kind": "csv_url",
+  "url": "https://…",
+  "auth": { "headerName": "X-Api-Key", "secretName": "CONNECTOR_WORKDAY_KEY" },
+  "columnMapping": {},
+  "config": {},
+  "enabled": true
+}
+```
+
+`kind` ∈ `csv_url` · `rest_json`. → **201**
+
+### `PATCH /hr-sources/:id` — `connector:manage` **(global)**
+
+Everything but `organizationId` and `kind`.
+
+### `POST /hr-sources/:id/preview` — `connector:manage` **(global)**
+
+Fetches the feed, applies the mapping, and runs the import pipeline's **preview** —
+never a commit; commits happen through the `hr:sync --commit` CLI. Writes nothing
+about any user, but records the run's outcome on the source row and one
+`hr_source:sync` audit row. → **200**
+
+---
+
+## Data flows
+
+### `GET /data-flows` — `connector:read`
+
+"What of ours goes where" — one read-only map of an organization's whole data flow,
+inbound and outbound, in a single response: every HR source (inbound) and every
+connector target with its configured attribute mappings (outbound). Deliberately
+**no live health check** — `GET /connector-targets` already covers "is it reachable
+right now"; this answers a structural question.
+
+| Query | Notes |
+|---|---|
+| `organizationId` | Optional; omitted means master. Readable for any organization, not scoped to the caller's org units — matching `GET /connector-targets`. |
+
+---
+
 ## SSO applications
 
 Every route requires a **global** grant; `sso_app:read` and `sso_app:manage` are held
@@ -577,13 +863,13 @@ Worth stating explicitly, because their absence is a design decision:
 
 | Not available | Why |
 |---|---|
-| `DELETE /users/:id` | `deactivated` is terminal; users are never deleted |
-| `PATCH`/`DELETE /org-units/:id` | Not built |
-| `DELETE /groups/:id` | Not built |
+| `DELETE` on `/users/:id` | `deactivated` is terminal; users are never deleted |
+| `PATCH`/`DELETE` on `/org-units/:id` | Not built |
+| `DELETE` on `/groups/:id` | Not built |
+| `DELETE` on `/business-roles/:id` | Retire via `POST .../disable` instead — a role's history (conflicts, exceptions, past simulations) survives |
 | Any `PATCH /users/:id` change to `orgUnitId`, `username`, `primaryEmail`, `status` | Out of the PATCH surface by design |
 | Any write to `attribute-definitions` | Database-managed today |
 | Any JML rule API | Database rows plus the `jml:lifecycle` CLI |
-| Any business-roles API | Schema only so far — see [14 — Roadmap](14-roadmap.md) |
 | Dead-letter retry | Use reconciliation |
-| `DELETE /organizations/:id` | Deleting a realm destroys every user, session, client and credential inside it. A retired tenant is `suspended` |
+| `DELETE` on `/organizations/:id` | Deleting a realm destroys every user, session, client and credential inside it. A retired tenant is `suspended` |
 | Any tenant-facing route | Every administrator is a platform operator authenticating against the master realm |

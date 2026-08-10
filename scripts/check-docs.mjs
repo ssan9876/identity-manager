@@ -25,6 +25,8 @@ const read = (p) => readFileSync(p, 'utf8').replace(/\r\n?/g, '\n')
 /** Documents that present a complete list of the operator-facing CLIs. */
 const CLI_LIST_DOCS = ['docs/11-operations.md']
 
+const API_REFERENCE = 'docs/10-api-reference.md'
+
 /** The scripts an operator runs on a host, as opposed to build plumbing. */
 const OPERATOR_CLIS = [
   'db:migrate', 'db:generate', 'bootstrap:admin', 'reconcile',
@@ -93,6 +95,41 @@ export function checkDocs(repoRoot) {
           '    The canonical list is ALL_CONNECTOR_TARGETS in apps/api/src/connectors/connector.ts.\n' +
           '    If this document deliberately covers only some targets, remove it from\n' +
           '    TARGET_LIST_DOCS in scripts/check-docs.mjs and say why in a comment.',
+      )
+    }
+  }
+
+  // 4. Routes, BOTH directions. A documented endpoint that does not exist is
+  //    as harmful as an undocumented one: it sends an integrator to build
+  //    against a 404. Matching is on the canonical `METHOD /path` token, which
+  //    is why prose forms such as "`GET`/`POST` on `/users`" must be
+  //    normalised into that shape rather than left for a looser regex.
+  const apiRefPath = join(repoRoot, API_REFERENCE)
+  if (existsSync(apiRefPath)) {
+    const body = read(apiRefPath)
+    const documented = new Set(
+      [...body.matchAll(/`(GET|POST|PATCH|PUT|DELETE) (\/[A-Za-z0-9:_/-]*)`/g)].map(
+        (m) => `${m[1]} ${m[2].replace(/\/$/, '') || '/'}`,
+      ),
+    )
+    const real = new Set(facts.routes.map((r) => `${r.method} ${r.path}`))
+
+    const undocumented = [...real].filter((r) => !documented.has(r)).sort()
+    if (undocumented.length > 0) {
+      problems.push(
+        `${API_REFERENCE} does not document ${undocumented.length} route(s) the API exposes:\n` +
+          undocumented.map((r) => `      ${r}`).join('\n') +
+          '\n    Document each as a `METHOD /path` token so this check can see it.',
+      )
+    }
+
+    const phantom = [...documented].filter((r) => !real.has(r)).sort()
+    if (phantom.length > 0) {
+      problems.push(
+        `${API_REFERENCE} documents ${phantom.length} route(s) that do not exist:\n` +
+          phantom.map((r) => `      ${r}`).join('\n') +
+          '\n    Either the route was removed and the doc kept it, or the path is mistyped.\n' +
+          '    A documented endpoint that 404s costs an integrator more than a missing one.',
       )
     }
   }
