@@ -146,3 +146,36 @@
   font-size: var(--text-sm);
   color: var(--ink-subtle);
 }
+
+/* The SoD refusal, above the gain/loss lists: this is the one part of a
+   simulation that BLOCKS rather than informs, so it uses the shared error
+   banner surface and earns its position before everything it overrules. */
+.simulate__sod {
+  margin-top: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.simulate__sod-headline {
+  font-weight: 600;
+}
+
+.simulate__sod-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.simulate__sod-reason {
+  color: var(--ink-muted);
+}
+
+.simulate__sod-more,
+.simulate__sod-remedy {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  max-width: 78ch;
+  text-wrap: pretty;
+}

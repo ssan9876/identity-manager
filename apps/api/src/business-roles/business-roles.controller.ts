@@ -21,7 +21,7 @@ import { PermissionEngine } from '../authz/permission.engine'
 import { PermissionGuard, type AuthorizedRequest } from '../authz/permission.guard'
 import { RequirePermission } from '../authz/require-permission.decorator'
 import { DB_CLIENT } from '../common/db.token'
-import { ConflictError, ForbiddenError, NotFoundError } from '../common/errors'
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
 import { noNulChar } from '../common/http/safe-string'
@@ -33,7 +33,18 @@ import {
   BusinessRolesRepository,
 } from './business-roles.repository'
 import { type RoleDefinition, hashDefinition, parseDefinition } from './draft'
-import { type EvaluableRole, type EvaluableUser, evaluateRoles } from './role-evaluator'
+import {
+  RoleConflictsRepository,
+  type RoleConflictRow,
+  type RoleConflictWithNames,
+} from './role-conflicts.repository'
+import {
+  type EvaluableRole,
+  type EvaluableUser,
+  evaluateRoles,
+  explainRoleHold,
+} from './role-evaluator'
+import { SodChecker, type StandingSodReport } from './sod-checker'
 import { RoleReconciler } from './role-reconciler'
 import { RoleReconciliationJob } from './role-reconciliation.job'
 
@@ -99,12 +110,53 @@ const exceptionBodySchema = z
   })
   .strict()
 
+/**
+ * A conflict's `reason` is mandatory for the same reason an exception's is:
+ * a segregation-of-duties control nobody can explain is one a later audit
+ * cannot defend or retire. `.strict()`, like every body here — the pair is
+ * immutable after creation, so a caller trying to send `enabled` or a new
+ * role id gets a 400 naming the field, never a silent no-op.
+ */
+const conflictBodySchema = z
+  .object({
+    roleAId: z.string().uuid(),
+    roleBId: z.string().uuid(),
+    reason: noNulChar(z.string().min(1).max(2000)),
+  })
+  .strict()
+
+/** `reason` ONLY — re-pairing is a new policy, not an edit; retirement is its own verb route. */
+const conflictPatchSchema = z
+  .object({
+    reason: noNulChar(z.string().min(1).max(2000)),
+  })
+  .strict()
+
 /** One person's movement under a simulated draft. */
 export interface SimulationEntry {
   userId: string
   username: string
   groupIds: string[]
   targets: ConnectorTarget[]
+}
+
+/**
+ * One segregation-of-duties violation the published draft WOULD create: a
+ * person who, under the draft, holds this role while also holding the other
+ * side of an enabled conflicting pair. `via`/`otherVia` say WHY each side is
+ * held (formula or include-exception) — the difference between "fix the
+ * draft" and "revisit an exception".
+ */
+export interface SimulationSodViolation {
+  userId: string
+  username: string
+  conflictId: string
+  conflictReason: string
+  /** How this person holds THIS role, as drafted. */
+  via: 'formula' | 'include_exception'
+  otherRoleId: string
+  otherRoleName: string
+  otherVia: 'formula' | 'include_exception'
 }
 
 export interface SimulationReport {
@@ -116,8 +168,28 @@ export interface SimulationReport {
   lossCount: number
   gains: SimulationEntry[]
   losses: SimulationEntry[]
-  /** True when `gains`/`losses` are samples rather than the whole list — see SIMULATION_SAMPLE_LIMIT. */
+  /**
+   * Segregation-of-duties violations the published draft would create. The
+   * TRUE total, regardless of `truncated` — and the number `recordSimulation`
+   * persists beside the draft hash, which `publishWithin` refuses on when
+   * non-zero. That persistence is what makes SoD PREVENTIVE: the violations
+   * shown here are the violations that block THIS exact draft.
+   */
+  sodViolationCount: number
+  /** Capped sample of the above, like `gains`/`losses`. */
+  sodViolations: SimulationSodViolation[]
+  /** True when `gains`/`losses`/`sodViolations` are samples rather than the whole list — see SIMULATION_SAMPLE_LIMIT. */
   truncated: boolean
+}
+
+function snapshotConflict(row: RoleConflictRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    roleAId: row.roleAId,
+    roleBId: row.roleBId,
+    reason: row.reason,
+    enabled: row.enabled,
+  }
 }
 
 function snapshotRole(role: BusinessRoleRow): Record<string, unknown> {
@@ -188,6 +260,8 @@ function snapshotDefinition(definition: {
 export class BusinessRolesController {
   constructor(
     @Inject(BusinessRolesRepository) private readonly roles: BusinessRolesRepository,
+    @Inject(RoleConflictsRepository) private readonly conflicts: RoleConflictsRepository,
+    @Inject(SodChecker) private readonly sod: SodChecker,
     @Inject(RoleReconciler) private readonly reconciler: RoleReconciler,
     @Inject(RoleReconciliationJob) private readonly reconciliation: RoleReconciliationJob,
     @Inject(UsersRepository) private readonly users: UsersRepository,
@@ -261,6 +335,164 @@ export class BusinessRolesController {
       })
 
       return role
+    })
+  }
+
+  /*
+   * ------------------------------------------------------------------
+   * Segregation-of-duties conflicts. DECLARED BEFORE the `:id` routes,
+   * deliberately: Nest maps routes in declaration order, so `GET
+   * /business-roles/conflicts` must exist before `GET /business-roles/:id`
+   * or the literal segment would be captured as a (non-uuid) id and 400.
+   *
+   * Same authorization posture as the rest of this controller: reads on
+   * `business_role:read` at any scope, mutations on `business_role:manage`
+   * held GLOBALLY (`requireGlobalManageGrant` — finding AUTHZ-M-2). A
+   * conflict constrains what directory-wide formulas may be published, so it
+   * is the same class of global infrastructure as the roles it joins.
+   * ------------------------------------------------------------------
+   */
+
+  /** Every conflict, retired ones included, with both role names — the console's index. */
+  @Get('conflicts')
+  @RequirePermission('business_role:read')
+  async listConflicts(): Promise<RoleConflictWithNames[]> {
+    return this.conflicts.list()
+  }
+
+  /**
+   * Defining a conflict changes NOBODY's access, ever — it changes what may
+   * be PUBLISHED from now on, and what the standing-violations report says.
+   * Any existing person already holding both roles becomes a reported
+   * standing violation, never an auto-revocation.
+   */
+  @Post('conflicts')
+  @RequirePermission('business_role:manage')
+  async createConflict(@Body() body: unknown, @Req() request: AuthorizedRequest): Promise<RoleConflictRow> {
+    await this.requireGlobalManageGrant(request)
+    const parsed = parseBody(conflictBodySchema, body)
+    if (parsed.roleAId === parsed.roleBId) {
+      throw new ValidationError(['a role cannot conflict with itself'])
+    }
+
+    return this.db.transaction(async (tx) => {
+      // Checked explicitly so an unknown role is a clean 404 rather than a
+      // raw FK violation surfacing as an unmapped 500. On `tx` (finding C1).
+      const roleA = await this.requireRole(parsed.roleAId, tx)
+      const roleB = await this.requireRole(parsed.roleBId, tx)
+      // The composite FKs would reject this write anyway; checking first
+      // turns it into a 409 that explains itself instead of a 500.
+      if (roleA.organizationId !== roleB.organizationId) {
+        throw new ConflictError('a conflict must join two roles of the same organization')
+      }
+
+      const conflict = await this.conflicts.create(
+        {
+          roleAId: parsed.roleAId,
+          roleBId: parsed.roleBId,
+          reason: parsed.reason,
+          organizationId: roleA.organizationId,
+          createdBy: request.actor.userId,
+        },
+        tx,
+      )
+
+      await this.auditWriter.record(tx, {
+        actorUserId: request.actor.userId,
+        action: 'business_role:conflict_create',
+        resourceType: 'business_role_conflict',
+        resourceId: conflict.id,
+        before: null,
+        after: snapshotConflict(conflict),
+      })
+
+      return conflict
+    })
+  }
+
+  /**
+   * The DETECTIVE report: who currently holds both roles of an enabled
+   * conflicting pair, and why each side is held. Read-only on the pooled
+   * handle with no transaction — looking must never reconcile, and it never
+   * revokes: which of the two holdings is wrong is a human's call.
+   */
+  @Get('conflicts/violations')
+  @RequirePermission('business_role:read')
+  async standingViolations(): Promise<StandingSodReport> {
+    return this.sod.listStandingViolations(this.db, new Date())
+  }
+
+  @Patch('conflicts/:conflictId')
+  @RequirePermission('business_role:manage')
+  async updateConflict(
+    @Param('conflictId') rawId: string,
+    @Body() body: unknown,
+    @Req() request: AuthorizedRequest,
+  ): Promise<RoleConflictRow> {
+    await this.requireGlobalManageGrant(request)
+    const id = parseId(rawId, 'conflictId')
+    const parsed = parseBody(conflictPatchSchema, body)
+
+    return this.db.transaction(async (tx) => {
+      const before = await this.conflicts.findById(id, tx)
+      if (before === null) throw new NotFoundError('role conflict', id)
+
+      const after = await this.conflicts.updateReason(id, parsed.reason, tx)
+
+      await this.auditWriter.record(tx, {
+        actorUserId: request.actor.userId,
+        action: 'business_role:conflict_update',
+        resourceType: 'business_role_conflict',
+        resourceId: id,
+        before: snapshotConflict(before),
+        after: snapshotConflict(after),
+      })
+
+      return after
+    })
+  }
+
+  /**
+   * Retire / restore — the only way a conflict stops or resumes being
+   * enforced, because there is no delete. Retiring stops BOTH halves at
+   * once: publishes stop being blocked by it, and the standing report stops
+   * naming it. Restoring resumes both, including over people who acquired
+   * the pair while it was retired — which land in the standing report, not
+   * in anyone's revocation queue.
+   */
+  @Post('conflicts/:conflictId/enable')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('business_role:manage')
+  async enableConflict(@Param('conflictId') rawId: string, @Req() request: AuthorizedRequest) {
+    return this.setConflictEnabled(parseId(rawId, 'conflictId'), true, request)
+  }
+
+  @Post('conflicts/:conflictId/disable')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('business_role:manage')
+  async disableConflict(@Param('conflictId') rawId: string, @Req() request: AuthorizedRequest) {
+    return this.setConflictEnabled(parseId(rawId, 'conflictId'), false, request)
+  }
+
+  private async setConflictEnabled(id: string, enabled: boolean, request: AuthorizedRequest) {
+    await this.requireGlobalManageGrant(request)
+
+    return this.db.transaction(async (tx) => {
+      const before = await this.conflicts.findById(id, tx)
+      if (before === null) throw new NotFoundError('role conflict', id)
+
+      const after = await this.conflicts.setEnabled(id, enabled, tx)
+
+      await this.auditWriter.record(tx, {
+        actorUserId: request.actor.userId,
+        action: enabled ? 'business_role:conflict_enable' : 'business_role:conflict_disable',
+        resourceType: 'business_role_conflict',
+        resourceId: id,
+        before: { enabled: before.enabled },
+        after: { enabled: after.enabled },
+      })
+
+      return after
     })
   }
 
@@ -389,7 +621,10 @@ export class BusinessRolesController {
     const report = await this.runSimulation(role, draft, new Date())
 
     await this.db.transaction(async (tx) => {
-      await this.roles.recordSimulation(id, hashDefinition(draft), tx)
+      // The SoD count rides beside the hash — see `recordSimulation`'s own
+      // doc comment for why the pair is what makes the publish gate
+      // preventive.
+      await this.roles.recordSimulation(id, hashDefinition(draft), report.sodViolationCount, tx)
 
       await this.auditWriter.record(tx, {
         actorUserId: request.actor.userId,
@@ -401,6 +636,7 @@ export class BusinessRolesController {
           scanned: report.scanned,
           gainCount: report.gainCount,
           lossCount: report.lossCount,
+          sodViolationCount: report.sodViolationCount,
           draftHash: hashDefinition(draft),
         },
       })
@@ -694,10 +930,45 @@ export class BusinessRolesController {
       exceptions: role.exceptions,
     }
 
+    /*
+     * SEGREGATION OF DUTIES, checked against the DRAFT. Only conflicts
+     * involving THIS role can gain or lose violations from THIS publish, so
+     * only those pairs are walked; violations on other pairs are the
+     * standing report's job (`SodChecker`). The counterpart is evaluated AS
+     * PUBLISHED — that is what the other role will actually be the moment
+     * this draft lands — and "holds" is `explainRoleHold`: formula or live
+     * include-exception, indifferent to either role's `enabled` kill switch
+     * (see that function's doc comment; enable is un-gated, so a disabled
+     * role's holdings still violate the policy).
+     */
+    const enabledConflicts = (await this.conflicts.listEnabled(this.db)).filter(
+      (c) => c.roleAId === role.id || c.roleBId === role.id,
+    )
+    const counterparts: { conflictId: string; conflictReason: string; other: EvaluableRole }[] = []
+    for (const conflict of enabledConflicts) {
+      const otherId = conflict.roleAId === role.id ? conflict.roleBId : conflict.roleAId
+      const other = await this.roles.findById(otherId)
+      // FK-restricted, so a miss means the row vanished mid-read. Loud, not guessed.
+      if (other === null) throw new NotFoundError('business role', otherId)
+      counterparts.push({
+        conflictId: conflict.id,
+        conflictReason: conflict.reason,
+        other: {
+          id: other.id,
+          name: other.name,
+          conditions: other.conditions,
+          grants: other.grants,
+          exceptions: other.exceptions,
+        },
+      })
+    }
+
     const gains: SimulationEntry[] = []
     const losses: SimulationEntry[] = []
+    const sodViolations: SimulationSodViolation[] = []
     let gainCount = 0
     let lossCount = 0
+    let sodViolationCount = 0
     let scanned = 0
     let truncated = false
 
@@ -735,13 +1006,60 @@ export class BusinessRolesController {
             truncated = true
           }
         }
+
+        if (counterparts.length > 0) {
+          const draftHold = this.explainHoldOrRefuse(draftRole, user, now)
+          if (draftHold.held) {
+            for (const { conflictId, conflictReason, other } of counterparts) {
+              const otherHold = this.explainHoldOrRefuse(other, user, now)
+              if (!otherHold.held) continue
+
+              sodViolationCount += 1
+              if (sodViolations.length < SIMULATION_SAMPLE_LIMIT) {
+                sodViolations.push({
+                  userId: user.id,
+                  username: user.username,
+                  conflictId,
+                  conflictReason,
+                  via: draftHold.via,
+                  otherRoleId: other.id,
+                  otherRoleName: other.name,
+                  otherVia: otherHold.via,
+                })
+              } else {
+                truncated = true
+              }
+            }
+          }
+        }
       }
 
       if (page.length < PAGE_SIZE) break
       offset += PAGE_SIZE
     }
 
-    return { scanned, gainCount, lossCount, gains, losses, truncated }
+    return { scanned, gainCount, lossCount, gains, losses, sodViolationCount, sodViolations, truncated }
+  }
+
+  /**
+   * `explainRoleHold` with the SAME refusal posture as `evaluateOne`: an
+   * unevaluable role aborts the whole simulation. The SoD count recorded
+   * beside the hash is what blocks or clears a publish, so a count computed
+   * over "the people we happened to understand" would be a gate that opens
+   * on a guess.
+   */
+  private explainHoldOrRefuse(
+    role: EvaluableRole,
+    user: EvaluableUser,
+    now: Date,
+  ): { held: false } | { held: true; via: 'formula' | 'include_exception' } {
+    const hold = explainRoleHold(role, user, now)
+    if (!hold.known) {
+      throw new ConflictError(
+        `role "${role.name}" (${role.id}) cannot be evaluated, so it cannot be simulated — ${hold.reason}`,
+      )
+    }
+    return hold.held ? { held: true, via: hold.via } : { held: false }
   }
 
   /**

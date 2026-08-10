@@ -2,7 +2,9 @@ import { sql } from 'drizzle-orm'
 import {
   boolean,
   check,
+  foreignKey,
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -89,6 +91,20 @@ export const businessRoles = pgTable(
     /** SHA-256 of the canonicalised draft that simulation ran against. */
     simulatedDraftHash: varchar('simulated_draft_hash', { length: 64 }),
 
+    /**
+     * How many segregation-of-duties violations the recorded simulation of
+     * this exact draft found — the second half of the publish gate (0034).
+     * Written by `recordSimulation` alongside `simulated_draft_hash` and
+     * cleared wherever the hash is cleared, so the pair always describes ONE
+     * simulation of ONE draft. `publishWithin` refuses when this is > 0, and
+     * refuses when it is NULL while a hash is present: NULL means the
+     * simulation predates SoD checking (a pre-0034 row), and publishing on
+     * the strength of a simulation that never looked for violations would
+     * quietly re-open the exact hole the gate closes. Enforced in the
+     * REPOSITORY, like the hash itself, so no caller can publish around it.
+     */
+    simulatedSodViolations: integer('simulated_sod_violations'),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -105,6 +121,15 @@ export const businessRoles = pgTable(
     // every evaluation. organization_id leads because it is the first
     // discriminator once more than one tenant exists.
     enabledIdx: index('business_roles_enabled_idx').on(table.organizationId, table.enabled),
+    // Strictly redundant as uniqueness (id alone already implies it); it
+    // exists only to be REFERENCEABLE — a composite FK can only reference a
+    // unique key over exactly the referenced pair (0029's own note, verbatim,
+    // for org_units/users/groups). `role_conflicts` pins both of its role
+    // references to its own organization_id through this.
+    idOrganizationKey: uniqueIndex('business_roles_id_organization_key').on(
+      table.id,
+      table.organizationId,
+    ),
   }),
 )
 
@@ -193,5 +218,73 @@ export const businessRoleExceptions = pgTable(
   (table) => ({
     uniquePerUser: uniqueIndex('business_role_exceptions_unique').on(table.businessRoleId, table.userId),
     userIdx: index('business_role_exceptions_user_idx').on(table.userId),
+  }),
+)
+
+/**
+ * Segregation of duties over business roles: an UNORDERED pair of roles no
+ * one person may hold both of, with the reason that makes the pairing
+ * reviewable later.
+ *
+ * UNORDERED is enforced structurally, not by convention. The CHECK pins
+ * `role_a_id < role_b_id` (canonical ordering — which also forbids a role
+ * conflicting with itself), and the unique index over the canonical pair
+ * then makes (A,B) and (B,A) the SAME row: the repository sorts the pair
+ * before every write, and a row that slipped past it un-sorted is a
+ * constraint violation, not a second, invisible copy of the same policy that
+ * half the queries would miss.
+ *
+ * NO DELETE, like everything else here: a conflict is retired by flipping
+ * `enabled` off, so the policy's history — who defined it, why, and when it
+ * stopped applying — survives the decision to stop enforcing it. Only
+ * ENABLED conflicts are consulted, by the publish gate and by the standing
+ * checker alike.
+ *
+ * The composite FKs (0034, same pattern as 0029) carry `organization_id` on
+ * both sides: a conflict can only ever join two roles of ITS OWN
+ * organization, so one tenant's SoD policy cannot name — and thereby probe
+ * for, or veto publishes of — another tenant's roles. ON DELETE RESTRICT on
+ * the single-column role FKs for the usual reason: nothing deletes a
+ * business role today, and if something ever does, a policy silently losing
+ * one of its two sides must be a loud failure.
+ */
+export const roleConflicts = pgTable(
+  'role_conflicts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'restrict' }),
+    /** The LESSER uuid of the pair — see the canonical-ordering CHECK. */
+    roleAId: uuid('role_a_id')
+      .notNull()
+      .references(() => businessRoles.id, { onDelete: 'restrict' }),
+    /** The GREATER uuid of the pair. */
+    roleBId: uuid('role_b_id')
+      .notNull()
+      .references(() => businessRoles.id, { onDelete: 'restrict' }),
+    /** Mandatory, like an exception's reason: an unexplained control is what a later audit cannot act on. */
+    reason: text('reason').notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    pairUnique: uniqueIndex('role_conflicts_pair_unique').on(table.roleAId, table.roleBId),
+    // The publish gate's and standing checker's read: enabled conflicts, one
+    // organization at a time.
+    organizationIdx: index('role_conflicts_organization_idx').on(table.organizationId, table.enabled),
+    canonicalPair: check('role_conflicts_canonical_pair', sql`${table.roleAId} < ${table.roleBId}`),
+    roleAOrganizationFk: foreignKey({
+      name: 'rc_role_a_organization_fk',
+      columns: [table.roleAId, table.organizationId],
+      foreignColumns: [businessRoles.id, businessRoles.organizationId],
+    }),
+    roleBOrganizationFk: foreignKey({
+      name: 'rc_role_b_organization_fk',
+      columns: [table.roleBId, table.organizationId],
+      foreignColumns: [businessRoles.id, businessRoles.organizationId],
+    }),
   }),
 )

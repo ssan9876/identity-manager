@@ -239,6 +239,13 @@
       "when": 1786313442699,
       "tag": "0033_connector_targets_per_organization",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1786400000000,
+      "tag": "0034_role_conflicts_sod",
+      "breakpoints": true
     }
   ]
 }

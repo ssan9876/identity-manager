@@ -238,7 +238,14 @@ export default function BusinessRoleDetailPage() {
        * rail loses its credibility.
        */
       if (cause instanceof ApiError && cause.status === 409) {
-        if (cause.message.includes('no draft')) {
+        if (cause.message.includes('segregation-of-duties')) {
+          // The THIRD 409, and the one that is not a staleness story: the
+          // simulation of this exact draft found SoD violations, and the
+          // gate refused. The server message states the count and the
+          // remedy; the SimulatePanel below is already showing exactly who
+          // and why.
+          setPublishError(cause.message)
+        } else if (cause.message.includes('no draft')) {
           setPublishError('There are no pending changes to publish — this role is already published as it stands.')
         } else if (hadSimulation) {
           setPublishError(
