@@ -152,9 +152,9 @@ function worseOf(
  * `'synced'`). `DISTINCT ON (aggregate_id) ... ORDER BY aggregate_id, id
  * DESC` picks that latest row directly in Postgres.
  *
- * FIXED GAP, formerly a documented KNOWN LIMIT (finding H3, docs/
- * superpowers/audit-integrity.md): the group/membership half used to walk
- * ONLY users' CURRENT effective group membership
+ * FIXED GAP, formerly a documented KNOWN LIMIT (finding H3,
+ * docs/archive/audits/audit-integrity.md): the group/membership half used
+ * to walk ONLY users' CURRENT effective group membership
  * (`GroupsRepository.listEffectiveUserMembers`) — so a user who was REMOVED
  * from a group in the same window that removal's own outbox event
  * dead-lettered was, by definition, no longer in that set, and the

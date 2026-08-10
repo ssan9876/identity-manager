@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
-import { extractFacts } from './extract-doc-facts.mjs'
+import { extractFacts, citationsIn } from './extract-doc-facts.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const f = extractFacts(repoRoot)
@@ -51,6 +51,42 @@ check('7 systemd units including the backup pair', () => {
 check('doc paths cited from code are found', () => {
   assert.ok(f.docPathsCitedFromCode.length >= 20)
   assert.ok(f.docPathsCitedFromCode.every((p) => p.startsWith('docs/')))
+})
+
+// This file lives under scripts/, which extractDocPathsCitedFromCode scans, so
+// a literal `docs/<name>.md` written here would be picked up as a real citation
+// and reported as a dead pointer. Every fixture below is therefore assembled
+// from `D` plus a tail, which no scan can see as one token. Do not inline them.
+const D = 'docs/'
+check('a citation wrapped across two comment lines is found', () => {
+  // The exact shape 7adaed9 left in sync-state.repository.ts: the break falls
+  // after `docs/`, so nothing on either line is a complete path.
+  const src = ' * (finding H3, ' + D + '\n * archive/audits/audit-integrity.md): the group half\n'
+  assert.deepEqual(citationsIn(src), [D + 'archive/audits/audit-integrity.md'])
+})
+check('a citation wrapped after a partial segment is found', () => {
+  // The RolesCatalogPage shape: the break falls mid-filename, before the `.md`.
+  const src = ' * dead end (' + D + 'design-system.md and task-2-\n * brief.md: no dead links)\n'
+  assert.ok(citationsIn(src).includes(D + 'design-system.md'))
+})
+check('// and # comment leaders wrap too', () => {
+  assert.deepEqual(citationsIn('// see ' + D + '\n// 12-security.md\n'), [D + '12-security.md'])
+  assert.deepEqual(citationsIn('# see ' + D + '\n#  12-security.md\n'), [D + '12-security.md'])
+})
+check('two complete citations on consecutive lines do NOT fuse', () => {
+  // The false positive the ordered alternation exists to prevent: greedy
+  // joining would yield one run-together path that exists nowhere, and the
+  // guard would report a dead pointer that is really two live ones.
+  const src = ' * ' + D + '12-security.md\n * ' + D + '14-roadmap.md\n'
+  assert.deepEqual(citationsIn(src), [D + '12-security.md', D + '14-roadmap.md'])
+})
+check('a sentence ending in docs/ does not swallow the next line', () => {
+  const src = ' * everything under ' + D + '\n * is non-authoritative prose, not a path\n'
+  assert.deepEqual(citationsIn(src), [])
+})
+check('a citation is not joined across more than one break', () => {
+  const src = ' * ' + D + '\n * archive/\n * audits/audit-integrity.md\n'
+  assert.deepEqual(citationsIn(src), [])
 })
 check('every array is sorted and deduplicated', () => {
   for (const key of ['connectorTargets','cliScripts','actions','roles','envVars','systemdUnits','docPathsCitedFromCode']) {

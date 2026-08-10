@@ -9,7 +9,7 @@
 > dated 2026-08-08) — and their findings were fixed across five waves plus the
 > follow-up work in [Recently closed findings](#recently-closed-findings) below.
 >
-> Planned dimensions remain unrun and a number of findings are still unverified. The
+> A planned dimension remains unrun and a number of findings are still unverified. The
 > only *total* on record is **six planned dimensions**, in
 > [14 — Roadmap](14-roadmap.md); five have now run, so **one** remains unrun. The
 > roadmap said "four of six ran" until it was corrected to match this banner — the

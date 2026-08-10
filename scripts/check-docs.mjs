@@ -66,6 +66,10 @@ export function checkDocs(repoRoot) {
       problems.push(
         `${rel} is cited from code but does not exist.\n` +
           `    Find the citation with: grep -rn "${rel}" apps/ deploy/ scripts/\n` +
+          '    If that grep finds NOTHING, the citation is wrapped across two comment\n' +
+          '    lines, which is exactly how one of these stayed hidden through a whole\n' +
+          '    accuracy pass. Search for a fragment instead:\n' +
+          `      grep -rn "${rel.slice(0, rel.lastIndexOf('/') + 1)}" apps/ deploy/ scripts/\n` +
           '    Either restore the document or update the citation.',
       )
     }

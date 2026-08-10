@@ -141,17 +141,81 @@ export function extractSystemdUnits(repoRoot) {
   return existsSync(dir) ? uniqSorted(readdirSync(dir)) : []
 }
 
-/** Every docs/*.md path cited from apps/, deploy/ or scripts/. */
+// A path character, and the noise a comment puts at the start of a wrapped
+// continuation line: ` * `, `// ` or `# `.
+const DOC_PATH_CHAR = '[0-9A-Za-z_./-]'
+// `[ \t]*` after the leader, not `[ \t]?`: a continuation line is often
+// indented past its `*`, and allowing only one space silently un-joins it.
+const COMMENT_BREAK = '(?:\\r?\\n[ \\t]*(?:\\*|//|#)[ \\t]*)'
+
+/**
+ * A cited docs path, INCLUDING one a comment wrapped across two lines.
+ *
+ * The flat form is the FIRST alternative and the wrapped form the second, and
+ * that order is load-bearing. Alternation is ordered, so a path that completes
+ * on its own line is taken whole and the match stops there. Were the wrapped
+ * form first, two citations on consecutive lines would fuse into a single
+ * run-together path that exists nowhere, and the guard would report a dead
+ * pointer that is really two live ones. Only a line that does NOT already
+ * reach the `.md` may continue onto the next.
+ *
+ * No example of that fusion is spelled out here on purpose: this file is
+ * itself under scripts/, so a literal path written into this comment would be
+ * scanned as a citation and reported as dead. Illustrating the bug would
+ * cause it.
+ *
+ * One break, not many: every real instance wrapped exactly once, and bounding
+ * it keeps an unterminated `docs/` from swallowing a whole comment block.
+ */
+const DOC_PATH_CITATION = new RegExp(
+  `docs/(?:${DOC_PATH_CHAR}*\\.md|${DOC_PATH_CHAR}*${COMMENT_BREAK}${DOC_PATH_CHAR}*\\.md)`,
+  'g',
+)
+
+/**
+ * Every docs/*.md path cited from apps/, deploy/ or scripts/.
+ *
+ * WRAPPED CITATIONS: 7adaed9's path rewrite mangled four comments, and the
+ * three that wrapped across comment lines were invisible to a flat regex —
+ * `docs/` ending one line and `superpowers/audit-integrity.md` starting the
+ * next never forms a contiguous token. That was a hole in check-docs.mjs's
+ * dead-pointer check, not a cosmetic one: it hid a real dead pointer through
+ * an entire documentation-accuracy pass. The continuation noise is stripped
+ * from each match before the path is recorded.
+ */
+export function citationsIn(src) {
+  const unwrap = new RegExp(COMMENT_BREAK, 'g')
+  return [...src.matchAll(DOC_PATH_CITATION)].map((m) => m[0].replace(unwrap, ''))
+}
+
 export function extractDocPathsCitedFromCode(repoRoot) {
   const roots = ['apps', 'deploy', 'scripts'].map((d) => join(repoRoot, d))
   const exts = ['.ts', '.tsx', '.mjs', '.js', '.sh', '.service', '.timer', '.conf', '.json']
   const cited = []
+  const flat = []
   for (const root of roots) {
     for (const file of walk(root, (f) => exts.some((e) => f.endsWith(e)))) {
-      for (const m of read(file).matchAll(/docs\/[0-9A-Za-z_./-]+\.md/g)) cited.push(m[0])
+      const src = read(file)
+      cited.push(...citationsIn(src))
+      for (const m of src.matchAll(/docs\/[0-9A-Za-z_./-]+\.md/g)) flat.push(m[0])
     }
   }
-  return uniqSorted(cited)
+  const found = uniqSorted(cited)
+  // Anchoring discipline, the same shape the other extractors use: the
+  // wrapped-aware scan must see everything the flat one does. If it ever sees
+  // LESS, DOC_PATH_CITATION has been broken and is silently matching nothing.
+  // Fail loudly rather than quietly reporting an empty citation list, which
+  // would make check-docs.mjs's dead-pointer check vacuously pass.
+  const lost = uniqSorted(flat).filter((p) => !found.includes(p))
+  if (lost.length > 0) {
+    throw new Error(
+      `DOC_PATH_CITATION missed ${lost.length} path(s) a plain regex finds:\n` +
+        lost.map((p) => `    ${p}`).join('\n') +
+        '\n  The wrapped-aware pattern must be a superset of the flat one.\n' +
+        '  Fix the pattern in scripts/extract-doc-facts.mjs — do not delete this check.',
+    )
+  }
+  return found
 }
 
 export function extractFacts(repoRoot) {
