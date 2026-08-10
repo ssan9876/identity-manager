@@ -28,14 +28,26 @@ import * as schema from '../db/schema/index'
 import { OrganizationsRepository } from '../organizations/organizations.repository'
 import { OutboxWriter } from '../outbox/outbox.writer'
 import {
+  acsUrlProblem,
   clientIdProblem,
+  entityIdProblem,
+  pemCertificateProblem,
   redirectUriProblem,
   webOriginProblem,
 } from './sso-app-validation'
-import { SsoAppsRepository, type SsoApp } from './sso-apps.repository'
+import { SsoAppsRepository, type SsoApp, type SsoAppPatch } from './sso-apps.repository'
 
+/**
+ * `protocol` is the request discriminator: absent or 'openid-connect' parses
+ * against this schema, 'saml' against `createSamlBodySchema` below. Two
+ * `.strict()` schemas rather than one wide one is what makes sending a SAML
+ * field on an OIDC create (or vice versa) a 400 NAMING the field — one merged
+ * schema would have to accept both shapes and then reject the cross-protocol
+ * fields by hand, re-implementing what `.strict()` already does.
+ */
 const createBodySchema = z
   .object({
+    protocol: z.literal('openid-connect').optional(),
     clientId: z.string().min(1).max(255),
     name: z.string().min(1).max(255),
     description: z.string().max(2000).default(''),
@@ -47,21 +59,69 @@ const createBodySchema = z
   .strict()
 
 /**
+ * The SAML create shape. `entityId` rather than `clientId` — the SP's own
+ * vocabulary — though it lands in the same `client_id` column, because
+ * Keycloak keys a SAML client by entity id in that same field (see
+ * db/schema/sso-apps.ts). No `publicClient`: a SAML SP has no such auth
+ * model; the row is stored with false. `groupsClaim` keeps its OIDC name and
+ * default deliberately: it answers the same question ("does the assertion
+ * carry group membership?"), realised as an attribute-statement mapper.
+ */
+const createSamlBodySchema = z
+  .object({
+    protocol: z.literal('saml'),
+    entityId: z.string().min(1).max(1024),
+    name: z.string().min(1).max(255),
+    description: z.string().max(2000).default(''),
+    acsUrls: z.array(z.string().min(1)).min(1),
+    spCertificate: z.string().min(1).max(20000).optional(),
+    signAssertions: z.boolean().default(false),
+    nameIdFormat: z.enum(['email', 'persistent', 'username']).default('email'),
+    groupsClaim: z.boolean().default(true),
+  })
+  .strict()
+
+/**
  * No `clientId`: immutable after create, because downstream applications
  * hard-code it and Keycloak would happily rename it. No `publicClient`:
  * flipping a confidential client to public silently invalidates its secret
  * and changes its whole auth model — that is a new application, not an edit.
- * No `enabled`: enable and disable are separately-audited verb routes.
+ * No `enabled`: enable and disable are separately-audited verb routes. No
+ * `protocol`: switching protocol in place is a different application, the
+ * same reasoning as clientId — the SP's own configuration is protocol-shaped.
  *
  * `.strict()` on top of the omissions means sending any of them is a 400
  * NAMING the field, rather than being silently ignored — an admin who thinks
  * they renamed a clientId must not be told it worked.
  */
 const patchBodySchema = createBodySchema
-  .omit({ clientId: true, publicClient: true })
+  .omit({ protocol: true, clientId: true, publicClient: true })
   .partial()
   .strict()
 
+/**
+ * The SAML PATCH shape, chosen by the LOADED row's protocol, not by anything
+ * in the request — so a SAML field sent to an OIDC application is rejected by
+ * name via `.strict()`, exactly as an OIDC field sent to a SAML one is. No
+ * `entityId` (immutable — it is the clientId), no `protocol`, no `enabled`.
+ * `spCertificate` is additionally nullable here: null REMOVES the SP
+ * certificate (and with it the client-signature requirement), which an
+ * optional-only field cannot express.
+ */
+const patchSamlBodySchema = z
+  .object({
+    name: z.string().min(1).max(255),
+    description: z.string().max(2000),
+    acsUrls: z.array(z.string().min(1)).min(1),
+    spCertificate: z.string().min(1).max(20000).nullable(),
+    signAssertions: z.boolean(),
+    nameIdFormat: z.enum(['email', 'persistent', 'username']),
+    groupsClaim: z.boolean(),
+  })
+  .partial()
+  .strict()
+
+/** Explicit field names, never a spread — docs/13, "Adding an endpoint". */
 function snapshotSsoApp(app: SsoApp): Record<string, unknown> {
   return {
     id: app.id,
@@ -74,6 +134,10 @@ function snapshotSsoApp(app: SsoApp): Record<string, unknown> {
     webOrigins: app.webOrigins,
     groupsClaim: app.groupsClaim,
     enabled: app.enabled,
+    samlAcsUrls: app.samlAcsUrls,
+    samlSpCertificate: app.samlSpCertificate,
+    samlSignAssertions: app.samlSignAssertions,
+    samlNameIdFormat: app.samlNameIdFormat,
   }
 }
 
@@ -124,6 +188,31 @@ export class SsoAppsController {
     }
   }
 
+  /**
+   * The SAML counterpart, same one-round-trip contract: every bad ACS URL
+   * and the certificate problem (if any) in a single ValidationError.
+   * `entityId` is checked only where it is settable (create).
+   */
+  private assertSafeSamlValues(
+    acsUrls: readonly string[],
+    spCertificate: string | null | undefined,
+  ): void {
+    const problems = acsUrls
+      .map(acsUrlProblem)
+      .filter((problem): problem is string => problem !== null)
+
+    if (spCertificate !== null && spCertificate !== undefined) {
+      const certificateProblem = pemCertificateProblem(spCertificate)
+      if (certificateProblem !== null) {
+        problems.push(certificateProblem)
+      }
+    }
+
+    if (problems.length > 0) {
+      throw new ValidationError(problems)
+    }
+  }
+
   private async requireApp(id: string): Promise<SsoApp> {
     const app = await this.apps.findById(id)
     if (app === null) {
@@ -146,10 +235,26 @@ export class SsoAppsController {
     return this.requireApp(id)
   }
 
+  /**
+   * The discriminator is read BEFORE parsing so each protocol's `.strict()`
+   * schema sees the whole body: an OIDC-only field on a SAML create is then
+   * an "unrecognized key" 400 NAMING the field, not a silent drop. A body
+   * whose `protocol` is neither value falls to the OIDC schema, whose
+   * `z.literal` names the bad value.
+   */
   @Post()
   @RequirePermission('sso_app:manage')
   async create(@Body() body: unknown, @Req() request: AuthorizedRequest): Promise<SsoApp> {
     await this.requireGlobalGrant(request, 'sso_app:manage')
+
+    const wantsSaml =
+      typeof body === 'object' &&
+      body !== null &&
+      (body as Record<string, unknown>).protocol === 'saml'
+    if (wantsSaml) {
+      return this.createSaml(body, request)
+    }
+
     const parsed = parseBody(createBodySchema, body)
 
     const clientIdIssue = clientIdProblem(parsed.clientId)
@@ -204,6 +309,68 @@ export class SsoAppsController {
     })
   }
 
+  /**
+   * The SAML arm of `create`. The entity id IS the stored clientId — one
+   * column, one uniqueness rule, one reserved-name denylist (an entity id
+   * naming a bootstrap client would register over it; see entityIdProblem).
+   * `publicClient` is false structurally: a SAML SP has no such auth model,
+   * and storing false (rather than a nullable) keeps every existing consumer
+   * of the row honest.
+   */
+  private async createSaml(body: unknown, request: AuthorizedRequest): Promise<SsoApp> {
+    const parsed = parseBody(createSamlBodySchema, body)
+
+    const problems = [entityIdProblem(parsed.entityId)].filter(
+      (problem): problem is string => problem !== null,
+    )
+    if (problems.length > 0) {
+      throw new ValidationError(problems)
+    }
+    this.assertSafeSamlValues(parsed.acsUrls, parsed.spCertificate)
+
+    if ((await this.apps.findByClientId(parsed.entityId)) !== null) {
+      throw new ConflictError(`an application with entity id "${parsed.entityId}" already exists`)
+    }
+
+    return this.db.transaction(async (tx) => {
+      const app = await this.apps.create(
+        {
+          clientId: parsed.entityId,
+          name: parsed.name,
+          description: parsed.description ?? '',
+          protocol: 'saml',
+          publicClient: false,
+          redirectUris: [],
+          webOrigins: [],
+          groupsClaim: parsed.groupsClaim ?? true,
+          samlAcsUrls: parsed.acsUrls,
+          samlSpCertificate: parsed.spCertificate ?? null,
+          samlSignAssertions: parsed.signAssertions ?? false,
+          samlNameIdFormat: parsed.nameIdFormat ?? 'email',
+        },
+        tx,
+      )
+
+      await this.auditWriter.record(tx, {
+        actorUserId: request.actor.userId,
+        action: 'sso_app:create',
+        resourceType: 'sso_app',
+        resourceId: app.id,
+        before: null,
+        after: snapshotSsoApp(app),
+      })
+
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'sso_app',
+        aggregateId: app.id,
+        eventType: 'created',
+        payload: { ...snapshotSsoApp(app), action: 'sso_app:create' },
+      })
+
+      return app
+    })
+  }
+
   @Patch(':id')
   @RequirePermission('sso_app:manage')
   async update(
@@ -213,9 +380,14 @@ export class SsoAppsController {
   ): Promise<SsoApp> {
     await this.requireGlobalGrant(request, 'sso_app:manage')
     const before = await this.requireApp(id)
-    const parsed = parseBody(patchBodySchema, body)
 
-    this.assertSafeUris(parsed.redirectUris ?? before.redirectUris, parsed.webOrigins ?? before.webOrigins)
+    // The schema is chosen by the ROW's protocol, never by the request:
+    // `.strict()` then rejects a cross-protocol field by name, exactly as it
+    // already rejects clientId/publicClient/enabled.
+    const parsed =
+      before.protocol === 'saml'
+        ? this.parseSamlPatch(body, before)
+        : this.parseOidcPatch(body, before)
 
     return this.db.transaction(async (tx) => {
       const app = await this.apps.update(id, parsed, tx)
@@ -238,6 +410,34 @@ export class SsoAppsController {
 
       return app
     })
+  }
+
+  private parseOidcPatch(body: unknown, before: SsoApp): SsoAppPatch {
+    const parsed = parseBody(patchBodySchema, body)
+    this.assertSafeUris(
+      parsed.redirectUris ?? before.redirectUris,
+      parsed.webOrigins ?? before.webOrigins,
+    )
+    return parsed
+  }
+
+  private parseSamlPatch(body: unknown, before: SsoApp): SsoAppPatch {
+    const parsed = parseBody(patchSamlBodySchema, body)
+    // Validate the EFFECTIVE values, mirroring the OIDC arm: an omitted field
+    // keeps its stored (already-vetted) value; a null certificate clears it.
+    this.assertSafeSamlValues(
+      parsed.acsUrls ?? before.samlAcsUrls ?? [],
+      parsed.spCertificate === undefined ? before.samlSpCertificate : parsed.spCertificate,
+    )
+    return {
+      name: parsed.name,
+      description: parsed.description,
+      groupsClaim: parsed.groupsClaim,
+      samlAcsUrls: parsed.acsUrls,
+      samlSpCertificate: parsed.spCertificate,
+      samlSignAssertions: parsed.signAssertions,
+      samlNameIdFormat: parsed.nameIdFormat,
+    }
   }
 
   @Post(':id/enable')
@@ -308,6 +508,12 @@ export class SsoAppsController {
   ): Promise<{ secret: string }> {
     await this.requireGlobalGrant(request, 'sso_app:manage')
     const app = await this.requireApp(id)
+
+    if (app.protocol === 'saml') {
+      throw new ConflictError(
+        `"${app.clientId}" is a SAML application — SAML SPs authenticate assertions by signature, not with a client secret`,
+      )
+    }
 
     if (app.publicClient) {
       throw new ConflictError(

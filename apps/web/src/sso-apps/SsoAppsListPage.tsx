@@ -87,7 +87,13 @@ export default function SsoAppsListPage() {
                 <td>
                   <code>{app.clientId}</code>
                 </td>
-                <td>{app.publicClient ? 'Public (PKCE)' : 'Confidential'}</td>
+                <td>
+                  {app.protocol === 'saml'
+                    ? 'SAML 2.0'
+                    : app.publicClient
+                      ? 'Public (PKCE)'
+                      : 'Confidential'}
+                </td>
                 <td>
                   <EnabledBadge enabled={app.enabled} />
                 </td>

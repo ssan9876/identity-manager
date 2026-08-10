@@ -7,17 +7,33 @@ import * as schema from '../db/schema/index'
 import { ssoApps } from '../db/schema/sso-apps'
 import type { DbHandle } from '../outbox/outbox.writer'
 
+export type SsoAppProtocol = 'openid-connect' | 'saml'
+export type SamlNameIdFormat = 'email' | 'persistent' | 'username'
+
 export interface SsoApp {
   id: string
+  /** For SAML rows this IS the SP's entity id — see db/schema/sso-apps.ts. */
   clientId: string
   name: string
   description: string
-  protocol: 'openid-connect'
+  protocol: SsoAppProtocol
   publicClient: boolean
   redirectUris: string[]
   webOrigins: string[]
   groupsClaim: boolean
   enabled: boolean
+  /**
+   * SAML-only, null on every OIDC row. Nullable fields rather than a
+   * discriminated union: the union would be the honest shape, but every
+   * caller routes through Drizzle rows whose types cannot express the
+   * correlation, so the union would be asserted, not proven. The
+   * controller's closed request schemas are what actually maintain the
+   * invariant — a SAML field can never be written to an OIDC row.
+   */
+  samlAcsUrls: string[] | null
+  samlSpCertificate: string | null
+  samlSignAssertions: boolean | null
+  samlNameIdFormat: SamlNameIdFormat | null
   createdAt: Date
   updatedAt: Date
 }
@@ -26,11 +42,15 @@ export interface SsoAppInput {
   clientId: string
   name: string
   description: string
-  protocol: 'openid-connect'
+  protocol: SsoAppProtocol
   publicClient: boolean
   redirectUris: string[]
   webOrigins: string[]
   groupsClaim: boolean
+  samlAcsUrls?: string[] | null
+  samlSpCertificate?: string | null
+  samlSignAssertions?: boolean | null
+  samlNameIdFormat?: SamlNameIdFormat | null
 }
 
 /**

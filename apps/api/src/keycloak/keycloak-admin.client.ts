@@ -121,6 +121,29 @@ export const GROUP_MEMBERSHIP_MAPPER = {
   },
 } as const
 
+/**
+ * The SAML twin of `GROUP_MEMBERSHIP_MAPPER`: one attribute statement named
+ * `groups`, carrying bare group names — the same fixed name and the same
+ * flattened values the OIDC claim carries, for the same reason (an
+ * application that has to guess where its authorization data lives is a
+ * support call waiting to happen). `single: 'true'` emits ONE multi-valued
+ * attribute rather than one attribute element per group; `'full.path':
+ * 'false'` is the SAML mapper's spelling of the OIDC mapper's `full:
+ * 'false'` — bare names, matching the flattened membership the user
+ * connector writes.
+ */
+export const SAML_GROUP_ATTRIBUTE_MAPPER = {
+  name: 'groups',
+  protocol: 'saml',
+  protocolMapper: 'saml-group-membership-mapper',
+  config: {
+    'attribute.name': 'groups',
+    'attribute.nameformat': 'Basic',
+    single: 'true',
+    'full.path': 'false',
+  },
+} as const
+
 export interface KeycloakGroup {
   id: string
   name: string
@@ -918,6 +941,28 @@ export class KeycloakAdminClient {
       'POST',
       `/clients/${uuid}/protocol-mappers/models`,
       GROUP_MEMBERSHIP_MAPPER,
+    )
+    await this.assertOk(created, { resource: 'keycloak client', id: uuid })
+  }
+
+  /**
+   * The SAML twin of `assertGroupMembershipMapper`, asserted against the
+   * same per-client endpoint for the same reason: Keycloak accepts
+   * `protocolMappers` on client CREATE and silently drops them on UPDATE, so
+   * the mapper must be asserted every sync or the client looks configured
+   * while the assertion simply carries no `groups` attribute.
+   */
+  async assertSamlGroupAttributeMapper(uuid: string): Promise<void> {
+    const res = await this.request('GET', `/clients/${uuid}/protocol-mappers/models`)
+    await this.assertOk(res, { resource: 'keycloak client', id: uuid })
+    const existing = (await res.json()) as { name: string }[]
+    if (existing.some((mapper) => mapper.name === SAML_GROUP_ATTRIBUTE_MAPPER.name)) {
+      return
+    }
+    const created = await this.request(
+      'POST',
+      `/clients/${uuid}/protocol-mappers/models`,
+      SAML_GROUP_ATTRIBUTE_MAPPER,
     )
     await this.assertOk(created, { resource: 'keycloak client', id: uuid })
   }

@@ -9,17 +9,20 @@ const SECRET_SENTINEL = 'MINTED-SECRET-SENTINEL'
 interface Fake extends SsoAdminApi {
   clients: KeycloakClientRepresentation[]
   mappers: Map<string, { name: string }[]>
+  samlMappers: Map<string, { name: string }[]>
   updateBodies: KeycloakClientRepresentation[]
 }
 
 function fakeAdmin(initial: KeycloakClientRepresentation[] = []): Fake {
   const clients = [...initial]
   const mappers = new Map<string, { name: string }[]>()
+  const samlMappers = new Map<string, { name: string }[]>()
   const updateBodies: KeycloakClientRepresentation[] = []
 
   return {
     clients,
     mappers,
+    samlMappers,
     updateBodies,
     async findClientByClientId(clientId) {
       return clients.find((c) => c.clientId === clientId) ?? null
@@ -43,6 +46,12 @@ function fakeAdmin(initial: KeycloakClientRepresentation[] = []): Fake {
       const existing = mappers.get(uuid) ?? []
       if (!existing.some((m) => m.name === 'groups')) {
         mappers.set(uuid, [...existing, { name: 'groups' }])
+      }
+    },
+    async assertSamlGroupAttributeMapper(uuid) {
+      const existing = samlMappers.get(uuid) ?? []
+      if (!existing.some((m) => m.name === 'groups')) {
+        samlMappers.set(uuid, [...existing, { name: 'groups' }])
       }
     },
     async mintClientSecret() {
@@ -179,5 +188,153 @@ describe('KeycloakSsoConnector', () => {
   it('reports health from the admin API', async () => {
     const connector = new KeycloakSsoConnector(fakeAdmin())
     await expect(connector.health()).resolves.toEqual({ ok: true, detail: 'reachable' })
+  })
+})
+
+// A syntactically valid PEM whose body is plain base64 — shape is all the
+// connector cares about; Keycloak is what would reject a non-X.509 payload.
+const TEST_PEM =
+  '-----BEGIN CERTIFICATE-----\nMIIBszCCARygAwIBAgIBATANBgkqhkiG9w0BAQsFADAA\nMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFow\n-----END CERTIFICATE-----'
+const TEST_PEM_STRIPPED =
+  'MIIBszCCARygAwIBAgIBATANBgkqhkiG9w0BAQsFADAAMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFow'
+
+const SAML_DESIRED: DesiredSsoApp = {
+  clientId: 'https://hr.example.com/saml/metadata',
+  name: 'HR Suite',
+  description: 'HR SaaS',
+  protocol: 'saml',
+  publicClient: false,
+  redirectUris: [],
+  webOrigins: [],
+  groupsClaim: true,
+  enabled: true,
+  samlAcsUrls: ['https://hr.example.com/saml/acs', 'https://hr.example.com/saml/acs2'],
+  samlSpCertificate: null,
+  samlSignAssertions: true,
+  samlNameIdFormat: 'email',
+}
+
+describe('KeycloakSsoConnector — SAML', () => {
+  it('creates a SAML client keyed by entity id, with the Keycloak 26 attribute map', async () => {
+    const admin = fakeAdmin()
+    const connector = new KeycloakSsoConnector(admin)
+
+    await connector.applyApp(SAML_DESIRED)
+
+    const created = admin.clients[0]
+    expect(created.protocol).toBe('saml')
+    // Keycloak keys a SAML client by entity id in the clientId field.
+    expect(created.clientId).toBe('https://hr.example.com/saml/metadata')
+    // Every ACS URL becomes a valid redirect URI — that is how Keycloak
+    // scopes acceptable assertion destinations.
+    expect(created.redirectUris).toEqual([
+      'https://hr.example.com/saml/acs',
+      'https://hr.example.com/saml/acs2',
+    ])
+    expect(created.attributes?.saml_assertion_consumer_url_post).toBe(
+      'https://hr.example.com/saml/acs',
+    )
+    expect(created.attributes?.['saml.assertion.signature']).toBe('true')
+    expect(created.attributes?.['saml.server.signature']).toBe('true')
+    expect(created.attributes?.saml_name_id_format).toBe('email')
+    expect(created.publicClient).toBe(false)
+  })
+
+  it('requires client signatures exactly when an SP certificate is supplied', async () => {
+    const admin = fakeAdmin()
+    const connector = new KeycloakSsoConnector(admin)
+
+    await connector.applyApp({ ...SAML_DESIRED, samlSpCertificate: TEST_PEM })
+
+    const created = admin.clients[0]
+    expect(created.attributes?.['saml.client.signature']).toBe('true')
+    // Stored as the PEM stripped to single-line base64 DER — Keycloak's shape.
+    expect(created.attributes?.['saml.signing.certificate']).toBe(TEST_PEM_STRIPPED)
+  })
+
+  it('does not require client signatures without a certificate', async () => {
+    const admin = fakeAdmin()
+    const connector = new KeycloakSsoConnector(admin)
+    await connector.applyApp(SAML_DESIRED)
+    expect(admin.clients[0].attributes?.['saml.client.signature']).toBe('false')
+    expect(admin.clients[0].attributes?.['saml.signing.certificate']).toBeUndefined()
+  })
+
+  it('removes the stale stored certificate when the SP certificate is cleared', async () => {
+    // Read-modify-write would otherwise preserve the half-state forever: a
+    // client that no longer requires signatures still holding a key.
+    const admin = fakeAdmin([
+      {
+        id: 'uuid-hr',
+        clientId: 'https://hr.example.com/saml/metadata',
+        attributes: {
+          'saml.client.signature': 'true',
+          'saml.signing.certificate': TEST_PEM_STRIPPED,
+        },
+      },
+    ])
+    const connector = new KeycloakSsoConnector(admin)
+
+    await connector.applyApp({ ...SAML_DESIRED, existingExternalId: 'uuid-hr' })
+
+    const after = admin.clients[0]
+    expect(after.attributes?.['saml.client.signature']).toBe('false')
+    expect(after.attributes?.['saml.signing.certificate']).toBeUndefined()
+  })
+
+  it('asserts the SAML groups attribute mapper, never the OIDC claim mapper', async () => {
+    const admin = fakeAdmin()
+    const connector = new KeycloakSsoConnector(admin)
+
+    await connector.applyApp(SAML_DESIRED)
+
+    expect(admin.samlMappers.get('uuid-https://hr.example.com/saml/metadata')).toEqual([
+      { name: 'groups' },
+    ])
+    expect(admin.mappers.size).toBe(0)
+  })
+
+  it('does not assert the mapper when groupsClaim is off', async () => {
+    const admin = fakeAdmin()
+    const connector = new KeycloakSsoConnector(admin)
+    await connector.applyApp({ ...SAML_DESIRED, groupsClaim: false })
+    expect(admin.samlMappers.size).toBe(0)
+  })
+
+  it('preserves SAML client fields it does not manage', async () => {
+    const admin = fakeAdmin([
+      {
+        id: 'uuid-hr',
+        clientId: 'https://hr.example.com/saml/metadata',
+        defaultClientScopes: ['role_list'],
+        attributes: { 'saml.artifact.binding': 'true' },
+      },
+    ])
+    const connector = new KeycloakSsoConnector(admin)
+
+    await connector.applyApp({ ...SAML_DESIRED, existingExternalId: 'uuid-hr' })
+
+    const after = admin.clients[0]
+    expect(after.defaultClientScopes).toEqual(['role_list'])
+    expect(after.attributes?.['saml.artifact.binding']).toBe('true')
+  })
+
+  it('CONVERGES: asserting the identical desired state twice plans no further change', async () => {
+    const admin = fakeAdmin()
+    const connector = new KeycloakSsoConnector(admin)
+    const desired = { ...SAML_DESIRED, samlSpCertificate: TEST_PEM, groupsClaim: false }
+
+    const { externalId } = await connector.applyApp(desired)
+    const ops = await connector.planApp({ ...desired, existingExternalId: externalId })
+
+    expect(ops).toEqual([])
+  })
+
+  it('does not disturb the OIDC merge — an OIDC app still gets an OIDC client', async () => {
+    const admin = fakeAdmin()
+    const connector = new KeycloakSsoConnector(admin)
+    await connector.applyApp(DESIRED)
+    expect(admin.clients[0].protocol).toBe('openid-connect')
+    expect(admin.clients[0].attributes?.saml_assertion_consumer_url_post).toBeUndefined()
   })
 })
