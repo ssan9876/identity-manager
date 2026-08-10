@@ -27,6 +27,8 @@ interface ParsedArgs {
   target: ConnectorTarget
   apply: boolean
   force: boolean
+  /** `--organization=<slug>` — per-organization connector targets: which organization's catalog and population this run covers. `null` means MASTER, exactly what every run meant before organizations owned their own rows. */
+  organizationSlug: string | null
 }
 
 /**
@@ -50,6 +52,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let target: string | null = null
   let apply = false
   let force = false
+  let organizationSlug: string | null = null
 
   for (const arg of args) {
     if (arg === '--apply') {
@@ -62,6 +65,10 @@ function parseArgs(argv: string[]): ParsedArgs {
     }
     if (arg.startsWith('--target=')) {
       target = arg.slice('--target='.length)
+      continue
+    }
+    if (arg.startsWith('--organization=')) {
+      organizationSlug = arg.slice('--organization='.length)
       continue
     }
     if (!arg.startsWith('--') && target === null) {
@@ -80,7 +87,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     throw new Error(`target-reconcile: unknown target "${target}" — known targets: ${KNOWN_TARGETS.join(', ')}`)
   }
 
-  return { target: target as ConnectorTarget, apply, force }
+  return { target: target as ConnectorTarget, apply, force, organizationSlug }
 }
 
 /**
@@ -126,7 +133,7 @@ function printReport(report: TargetReconciliationReport): void {
  * runtime role already holds.
  */
 async function main(): Promise<void> {
-  const { target, apply, force } = parseArgs(process.argv.slice(2))
+  const { target, apply, force, organizationSlug } = parseArgs(process.argv.slice(2))
   const env = loadEnv(process.env)
   const { db, pool } = createDbClient(env.runtimeDatabaseUrl, { max: env.dbPoolMax })
 
@@ -152,10 +159,28 @@ async function main(): Promise<void> {
 
     const job = new TargetReconciliationJob(usersRepository, connectorRegistry, syncWorker, auditWriter, db)
 
-    const dryRun = !apply
-    console.log(`[target-reconcile] ${dryRun ? 'DRY RUN — ' : ''}reconciling target "${target}" ...`)
+    // `--organization=<slug>` resolves HERE, before the job runs, so a typo
+    // fails with a clear message rather than an empty walk. Omitted means
+    // master — the job's own default (see TargetReconciliationOptions).
+    let organizationId: string | undefined
+    if (organizationSlug !== null) {
+      const { rows } = await pool.query<{ id: string }>(
+        'SELECT id FROM organizations WHERE slug = $1',
+        [organizationSlug],
+      )
+      if (rows.length === 0) {
+        throw new Error(`target-reconcile: no organization with slug "${organizationSlug}"`)
+      }
+      organizationId = rows[0].id
+    }
 
-    const report = await job.reconcile(target, { dryRun, force })
+    const dryRun = !apply
+    console.log(
+      `[target-reconcile] ${dryRun ? 'DRY RUN — ' : ''}reconciling target "${target}"` +
+        `${organizationSlug !== null ? ` for organization "${organizationSlug}"` : ''} ...`,
+    )
+
+    const report = await job.reconcile(target, { dryRun, force, organizationId })
     printReport(report)
 
     if (report.halted) {

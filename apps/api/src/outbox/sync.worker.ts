@@ -9,6 +9,7 @@ import { OrganizationConnector } from '../connectors/organization.connector'
 import type { DesiredGroup, DesiredUser, DirectoryGroupConnector } from '../connectors/connector'
 import { NotApplicableError } from '../connectors/connector'
 import { connectorTargets } from '../db/schema/connector-targets'
+import { groups } from '../db/schema/groups'
 import * as schema from '../db/schema/index'
 import { externalGroupIdentities } from '../db/schema/external-group-identities'
 import { externalIdentities } from '../db/schema/external-identities'
@@ -561,7 +562,13 @@ export class SyncWorker implements OnApplicationShutdown {
     // and a tenant never reaches one anyway (Task 13's fan-out narrowing).
     const realm = target === 'keycloak' ? await this.requireProvisionedRealm(tx, user) : null
 
-    const connector = await this.connectorRegistry.resolve(target, tx, realm)
+    // Per-organization connector targets: resolution is by (organization of
+    // the aggregate, target) — the USER's own organization, read from the
+    // row this method just re-read, never a caller-supplied value and never
+    // any other organization's row. An organization with no row for this
+    // target resolves an empty config and fails loudly, exactly like a
+    // globally-unconfigured target always did.
+    const connector = await this.connectorRegistry.resolve(target, tx, user.organizationId, realm)
 
     let externalId: string
     try {
@@ -861,7 +868,8 @@ export class SyncWorker implements OnApplicationShutdown {
     // between them. On an `all_users` target - the default, and every
     // target until an operator opts one in - `entitled` is unconditionally
     // true and this reduces to the single status check it always was.
-    const provisioning = targetProvisioning ?? (await this.loadTargetProvisioningForUser(tx, target, user.id))
+    const provisioning =
+      targetProvisioning ?? (await this.loadTargetProvisioningForUser(tx, user.organizationId, target, user.id))
     const entitled = provisioning.mode === 'all_users' || provisioning.entitledUserIds.has(user.id)
     const desiredEnabled = user.status === 'active' && entitled
 
@@ -911,8 +919,12 @@ export class SyncWorker implements OnApplicationShutdown {
    * exactly whom this system enabled before business roles existed. Guessing
    * `entitled_only` for an unconfigured target would disable everybody in it.
    */
-  async loadTargetProvisioning(tx: DbHandle, target: OutboxTarget): Promise<TargetProvisioning> {
-    const mode = await this.loadProvisioningMode(tx, target)
+  async loadTargetProvisioning(
+    tx: DbHandle,
+    organizationId: string,
+    target: OutboxTarget,
+  ): Promise<TargetProvisioning> {
+    const mode = await this.loadProvisioningMode(tx, organizationId, target)
     if (mode === 'all_users') {
       return { mode, entitledUserIds: new Set() }
     }
@@ -932,10 +944,11 @@ export class SyncWorker implements OnApplicationShutdown {
    */
   private async loadTargetProvisioningForUser(
     tx: DbHandle,
+    organizationId: string,
     target: OutboxTarget,
     userId: string,
   ): Promise<TargetProvisioning> {
-    const mode = await this.loadProvisioningMode(tx, target)
+    const mode = await this.loadProvisioningMode(tx, organizationId, target)
     if (mode === 'all_users') {
       return { mode, entitledUserIds: new Set() }
     }
@@ -948,14 +961,55 @@ export class SyncWorker implements OnApplicationShutdown {
     return { mode, entitledUserIds: new Set(rows.map((row) => row.userId)) }
   }
 
-  /** The one `connector_targets` read both flavours above share - see `loadTargetProvisioning` for why a missing row means `all_users`. */
-  private async loadProvisioningMode(tx: DbHandle, target: OutboxTarget): Promise<'all_users' | 'entitled_only'> {
+  /** The one `connector_targets` read both flavours above share - see `loadTargetProvisioning` for why a missing row means `all_users`. Keyed by (organization, target) — per-organization connector targets — and a missing row for THIS organization still answers `all_users`, never another organization's mode. */
+  private async loadProvisioningMode(
+    tx: DbHandle,
+    organizationId: string,
+    target: OutboxTarget,
+  ): Promise<'all_users' | 'entitled_only'> {
     const [row] = await tx
       .select({ mode: connectorTargets.provisioningMode })
       .from(connectorTargets)
-      .where(eq(connectorTargets.target, target))
+      .where(and(eq(connectorTargets.organizationId, organizationId), eq(connectorTargets.target, target)))
       .limit(1)
     return row?.mode ?? 'all_users'
+  }
+
+  /**
+   * The organization a GROUP belongs to — needed because `GroupsRepository.
+   * findById`'s `Group` shape does not expose `organization_id`, and
+   * per-organization connector-target resolution needs it for every
+   * group-shaped reconcile. One indexed read via the caller's own `tx`.
+   */
+  private async organizationIdOfGroup(tx: DbHandle, groupId: string): Promise<string> {
+    const [row] = await tx
+      .select({ organizationId: groups.organizationId })
+      .from(groups)
+      .where(eq(groups.id, groupId))
+      .limit(1)
+    if (row === undefined) {
+      throw new Error(`sync worker: no group found for id ${groupId}`)
+    }
+    return row.organizationId
+  }
+
+  /**
+   * The MASTER organization's id — the catalog `sso_app` events resolve
+   * against (an SSO application is registered in the master realm and is
+   * platform-level; see resolveAggregateOrganizationId's doc comment in
+   * aggregate-organization.ts for the identical classification the WRITER
+   * uses, kept in lockstep here).
+   */
+  private async masterOrganizationId(tx: DbHandle): Promise<string> {
+    const [row] = await tx
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.isMaster, true))
+      .limit(1)
+    if (row === undefined) {
+      throw new Error('sync worker: no master organization exists — has the organizations backfill migration run?')
+    }
+    return row.id
   }
 
   /**
@@ -1090,7 +1144,7 @@ export class SyncWorker implements OnApplicationShutdown {
    * dead-letter path where an operator can see it.
    */
   async reconcileSsoApp(tx: DbHandle, appId: string, target: OutboxTarget): Promise<void> {
-    const connector = await this.connectorRegistry.resolveSsoConnector(target, tx)
+    const connector = await this.connectorRegistry.resolveSsoConnector(target, tx, await this.masterOrganizationId(tx))
     if (connector === null) {
       throw new Error(`sync worker: target "${target}" implements no SSO connector`)
     }
@@ -1155,7 +1209,11 @@ export class SyncWorker implements OnApplicationShutdown {
     // `member`/`memberOf` DN reference itself across a `modifyDN` (verified
     // empirically — see ActiveDirectoryConnector's own "THE NESTING
     // DECISION" doc comment).
-    const groupConnector = await this.connectorRegistry.resolveGroupConnector(target, tx)
+    const groupConnector = await this.connectorRegistry.resolveGroupConnector(
+      target,
+      tx,
+      await this.organizationIdOfGroup(tx, groupId),
+    )
     if (groupConnector !== null) {
       await this.reconcileAdStyleGroup(tx, group, target, groupConnector)
       return
@@ -1202,7 +1260,11 @@ export class SyncWorker implements OnApplicationShutdown {
     // connector's own rule — is exactly what both a user-edge change AND a
     // child-group-edge change need, without needing to distinguish which
     // one `payload` describes.
-    const groupConnector = await this.connectorRegistry.resolveGroupConnector(event.target, tx)
+    const groupConnector = await this.connectorRegistry.resolveGroupConnector(
+      event.target,
+      tx,
+      await this.organizationIdOfGroup(tx, event.aggregateId),
+    )
     if (groupConnector !== null) {
       const group = await this.groupsRepository.findById(event.aggregateId, tx)
       if (group === null) {
@@ -1366,7 +1428,11 @@ export class SyncWorker implements OnApplicationShutdown {
    * cross-aggregate race exists for a group's own AD identity/membership.
    */
   async reconcileGroupById(tx: DbHandle, groupId: string, target: OutboxTarget): Promise<void> {
-    const groupConnector = await this.connectorRegistry.resolveGroupConnector(target, tx)
+    const groupConnector = await this.connectorRegistry.resolveGroupConnector(
+      target,
+      tx,
+      await this.organizationIdOfGroup(tx, groupId),
+    )
     if (groupConnector === null) {
       return
     }

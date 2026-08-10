@@ -1,11 +1,13 @@
 import { Inject, Injectable, Optional } from '@nestjs/common'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { AuditWriter } from '../audit/audit.writer'
 import { DB_CLIENT } from '../common/db.token'
 import type { ConnectorOperation, ConnectorTarget } from '../connectors/connector'
 import { ConnectorRegistry } from '../connectors/connector-registry'
 import { connectorTargets } from '../db/schema/connector-targets'
+import { groups as groupsTable } from '../db/schema/groups'
+import { organizations } from '../db/schema/organizations'
 import * as schema from '../db/schema/index'
 import { type Group, GroupsRepository } from '../groups/groups.repository'
 import { type User, UsersRepository, type UserStatus } from '../users/users.repository'
@@ -132,6 +134,17 @@ export interface TargetReconciliationOptions {
    * `connector:reconcile-override` names a human when one exists".
    */
   actorUserId?: string | null
+  /**
+   * Per-organization connector targets: WHICH organization's catalog —
+   * (organization_id, target) is `connector_targets`' identity — this run
+   * reconciles, and whose population it walks. Omitted means MASTER: the
+   * platform operator's own catalog, which is exactly what every run meant
+   * before organizations owned their own rows (the CLI and every
+   * pre-existing caller are master-scoped by construction). This is a run
+   * SCOPE the caller chooses, not a config fallback — resolution inside the
+   * run never reads any other organization's rows.
+   */
+  organizationId?: string
 }
 
 /** One principal whose OWN `reconcileUser` call threw during the APPLY phase — see `TargetReconciliationReport.failed`'s own doc comment. */
@@ -150,6 +163,8 @@ export interface FailedGroup {
 
 export interface TargetReconciliationReport {
   target: ConnectorTarget
+  /** The organization whose catalog and population this run covered — see `TargetReconciliationOptions.organizationId`. */
+  organizationId: string
   /**
    * Every in-scope principal walked — every user, every status (see
    * `ALL_USER_STATUSES`), PLUS every in-scope GROUP walked when `target` has
@@ -345,8 +360,9 @@ export class TargetReconciliationJob {
   ): Promise<TargetReconciliationReport> {
     const dryRun = options.dryRun ?? false
     const force = options.force ?? false
+    const organizationId = options.organizationId ?? (await this.masterOrganizationId())
 
-    const { thresholdPercent, floor } = await this.loadBlastRadiusConfig(target)
+    const { thresholdPercent, floor } = await this.loadBlastRadiusConfig(organizationId, target)
 
     // MILESTONE 18, TASK 15 — this target's provisioning mode and, when it
     // is `entitled_only`, the FULL set of users entitled to an account in
@@ -365,7 +381,7 @@ export class TargetReconciliationJob {
     // has, and far better than a walk whose first half and second half
     // disagree about who should have an account.
     const provisioning = await this.db.transaction(async (tx) =>
-      this.syncWorker.loadTargetProvisioning(tx, target),
+      this.syncWorker.loadTargetProvisioning(tx, organizationId, target),
     )
 
     const toMutate: PlannedPrincipal[] = []
@@ -380,8 +396,16 @@ export class TargetReconciliationJob {
         }
 
         for (const user of page) {
+          // Per-organization scope: this run walks ONE organization's own
+          // people. `UsersRepository.list` has no organization filter of its
+          // own, so the page is filtered here — a skipped user contributes
+          // to neither the population nor the plan, exactly as if the walk
+          // never saw them.
+          if (user.organizationId !== organizationId) {
+            continue
+          }
           populationSize += 1
-          const operations = await this.planForUser(user, target, provisioning)
+          const operations = await this.planForUser(user, target, organizationId, provisioning)
           if (operations.length > 0) {
             toMutate.push({ userId: user.id, username: user.username, operations })
           }
@@ -405,7 +429,18 @@ export class TargetReconciliationJob {
     const toMutateGroups: PlannedGroup[] = []
     let groupPopulationSize = 0
 
-    if (await this.hasGroupConnector(target)) {
+    if (await this.hasGroupConnector(target, organizationId)) {
+      // `Group` does not expose `organization_id`, so the organization's own
+      // group ids are read once up front and the walk filters against them —
+      // same per-organization scope rule as the user walk above.
+      const organizationGroupIds = new Set(
+        (
+          await this.db
+            .select({ id: groupsTable.id })
+            .from(groupsTable)
+            .where(eq(groupsTable.organizationId, organizationId))
+        ).map((row) => row.id),
+      )
       let offset = 0
       for (;;) {
         const page = await this.groupsRepository.list({ limit: PAGE_SIZE, offset, scopePaths: null })
@@ -414,8 +449,11 @@ export class TargetReconciliationJob {
         }
 
         for (const group of page) {
+          if (!organizationGroupIds.has(group.id)) {
+            continue
+          }
           groupPopulationSize += 1
-          const operations = await this.planForGroup(group, target)
+          const operations = await this.planForGroup(group, target, organizationId)
           if (operations.length > 0) {
             toMutateGroups.push({ groupId: group.id, name: group.name, operations })
           }
@@ -446,6 +484,7 @@ export class TargetReconciliationJob {
       // the guard would have decided.
       return {
         target,
+        organizationId,
         populationSize,
         toMutate,
         toMutateGroups,
@@ -466,6 +505,7 @@ export class TargetReconciliationJob {
       // caller (the CLI) can report exactly what would have happened.
       return {
         target,
+        organizationId,
         populationSize,
         toMutate,
         toMutateGroups,
@@ -540,6 +580,7 @@ export class TargetReconciliationJob {
 
     return {
       target,
+      organizationId,
       populationSize,
       toMutate,
       toMutateGroups,
@@ -576,6 +617,7 @@ export class TargetReconciliationJob {
   private async planForUser(
     user: User,
     target: ConnectorTarget,
+    organizationId: string,
     provisioning: TargetProvisioning,
   ): Promise<ConnectorOperation[]> {
     return this.db.transaction(async (tx) => {
@@ -590,7 +632,7 @@ export class TargetReconciliationJob {
       // user is planned for a DISABLE rather than quietly skipped, which
       // would leave a live account nobody manages.
       const desired = await this.syncWorker.buildDesiredUser(tx, user, target, provisioning)
-      const connector = await this.connectorRegistry.resolve(target, tx)
+      const connector = await this.connectorRegistry.resolve(target, tx, organizationId)
       const operations = await connector.plan(desired)
 
       const entitled = provisioning.mode === 'all_users' || provisioning.entitledUserIds.has(user.id)
@@ -628,9 +670,9 @@ export class TargetReconciliationJob {
    * is what keeps this job's behaviour byte-for-byte unchanged, for every
    * one of those targets, from what Milestone 10 Task 4 originally shipped.
    */
-  private async hasGroupConnector(target: ConnectorTarget): Promise<boolean> {
+  private async hasGroupConnector(target: ConnectorTarget, organizationId: string): Promise<boolean> {
     return this.db.transaction(
-      async (tx) => (await this.connectorRegistry.resolveGroupConnector(target, tx)) !== null,
+      async (tx) => (await this.connectorRegistry.resolveGroupConnector(target, tx, organizationId)) !== null,
     )
   }
 
@@ -654,9 +696,13 @@ export class TargetReconciliationJob {
    * converged would also report — never a hard failure over a race this
    * narrow.
    */
-  private async planForGroup(group: Group, target: ConnectorTarget): Promise<ConnectorOperation[]> {
+  private async planForGroup(
+    group: Group,
+    target: ConnectorTarget,
+    organizationId: string,
+  ): Promise<ConnectorOperation[]> {
     return this.db.transaction(async (tx) => {
-      const groupConnector = await this.connectorRegistry.resolveGroupConnector(target, tx)
+      const groupConnector = await this.connectorRegistry.resolveGroupConnector(target, tx, organizationId)
       if (groupConnector === null) {
         return []
       }
@@ -680,6 +726,7 @@ export class TargetReconciliationJob {
    * of.
    */
   private async loadBlastRadiusConfig(
+    organizationId: string,
     target: ConnectorTarget,
   ): Promise<{ thresholdPercent: number; floor: number }> {
     const [row] = await this.db
@@ -688,7 +735,7 @@ export class TargetReconciliationJob {
         floor: connectorTargets.blastRadiusFloor,
       })
       .from(connectorTargets)
-      .where(eq(connectorTargets.target, target))
+      .where(and(eq(connectorTargets.organizationId, organizationId), eq(connectorTargets.target, target)))
       .limit(1)
 
     if (row === undefined) {
@@ -697,6 +744,21 @@ export class TargetReconciliationJob {
       )
     }
     return row
+  }
+
+  /** The default run scope when a caller names no organization — see `TargetReconciliationOptions.organizationId`. */
+  private async masterOrganizationId(): Promise<string> {
+    const [row] = await this.db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.isMaster, true))
+      .limit(1)
+    if (row === undefined) {
+      throw new Error(
+        'target-reconciliation: no master organization exists — has the organizations backfill migration run?',
+      )
+    }
+    return row.id
   }
 
   /**
