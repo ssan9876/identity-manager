@@ -78,6 +78,18 @@ export const businessRoles = pgTable(
     enabled: boolean('enabled').notNull().default(false),
 
     /**
+     * Self-service catalogue visibility (access-request catalogue, 0035).
+     * A THIRD gate, deliberately separate from the two above: `enabled`
+     * decides whether the formula grants anything at all, and the draft
+     * gate decides how the formula changes — `requestable` decides only
+     * whether ordinary employees may ASK for this role through the
+     * self-service catalogue. Default false: nothing is requestable until
+     * an admin explicitly publishes it as such, so the catalogue is an
+     * allowlist, never "everything minus some exclusions".
+     */
+    requestable: boolean('requestable').notNull().default(false),
+
+    /**
      * Pending edits. Shape is validated by the application on write and again
      * on publish (see business-roles.repository.ts) — jsonb because a draft is
      * scratch, deliberately NOT the typed child tables below, which are what

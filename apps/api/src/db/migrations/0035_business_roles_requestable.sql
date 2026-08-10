@@ -1,0 +1,17 @@
+-- Access-request catalogue, part 1 of 2 (0036 adds the requests table).
+--
+-- `requestable` is a THIRD, independent gate on a business role, beside the
+-- kill switch (`enabled`) and the draft/simulate/publish change gate: it
+-- decides only whether ordinary employees may ASK for this role through the
+-- self-service catalogue. NOT NULL DEFAULT false makes the catalogue an
+-- allowlist by construction — every pre-existing role backfills to
+-- not-requestable, and nothing appears in the catalogue until an admin
+-- explicitly publishes it there (`PUT /business-roles/:id/requestable`, a
+-- separately-audited verb route exactly like enable/disable).
+--
+-- RE-RUNNABLE, like everything from 0027 onward: test/migrate.spec.ts
+-- rewinds the ledger and replays this tail against a POPULATED schema, so
+-- `ADD COLUMN IF NOT EXISTS` keeps that honest (0030 is the model). A
+-- NOT NULL column with a DEFAULT is safe to add to a populated table in a
+-- single step — every existing row takes the default.
+ALTER TABLE "business_roles" ADD COLUMN IF NOT EXISTS "requestable" boolean NOT NULL DEFAULT false;

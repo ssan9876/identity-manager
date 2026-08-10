@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common'
+import { AccessRequestsController } from './access-requests/access-requests.controller'
+import { AccessRequestsRepository } from './access-requests/access-requests.repository'
 import { JWT_GUARD_OPTIONS, JwtGuard, type JwtGuardOptions } from './auth/jwt.guard'
 import { MeController } from './auth/me.controller'
 import { AttributeDefinitionsController } from './attributes/attribute-definitions.controller'
@@ -71,6 +73,9 @@ import { UsersRepository } from './users/users.repository'
     RoleAssignmentsController,
     ImportsController,
     SelfServiceController,
+    // Self-service access-request catalogue: /access-requests (authentication-
+    // only, like SelfServiceController — see guard-coverage.spec.ts).
+    AccessRequestsController,
     OutboxController,
     AttributeDefinitionsController,
     AuditController,
@@ -283,6 +288,7 @@ import { UsersRepository } from './users/users.repository'
     // safe for every boot, exactly as for SyncWorker/TargetReconciliationJob
     // above.
     BusinessRolesRepository,
+    AccessRequestsRepository,
     RoleReconciler,
     // Milestone 17, Task 11: the sweep BusinessRolesController runs after a
     // publish, an enable or a disable — Task 10 built it CLI-only and

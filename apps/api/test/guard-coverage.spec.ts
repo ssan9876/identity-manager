@@ -27,7 +27,22 @@ const OPEN_BY_DESIGN = new Set(['HealthController'])
  * hardening: an ordinary employee with zero grants would be locked out of
  * their own profile.
  */
-const AUTHENTICATION_ONLY = new Set(['MeController', 'SelfServiceController'])
+/*
+ * `AccessRequestsController` (self-service access-request catalogue) joins
+ * on the same terms as `SelfServiceController`: every route serves the
+ * authenticated caller as themselves — browsing the catalogue, requesting a
+ * role, cancelling their own request, and deciding requests as the RESOLVED
+ * APPROVER (an ordinary manager holding no admin role and no permission
+ * grant at all). Gating it behind PermissionGuard would lock every ordinary
+ * employee out of the catalogue and every manager out of their own inbox.
+ * Its authorization is per-route and in-handler, from server-resolved facts
+ * only — see that controller's own class doc comment.
+ */
+const AUTHENTICATION_ONLY = new Set([
+  'MeController',
+  'SelfServiceController',
+  'AccessRequestsController',
+])
 
 type Ctor = new (...args: never[]) => unknown
 
@@ -86,6 +101,7 @@ describe('guard coverage', () => {
     // If a controller is added or renamed, update this list deliberately.
     expect(found).toEqual(
       [
+        'AccessRequestsController',
         'AttributeDefinitionsController',
         'AttributeTargetMappingsController',
         'AuditController',

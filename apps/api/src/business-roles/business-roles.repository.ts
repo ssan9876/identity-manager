@@ -226,6 +226,28 @@ export class BusinessRolesRepository {
   }
 
   /**
+   * The catalogue-visibility flag (access-request catalogue). Mirrors
+   * `setEnabled` but is deliberately NOT the kill switch: flipping
+   * `requestable` off removes the role from the self-service catalogue and
+   * blocks NEW requests, while granting nothing and revoking nothing —
+   * exceptions already approved through past requests stand untouched.
+   */
+  async setRequestable(
+    id: string,
+    requestable: boolean,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<BusinessRoleRow> {
+    const [row] = await db
+      .update(businessRoles)
+      .set({ requestable, updatedAt: new Date() })
+      .where(eq(businessRoles.id, id))
+      .returning()
+
+    if (!row) throw new NotFoundError('business role', id)
+    return row
+  }
+
+  /**
    * Add or replace ONE person's exception on a role.
    *
    * An upsert rather than a plain insert, keyed on the table's own
