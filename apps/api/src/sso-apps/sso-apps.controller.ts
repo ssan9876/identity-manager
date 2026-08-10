@@ -25,6 +25,7 @@ import { parseBody } from '../common/http/parse-body'
 import { ConnectorTargetsRepository } from '../connectors/connector-targets.repository'
 import { KeycloakSsoConnectorFactory } from '../connectors/keycloak-sso.connector'
 import * as schema from '../db/schema/index'
+import { OrganizationsRepository } from '../organizations/organizations.repository'
 import { OutboxWriter } from '../outbox/outbox.writer'
 import {
   clientIdProblem,
@@ -85,6 +86,7 @@ export class SsoAppsController {
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
     @Inject(OutboxWriter) private readonly outboxWriter: OutboxWriter,
     @Inject(ConnectorTargetsRepository) private readonly targets: ConnectorTargetsRepository,
+    @Inject(OrganizationsRepository) private readonly organizations: OrganizationsRepository,
     @Inject(KeycloakSsoConnectorFactory) private readonly ssoFactory: KeycloakSsoConnectorFactory,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
   ) {}
@@ -322,7 +324,13 @@ export class SsoAppsController {
       )
     }
 
-    const target = await this.targets.findOne('keycloak_sso')
+    // Per-organization connector targets: an SSO application is registered
+    // in the master realm and is platform-level, so the `keycloak_sso` row
+    // consulted here is MASTER's — the same classification the outbox
+    // writer's fan-out uses for `sso_app` aggregates
+    // (resolveAggregateOrganizationId, outbox/aggregate-organization.ts).
+    const master = await this.organizations.findMaster()
+    const target = await this.targets.findOne(master.id, 'keycloak_sso')
     if (!target.configured || !target.enabled) {
       throw new ConflictError('the keycloak_sso target is not configured and enabled')
     }

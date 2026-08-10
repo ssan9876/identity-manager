@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Param, Post, Patch, UseGuards, Req } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Param, Post, Patch, Query, UseGuards, Req } from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
 import { JwtGuard } from '../auth/jwt.guard'
@@ -7,10 +7,13 @@ import { PermissionGuard, type AuthorizedRequest } from '../authz/permission.gua
 import { RequirePermission } from '../authz/require-permission.decorator'
 import { DB_CLIENT } from '../common/db.token'
 import { PermissionEngine } from '../authz/permission.engine'
-import { ForbiddenError, ValidationError } from '../common/errors'
+import { ForbiddenError, NotFoundError, ValidationError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
+import { parseId } from '../common/http/parse-id'
 import { noNulChar } from '../common/http/safe-string'
 import * as schema from '../db/schema/index'
+import type { Organization } from '../db/schema/organizations'
+import { OrganizationsRepository } from '../organizations/organizations.repository'
 import {
   type TargetReconciliationOptions,
   type TargetReconciliationReport,
@@ -145,6 +148,7 @@ const reconcileBodySchema = z
 
 function snapshotTarget(row: ConnectorTargetRow): Record<string, unknown> {
   return {
+    organizationId: row.organizationId,
     target: row.target,
     enabled: row.enabled,
     config: row.config,
@@ -225,8 +229,31 @@ export class ConnectorTargetsController {
     }
   }
 
+  /**
+   * Per-organization connector targets: every route on this controller takes
+   * an OPTIONAL `?organizationId=` query parameter naming which
+   * organization's catalog it reads or writes — (organization_id, target) is
+   * the table's identity. Omitted means MASTER, the platform operator's own
+   * catalog, which is exactly what every request to these routes meant
+   * before organizations owned their own rows. A named organization must
+   * exist (404 otherwise); a named organization with no row for a target is
+   * simply `not_configured` for it — never another organization's row.
+   */
+  private async resolveOrganization(raw: unknown): Promise<Organization> {
+    if (raw === undefined) {
+      return this.organizations.findMaster()
+    }
+    const id = parseId(raw, 'organizationId')
+    const organization = await this.organizations.findById(id)
+    if (organization === null) {
+      throw new NotFoundError('organization', id)
+    }
+    return organization
+  }
+
   constructor(
     @Inject(ConnectorTargetsRepository) private readonly targets: ConnectorTargetsRepository,
+    @Inject(OrganizationsRepository) private readonly organizations: OrganizationsRepository,
     @Inject(PermissionEngine) private readonly engine: PermissionEngine,
     @Inject(ConnectorRegistry) private readonly registry: ConnectorRegistry,
     @Inject(TargetReconciliationJob) private readonly reconciliationJob: TargetReconciliationJob,
@@ -236,14 +263,19 @@ export class ConnectorTargetsController {
 
   @Get()
   @RequirePermission('connector:read')
-  async list(): Promise<ConnectorTargetSummary[]> {
-    return Promise.all(ALL_CONNECTOR_TARGETS.map((target) => this.summarize(target)))
+  async list(@Query() query: Record<string, unknown>): Promise<ConnectorTargetSummary[]> {
+    const organization = await this.resolveOrganization(query.organizationId)
+    return Promise.all(ALL_CONNECTOR_TARGETS.map((target) => this.summarize(organization, target)))
   }
 
   @Get(':target')
   @RequirePermission('connector:read')
-  async findOne(@Param('target') rawTarget: string): Promise<ConnectorTargetSummary> {
-    return this.summarize(parseTargetParam(rawTarget))
+  async findOne(
+    @Param('target') rawTarget: string,
+    @Query() query: Record<string, unknown>,
+  ): Promise<ConnectorTargetSummary> {
+    const organization = await this.resolveOrganization(query.organizationId)
+    return this.summarize(organization, parseTargetParam(rawTarget))
   }
 
   /**
@@ -257,9 +289,11 @@ export class ConnectorTargetsController {
   async update(
     @Param('target') rawTarget: string,
     @Body() body: unknown,
+    @Query() query: Record<string, unknown>,
     @Req() request: AuthorizedRequest,
   ): Promise<ConnectorTargetSummary> {
     await this.requireGlobalManageGrant(request)
+    const organization = await this.resolveOrganization(query.organizationId)
     const target = parseTargetParam(rawTarget)
     const parsed = parseBody(patchTargetBodySchema, body)
     const patch = {
@@ -270,8 +304,8 @@ export class ConnectorTargetsController {
     }
 
     await this.db.transaction(async (tx) => {
-      const before = await this.targets.findOne(target, tx)
-      const after = await this.targets.upsert(tx, target, patch)
+      const before = await this.targets.findOne(organization.id, target, tx)
+      const after = await this.targets.upsert(tx, organization.id, target, patch)
 
       await this.auditWriter.record(tx, {
         actorUserId: request.actor.userId,
@@ -286,7 +320,7 @@ export class ConnectorTargetsController {
       })
     })
 
-    return this.summarize(target)
+    return this.summarize(organization, target)
   }
 
   /**
@@ -316,13 +350,15 @@ export class ConnectorTargetsController {
   async reconcile(
     @Param('target') rawTarget: string,
     @Body() body: unknown,
+    @Query() query: Record<string, unknown>,
     @Req() request: AuthorizedRequest,
   ): Promise<TargetReconciliationReport> {
     await this.requireGlobalManageGrant(request)
+    const organization = await this.resolveOrganization(query.organizationId)
     const target = parseTargetParam(rawTarget)
     const parsed = parseBody(reconcileBodySchema, body)
 
-    const row = await this.targets.findOne(target)
+    const row = await this.targets.findOne(organization.id, target)
     if (!row.configured) {
       throw new ValidationError([
         `target: "${target}" has no blast-radius threshold/floor configured yet — configure it before running a reconcile`,
@@ -343,6 +379,7 @@ export class ConnectorTargetsController {
       dryRun: parsed.dryRun,
       force: parsed.force,
       actorUserId: request.actor.userId,
+      organizationId: organization.id,
     }
     const report = await this.reconciliationJob.reconcile(target, options)
 
@@ -354,6 +391,7 @@ export class ConnectorTargetsController {
         resourceId: null,
         before: null,
         after: {
+          organizationId: organization.id,
           target,
           dryRun: report.dryRun,
           force: parsed.force ?? false,
@@ -383,10 +421,10 @@ export class ConnectorTargetsController {
    * transaction first, mirroring `TargetReconciliationJob.hasGroupConnector`'s
    * identical "one cheap, closed transaction before the real work" shape.
    */
-  private async summarize(target: ConnectorTarget): Promise<ConnectorTargetSummary> {
+  private async summarize(organization: Organization, target: ConnectorTarget): Promise<ConnectorTargetSummary> {
     const [row, lastSuccessfulSyncAt] = await Promise.all([
-      this.targets.findOne(target),
-      this.targets.lastSuccessfulSyncAt(target),
+      this.targets.findOne(organization.id, target),
+      this.targets.lastSuccessfulSyncAt(organization.id, target),
     ])
 
     if (!row.configured) {
@@ -401,7 +439,7 @@ export class ConnectorTargetsController {
       // healthFor, not resolve+health: `resolve` only knows the
       // user-directory family, so it throws "no connector registered" for
       // keycloak_sso and this catch would report a healthy target as failing.
-      health = await this.db.transaction((tx) => this.registry.healthFor(target, tx))
+      health = await this.db.transaction((tx) => this.registry.healthFor(target, tx, organization.id))
     } catch (error) {
       health = { ok: false, detail: error instanceof Error ? error.message : String(error) }
     }

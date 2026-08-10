@@ -14,6 +14,7 @@ import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { ConnectorTargetsRepository } from '../src/connectors/connector-targets.repository'
 import { KeycloakSsoConnectorFactory, type SsoAdminApi } from '../src/connectors/keycloak-sso.connector'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
+import { OrganizationsRepository } from '../src/organizations/organizations.repository'
 import { OutboxWriter } from '../src/outbox/outbox.writer'
 import { SsoAppsController } from '../src/sso-apps/sso-apps.controller'
 import { SsoAppsRepository } from '../src/sso-apps/sso-apps.repository'
@@ -80,6 +81,7 @@ describe('SsoAppsController', () => {
         { provide: KeycloakSsoConnectorFactory, useValue: fakeFactory },
         SsoAppsRepository,
         ConnectorTargetsRepository,
+        OrganizationsRepository,
         AuditWriter,
         OutboxWriter,
         PermissionEngine,

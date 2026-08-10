@@ -20,6 +20,7 @@ import { EchoConnector } from '../src/connectors/echo.connector'
 import { GroupsRepository } from '../src/groups/groups.repository'
 import { KeycloakAdminClient } from '../src/keycloak/keycloak-admin.client'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
+import { OrganizationsRepository } from '../src/organizations/organizations.repository'
 import { OutboxRepository } from '../src/outbox/outbox.repository'
 import { SyncWorker } from '../src/outbox/sync.worker'
 import { TargetReconciliationJob } from '../src/outbox/target-reconciliation.job'
@@ -94,6 +95,7 @@ describe('ConnectorTargetsController (Milestone 14, Task 9)', () => {
         { provide: TargetReconciliationJob, useValue: job },
         { provide: AuditWriter, useValue: auditWriter },
         ConnectorTargetsRepository,
+        OrganizationsRepository,
         PermissionEngine,
         PermissionGuard,
         Reflector,
@@ -641,7 +643,7 @@ describe('ConnectorTargetsController (Milestone 14, Task 9)', () => {
       await ctx.pool.query(
         `INSERT INTO connector_targets (target, enabled, config, blast_radius_threshold, blast_radius_floor)
          VALUES ('echo', true, $1, 100, 1000000)
-         ON CONFLICT (target) DO UPDATE SET enabled = true, config = $1, blast_radius_threshold = 100, blast_radius_floor = 1000000`,
+         ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true, config = $1, blast_radius_threshold = 100, blast_radius_floor = 1000000`,
         [JSON.stringify({ credentialSecretName: secretName })],
       )
     })
