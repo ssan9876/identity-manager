@@ -6,8 +6,28 @@ import { JwtGuard } from '../src/auth/jwt.guard'
 import { PermissionGuard } from '../src/authz/permission.guard'
 import { REQUIRED_PERMISSION } from '../src/authz/require-permission.decorator'
 
-/** Only the liveness probe may be reached without authentication. */
-const OPEN_BY_DESIGN = new Set(['HealthController'])
+/**
+ * Only the PROBE endpoints may be reached without authentication.
+ *
+ * `HealthController` (liveness) and `ReadinessController` (`GET
+ * /health/ready`) are both called by things that hold no token and cannot be
+ * given one: a systemd unit, a kubelet, the deploy script's curl loop. An
+ * authenticated probe is not a probe — it fails for reasons that have
+ * nothing to do with whether this instance can serve, and it cannot run
+ * before a token issuer is reachable.
+ *
+ * The cost of that exemption is paid in the handlers themselves: neither may
+ * return anything an anonymous caller should not see. Liveness returns a
+ * constant. Readiness returns a closed vocabulary of literal strings and
+ * never the underlying error (see readiness.controller.ts, and the leak
+ * assertions in readiness.spec.ts).
+ *
+ * Readiness is a SEPARATE controller rather than a second route on
+ * `HealthController` precisely so that it had to be added here by hand: a
+ * new unauthenticated route on an already-exempt controller would have
+ * slipped past this file entirely.
+ */
+const OPEN_BY_DESIGN = new Set(['HealthController', 'ReadinessController'])
 
 /**
  * Authenticated but not authorized: these controllers need identity
@@ -128,6 +148,7 @@ describe('guard coverage', () => {
         'OrgUnitsController',
         'OrganizationsController',
         'OutboxController',
+        'ReadinessController',
         'RecertCampaignsController',
         'RecertReviewsController',
         'RoleAssignmentsController',

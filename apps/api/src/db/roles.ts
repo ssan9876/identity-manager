@@ -221,4 +221,31 @@ export async function provisionRuntimeRole(pool: Pool, credentials: RuntimeRoleC
   // audit_log's ROWS do, so there is no equivalent restriction to carve out
   // here the way there is for tables.
   await pool.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ${role}`)
+
+  // READ-ONLY access to drizzle's applied-migration ledger, for
+  // `health/readiness.controller.ts`. The readiness probe answers "is this
+  // instance's schema at the version its code was built for", which it can
+  // only do by reading this table — and it runs on the RUNTIME connection
+  // (app.module.ts's DB_CLIENT), which by design holds nothing outside
+  // `public`, not even USAGE on this schema. Without these two grants the
+  // probe would answer `migrations: 'unknown'` on every healthy instance in
+  // production while passing against any owner-privileged handle, which is
+  // the worst kind of green test.
+  //
+  // SELECT only, and on this one table only: nothing here weakens finding
+  // H1's posture. The role still owns nothing, still has no CREATE on any
+  // schema, and still cannot write to (or through) the ledger — reading
+  // which migrations ran grants no ability to change what ran.
+  //
+  // Guarded on existence because `provisionRuntimeRole` is also reachable
+  // before drizzle has ever created the ledger (`runMigrations` returns
+  // early when no journal has been generated yet), and a GRANT on a missing
+  // object is an error, not a no-op.
+  const { rows: ledger } = await pool.query(
+    `SELECT 1 FROM pg_tables WHERE schemaname = 'drizzle' AND tablename = '__drizzle_migrations'`,
+  )
+  if (ledger.length > 0) {
+    await pool.query(`GRANT USAGE ON SCHEMA drizzle TO ${role}`)
+    await pool.query(`GRANT SELECT ON TABLE drizzle.__drizzle_migrations TO ${role}`)
+  }
 }
