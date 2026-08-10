@@ -6,6 +6,15 @@
 // 6b75107 had already closed — that needed a human reading a claim against an
 // implementation. A guard that is narrow and trusted beats one that is broad
 // and noisy, because a noisy guard gets suppressed and then catches nothing.
+//
+// SUBSTRING MATCHING FRAGILITY: The target and CLI checks use substring
+// matching (body.includes()), which has latent false-negative risks:
+//   - 'echo' is an English word; prose like "output will echo to the console"
+//     in a document would satisfy the check despite a missing 'echo' target.
+//   - 'keycloak' is a prefix of 'keycloak_sso', so a document could mention
+//     only the longer form yet pass a substring check for 'keycloak'.
+// Today's checks pass (all "present" verdicts verified), but future changes
+// to documentation should account for this limitation.
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -25,7 +34,7 @@ const OPERATOR_CLIS = [
 /**
  * Documents whose connector-target lists present themselves as complete.
  * A target missing from one of these is a target an operator does not learn
- * exists — which on 2026-08-10 was six of thirteen, every SCIM application.
+ * exists. Run scripts/check-docs.mjs to see the current gap.
  */
 const TARGET_LIST_DOCS = [
   'docs/03-data-model.md',
