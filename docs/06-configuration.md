@@ -51,10 +51,27 @@ not redundancy. The admin credential is *realm-scoped*: its roles are
 cannot reach `/admin/realms/<anything-else>` at all. Creating a realm is a
 **server-level** operation, which only a master-realm principal can perform.
 
-**Creating the service account** (once, by hand or by your Keycloak IaC):
+**Creating the service account.** `scripts/keycloak-setup.sh` will do it, but only
+when asked:
 
-1. In the Keycloak admin console, switch to the **`master`** realm — not
-   `identity-manager`.
+```
+SETUP_PROVISIONER=1 \
+  KEYCLOAK_URL=https://kc.example.com \
+  KC_ADMIN_USER=admin KC_ADMIN_PASS=... \
+  CONSOLE_URL=http://idm.lan \
+  bash scripts/keycloak-setup.sh
+```
+
+It prints `KEYCLOAK_PROVISION_CLIENT_ID` and `KEYCLOAK_PROVISION_CLIENT_SECRET` at
+the end. The flag is opt-in rather than default because this is the only credential
+in the system whose reach is the whole Keycloak server; a single-tenant install has
+no use for it and is better off without it. Run the script without the flag and it
+says so explicitly, so the `503 NOT_CONFIGURED` you would otherwise meet at the
+Organizations page is not a mystery.
+
+By hand, the same thing is four steps in the admin console:
+
+1. Switch to the **`master`** realm — not `identity-manager`.
 2. **Clients → Create client.** Client ID `idm-provisioner`. Client authentication
    **on**; standard flow and direct access grants **off**; **Service accounts roles
    on**.
@@ -62,12 +79,30 @@ cannot reach `/admin/realms/<anything-else>` at all. Creating a realm is a
 4. **Service accounts roles → Assign role → Filter by realm roles → `create-realm`.**
    Assign that, and nothing else.
 
-`create-realm` alone is sufficient, and this was verified against a real Keycloak 26
-rather than assumed: Keycloak grants the creator of a realm the `<realm>-realm` client
-roles at creation time, so the provisioner can administer every realm it made. It
-follows that a realm this credential did **not** create — one made by hand, or made
-before the credential was rotated — is *not* administrable, and `ensureRealm` probes for
-exactly that on the already-exists path and refuses with a message naming the remedy.
+`create-realm` alone is sufficient, and this is measured against a real Keycloak 26
+rather than assumed. Holding only that role, the credential gets:
+
+| Request | Realm it created | Realm it did not create |
+|---|---|---|
+| `GET /admin/realms/<name>` | 200 | 200 |
+| `GET .../users/count` | 200 | 403 |
+| `GET .../clients` | 200 | 403 |
+| `POST .../users` | 201 | 403 |
+| `PUT /admin/realms/<name>` | 200 | 403 |
+
+Keycloak grants the creator of a realm the `<realm>-realm` client roles at creation
+time, so the provisioner can administer every realm it made and, apart from one bare
+top-level read, nothing about any realm it did not. A realm made by hand, or made
+before the credential was rotated, is therefore *not* administrable; `ensureRealm`
+probes for exactly that on the already-exists path and refuses with a message naming
+the remedy.
+
+One consequence is easy to be bitten by: those creator roles are attached to the
+service account, not back-filled into tokens already issued to it. A token minted
+*before* the realm existed gets 403 on that realm's own `users/count`; one minted
+after gets 200. `KeycloakAdminClient.invalidateCachedToken()` is what makes the
+provisioning path re-mint at the right moment, which is why deleting it as dead code
+turns seven tests red.
 
 Grant nothing beyond `create-realm`. A master-realm `admin` would work, and would also
 be a credential that can do anything to anything, held by a long-running service.

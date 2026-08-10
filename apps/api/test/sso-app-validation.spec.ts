@@ -80,7 +80,14 @@ describe('reserved client ids', () => {
   // rewriting idm-console's own redirectUris. It is an application-level
   // guard and strictly weaker than a structural boundary — this test at
   // least proves the list still names every client keycloak-setup.sh creates.
-  it('names every client keycloak-setup.sh creates', () => {
+  // Scoped to `upsert_client`, which is the script's helper for clients in the
+  // identity-manager realm. keycloak-setup.sh also creates `idm-provisioner`,
+  // deliberately NOT through that helper: it lives in the MASTER realm, and
+  // idm-sso-admin's manage-clients is realm-scoped to identity-manager, so no
+  // SSO app registration can name it. Denylisting it would suggest a reach this
+  // credential does not have. If a master-realm client ever does become
+  // reachable from here, it belongs in RESERVED_CLIENT_IDS and in this scan.
+  it('names every client keycloak-setup.sh creates in the application realm', () => {
     const setup = readFileSync(join(__dirname, '../../../scripts/keycloak-setup.sh'), 'utf8')
     const created = [...setup.matchAll(/upsert_client\s+([a-z0-9-]+)/g)].map((m) => m[1])
 

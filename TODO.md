@@ -227,9 +227,12 @@ master's `All enabled targets`; **Suspend disabled the realm without deleting
 it** — three realms still present, `acme-corp` `enabled: false` — and Reactivate
 re-enabled it. Master carries no Suspend control. No console errors.
 
-**Still not run:** `apps/web/e2e/organizations.spec.ts` as a spec. It needs
-`KEYCLOAK_PROVISION_*` configured, which nothing scripts yet — see the
-housekeeping item on `idm-provisioner`.
+**Still not run:** `apps/web/e2e/organizations.spec.ts` as a spec. The blocker
+that nothing scripted `KEYCLOAK_PROVISION_*` is gone — `SETUP_PROVISIONER=1
+bash scripts/keycloak-setup.sh` now mints the credential. What remains is
+wiring that into the e2e harness and CI, and deciding what the spec does about
+the realms it creates: each run leaves a Keycloak realm behind, and `create-realm`
+can delete the realms it made, so teardown is possible but must be written.
 
 ---
 
@@ -476,34 +479,47 @@ Two traps worth knowing, both of which made a working fix look broken:
 
 ## Housekeeping
 
-- [ ] **Nothing creates the provisioning client, so Organizations is
-      unreachable on a documented install.** `scripts/keycloak-setup.sh` builds
-      the realm and three clients through the Admin API, but never creates
-      `idm-provisioner` (a master-realm service account holding `create-realm`).
-      `docs/06-configuration.md` says to make it "by hand or by your Keycloak
-      IaC", so an operator who follows the install and then opens Organizations
-      gets `503 NOT_CONFIGURED` — correct fail-closed behaviour with no scripted
-      path out of it. It also means `apps/web/e2e/organizations.spec.ts` cannot
-      run in CI. Creating it is ~30 lines in the same idempotent style the script
-      already uses for the other three clients: create the client
-      (confidential, service accounts on, standard flow and direct grants off),
-      read its secret, assign the realm role `create-realm` to its service
-      account user, and print the secret the way the script already prints the
-      sync secret. Verified working by hand on 2026-08-09 via exactly those Admin
-      API calls.
+- [x] **`scripts/keycloak-setup.sh` now creates the provisioning client.**
+      Behind `SETUP_PROVISIONER=1`, opt-in rather than default: this is the one
+      credential whose reach is the whole Keycloak server, and a single-tenant
+      install should not hold it. Without the flag the script says plainly that
+      Organizations will answer `503 NOT_CONFIGURED` and how to fix it, so the
+      failure is no longer a mystery. Verified end to end against Keycloak 26 on
+      a throwaway client: the minted credential obtained a token, created a
+      realm (201), and administered it.
 
-- [ ] **`.env.example` blocks `db:migrate` out of the box.** The two
-      `KEYCLOAK_PROVISION_CLIENT_ID` / `_SECRET` lines are present-but-empty, and
-      the env schema is `z.string().min(1)`, so `db:migrate` refuses to start —
-      despite the accompanying comment saying blank is supported. Anyone
-      following `docs/04-quickstart.md` on a clean clone hits this; the
-      workaround is to comment both lines out. Either relax the schema to accept
-      empty-as-absent or ship them commented.
+      The scope of `create-realm` was measured rather than restated, and the
+      table is now in `docs/06-configuration.md`. Against a realm it did **not**
+      create, the credential gets 200 on a bare `GET /admin/realms/<name>` and
+      403 on everything else — users, clients, realm update. The previous doc
+      wording implied no access at all; the bare read is the one exception.
 
-- [ ] **`scripts/verify.mjs`'s header is out of date.** It states "This
-      repository has no git remote", which is no longer true — `origin` is
-      `github.com/ssan9876/identity-manager`, and `.github/workflows/ci.yml`
-      will now actually run.
+      It also settled a question the code had only answered empirically: the
+      creator roles attach to the service account, **not** to tokens already
+      issued to it. A token minted before the realm existed gets 403 on that
+      realm's `users/count`; one minted after gets 200. That is precisely why
+      `KeycloakAdminClient.invalidateCachedToken()` is load-bearing and why
+      deleting it as dead code turns seven tests red.
+
+- [x] **`.env.example` no longer blocks `db:migrate`.** Of the two remedies
+      this item offered, the right one was to ship the lines commented, not to
+      relax the schema. I tried the schema first and it was wrong: `test/env.spec.ts`
+      already asserts that an empty value is *rejected*, on the deliberate
+      grounds that a blank credential is an accident and failing at startup
+      beats a client-credentials grant with an empty secret and a confusing 401
+      from Keycloak. That reasoning holds, so the schema is untouched.
+
+      `KEYCLOAK_PROVISION_CLIENT_ID` / `_SECRET` are now commented out rather
+      than present-but-empty. The mechanism is Node's `--env-file`, not dotenv
+      as previously assumed — measured: `FOO=` yields `""`, a commented line
+      yields `undefined`. Verified end to end by running the real `.env.example`
+      through the real loader: `loadEnv` succeeds and both values come back
+      null.
+
+- [x] **`scripts/verify.mjs`'s header was already correct.** Stale item — the
+      header now reads "CI is live as of 2026-08-08 ... the repository now has a
+      remote and master is pushed". Fixed at some point before this was
+      re-checked on 2026-08-09; the ledger simply had not caught up.
 - [x] **Two bare `task-2-report.md` citations removed** from
       `apps/api/test/connector-secrets.spec.ts` and
       `apps/web/e2e/theme.spec.ts`, which pointed at a file that exists at

@@ -12,6 +12,10 @@
 #   bash scripts/keycloak-setup.sh
 #
 # Optional: REALM (default identity-manager)
+# Optional: SETUP_PROVISIONER=1 — also create the master-realm `idm-provisioner`
+#   service account that the Organizations feature needs in order to create a
+#   realm per tenant. Off by default: it is a server-wide credential, and a
+#   single-tenant install has no use for it.
 #
 # ---------------------------------------------------------------------------
 # WHY THIS DOES NOT IMPORT keycloak/realm-import/identity-manager-realm.dev.json
@@ -217,6 +221,64 @@ info "generating a new idm-sso-admin client secret"
 SSO_SECRET="$(api POST "/realms/$REALM/clients/$SSO_UUID/client-secret" | jq -r .value)"
 [[ -n "$SSO_SECRET" && "$SSO_SECRET" != "null" ]] || die "failed to generate an idm-sso-admin client secret"
 
+# --- idm-provisioner: the credential that creates per-organization realms ----
+# Lives in the MASTER realm, not in "$REALM": creating a realm is a server-level
+# operation, so no role inside a single realm can authorize it. This is the one
+# credential in the system whose blast radius is the whole Keycloak server, and
+# it is therefore OPT-IN. A single-tenant install never creates organizations
+# and should never hold it; set SETUP_PROVISIONER=1 only when you intend to use
+# multi-tenancy.
+#
+# It gets `create-realm` and nothing else. Measured against Keycloak 26 on
+# 2026-08-09, that means: it can create a realm, and administer the realms it
+# created (Keycloak assigns the creator the `<realm>-realm` client roles at
+# creation time). Against a realm it did NOT create it can perform a bare
+# `GET /admin/realms/<name>` and nothing more — users, clients and realm updates
+# all return 403. That is why this is not simply master-realm `admin`.
+#
+# One non-obvious consequence: the creator roles are granted to the service
+# account, not retro-fitted into tokens already issued to it. A token minted
+# BEFORE the realm existed gets 403 on that realm's own `users/count`; one
+# minted after gets 200. KeycloakAdminClient.invalidateCachedToken() exists for
+# exactly this, and removing it fails 7 tests.
+if [[ "${SETUP_PROVISIONER:-0}" == "1" ]]; then
+  info "creating the master-realm provisioning client idm-provisioner"
+  master_client_uuid() { api GET "/realms/master/clients?clientId=$1" | jq -r '.[0].id // empty'; }
+
+  PROV_BODY="$(jq -n '{
+    clientId:"idm-provisioner", enabled:true, protocol:"openid-connect",
+    publicClient:false, serviceAccountsEnabled:true,
+    standardFlowEnabled:false, directAccessGrantsEnabled:false,
+    description:"Service account that creates and administers per-organization realms. Holds create-realm and nothing else."
+  }')"
+  PROV_UUID="$(master_client_uuid idm-provisioner)"
+  if [[ -n "$PROV_UUID" ]]; then
+    api PUT "/realms/master/clients/$PROV_UUID" "$PROV_BODY" >/dev/null
+    ok "updated client idm-provisioner"
+  else
+    api POST /realms/master/clients "$PROV_BODY" >/dev/null
+    PROV_UUID="$(master_client_uuid idm-provisioner)"
+    [[ -n "$PROV_UUID" ]] || die "created idm-provisioner but could not read it back"
+    ok "created client idm-provisioner"
+  fi
+
+  # create-realm is a REALM role of master, not a client role, so it is assigned
+  # through role-mappings/realm rather than role-mappings/clients/<uuid>.
+  PROV_SA_USER_ID="$(api GET "/realms/master/clients/$PROV_UUID/service-account-user" | jq -r .id)"
+  PROV_AVAILABLE="$(api GET "/realms/master/users/$PROV_SA_USER_ID/role-mappings/realm/available")"
+  PROV_TO_ADD="$(jq -c '[.[] | select(.name=="create-realm")]' <<<"$PROV_AVAILABLE")"
+  if [[ "$(jq 'length' <<<"$PROV_TO_ADD")" -gt 0 ]]; then
+    api POST "/realms/master/users/$PROV_SA_USER_ID/role-mappings/realm" "$PROV_TO_ADD" >/dev/null
+    ok "granted: create-realm"
+  else
+    ok "create-realm already granted"
+  fi
+
+  info "generating a new idm-provisioner client secret"
+  PROV_SECRET="$(api POST "/realms/master/clients/$PROV_UUID/client-secret" | jq -r .value)"
+  [[ -n "$PROV_SECRET" && "$PROV_SECRET" != "null" ]] || die "failed to generate an idm-provisioner client secret"
+fi
+
 # --- Fresh secret -----------------------------------------------------------
 # Always regenerated: the only other way to get here is the committed dev
 # secret, which is public.
@@ -239,6 +301,23 @@ echo "The second secret is only needed if you register SSO applications. It is"
 echo "resolved ONLY by the sso_app code path (connectors/secrets.ts enforces the"
 echo "CONNECTOR_ prefix); the user and group sync path never reads it."
 echo
+if [[ "${SETUP_PROVISIONER:-0}" == "1" ]]; then
+  echo "  KEYCLOAK_PROVISION_CLIENT_ID=idm-provisioner"
+  echo "  KEYCLOAK_PROVISION_CLIENT_SECRET=$PROV_SECRET"
+  echo
+  echo "That last pair is the provisioning credential: a MASTER-realm service"
+  echo "account holding create-realm, read only when creating or administering"
+  echo "an organization's realm. Set both or neither — a half-configured pair is"
+  echo "treated as unconfigured (Organizations answers 503 NOT_CONFIGURED); it"
+  echo "does not fail startup."
+  echo
+else
+  echo "No provisioning client was created, so the Organizations feature will"
+  echo "answer 503 NOT_CONFIGURED. If you want multi-tenancy, re-run this script"
+  echo "with SETUP_PROVISIONER=1 and set the two KEYCLOAK_PROVISION_* variables"
+  echo "it prints. See docs/06-configuration.md."
+  echo
+fi
 warn "Put that secret into .env, then: systemctl restart idm-api"
 echo
 echo "Users still need to exist in realm '$REALM' to sign in. This system is a"
