@@ -11,9 +11,9 @@
 >
 > Planned dimensions remain unrun and a number of findings are still unverified. The
 > only *total* on record is **six planned dimensions**, in
-> [14 — Roadmap](14-roadmap.md); five have now run, so **one** remains unrun. That
-> roadmap line also says "four of six ran", which is the same stale count corrected in
-> this banner — the arithmetic above is derived from a record that has itself drifted,
+> [14 — Roadmap](14-roadmap.md); five have now run, so **one** remains unrun. The
+> roadmap said "four of six ran" until it was corrected to match this banner — the
+> arithmetic above is derived from a record that has itself drifted,
 > not from an independent re-count, and no enumeration of the planned dimensions by
 > *name* exists anywhere. [`archive/README.md`](archive/README.md) carries only the
 > older "two never ran" figure.

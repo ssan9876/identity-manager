@@ -165,7 +165,7 @@ Both are archive material and are not maintained.
 
 | Capability | State |
 |---|---|
-| **Attribute definitions** | Read API and console rendering exist; **still no write endpoint at all** — `attribute-definitions.controller.ts` carries a single `@Get()`. Managed directly in the database. **The ReDoS that used to block this is closed** (`6b75107`): `new RegExp(rules.pattern)` is gone, `validationRules.pattern` is now rejected outright with a message pointing at the closed `validationRules.format` vocabulary, and it fails *closed* rather than silently skipping a constraint an admin set. Note that [12 — Security](12-security.md#known-open-items) still lists this as open and unreachable; that entry is stale. |
+| **Attribute definitions** | Read API and console rendering exist; **still no write endpoint at all** — `attribute-definitions.controller.ts` carries a single `@Get()`. Managed directly in the database. **The ReDoS that used to block this is closed** (`6b75107`): `new RegExp(rules.pattern)` is gone, `validationRules.pattern` is now rejected outright with a message pointing at the closed `validationRules.format` vocabulary, and it fails *closed* rather than silently skipping a constraint an admin set. |
 | **JML rules** | Engine, applier and lifecycle job all work. **Still no HTTP surface** — there is no controller anywhere under `apps/api/src/jml/`. Rules are database rows; the CLI runs them. Simulation exists at the repository level. |
 
 ## Not built
@@ -246,10 +246,11 @@ Re-verified in this pass unless marked otherwise.
 - **Group-rename fan-out re-syncs only current effective members.** Reconciliation is the
   backstop. *Carried forward from [12 — Security](12-security.md); not independently
   re-verified in this pass.*
-- **The security audit is incomplete.** Four of six dimensions ran; two never did, and
-  roughly twenty findings are unverified. See [12 — Security](12-security.md) — noting
-  that its ReDoS entry is itself out of date, so read the rest of that list as needing the
-  same treatment.
+- **The security audit is incomplete.** Six dimensions were planned; five have run — the
+  fifth, the client-side and supply-chain pass, landed 2026-08-08 in `22283b5` — so **one**
+  remains unrun. The "roughly twenty" unverified findings figure was **not** re-counted in
+  this pass, so treat it as an upper bound rather than a current count. See
+  [12 — Security](12-security.md).
 
 ## If you are picking this up
 
@@ -258,9 +259,8 @@ previous list was written when business roles were the centre of gravity, and tw
 four items are now either done or unblocked.
 
 1. **Finish the security audit** — unchanged at number one, and now more urgent, not less.
-   It is the one thing standing between this and a real network, and the audit's own
-   findings list has been shown to drift (its ReDoS entry describes a vulnerability that
-   was fixed in `6b75107`). Two dimensions never ran at all.
+   It is the one thing standing between this and a real network. One of the six planned
+   dimensions has never run at all.
 2. **A write path for attribute definitions** — promoted from third. The old caveat "fix
    the ReDoS first, because that path is what makes it reachable" **no longer applies**:
    the regex compile is gone and `validationRules.pattern` is rejected outright. This is
