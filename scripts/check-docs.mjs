@@ -27,6 +27,15 @@ const CLI_LIST_DOCS = ['docs/11-operations.md']
 
 const API_REFERENCE = 'docs/10-api-reference.md'
 
+/**
+ * Anchors the "Routes that do not exist" table in docs/10-api-reference.md —
+ * the same anchoring discipline as extract-doc-facts.mjs's ALL_CONNECTOR_TARGETS
+ * and ALL_ACTIONS anchors: a MISSING marker throws rather than silently parsing
+ * zero absence rows and passing, which would prove nothing. If the comment is
+ * ever reworded, update this string to match — do not delete the check.
+ */
+const ABSENCE_TABLE_MARKER = '<!-- ABSENCE-TABLE:'
+
 /** The scripts an operator runs on a host, as opposed to build plumbing. */
 const OPERATOR_CLIS = [
   'db:migrate', 'db:generate', 'bootstrap:admin', 'reconcile',
@@ -99,11 +108,24 @@ export function checkDocs(repoRoot) {
     }
   }
 
-  // 4. Routes, BOTH directions. A documented endpoint that does not exist is
+  // 4. Routes, THREE directions. A documented endpoint that does not exist is
   //    as harmful as an undocumented one: it sends an integrator to build
   //    against a 404. Matching is on the canonical `METHOD /path` token, which
   //    is why prose forms such as "`GET`/`POST` on `/users`" must be
   //    normalised into that shape rather than left for a looser regex.
+  //
+  //    The reference also documents routes that do NOT exist, on purpose (a
+  //    "Routes that do not exist" table stating design decisions) — and that
+  //    table necessarily uses the exact same `METHOD /path` shape the check
+  //    above reads as a claim of existence. Reformatting those rows to dodge
+  //    the regex (splitting `` `DELETE /x` `` into `` `DELETE` on `/x` ``) was
+  //    tried and rejected: it removes the claim from THIS check's view
+  //    entirely, so a route that ships while the table still calls it absent
+  //    would go undetected — silent staleness, the exact failure class this
+  //    project exists to close. Instead the absence table is itself parsed
+  //    (anchored on ABSENCE_TABLE_MARKER, see its own doc comment) and its
+  //    claims are CHECKED against facts.routes, then excluded from the
+  //    phantom set below rather than left to false-positive against it.
   const apiRefPath = join(repoRoot, API_REFERENCE)
   if (existsSync(apiRefPath)) {
     const body = read(apiRefPath)
@@ -114,6 +136,29 @@ export function checkDocs(repoRoot) {
     )
     const real = new Set(facts.routes.map((r) => `${r.method} ${r.path}`))
 
+    const markerAt = body.indexOf(ABSENCE_TABLE_MARKER)
+    if (markerAt === -1) {
+      throw new Error(
+        `could not find "${ABSENCE_TABLE_MARKER}" in ${API_REFERENCE}.\n` +
+          '  That comment anchors the "Routes that do not exist" table parser in\n' +
+          '  scripts/check-docs.mjs. If the comment was reworded or removed, update\n' +
+          '  ABSENCE_TABLE_MARKER there — do not delete the check; a missing anchor must\n' +
+          '  fail loudly rather than silently parse zero absence rows and pass.',
+      )
+    }
+    // Bounded to the next `## ` heading (or end of file): a row format this
+    // exact — a bare `METHOD /path` token as an ENTIRE table cell, nothing
+    // else in it — should not occur outside this one table, but bounding the
+    // scan is one guard against a future section reusing the shape by
+    // coincidence.
+    const nextHeadingAt = body.indexOf('\n## ', markerAt + ABSENCE_TABLE_MARKER.length)
+    const tableRegion = body.slice(markerAt, nextHeadingAt === -1 ? undefined : nextHeadingAt)
+    const claimedAbsent = new Set(
+      [...tableRegion.matchAll(/^\|\s*`(GET|POST|PATCH|PUT|DELETE) (\/[A-Za-z0-9:_/-]*)`\s*\|/gm)].map(
+        (m) => `${m[1]} ${m[2].replace(/\/$/, '') || '/'}`,
+      ),
+    )
+
     const undocumented = [...real].filter((r) => !documented.has(r)).sort()
     if (undocumented.length > 0) {
       problems.push(
@@ -123,13 +168,25 @@ export function checkDocs(repoRoot) {
       )
     }
 
-    const phantom = [...documented].filter((r) => !real.has(r)).sort()
+    const phantom = [...documented].filter((r) => !real.has(r) && !claimedAbsent.has(r)).sort()
     if (phantom.length > 0) {
       problems.push(
         `${API_REFERENCE} documents ${phantom.length} route(s) that do not exist:\n` +
           phantom.map((r) => `      ${r}`).join('\n') +
           '\n    Either the route was removed and the doc kept it, or the path is mistyped.\n' +
           '    A documented endpoint that 404s costs an integrator more than a missing one.',
+      )
+    }
+
+    const shippedButClaimedAbsent = [...claimedAbsent].filter((r) => real.has(r)).sort()
+    if (shippedButClaimedAbsent.length > 0) {
+      problems.push(
+        `${API_REFERENCE}'s "Routes that do not exist" table claims ${shippedButClaimedAbsent.length} ` +
+          `route(s) are absent, but they now exist:\n` +
+          shippedButClaimedAbsent.map((r) => `      ${r}`).join('\n') +
+          '\n    Remove the row (or move it into the documented-routes section above) — the table\n' +
+          '    exists to tell an integrator a route is unavailable; leaving it here after the\n' +
+          '    route ships tells them the opposite of the truth.',
       )
     }
   }

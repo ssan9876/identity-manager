@@ -196,7 +196,7 @@ Commits the local transaction, then **synchronously** disables the Keycloak acco
 revokes its sessions before returning. A failure there does not fail the request — the
 queued outbox event is the durability fallback.
 
-`deactivated` is terminal. **There is no `DELETE` on `/users/:id`.**
+`deactivated` is terminal. **There is no `DELETE /users/:id`.**
 
 ---
 
@@ -381,7 +381,7 @@ globally even though it is a GET.
 | `PATCH /business-roles/:id` | `business_role:manage` **(global)** | `name`, `description` only |
 | `PUT /business-roles/:id/draft` | `business_role:manage` **(global)** | Replaces `draft_definition` wholesale; clears any prior simulation |
 | `POST /business-roles/:id/simulate` | `business_role:manage` **(global)** | Dry run over the whole directory; commits nothing but the simulation record |
-| `POST /business-roles/:id/publish` | `business_role:manage` **(global)** | Refuses unless simulated against this exact draft; sweeps affected users afterward |
+| `POST /business-roles/:id/publish` | `business_role:manage` **(global)** | Refuses (409) unless simulated against this exact draft hash; also refuses when the recorded SoD-violation count is non-zero **or `null`** (a pre-0034 simulation predating SoD checking) — re-simulate first. Sweeps affected users afterward. |
 | `POST /business-roles/:id/enable` | `business_role:manage` **(global)** | Sweeps immediately |
 | `POST /business-roles/:id/disable` | `business_role:manage` **(global)** | A revocation, not a pause — sweeps immediately |
 | `PUT /business-roles/:id/requestable` | `business_role:manage` **(global)** | Publishes into (or withdraws from) the self-service catalogue; grants/revokes nothing |
@@ -396,7 +396,7 @@ globally even though it is a GET.
 | `GET /business-roles/mining/recommendations` | `business_role:manage` **(global)** | Read-only, but requires the global manage grant — see above |
 | `POST /business-roles/mining/drafts` | `business_role:manage` **(global)** | Adopts a recommendation as a new disabled role plus a pre-filled draft |
 
-There is no `DELETE` on `/business-roles/:id`.
+There is no `DELETE /business-roles/:id`.
 
 ---
 
@@ -490,7 +490,12 @@ checked first, unconditionally.
 { "name": "…", "scopeRoleIds": null, "reviewerStrategy": "manager_of_subject", "dueDate": null }
 ```
 
-A new campaign is a **draft** by construction.
+`reviewerStrategy` ∈ `manager_of_subject` · `role_owner` — resolved per include-exception
+item when the campaign opens: `manager_of_subject` tries the subject's manager, else the
+campaign's creator; `role_owner` tries the campaign's creator, else the subject's manager
+(`business_roles` carries no owner column). `scopeRoleIds` is either `null` (every enabled
+role at open time) or a non-empty array of role ids — `[]` is a **400**, never a campaign
+that silently reviews nothing. A new campaign is a **draft** by construction.
 
 ### `GET /recert-campaigns/:id` — `recert:read`
 
@@ -728,9 +733,9 @@ infrastructure.
 
 ### `GET /hr-sources/:id/runs` — `connector:read`
 
-The append-only `hr_source:sync` audit rows for this source, newest first — the
-durable ledger behind the source row's own `lastRun*` fields, which only ever show
-the latest run.
+The 50 most recent `hr_source:sync` audit rows for this source, newest first (hard
+`LIMIT 50`, no pagination) — the durable ledger behind the source row's own
+`lastRun*` fields, which only ever show the latest run.
 
 ### `POST /hr-sources` — `connector:manage` **(global)**
 
@@ -861,15 +866,31 @@ Read-only. Retrying is reconciliation's job, not an HTTP route.
 
 Worth stating explicitly, because their absence is a design decision:
 
+<!-- ABSENCE-TABLE: scripts/check-docs.mjs anchors on this exact comment and parses
+     every row below whose FIRST cell is exactly one canonical `METHOD /path` token —
+     nothing else in the cell: no surrounding prose, and no two methods joined into
+     one cell (joining a PATCH and a DELETE claim into a single cell, as this table
+     once did for org-units, silently hides the second method from the parser — keep
+     one method per row). Each such token is asserted ABSENT from the live API and is excluded
+     from the phantom-route check for that reason: this table's entire job is to hold
+     tokens shaped exactly like "this route exists" while meaning the opposite, and a
+     route claimed absent here that has since shipped is exactly the drift this guard
+     exists to catch — it fails loudly, naming the route, rather than leaving this
+     table to silently go stale. Do not move or delete this comment; if the anchor
+     text changes, update ABSENCE_TABLE_MARKER in scripts/check-docs.mjs to match.
+     Rows that are prose rather than a bare token (the "Any ..." rows below) are left
+     alone by the parser — they are not machine-checked. -->
+
 | Not available | Why |
 |---|---|
-| `DELETE` on `/users/:id` | `deactivated` is terminal; users are never deleted |
-| `PATCH`/`DELETE` on `/org-units/:id` | Not built |
-| `DELETE` on `/groups/:id` | Not built |
-| `DELETE` on `/business-roles/:id` | Retire via `POST .../disable` instead — a role's history (conflicts, exceptions, past simulations) survives |
+| `DELETE /users/:id` | `deactivated` is terminal; users are never deleted |
+| `PATCH /org-units/:id` | Not built |
+| `DELETE /org-units/:id` | Not built |
+| `DELETE /groups/:id` | Not built |
+| `DELETE /business-roles/:id` | Retire via `POST .../disable` instead — a role's history (conflicts, exceptions, past simulations) survives |
 | Any `PATCH /users/:id` change to `orgUnitId`, `username`, `primaryEmail`, `status` | Out of the PATCH surface by design |
 | Any write to `attribute-definitions` | Database-managed today |
 | Any JML rule API | Database rows plus the `jml:lifecycle` CLI |
 | Dead-letter retry | Use reconciliation |
-| `DELETE` on `/organizations/:id` | Deleting a realm destroys every user, session, client and credential inside it. A retired tenant is `suspended` |
+| `DELETE /organizations/:id` | Deleting a realm destroys every user, session, client and credential inside it. A retired tenant is `suspended` |
 | Any tenant-facing route | Every administrator is a platform operator authenticating against the master realm |
