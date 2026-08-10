@@ -256,7 +256,7 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
         grants: [{ kind: 'group_membership', groupId: group.id, target: null }],
       }
       await repo.saveDraft(role.id, definition)
-      await repo.recordSimulation(role.id, hashDefinition(parseDefinition(definition)))
+      await repo.recordSimulation(role.id, hashDefinition(parseDefinition(definition)), 0)
       await repo.publish(role.id)
       await repo.setEnabled(role.id, true)
 

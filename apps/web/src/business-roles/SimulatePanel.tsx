@@ -5,7 +5,7 @@ import { useGroups } from '../groups/GroupsContext'
 import { useOrgUnits } from '../org-units/OrgUnitsContext'
 import { CONNECTOR_TARGET_LABEL } from '../connectors/api'
 import { fetchPeopleByIds, type Person } from '../people/api'
-import type { SimulationEntry, SimulationReport } from './api'
+import type { SimulationEntry, SimulationReport, SimulationSodViolation } from './api'
 import './SimulatePanel.css'
 
 /**
@@ -122,6 +122,57 @@ function EntryList({ title, verb, entries, total, truncated, people, testId }: E
   )
 }
 
+const HELD_VIA: Record<SimulationSodViolation['via'], string> = {
+  formula: 'by formula',
+  include_exception: 'by include-exception',
+}
+
+/**
+ * The publish-time refusal, said BEFORE the refusal happens. A non-zero
+ * count here is not advisory: the API records it beside the draft hash in
+ * the same moment it produces this report, and the publish route will
+ * answer 409 on it. Saying so here — with the people and the pairs — is
+ * what turns that 409 from a surprise into a confirmation.
+ */
+function SodViolations({ report, people }: { report: SimulationReport; people: PeopleState }) {
+  if (report.sodViolationCount === 0) return null
+  const shown = report.sodViolations.slice(0, SAMPLE_RENDER_LIMIT)
+
+  return (
+    <div className="banner banner--error simulate__sod" role="alert" data-testid="simulate-sod">
+      <p className="simulate__sod-headline" data-testid="simulate-sod-count">
+        Publishing is blocked: this draft would create {report.sodViolationCount} segregation-of-duties{' '}
+        {report.sodViolationCount === 1 ? 'violation' : 'violations'}.
+      </p>
+      <ul className="simulate__sod-list">
+        {shown.map((violation, index) => {
+          const person = people.get(violation.userId)
+          return (
+            <li key={`${violation.conflictId}-${violation.userId}-${index}`} className="simulate__sod-entry" data-testid="simulate-sod-entry">
+              <Link to={`/people/${violation.userId}`} className="row-link">
+                {person?.displayName ?? violation.username}
+              </Link>{' '}
+              would hold this role {HELD_VIA[violation.via]} while also holding{' '}
+              <strong>{violation.otherRoleName}</strong> {HELD_VIA[violation.otherVia]} —{' '}
+              <span className="simulate__sod-reason">{violation.conflictReason}</span>
+            </li>
+          )
+        })}
+      </ul>
+      {(report.truncated || report.sodViolationCount > shown.length) && (
+        <p className="simulate__sod-more">
+          Showing {shown.length} of {report.sodViolationCount}; the count is the whole directory.
+        </p>
+      )}
+      <p className="simulate__sod-remedy">
+        Change the draft so these people no longer match, exclude them with an exception, or retire
+        the conflict — then simulate again. Publishing stays refused until a fresh simulation of the
+        exact draft comes back clean.
+      </p>
+    </div>
+  )
+}
+
 export interface SimulatePanelProps {
   report: SimulationReport | null
   running: boolean
@@ -161,7 +212,13 @@ export function SimulatePanel({
   dirty,
   onSimulate,
 }: SimulatePanelProps) {
-  const people = useResolvedPeople([...(report?.losses ?? []), ...(report?.gains ?? [])])
+  const people = useResolvedPeople([
+    ...(report?.losses ?? []),
+    ...(report?.gains ?? []),
+    // The SoD sample rides in the same id-batch: it names people the two
+    // diff lists may not contain.
+    ...(report?.sodViolations ?? []).map((v) => ({ userId: v.userId, username: v.username, groupIds: [], targets: [] })),
+  ])
 
   return (
     <div className="simulate" data-testid="simulate-panel">
@@ -234,6 +291,8 @@ export function SimulatePanel({
               {report.scanned.toLocaleString()} people examined
             </p>
           </div>
+
+          <SodViolations report={report} people={people} />
 
           <p className="simulate__caveat" data-testid="simulate-caveat">
             Counted for this role alone: what it will start and stop granting, not which membership

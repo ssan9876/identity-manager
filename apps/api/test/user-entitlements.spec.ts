@@ -160,7 +160,7 @@ async function seedRoleGrantingGroup(options: { matches: boolean }): Promise<Fix
     grants: [{ kind: 'group_membership', groupId: group.id, target: null }],
   }
   await roles().saveDraft(role.id, definition)
-  await roles().recordSimulation(role.id, hashDefinition(parseDefinition(definition)))
+  await roles().recordSimulation(role.id, hashDefinition(parseDefinition(definition)), 0)
   await roles().publish(role.id)
   await roles().setEnabled(role.id, true)
 

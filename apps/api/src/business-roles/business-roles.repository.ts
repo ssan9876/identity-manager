@@ -142,6 +142,7 @@ export class BusinessRolesRepository {
         draftDefinition: { conditions: parsed.conditions, grants: parsed.grants },
         simulatedAt: null,
         simulatedDraftHash: null,
+        simulatedSodViolations: null,
         updatedAt: new Date(),
       })
       .where(eq(businessRoles.id, id))
@@ -150,14 +151,25 @@ export class BusinessRolesRepository {
     if (updated.length === 0) throw new NotFoundError('business role', id)
   }
 
+  /**
+   * `sodViolations` is REQUIRED, not defaulted, and that is deliberate: a
+   * caller cannot record a simulation without stating how many
+   * segregation-of-duties violations it found, and `publishWithin` refuses
+   * whenever the recorded number is non-zero (or absent — a pre-0034
+   * simulation that never looked). Because the hash pins the count to the
+   * EXACT draft simulated, "this publish creates no violations" is a
+   * property of the thing being published, not of whatever happened to be
+   * simulated at some point.
+   */
   async recordSimulation(
     id: string,
     hash: string,
+    sodViolations: number,
     db: NodePgDatabase<typeof schema> = this.db,
   ): Promise<void> {
     const updated = await db
       .update(businessRoles)
-      .set({ simulatedAt: new Date(), simulatedDraftHash: hash })
+      .set({ simulatedAt: new Date(), simulatedDraftHash: hash, simulatedSodViolations: sodViolations })
       .where(eq(businessRoles.id, id))
       .returning({ id: businessRoles.id })
 
@@ -190,6 +202,28 @@ export class BusinessRolesRepository {
       throw new ConflictError('this draft has not been simulated — simulate it before publishing')
     }
 
+    // The SEGREGATION-OF-DUTIES half of the gate, enforced HERE for the same
+    // reason the hash is: no caller convention can publish around it. The
+    // hash comparison above has just proven the recorded count describes
+    // this exact draft, so a non-zero count means this publish would put at
+    // least one person in both roles of an enabled conflicting pair — and
+    // refusing NOW, before any child row is written, is what makes SoD
+    // preventive rather than a violation report after the fact. NULL beside
+    // a valid hash is a simulation that predates SoD checking (0034);
+    // re-simulating is cheap and publishing on a blind simulation is not.
+    if (role.simulatedSodViolations === null) {
+      throw new ConflictError(
+        'this draft was simulated before segregation-of-duties checking — simulate it again before publishing',
+      )
+    }
+    if (role.simulatedSodViolations > 0) {
+      throw new ConflictError(
+        `publishing is refused: simulating this exact draft found ${role.simulatedSodViolations} ` +
+          `segregation-of-duties violation${role.simulatedSodViolations === 1 ? '' : 's'} — ` +
+          'change the draft or retire the conflict, then simulate again',
+      )
+    }
+
     await tx.delete(businessRoleConditions).where(eq(businessRoleConditions.businessRoleId, id))
     await tx.delete(businessRoleGrants).where(eq(businessRoleGrants.businessRoleId, id))
 
@@ -206,7 +240,7 @@ export class BusinessRolesRepository {
 
     await tx
       .update(businessRoles)
-      .set({ draftDefinition: null, simulatedDraftHash: null, updatedAt: new Date() })
+      .set({ draftDefinition: null, simulatedDraftHash: null, simulatedSodViolations: null, updatedAt: new Date() })
       .where(eq(businessRoles.id, id))
   }
 

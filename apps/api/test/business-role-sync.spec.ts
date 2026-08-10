@@ -312,7 +312,7 @@ async function seedRoleGrantingTargetAccount(
     grants: [{ kind: 'target_account', groupId: null, target }],
   }
   await roleRepo().saveDraft(role.id, definition)
-  await roleRepo().recordSimulation(role.id, hashDefinition(parseDefinition(definition)))
+  await roleRepo().recordSimulation(role.id, hashDefinition(parseDefinition(definition)), 0)
   await roleRepo().publish(role.id)
   await roleRepo().setEnabled(role.id, true)
 
@@ -340,7 +340,7 @@ async function seedUnevaluableRole(): Promise<{ roleId: string }> {
     grants: [],
   }
   await roleRepo().saveDraft(role.id, definition)
-  await roleRepo().recordSimulation(role.id, hashDefinition(parseDefinition(definition)))
+  await roleRepo().recordSimulation(role.id, hashDefinition(parseDefinition(definition)), 0)
   await roleRepo().publish(role.id)
   await roleRepo().setEnabled(role.id, true)
 

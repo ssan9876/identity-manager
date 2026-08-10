@@ -6,6 +6,7 @@ import { formatDateTime } from '../format'
 import { useSelfPermissions } from '../shell/permissions'
 import { useToast } from '../shell/ToastProvider'
 import { BusinessRoleStatusBadge, DraftStateBadge } from './badges'
+import { ConflictsSection } from './ConflictsSection'
 import { createBusinessRole, fetchBusinessRoles, type BusinessRole } from './api'
 import './BusinessRolesPage.css'
 
@@ -368,6 +369,12 @@ export default function BusinessRolesPage() {
           </table>
         )}
       </div>
+
+      {/* Segregation of duties — a fact about PAIRS of roles, so it lives on
+          the catalogue page rather than on either role's detail page. */}
+      {!loading && roles !== null && (
+        <ConflictsSection roles={roles} canManage={canManage} />
+      )}
     </div>
   )
 }

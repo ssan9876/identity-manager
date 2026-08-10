@@ -109,7 +109,7 @@ async function seedRoleGrantingGroup(
     grants: [{ kind: 'group_membership', groupId: group.id, target: null }],
   }
   await repo().saveDraft(role.id, definition)
-  await repo().recordSimulation(role.id, hashDefinition(parseDefinition(definition)))
+  await repo().recordSimulation(role.id, hashDefinition(parseDefinition(definition)), 0)
   await repo().publish(role.id)
   await repo().setEnabled(role.id, true)
 
@@ -162,7 +162,7 @@ async function seedTwoRolesOneGroup(ctx: TestDatabase): Promise<{ userId: string
     grants: [{ kind: 'group_membership', groupId: group.id, target: null }],
   }
   await repo().saveDraft(roleA.id, definitionA)
-  await repo().recordSimulation(roleA.id, hashDefinition(parseDefinition(definitionA)))
+  await repo().recordSimulation(roleA.id, hashDefinition(parseDefinition(definitionA)), 0)
   await repo().publish(roleA.id)
   await repo().setEnabled(roleA.id, true)
 
@@ -172,7 +172,7 @@ async function seedTwoRolesOneGroup(ctx: TestDatabase): Promise<{ userId: string
     grants: [{ kind: 'group_membership', groupId: group.id, target: null }],
   }
   await repo().saveDraft(roleB.id, definitionB)
-  await repo().recordSimulation(roleB.id, hashDefinition(parseDefinition(definitionB)))
+  await repo().recordSimulation(roleB.id, hashDefinition(parseDefinition(definitionB)), 0)
   await repo().publish(roleB.id)
   await repo().setEnabled(roleB.id, true)
 
@@ -260,7 +260,7 @@ describe('the publish gate (Milestone 17, Task 7)', () => {
   it('publish refuses when the draft changed after simulation', async () => {
     const role = await repo().create({ name: 'Edited after simulation', description: null })
     await repo().saveDraft(role.id, DEFINITION)
-    await repo().recordSimulation(role.id, hashDefinition(parseDefinition(DEFINITION)))
+    await repo().recordSimulation(role.id, hashDefinition(parseDefinition(DEFINITION)), 0)
 
     // Simulate something harmless, then try to ship something sweeping.
     await repo().saveDraft(role.id, {
@@ -274,7 +274,7 @@ describe('the publish gate (Milestone 17, Task 7)', () => {
   it('publish copies the draft down and clears it', async () => {
     const role = await repo().create({ name: 'Publishable', description: null })
     await repo().saveDraft(role.id, DEFINITION)
-    await repo().recordSimulation(role.id, hashDefinition(parseDefinition(DEFINITION)))
+    await repo().recordSimulation(role.id, hashDefinition(parseDefinition(DEFINITION)), 0)
 
     await repo().publish(role.id)
 
@@ -297,7 +297,7 @@ describe('the publish gate (Milestone 17, Task 7)', () => {
     await repo().recordSimulation(role.id, hashDefinition(parseDefinition({
       conditions: [{ field: 'status', operator: 'equals', value: 'active' }],
       grants: [],
-    })))
+    })), 0)
 
     await expect(repo().publish(role.id)).rejects.toThrow(/simulat/i)
   })
@@ -305,13 +305,13 @@ describe('the publish gate (Milestone 17, Task 7)', () => {
   it('listEnabledForEvaluation returns only enabled roles, with their published definitions', async () => {
     const on = await repo().create({ name: 'Enabled role', description: null })
     await repo().saveDraft(on.id, DEFINITION)
-    await repo().recordSimulation(on.id, hashDefinition(parseDefinition(DEFINITION)))
+    await repo().recordSimulation(on.id, hashDefinition(parseDefinition(DEFINITION)), 0)
     await repo().publish(on.id)
     await repo().setEnabled(on.id, true)
 
     const off = await repo().create({ name: 'Disabled role', description: null })
     await repo().saveDraft(off.id, DEFINITION)
-    await repo().recordSimulation(off.id, hashDefinition(parseDefinition(DEFINITION)))
+    await repo().recordSimulation(off.id, hashDefinition(parseDefinition(DEFINITION)), 0)
     await repo().publish(off.id)
 
     // Scoped to the role's own organization since Task 5 of the
@@ -533,7 +533,7 @@ async function seedDeactivatedUserInRoleGroup(
     grants: [{ kind: 'group_membership', groupId: group.id, target: null }],
   }
   await repo().saveDraft(role.id, definition)
-  await repo().recordSimulation(role.id, hashDefinition(parseDefinition(definition)))
+  await repo().recordSimulation(role.id, hashDefinition(parseDefinition(definition)), 0)
   await repo().publish(role.id)
   await repo().setEnabled(role.id, true)
 
@@ -569,7 +569,7 @@ async function seedUnevaluableRole(ctx: TestDatabase): Promise<{ roleId: string 
     grants: [],
   }
   await repo().saveDraft(role.id, definition)
-  await repo().recordSimulation(role.id, hashDefinition(parseDefinition(definition)))
+  await repo().recordSimulation(role.id, hashDefinition(parseDefinition(definition)), 0)
   await repo().publish(role.id)
   await repo().setEnabled(role.id, true)
 

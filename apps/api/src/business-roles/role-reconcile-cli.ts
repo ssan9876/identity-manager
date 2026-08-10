@@ -118,6 +118,39 @@ async function main(): Promise<void> {
       process.exitCode = 1
     }
 
+    // Standing SoD violations are a REPORT, never an action — the sweep has
+    // already finished and revoked nothing on their account. Printed to
+    // stdout, not stderr, and without flipping the exit code: unlike a
+    // refusal, a standing violation is not this pass failing to do its job,
+    // it is the directory's current state, surfaced for a human to resolve
+    // through the console (retire the conflict, exclude the person, or edit
+    // a formula and republish through the gate).
+    if (report.sod.violationCount > 0) {
+      console.log(
+        `[role-reconcile] ${report.sod.violationCount} standing segregation-of-duties violation(s) ` +
+          `across ${report.sod.conflictsChecked} enabled conflict(s):`,
+      )
+      for (const violation of report.sod.violations) {
+        console.log(
+          `[role-reconcile]   ${violation.username} (${violation.userId}) holds both ` +
+            `"${violation.roleA.roleName}" (${violation.roleA.via}) and ` +
+            `"${violation.roleB.roleName}" (${violation.roleB.via}) — ${violation.conflictReason}`,
+        )
+      }
+      if (report.sod.truncated) {
+        console.log('[role-reconcile]   ... list truncated; the count above is the true total.')
+      }
+    }
+    if (report.sod.unevaluable.length > 0) {
+      console.warn(
+        `[role-reconcile] ${report.sod.unevaluable.length} conflict role(s) could not be evaluated ` +
+          'for at least one user — the standing-violation report above is honest but partial:',
+      )
+      for (const entry of report.sod.unevaluable) {
+        console.warn(`[role-reconcile]   "${entry.roleName}" (${entry.roleId}): ${entry.reason}`)
+      }
+    }
+
     if (report.skipped.length > 0) {
       console.warn(
         `[role-reconcile] ${report.skipped.length} user(s) vanished mid-sweep and were skipped: ` +

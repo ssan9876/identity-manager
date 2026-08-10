@@ -272,23 +272,58 @@ function isLive(exception: RoleException, now: Date): boolean {
 }
 
 /**
- * Precedence, in order: `exclude` beats everything, then `include` grants
- * regardless of the formula, then the formula decides. An EXPIRED exception is
- * treated as ABSENT, never as a denial — an expired `exclude` stops excluding
- * and an expired `include` stops including.
+ * Whether — and, when held, WHY — one person holds one role. This is the
+ * single definition of "holds" in this module, and the segregation-of-duties
+ * checks (the publish-time simulation and the reconciler's standing check
+ * alike) call it rather than re-deriving precedence, because two disagreeing
+ * notions of "holds both roles of a conflicting pair" would be a policy that
+ * enforces one thing and reports another.
+ *
+ * `via` is not decoration: an SoD violation report that cannot say whether a
+ * person is in the role by FORMULA (fix the formula or the person's data) or
+ * by INCLUDE-EXCEPTION (revisit the exception and its recorded reason) is a
+ * finding nobody can act on.
+ *
+ * Deliberately indifferent to the role's `enabled` flag — holding a role is
+ * a fact about its definition and exceptions, while `enabled` is the kill
+ * switch on what that holding GRANTS. SoD constrains the holding: a pair of
+ * conflicting formulas is a policy violation even while one side's grants
+ * are switched off, because enable is a single un-gated click away.
  */
-function holdsRole(role: EvaluableRole, user: EvaluableUser, now: Date): ConditionMatch {
+export type RoleHold =
+  | { known: true; held: true; via: 'formula' | 'include_exception' }
+  | { known: true; held: false }
+  | { known: false; reason: string }
+
+export function explainRoleHold(role: EvaluableRole, user: EvaluableUser, now: Date): RoleHold {
   let included = false
 
   for (const exception of role.exceptions) {
     if (exception.userId !== user.id || !isLive(exception, now)) continue
-    if (exception.mode === 'exclude') return { known: true, matched: false }
+    if (exception.mode === 'exclude') return { known: true, held: false }
     included = true
   }
 
-  if (included) return { known: true, matched: true }
+  if (included) return { known: true, held: true, via: 'include_exception' }
 
-  return matchesConditions(role.conditions, user)
+  const match = matchesConditions(role.conditions, user)
+  if (!match.known) return { known: false, reason: match.reason }
+  return match.matched ? { known: true, held: true, via: 'formula' } : { known: true, held: false }
+}
+
+/**
+ * Precedence, in order: `exclude` beats everything, then `include` grants
+ * regardless of the formula, then the formula decides. An EXPIRED exception is
+ * treated as ABSENT, never as a denial — an expired `exclude` stops excluding
+ * and an expired `include` stops including.
+ *
+ * Nothing but a narrowing of `explainRoleHold` — ONE implementation of
+ * precedence, not two that could drift apart.
+ */
+function holdsRole(role: EvaluableRole, user: EvaluableUser, now: Date): ConditionMatch {
+  const hold = explainRoleHold(role, user, now)
+  if (!hold.known) return { known: false, reason: hold.reason }
+  return { known: true, matched: hold.held }
 }
 
 /**

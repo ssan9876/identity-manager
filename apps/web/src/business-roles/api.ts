@@ -109,13 +109,27 @@ export interface SimulationEntry {
   targets: ConnectorTarget[]
 }
 
-/** Mirrors `SimulationReport`. `gainCount`/`lossCount` are the TRUE totals across the whole directory; `gains`/`losses` are capped samples, and `truncated` says so. */
+/** Mirrors `SimulationSodViolation` — one person the published draft would put in both roles of an enabled conflicting pair. */
+export interface SimulationSodViolation {
+  userId: string
+  username: string
+  conflictId: string
+  conflictReason: string
+  via: 'formula' | 'include_exception'
+  otherRoleId: string
+  otherRoleName: string
+  otherVia: 'formula' | 'include_exception'
+}
+
+/** Mirrors `SimulationReport`. `gainCount`/`lossCount`/`sodViolationCount` are the TRUE totals across the whole directory; `gains`/`losses`/`sodViolations` are capped samples, and `truncated` says so. A non-zero `sodViolationCount` is recorded server-side beside the draft hash, and the publish route will refuse on it. */
 export interface SimulationReport {
   scanned: number
   gainCount: number
   lossCount: number
   gains: SimulationEntry[]
   losses: SimulationEntry[]
+  sodViolationCount: number
+  sodViolations: SimulationSodViolation[]
   truncated: boolean
 }
 
@@ -259,4 +273,106 @@ export function describeGrant(
     return `${targetLabel(grant.target)} account`
   }
   return 'Unrecognised grant'
+}
+
+// ---------------------------------------------------------------------------
+// Segregation of duties — the console's mirror of `role-conflicts.repository`
+// and the `/business-roles/conflicts*` routes.
+// ---------------------------------------------------------------------------
+
+/** Mirrors `RoleConflictWithNames`: the `role_conflicts` row plus both role names. The pair is stored in canonical order (`roleAId < roleBId`) and is immutable; `enabled: false` means RETIRED, never deleted. */
+export interface RoleConflict {
+  id: string
+  organizationId: string
+  roleAId: string
+  roleBId: string
+  roleAName: string
+  roleBName: string
+  reason: string
+  enabled: boolean
+  createdBy: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+/** Mirrors `SodRoleSide` — one half of a standing violation, with WHY it is held. */
+export interface SodRoleSide {
+  roleId: string
+  roleName: string
+  enabled: boolean
+  via: 'formula' | 'include_exception'
+}
+
+/** Mirrors `StandingSodViolation`. */
+export interface StandingSodViolation {
+  conflictId: string
+  conflictReason: string
+  userId: string
+  username: string
+  roleA: SodRoleSide
+  roleB: SodRoleSide
+}
+
+/** Mirrors `StandingSodReport` — the DETECTIVE report. The API only ever reports these; nothing auto-revokes either side. */
+export interface StandingSodReport {
+  conflictsChecked: number
+  scanned: number
+  violationCount: number
+  violations: StandingSodViolation[]
+  truncated: boolean
+  unevaluable: { roleId: string; roleName: string; reason: string }[]
+}
+
+export function fetchRoleConflicts(accessToken: string): Promise<RoleConflict[]> {
+  return authorizedRequest<RoleConflict[]>('/business-roles/conflicts', accessToken)
+}
+
+export function fetchStandingSodViolations(accessToken: string): Promise<StandingSodReport> {
+  return authorizedRequest<StandingSodReport>('/business-roles/conflicts/violations', accessToken)
+}
+
+/** Mirrors `conflictBodySchema` exactly. `reason` is REQUIRED — an unexplained control is one a later audit cannot defend or retire. The server canonicalises the pair, so the order given here does not matter. */
+export function createRoleConflict(
+  accessToken: string,
+  input: { roleAId: string; roleBId: string; reason: string },
+): Promise<Omit<RoleConflict, 'roleAName' | 'roleBName'>> {
+  return authorizedRequest<Omit<RoleConflict, 'roleAName' | 'roleBName'>>(
+    '/business-roles/conflicts',
+    accessToken,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  )
+}
+
+/** `reason` only — the pair is immutable; a different pairing is a new policy. */
+export function updateRoleConflictReason(
+  accessToken: string,
+  id: string,
+  reason: string,
+): Promise<Omit<RoleConflict, 'roleAName' | 'roleBName'>> {
+  return authorizedRequest<Omit<RoleConflict, 'roleAName' | 'roleBName'>>(
+    `/business-roles/conflicts/${id}`,
+    accessToken,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    },
+  )
+}
+
+/** Retire (`false`) or restore (`true`) — there is no delete, by design. */
+export function setRoleConflictEnabled(
+  accessToken: string,
+  id: string,
+  enabled: boolean,
+): Promise<Omit<RoleConflict, 'roleAName' | 'roleBName'>> {
+  return authorizedRequest<Omit<RoleConflict, 'roleAName' | 'roleBName'>>(
+    `/business-roles/conflicts/${id}/${enabled ? 'enable' : 'disable'}`,
+    accessToken,
+    { method: 'POST' },
+  )
 }

@@ -11,7 +11,9 @@ import { AuditWriter } from './audit/audit.writer'
 import { PermissionEngine } from './authz/permission.engine'
 import { BusinessRolesController } from './business-roles/business-roles.controller'
 import { BusinessRolesRepository } from './business-roles/business-roles.repository'
+import { RoleConflictsRepository } from './business-roles/role-conflicts.repository'
 import { RoleReconciler } from './business-roles/role-reconciler'
+import { SodChecker } from './business-roles/sod-checker'
 import { RoleReconciliationJob } from './business-roles/role-reconciliation.job'
 import { PermissionGuard } from './authz/permission.guard'
 import { PrivilegeGuards } from './authz/privilege.guards'
@@ -284,6 +286,13 @@ import { UsersRepository } from './users/users.repository'
     // above.
     BusinessRolesRepository,
     RoleReconciler,
+    // Segregation of duties over business roles: the conflicts catalogue and
+    // the standing-violations checker BusinessRolesController now injects.
+    // Neither performs I/O at construction — both only store already-provided
+    // dependencies — so registering them unconditionally is safe for every
+    // boot; app.module.spec.ts guards that they resolve.
+    RoleConflictsRepository,
+    SodChecker,
     // Milestone 17, Task 11: the sweep BusinessRolesController runs after a
     // publish, an enable or a disable — Task 10 built it CLI-only and
     // registered it nowhere, exactly as Milestone 10 Task 4 left

@@ -1,11 +1,13 @@
-import { Inject, Injectable } from '@nestjs/common'
+import { Inject, Injectable, Optional } from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { DB_CLIENT } from '../common/db.token'
 import { NotFoundError } from '../common/errors'
 import * as schema from '../db/schema/index'
 import { type UserStatus, UsersRepository } from '../users/users.repository'
 import { BusinessRolesRepository } from './business-roles.repository'
+import { RoleConflictsRepository } from './role-conflicts.repository'
 import { RoleReconciler } from './role-reconciler'
+import { SodChecker, type StandingSodReport } from './sod-checker'
 
 // Every status, not just 'active' — the same constant, with the same
 // reasoning, that `ReconciliationJob` (outbox/reconciliation.job.ts) and
@@ -76,6 +78,17 @@ export interface RoleReconciliationReport {
   refusals: RoleReconciliationRefusal[]
   /** Users selected by the walk that no longer existed by the time their own transaction opened. */
   skipped: string[]
+  /**
+   * STANDING segregation-of-duties violations — people who, right now, hold
+   * both roles of an enabled conflicting pair (a conflict defined after both
+   * roles were already granted, an include-exception on one side, or the
+   * directory's own data moving someone into a second formula). REPORTED,
+   * never acted on: nothing in this sweep revokes either side, because an
+   * engine that quietly removes access is this codebase's explicitly
+   * rejected failure mode, and which of the two holdings is wrong is a
+   * human's call. The preventive half lives in the publish gate.
+   */
+  sod: StandingSodReport
 }
 
 /**
@@ -133,6 +146,14 @@ export class RoleReconciliationJob {
     @Inject(UsersRepository) private readonly usersRepository: UsersRepository,
     @Inject(BusinessRolesRepository) private readonly roles: BusinessRolesRepository,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
+    // OPTIONAL, defaulting to a raw instance over the same handles — the
+    // exact pattern BusinessRolesRepository uses for OrganizationsRepository,
+    // and for the same reason: every existing four-argument construction in
+    // the CLI and the test suite keeps compiling, while real Nest DI hands
+    // this the same managed instance every other provider gets.
+    @Optional()
+    @Inject(SodChecker)
+    private readonly sodChecker: SodChecker = new SodChecker(roles, new RoleConflictsRepository(db)),
   ) {}
 
   /**
@@ -258,11 +279,18 @@ export class RoleReconciliationJob {
       }
     }
 
+    // The standing SoD check runs AFTER the walk, on the pooled handle with
+    // no transaction open (the same connection discipline as the walk
+    // itself), so it reports on the directory as this pass LEFT it. It
+    // detects; it never revokes — see `RoleReconciliationReport.sod`.
+    const sod = await this.sodChecker.listStandingViolations(this.db, now)
+
     console.log(
       `[role-reconcile] swept ${label}: scanned ${scanned}, changed ${changed}, ` +
-        `refused ${refusals.length}, skipped ${skipped.length}`,
+        `refused ${refusals.length}, skipped ${skipped.length}, ` +
+        `standing SoD violations ${sod.violationCount}`,
     )
 
-    return { scanned, changed, refused: refusals.length, refusals, skipped }
+    return { scanned, changed, refused: refusals.length, refusals, skipped, sod }
   }
 }

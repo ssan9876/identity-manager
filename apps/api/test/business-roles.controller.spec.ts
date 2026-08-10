@@ -12,6 +12,8 @@ import { PermissionGuard } from '../src/authz/permission.guard'
 import { RoleAssignmentsRepository } from '../src/authz/role-assignments.repository'
 import { BusinessRolesController } from '../src/business-roles/business-roles.controller'
 import { BusinessRolesRepository } from '../src/business-roles/business-roles.repository'
+import { RoleConflictsRepository } from '../src/business-roles/role-conflicts.repository'
+import { SodChecker } from '../src/business-roles/sod-checker'
 import { RoleReconciler } from '../src/business-roles/role-reconciler'
 import { RoleReconciliationJob } from '../src/business-roles/role-reconciliation.job'
 import { DB_CLIENT } from '../src/common/db.token'
@@ -90,6 +92,8 @@ describe('BusinessRolesController (Milestone 17, Task 11)', () => {
       providers: [
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         BusinessRolesRepository,
+        RoleConflictsRepository,
+        SodChecker,
         RoleReconciler,
         RoleReconciliationJob,
         UsersRepository,

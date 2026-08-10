@@ -1,0 +1,113 @@
+/* The Conflicts section sits below the role catalogue on /business-roles —
+   a sibling surface, not a nested widget, so it repeats the page's own
+   header rhythm rather than inventing one. */
+.conflicts {
+  margin-top: var(--space-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.conflicts__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.conflicts__heading {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.conflicts__hint {
+  margin-top: var(--space-1);
+  max-width: 72ch;
+  font-size: var(--text-base);
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+.conflicts__create {
+  padding: var(--space-5);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.conflicts__create-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: var(--space-4);
+}
+
+.conflicts__create-reason {
+  grid-column: 1 / -1;
+}
+
+.conflicts__create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+.conflicts__violations {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.conflicts__violations-headline {
+  font-weight: 600;
+}
+
+.conflicts__violations-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.conflicts__violations-reason {
+  color: var(--ink-muted);
+}
+
+.conflicts__violations-more,
+.conflicts__violations-remedy {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  max-width: 78ch;
+  text-wrap: pretty;
+}
+
+.conflicts__clear {
+  font-size: var(--text-sm);
+  color: var(--ink-subtle);
+}
+
+.conflicts__empty {
+  font-size: var(--text-base);
+}
+
+.conflicts__pair {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.conflicts__pair-x {
+  color: var(--ink-subtle);
+}
+
+.conflicts__actions-col {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+}
