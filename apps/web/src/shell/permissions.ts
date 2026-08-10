@@ -30,6 +30,14 @@ export type Action =
   // still decides, and explains the refusal on its own terms.
   | 'business_role:read'
   | 'business_role:manage'
+  // Recertification campaigns. `recert:read` mirrors business_role:read
+  // (user_admin/auditor/read_only); `recert:manage` is super_admin's alone
+  // and must additionally be GLOBAL. The reviewer queue and decide routes
+  // are deliberately gated on IDENTITY rather than any action here —
+  // reviewers are ordinary managers holding no role at all — so the
+  // Recertification nav item is NOT permission-gated (see nav-items.tsx).
+  | 'recert:read'
+  | 'recert:manage'
   // Organizations milestone, Task 12. All three are super_admin's ALONE —
   // including the READ, which is the only read action in this catalog not
   // granted to the auditor or read_only roles: the tenant roster is the list

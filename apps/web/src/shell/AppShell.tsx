@@ -101,7 +101,12 @@ function monogramOf(username: string | undefined): string {
 function NavList({ variant, onNavigate }: { variant: 'full' | 'rail' | 'dialog'; onNavigate?: () => void }) {
   const perms = useSelfPermissions()
   const location = useLocation()
-  const visibleItems = NAV_ITEMS.filter((item) => perms.status !== 'error' && hasAction(perms, item.action))
+  // An item with no `action` is visible to every authenticated user — see
+  // NavItem.action's own comment (today: Recertification, whose reviewer
+  // queue belongs to people holding no role at all).
+  const visibleItems = NAV_ITEMS.filter(
+    (item) => perms.status !== 'error' && (item.action === undefined || hasAction(perms, item.action)),
+  )
 
   if (perms.status === 'loading') {
     return (
