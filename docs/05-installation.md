@@ -292,13 +292,13 @@ and leave HTTP/2 out.
 | Code | `/opt/identity-manager` |
 | Config | `/opt/identity-manager/.env` (0640, owned by `idm`) |
 | Service | `idm-api.service` — API **and** outbox worker in one process |
-| Timers | `idm-backup.timer` (01:00), `idm-lifecycle.timer` (02:00) and `idm-reconcile.timer` (03:00), each firing a oneshot service of the same name — seven units in `/etc/systemd/system/` in total |
+| Timers | `idm-backup.timer` (01:00), `idm-lifecycle.timer` (02:00) and `idm-reconcile.timer` (03:00), each firing a oneshot service of the same name. **Seven** units in `/etc/systemd/system/` after a current `install.sh` or `update.sh` run — a host installed before `idm-backup` existed and never updated since has five, and needs `update.sh`; see [11 — Operations](11-operations.md#scheduled-work) |
 | Backups | `/var/backups/identity-manager` (0700, owned by `postgres`) — newest 7 scheduled and 7 pre-update dumps |
 | Web bundle | `/opt/identity-manager/apps/web/dist`, served by nginx |
 | nginx vhost | `/etc/nginx/sites-available/idm.conf` |
 | nginx log format | `/etc/nginx/conf.d/idm-log.conf` — defines `idm_noquery`, which the vhost references |
 | Database | local PostgreSQL 16, database `identity_manager` |
-| Logs | `journalctl -u idm-api -f`; the timers' jobs log under `-u idm-backup`, `-u idm-lifecycle` and `-u idm-reconcile` (their `SyslogIdentifier=`); nginx's own `/var/log/nginx/access.log` |
+| Logs | `journalctl -u idm-api -f`; each timer's job logs under the oneshot **service** the timer fires, so `-u idm-backup`, `-u idm-lifecycle` and `-u idm-reconcile` — not the `.timer` units; nginx's own `/var/log/nginx/access.log` |
 
 **Two database roles, deliberately.** `idm_owner` owns the schema and is what migrations
 run as; `idm_app` is what the application runs as, and is created *by* the migration

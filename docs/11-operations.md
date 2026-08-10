@@ -51,9 +51,12 @@ sudo -u idm bash -c 'set -a && . .env && set +a && <command>'
 
 **Passing flags.** A bare positional argument goes straight through
 (`pnpm --filter @idm/api target-reconcile echo`), but anything starting with `--` has to
-be forwarded past pnpm: `pnpm --filter @idm/api run activate -- --all --apply`. Each of
-these CLIs strips a literal `--` from its own argument list, so the extra separator is
-always safe to include.
+be forwarded past pnpm: `pnpm --filter @idm/api run activate -- --all --apply`. The
+separator is always safe to include: the CLIs in this document that parse arguments at all
+— `target-reconcile`, `role-reconcile`, `hr:sync`, `activate` and `bootstrap:admin` —
+each filter a literal `--` out of their own argument list, and `db:migrate`,
+`reconcile` and `jml:lifecycle` never read `process.argv`, so they ignore it along with
+everything else you pass them.
 
 ### Web package (`pnpm --filter @idm/web …`)
 
@@ -66,12 +69,19 @@ always safe to include.
 
 ## Scheduled work
 
-There is **no scheduler in the process**. Every recurring job is a plain script driven by
-a systemd timer the installer sets up and enables for you — nothing to write by hand, and
-nothing to add to a crontab. Per-target reconciliation (`target-reconcile`) is the one
-exception and stays manual, deliberately; see below. `role-reconcile` and `hr:sync` ship
-**no unit at all** — there are seven files in `deploy/systemd/` and none of them is
-theirs — so if you want either on a cadence, the timer is yours to write.
+There is **no scheduler in the process**. **Most** recurring jobs are a plain script
+driven by a systemd timer the installer sets up and enables for you — nothing to write by
+hand, and nothing to add to a crontab. But **three commands are exceptions**, and only the
+first is one by design:
+
+- `target-reconcile` stays manual **deliberately**. See "Per-target reconciliation stays
+  manual" below for why putting it on a timer would defeat the guards it was given.
+- `role-reconcile` and `hr:sync` ship **no unit at all** — there are seven files in
+  `deploy/systemd/` and none of them is theirs. **Nothing runs either one until somebody
+  does**, by hand or from a timer you write yourself.
+
+So the table below is the complete list of what this host does on a schedule, not the
+complete list of recurring work.
 
 | Timer | Fires | What it does |
 |---|---|---|
@@ -89,7 +99,7 @@ in `deploy/systemd/`, all seven rendered into `/etc/systemd/system/` by `install
 
 ```bash
 systemctl list-timers 'idm-*'   # all three, with next and last fire times
-ls /etc/systemd/system/idm-*    # all seven units, as installed
+ls -1 /etc/systemd/system/idm-*.service /etc/systemd/system/idm-*.timer   # all seven
 ```
 
 ### Database backup — installed as a daily timer
