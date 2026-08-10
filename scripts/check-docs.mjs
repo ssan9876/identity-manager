@@ -61,7 +61,12 @@ export function checkDocs(repoRoot) {
 }
 
 // pathToFileURL for the same Windows reason documented in extract-doc-facts.mjs.
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+// The `process.argv[1] &&` guard matters separately: argv[1] is undefined
+// under `node -e "import(...)"`, the REPL, and some test-runner invocations,
+// and an unguarded `pathToFileURL(undefined)` throws TypeError
+// [ERR_INVALID_ARG_TYPE] before the comparison ever runs — crashing a plain
+// import of this module instead of just skipping the CLI block.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const problems = checkDocs(process.cwd())
   if (problems.length === 0) {
     console.error('[check-docs] OK — documentation matches the code on every checked claim.')
