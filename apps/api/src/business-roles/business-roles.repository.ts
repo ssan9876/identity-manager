@@ -9,6 +9,8 @@ import {
   businessRoleGrants,
   businessRoles,
 } from '../db/schema/business-roles'
+import { groupUserMembers } from '../db/schema/group-members'
+import { groups } from '../db/schema/groups'
 import * as schema from '../db/schema/index'
 import { orgUnits } from '../db/schema/org-units'
 import { users } from '../db/schema/users'
@@ -389,6 +391,74 @@ export class BusinessRolesRepository {
     if (!role) return null
     const definition = await this.loadDefinition(role.id, role.name, db)
     return { ...role, conditions: definition.conditions, grants: definition.grants, exceptions: definition.exceptions }
+  }
+
+  /**
+   * The organization mining (and creation) runs against. There is no API
+   * surface yet that can name a target organization (Organizations
+   * milestone, Task 12), so this mirrors `create`'s own fallback exactly —
+   * one method, so the two cannot drift.
+   */
+  async masterOrganizationId(db: NodePgDatabase<typeof schema> = this.db): Promise<string> {
+    return (await this.organizations.findMaster(db)).id
+  }
+
+  /**
+   * Every MANUAL user→group membership edge in one organization, with the
+   * group's name — role mining's raw material. `grant_source = 'manual'`
+   * only, and that filter is the point of the feature: rows the reconciler
+   * itself wrote (`business_role`) are already explained by a formula, and
+   * mining them back out would just rediscover the published roles.
+   *
+   * Read-only, unpaged: one row per manual edge is the same order of
+   * magnitude as the user walk the simulation already performs, and the
+   * miner needs the whole picture — a sampled membership list would produce
+   * confidently wrong precision numbers.
+   */
+  async listManualGroupMemberships(
+    db: NodePgDatabase<typeof schema>,
+    organizationId: string,
+  ): Promise<{ groupId: string; groupName: string; userId: string }[]> {
+    return db
+      .select({
+        groupId: groupUserMembers.groupId,
+        groupName: groups.name,
+        userId: groupUserMembers.userId,
+      })
+      .from(groupUserMembers)
+      .innerJoin(groups, eq(groupUserMembers.groupId, groups.id))
+      .where(
+        and(
+          eq(groupUserMembers.organizationId, organizationId),
+          eq(groupUserMembers.grantSource, 'manual'),
+        ),
+      )
+  }
+
+  /** One group's name within one organization, or null — the existence check the mining draft route runs before granting the group. */
+  async findGroupName(
+    db: NodePgDatabase<typeof schema>,
+    groupId: string,
+    organizationId: string,
+  ): Promise<string | null> {
+    const [row] = await db
+      .select({ name: groups.name })
+      .from(groups)
+      .where(and(eq(groups.id, groupId), eq(groups.organizationId, organizationId)))
+    return row?.name ?? null
+  }
+
+  /** One org unit's ltree path within one organization, or null — how a mining run scopes its population to a subtree. */
+  async findOrgUnitPath(
+    db: NodePgDatabase<typeof schema>,
+    orgUnitId: string,
+    organizationId: string,
+  ): Promise<string | null> {
+    const [row] = await db
+      .select({ path: orgUnits.path })
+      .from(orgUnits)
+      .where(and(eq(orgUnits.id, orgUnitId), eq(orgUnits.organizationId, organizationId)))
+    return row?.path ?? null
   }
 
   /**

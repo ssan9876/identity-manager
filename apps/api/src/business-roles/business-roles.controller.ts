@@ -10,6 +10,7 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common'
@@ -33,7 +34,13 @@ import {
   BusinessRolesRepository,
 } from './business-roles.repository'
 import { type RoleDefinition, hashDefinition, parseDefinition } from './draft'
-import { type EvaluableRole, type EvaluableUser, evaluateRoles } from './role-evaluator'
+import { type EvaluableRole, type EvaluableUser, type RoleCondition, evaluateRoles } from './role-evaluator'
+import {
+  DEFAULT_MINING_PARAMS,
+  type GroupMiningResult,
+  type MiningCandidate,
+  mineRoles,
+} from './role-miner'
 import { RoleReconciler } from './role-reconciler'
 import { RoleReconciliationJob } from './role-reconciliation.job'
 
@@ -98,6 +105,120 @@ const exceptionBodySchema = z
     expiresAt: z.string().datetime({ offset: true }).nullable().default(null),
   })
   .strict()
+
+/**
+ * ROLE MINING — the analysis routes' own shapes and limits.
+ *
+ * `MINING_SAMPLE_LIMIT` mirrors `SIMULATION_SAMPLE_LIMIT`'s reasoning: the
+ * COUNTS are always the true totals across the mined population, the lists
+ * are capped samples, and `truncated` says so explicitly.
+ */
+const MINING_SAMPLE_LIMIT = 100
+
+/**
+ * `.strict()` on the query, like every body schema here: a mistyped
+ * parameter name must be a 400 naming the field, never a silently-ignored
+ * knob that leaves the admin reading results computed under defaults they
+ * believe they overrode. Coerced, because query strings arrive as strings.
+ */
+const miningQuerySchema = z
+  .object({
+    minPrecision: z.coerce.number().min(0).max(1).default(DEFAULT_MINING_PARAMS.minPrecision),
+    minCoverage: z.coerce.number().min(0).max(1).default(DEFAULT_MINING_PARAMS.minCoverage),
+    maxCandidatesPerGroup: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(10)
+      .default(DEFAULT_MINING_PARAMS.maxCandidatesPerGroup),
+    scopeOrgUnitId: z.string().uuid().optional(),
+  })
+  .strict()
+
+/**
+ * Adopting a recommendation creates a role WITH a pre-filled draft — and
+ * nothing else. A draft affects nobody (the whole design of the gate), so
+ * this is deliberately the same two audited writes the create and draft
+ * routes already perform, composed in one transaction. The simulate →
+ * publish gate is untouched: the draft this route writes must still be
+ * simulated and published like one typed by hand.
+ *
+ * `conditions` is a small array by construction — the miner emits one or two
+ * — but the cap is generous enough that an admin can adopt-and-tweak.
+ * `parseDefinition` (via `saveDraft`) remains the single authority on what a
+ * well-formed condition is; this schema only shapes the envelope.
+ */
+const miningDraftBodySchema = z
+  .object({
+    name: noNulChar(z.string().min(1).max(255)),
+    description: noNulChar(z.string().max(2000)).nullable().default(null),
+    groupId: z.string().uuid(),
+    conditions: z
+      .array(
+        z
+          .object({
+            field: noNulChar(z.string().min(1).max(128)),
+            operator: z.enum(['equals', 'not_equals', 'in', 'in_org_subtree']),
+            value: z.unknown(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(8),
+  })
+  .strict()
+
+/** A capped, named sample of a residual list. `count` is always the true total. */
+export interface MiningPersonSample {
+  count: number
+  sample: { userId: string; username: string }[]
+  truncated: boolean
+}
+
+export interface MiningCandidateReport {
+  conditions: RoleCondition[]
+  precision: number
+  coverage: number
+  score: number
+  cohortSize: number
+  matchedCount: number
+  /** People the formula matches who are NOT manual members — adopting and publishing would grant them the group. */
+  gained: MiningPersonSample
+  /** Manual members the formula does NOT describe — the role would never cover them (their manual rows survive; the reconciler never revokes `manual`). */
+  lost: MiningPersonSample
+}
+
+export interface MiningGroupReport {
+  groupId: string
+  groupName: string
+  memberCount: number
+  candidates: MiningCandidateReport[]
+}
+
+export interface MiningReport {
+  /** The population mined — every user in scope, across every status. */
+  scannedUsers: number
+  /** Manual membership edges considered (within the scoped population). */
+  manualMemberships: number
+  /** Groups with at least one manual member in scope, whether or not any candidate cleared the thresholds. */
+  groupsExamined: number
+  params: {
+    minPrecision: number
+    minCoverage: number
+    maxCandidatesPerGroup: number
+    scopeOrgUnitId: string | null
+  }
+  recommendations: MiningGroupReport[]
+}
+
+/**
+ * Label-safe ltree ancestry — the same comparison, for the same reason, as
+ * the evaluator's own `isAtOrBelow`: `acme.salesops` must not read as being
+ * under `acme.sales`.
+ */
+function isAtOrBelowPath(path: string, ancestor: string): boolean {
+  return path === ancestor || path.startsWith(`${ancestor}.`)
+}
 
 /** One person's movement under a simulated draft. */
 export interface SimulationEntry {
@@ -650,6 +771,207 @@ export class BusinessRolesController {
 
       return { removed: true, reconciliation: outcome }
     })
+  }
+
+  /**
+   * ROLE MINING — recommend candidate formulas from existing MANUAL group
+   * memberships. READ-ONLY: this route computes and returns, writing nothing
+   * at all (not even an audit row — nothing changed, and an append-only audit
+   * log of "somebody looked" belongs to a different feature). A GET, because
+   * that is what it is.
+   *
+   * Compute-on-demand, deliberately: the walk is the same order of work as
+   * the simulation this controller already runs on demand, the result is a
+   * pure function of current state (stale persisted runs would be worse than
+   * no persistence), and the only artifact worth keeping — an adopted
+   * recommendation — is persisted as a role + draft through the existing
+   * audited path. No runs table, no migration.
+   *
+   * `business_role:manage`, held GLOBALLY, on a read route — unlike every
+   * other read here. Mining does not read a formula that describes access;
+   * it reads the entire directory's manual memberships and everyone's
+   * attributes, cross-tabulated — exactly the directory-wide view the
+   * global-grant rule (finding AUTHZ-M-2) exists to keep from scoped admins.
+   * And its only purpose is to pre-fill a draft, which requires the same
+   * global grant anyway: a viewer who could never adopt has no business
+   * running the analysis.
+   */
+  @Get('mining/recommendations')
+  @RequirePermission('business_role:manage')
+  async mineRecommendations(
+    @Query() query: unknown,
+    @Req() request: AuthorizedRequest,
+  ): Promise<MiningReport> {
+    await this.requireGlobalManageGrant(request)
+    const parsed = parseBody(miningQuerySchema, query ?? {})
+    // `parseBody`'s `z.ZodType<T>` signature erases the output-narrowing a
+    // `.default()` performs, so the defaults are restated once here — from
+    // the same constant the schema itself reads.
+    const params = {
+      minPrecision: parsed.minPrecision ?? DEFAULT_MINING_PARAMS.minPrecision,
+      minCoverage: parsed.minCoverage ?? DEFAULT_MINING_PARAMS.minCoverage,
+      maxCandidatesPerGroup: parsed.maxCandidatesPerGroup ?? DEFAULT_MINING_PARAMS.maxCandidatesPerGroup,
+    }
+
+    const organizationId = await this.roles.masterOrganizationId()
+
+    // Scope resolves to an ltree path FIRST, so an unknown org unit is a
+    // clean 404 rather than a silently-empty population scored over nobody.
+    let scopePath: string | null = null
+    if (parsed.scopeOrgUnitId !== undefined) {
+      scopePath = await this.roles.findOrgUnitPath(this.db, parsed.scopeOrgUnitId, organizationId)
+      if (scopePath === null) throw new NotFoundError('org unit', parsed.scopeOrgUnitId)
+    }
+
+    // The same paged, no-transaction walk as runSimulation, over the same
+    // query — every status, because a formula may condition on `status`.
+    const population: (EvaluableUser & { username: string })[] = []
+    let offset = 0
+    for (;;) {
+      const page = await this.roles.listEvaluableUsers(
+        this.db,
+        { limit: PAGE_SIZE, offset },
+        organizationId,
+      )
+      for (const user of page) {
+        if (scopePath === null || isAtOrBelowPath(user.orgUnitPath, scopePath)) {
+          population.push(user)
+        }
+      }
+      if (page.length < PAGE_SIZE) break
+      offset += PAGE_SIZE
+    }
+
+    const usernameById = new Map(population.map((user) => [user.id, user.username]))
+    const edges = await this.roles.listManualGroupMemberships(this.db, organizationId)
+
+    const groupNameById = new Map<string, string>()
+    const inScopeGroups = new Set<string>()
+    let inScopeEdges = 0
+    for (const edge of edges) {
+      groupNameById.set(edge.groupId, edge.groupName)
+      if (usernameById.has(edge.userId)) {
+        inScopeEdges += 1
+        inScopeGroups.add(edge.groupId)
+      }
+    }
+
+    // The miner itself ignores edges naming users outside the population —
+    // scoping by org unit therefore scopes BOTH sides of every ratio.
+    const results = mineRoles(
+      population,
+      edges.map(({ groupId, userId }) => ({ groupId, userId })),
+      params,
+    )
+
+    return {
+      scannedUsers: population.length,
+      manualMemberships: inScopeEdges,
+      groupsExamined: inScopeGroups.size,
+      params: {
+        ...params,
+        scopeOrgUnitId: parsed.scopeOrgUnitId ?? null,
+      },
+      recommendations: results.map((group) => this.toGroupReport(group, groupNameById, usernameById)),
+    }
+  }
+
+  /**
+   * Adopt one recommendation as a business-role DRAFT — a new, DISABLED role
+   * carrying the mined conditions and a single group-membership grant as its
+   * `draft_definition`. This is exactly the create route followed by the
+   * draft route, composed in one transaction with both of their audit rows;
+   * it deliberately reuses `BusinessRolesRepository.create` and `saveDraft`
+   * rather than any new write path, and it does not simulate, publish or
+   * enable anything. Creating a draft is a safe, audited,
+   * affects-nobody operation; everything that CAN affect somebody still has
+   * to walk the existing simulate → publish gate, unchanged.
+   */
+  @Post('mining/drafts')
+  @RequirePermission('business_role:manage')
+  async adoptMiningRecommendation(@Body() body: unknown, @Req() request: AuthorizedRequest) {
+    await this.requireGlobalManageGrant(request)
+    const parsed = parseBody(miningDraftBodySchema, body)
+
+    return this.db.transaction(async (tx) => {
+      const organizationId = await this.roles.masterOrganizationId(tx)
+
+      // A clean 404 for an unknown (or other-tenant) group, before anything
+      // is written — not a draft that fails much later at reconcile time
+      // with a foreign-key violation nobody can trace back to this call.
+      const groupName = await this.roles.findGroupName(tx, parsed.groupId, organizationId)
+      if (groupName === null) throw new NotFoundError('group', parsed.groupId)
+
+      const role = await this.roles.create({ name: parsed.name, description: parsed.description ?? null }, tx)
+
+      await this.auditWriter.record(tx, {
+        actorUserId: request.actor.userId,
+        action: 'business_role:create',
+        resourceType: 'business_role',
+        resourceId: role.id,
+        before: null,
+        after: snapshotRole(role),
+      })
+
+      // `saveDraft` → `parseDefinition` stays the single authority on what a
+      // well-formed definition is (operator allow-list, NUL scan, caps) —
+      // the same funnel a hand-typed draft passes through.
+      await this.roles.saveDraft(
+        role.id,
+        {
+          conditions: parsed.conditions.map((c) => ({ field: c.field, operator: c.operator, value: c.value ?? null })),
+          grants: [{ kind: 'group_membership', groupId: parsed.groupId, target: null }],
+        },
+        tx,
+      )
+      const after = await this.requireRole(role.id, tx)
+
+      await this.auditWriter.record(tx, {
+        actorUserId: request.actor.userId,
+        action: 'business_role:draft',
+        resourceType: 'business_role',
+        resourceId: role.id,
+        before: { draftDefinition: null },
+        after: { draftDefinition: after.draftDefinition },
+      })
+
+      return after
+    })
+  }
+
+  private toGroupReport(
+    group: GroupMiningResult,
+    groupNameById: ReadonlyMap<string, string>,
+    usernameById: ReadonlyMap<string, string>,
+  ): MiningGroupReport {
+    const sampleOf = (userIds: readonly string[]): MiningPersonSample => ({
+      count: userIds.length,
+      sample: userIds.slice(0, MINING_SAMPLE_LIMIT).map((userId) => ({
+        userId,
+        // The population map is where every mined id came from, so the
+        // fallback can only fire on a genuine race with a concurrent delete.
+        username: usernameById.get(userId) ?? userId,
+      })),
+      truncated: userIds.length > MINING_SAMPLE_LIMIT,
+    })
+
+    const toCandidateReport = (candidate: MiningCandidate): MiningCandidateReport => ({
+      conditions: candidate.conditions,
+      precision: candidate.precision,
+      coverage: candidate.coverage,
+      score: candidate.score,
+      cohortSize: candidate.cohortSize,
+      matchedCount: candidate.matchedCount,
+      gained: sampleOf(candidate.gainedUserIds),
+      lost: sampleOf(candidate.lostUserIds),
+    })
+
+    return {
+      groupId: group.groupId,
+      groupName: groupNameById.get(group.groupId) ?? group.groupId,
+      memberCount: group.memberCount,
+      candidates: group.candidates.map(toCandidateReport),
+    }
   }
 
   /**
