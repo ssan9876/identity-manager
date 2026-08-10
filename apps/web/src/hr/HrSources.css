@@ -1,0 +1,88 @@
+/**
+ * HR sources console. Every value is a token from styles/tokens.css,
+ * consumed the same way Connectors.css already does (docs/design-system.md:
+ * "no ad-hoc colour or size").
+ */
+
+.hr-panel {
+  margin-top: var(--space-5);
+}
+
+.hr-secret-note {
+  max-width: 72ch;
+  color: var(--ink-muted);
+  margin-bottom: var(--space-4);
+}
+
+.hr-mapping {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.hr-mapping__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  max-width: 40rem;
+}
+
+.hr-mapping__input {
+  flex: 1;
+  min-width: 0;
+}
+
+.hr-mapping__arrow {
+  color: var(--ink-muted);
+}
+
+.hr-form__actions {
+  margin-top: var(--space-4);
+}
+
+.hr-detail__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.hr-detail__header h2 {
+  margin: 0;
+}
+
+.hr-input--narrow {
+  max-width: 8rem;
+}
+
+.hr-source-link {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.hr-preview {
+  margin-bottom: var(--space-5);
+}
+
+.hr-preview__summary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.hr-preview__reason {
+  color: var(--ink);
+}
+
+.hr-preview__reasons {
+  margin: 0;
+  padding-left: var(--space-4);
+}

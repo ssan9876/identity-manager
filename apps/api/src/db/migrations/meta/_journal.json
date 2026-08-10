@@ -281,6 +281,13 @@
       "when": 1786620400000,
       "tag": "0039_sso_apps_saml",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1786620500000,
+      "tag": "0040_hr_sources",
+      "breakpoints": true
     }
   ]
 }
