@@ -200,7 +200,14 @@ Two guards protect role assignment specifically.
 
 ### `assertCanAssignRole(actor, roleKey, scopeOrgUnitId)`
 
-You may only grant a role **you hold yourself**, at a scope **your own holding covers**.
+You may only grant a role **you hold yourself**, at a scope **your own holding covers** —
+with one wildcard on the *role* dimension. The holding filter is
+`assignment.roleKey === roleKey || assignment.roleKey === 'super_admin'`
+(`authz/privilege.guards.ts`), so holding `super_admin` stands in for holding any role: a
+`super_admin` scoped to Sales may grant `user_admin` **in Sales** without holding
+`user_admin` anywhere. That is deliberate — an administrator of a scope can staff that
+scope — but it means the *scope* dimension carries essentially all of this guard's weight,
+and it is the escalation path to reason about first.
 
 The critical case: **a scoped holding can never produce a global grant.** A
 `super_admin` scoped to Sales cannot grant global `super_admin` — that is exactly the
@@ -212,9 +219,10 @@ The target must not **outrank** the actor, by `ROLE_RANK`. This is independent o
 entirely: a `help_desk` scoped to Sales must not be able to touch a global `super_admin`
 who happens to sit in Sales.
 
-Rank also guards ordinary user writes — `PATCH /users/:id`, `POST
-/users/:id/deactivate`, and every import row — so a lower-ranked admin cannot edit or
-deactivate a higher-ranked one.
+Rank also guards ordinary user writes — `PATCH /users/:id`, `POST /users/:id/activate`,
+`POST /users/:id/deactivate` (all three call `assertCanModifyPrincipal` in
+`users/users.controller.ts`), and every import row — so a lower-ranked admin cannot edit,
+activate or deactivate a higher-ranked one.
 
 ### The four checks on a role write
 

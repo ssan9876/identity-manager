@@ -204,9 +204,9 @@ pattern read straight out of `attribute_definitions.validation_rules` — admin-
 jsonb — and executed it against user input. A regex is a program, so this was the
 system running admin-supplied code against its own directory. **Re-measured** against
 the pre-fix code while fixing it (`6b75107`): `^(a+)+$` blocked the event loop for
-**12.5 seconds** on a 28-character input. The **96.7 seconds at 33 characters** quoted
-throughout this document is the *original audit's* figure, carried forward and not
-re-measured here; cost doubles per added character, so the two sit on the same curve.
+**12.5 seconds** on a 28-character input. The original audit's figure — **96.7 seconds at
+33 characters** — is carried forward here and was not re-measured; cost doubles per added
+character, so the two sit on the same curve.
 One Node process serves the whole API and drains the outbox, so either number is a total
 outage, not a slow request.
 
@@ -314,7 +314,9 @@ confirm it is still open.
   and `PermissionEngine.resolveActor` resolves it with
   `lower(users.username) = lower($1)` (`authz/permission.engine.ts:66`), failing closed
   on `status <> 'active'` (line 73).
-- **Nothing in the application ever sets `suspended`.** There is no suspend route, and
+- **Nothing in the application ever sets `suspended` on a *user*.** (Organizations are
+  different: they have a real suspend endpoint — `PATCH /organizations/:id` accepts
+  `{"status": "suspended"}`.) There is no user suspend route, and
   `PATCH /users/:id` does not accept `status` at all — its `.strict()` body schema has no
   such key (`users/users.controller.ts`, `updateUserBodySchema`). Nor does any background
   path reach it: `UsersRepository.changeStatus` (`users/users.repository.ts:464`) is the

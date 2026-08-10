@@ -112,10 +112,15 @@ verbatim and takes a different merge path per protocol. Configured with `baseUrl
 
 For a SAML row, Keycloak 26 keeps the SP's settings in the client's `attributes` map,
 so `mergeSaml` writes `saml_assertion_consumer_url_post` (the first `saml_acs_urls`
-entry), `saml.assertion.signature`, `saml.server.signature`, `saml_name_id_format` and —
-only when an SP certificate is configured — `saml.client.signature` plus
-`saml.signing.certificate`. The SP's **entity id** is the row's `client_id`: Keycloak
-keys a SAML client by entity id in the same field, so there is no second value to drift.
+entry), `saml.assertion.signature`, `saml.server.signature`, `saml_name_id_format` and
+`saml.client.signature`. That last one is written **unconditionally** — `'true'` when an
+SP certificate is configured, `'false'` when it is not — so clearing a certificate turns
+client-signature verification back off rather than stranding it on. Only
+`saml.signing.certificate` is conditional: written when a certificate is present, and
+actively deleted from the merged attribute map when it is not.
+
+The SP's **entity id** is the row's `client_id`: Keycloak keys a SAML client by entity id
+in the same field, so there is no second value to drift.
 
 The realm **must** be the same one the console authenticates against — an application
 registered elsewhere is invisible to every account this system masters. The two targets
@@ -263,12 +268,9 @@ what lets one organization provision Slack *and* Zoom *and* Box without touching
 invariant — and each slot keeps its own credential, its own attribute mappings, its own
 enable/disable, its own dry run and its own blast-radius settings.
 
-Adding a seventh application is five small edits and **no new adapter logic**: the value
-in `ALL_CONNECTOR_TARGETS` (`connectors/connector.ts`), a migration widening both
-pgEnums (`outbox_target` and `external_identity_system`), one entry in `SCIM_TARGETS`
-(`connector-registry.ts`), and one label plus the shared field spec in the console's
-`TARGET_CONFIG_FIELDS`. `apps/web/scripts/check-connector-targets.mjs` fails
-`pnpm verify` with the exact console edits spelled out if you miss the last one.
+Adding a seventh application needs **no new adapter logic** — but it is more than the
+handful of edits that suggests, and two of them are caught by nothing. The complete list
+lives in one place, deliberately: [Adding a new target](#adding-a-new-target), below.
 
 | Config key | Meaning |
 |---|---|
@@ -459,9 +461,12 @@ against this target, and what did it do" is always answerable.
 ## Inbound sources — where data comes FROM
 
 Everything above is outbound. The inbound half is `hr_sources`: **pull-based** feeds
-this system fetches on demand. The standing rule is that nothing writes into this
-system except its own API — an HR feed is never a pushed webhook and never inbound
-SCIM; the table only describes where *we* go to fetch.
+this system fetches on demand. External data really does enter the system this way, so
+the old blanket rule — "nothing writes into this system except its own API" — no longer
+holds literally. The narrower rule that replaced it is the one that still binds: nothing
+**pushes** into this system. An HR feed is never a pushed webhook and never inbound SCIM;
+the table only describes where *we* go to fetch, and every fetch is followed by a preview
+and an explicit commit an operator can inspect before anything lands.
 
 **There is no scheduler in this repository.** A run happens when something invokes it:
 `POST /hr-sources/:id/preview` from the console, or the `hr:sync` CLI, which an operator
@@ -524,9 +529,12 @@ to flow and no longer does" is precisely what the screen is for.
 
 ## Adding a new target
 
-1. Add the value to the `outbox_target` **and** `external_identity_system` pgEnums, in a
-   migration. Do **not** seed a `connector_targets` row in that same migration — Postgres
-   forbids using an enum value in the transaction that added it.
+1. Add the value to the `outbox_target` **and** `external_identity_system` pgEnums. That
+   is two edits, not one: the drizzle declarations (`db/schema/outbox-events.ts` and
+   `db/schema/external-identities.ts`) *and* a migration that widens both
+   (`ALTER TYPE … ADD VALUE IF NOT EXISTS …`). Do **not** seed a `connector_targets` row
+   in that same migration — Postgres forbids using an enum value in the transaction that
+   added it.
 2. Add it to `ALL_CONNECTOR_TARGETS` in `connectors/connector.ts`. That array is the
    single source of truth; the union derives from it, and
    `connector-target-catalog.spec.ts` asserts it matches the pgEnum in **both**
@@ -536,12 +544,59 @@ to flow and no longer does" is precisely what the screen is for.
    credential only through `resolveSecret`.
 4. Register it in `ConnectorRegistry` — widen `ImplementedConnectorTarget` and the
    `satisfies` literal together.
-5. Add its form fields to `TARGET_CONFIG_FIELDS` in the console.
-6. Add tests, including a sentinel-value secret-leak test.
+5. Place it in each per-target capability list in `outbox/sync.worker.ts` that applies:
+   `TARGETS_NEEDING_EXTERNAL_ID_CORRELATION`, `TARGETS_NEEDING_MANAGED_ATTRIBUTE_NAMES`
+   and `TARGETS_NEEDING_FULL_STATUS`. **Read the warning below before skipping this step.**
+6. Add the target to the console's hand-written catalog in
+   `apps/web/src/connectors/api.ts` — **three** places: the `ConnectorTarget` union, the
+   array below it, and the `CONNECTOR_TARGET_LABEL` record.
+   `apps/web/scripts/check-connector-targets.mjs` reads exactly this file and
+   `connectors/connector.ts`, and fails `pnpm verify` with the missing edits spelled out.
+7. Add its form fields to `TARGET_CONFIG_FIELDS` in
+   `apps/web/src/connectors/config-fields.ts`. That record is typed
+   `Record<ConnectorTarget, ConfigFieldSpec[]>`, so a missing key is a compile error.
+8. Add tests, including a sentinel-value secret-leak test.
 
 A target present in the wider union but absent from the registry fails **safely** rather
 than silently.
 
-If the target speaks **SCIM 2.0**, steps 3–5 collapse: add it to `SCIM_TARGETS` in
-`connector-registry.ts` and give it a label and the shared field spec in the console.
-There is no new adapter to write.
+> **Step 5 is the one that fails silently.** Steps 1, 2, 6 and 7 are caught by the
+> compiler, by `connector-target-catalog.spec.ts` or by `check-connector-targets.mjs`;
+> skipping step 4 at least fails *safely* at resolve time, as just noted. The three lists
+> in `sync.worker.ts` are each typed `readonly OutboxTarget[]`, not an exhaustive record,
+> so omitting a target from one of them type-checks, builds, ships — and then behaves
+> almost correctly.
+>
+> Leaving a target out of `TARGETS_NEEDING_MANAGED_ATTRIBUTE_NAMES` is the quietest
+> failure in this chapter. The target provisions and updates correctly and simply never
+> **clears** an attribute whose mapping was later turned off: partial-update APIs — SCIM
+> PATCH, Graph PATCH, the Admin SDK's update — touch only the paths they are handed, so a
+> stale remote value has to be *named* to be removed, and that list is what names it.
+> Nothing fails; a de-mapped attribute just sits in the target forever.
+>
+> Leaving a target out of `TARGETS_NEEDING_EXTERNAL_ID_CORRELATION` is the other half. The
+> worker passes `undefined` for the stored external id, so the connector has no
+> service-assigned id to match on and falls back to a mutable name — the
+> duplicate-account-on-rename hazard that list's own comment was written for. (`mail_server`
+> is in this list for a different reason of its own: it needs to tell "never had mail" from
+> "had mail, now revoked".)
+
+### If the target speaks SCIM 2.0
+
+Step 3 disappears entirely — `ScimConnector` already serves every slot — and step 4
+shrinks to adding the value to `SCIM_TARGETS` in `connector-registry.ts`, from which both
+`ScimTarget` and `ImplementedConnectorTarget` derive. Nothing else collapses. The complete
+recipe for a seventh SCIM application is **eight files and eleven edits**:
+
+| Where | What |
+|---|---|
+| `db/schema/outbox-events.ts` | the `outbox_target` pgEnum |
+| `db/schema/external-identities.ts` | the `external_identity_system` pgEnum |
+| `db/migrations/…` | one migration widening **both**, `ADD VALUE IF NOT EXISTS '<slot>' BEFORE 'keycloak_sso'` |
+| `connectors/connector.ts` | the value in `ALL_CONNECTOR_TARGETS` |
+| `connectors/connector-registry.ts` | `SCIM_TARGETS` |
+| `outbox/sync.worker.ts` | **twice** — `TARGETS_NEEDING_EXTERNAL_ID_CORRELATION` *and* `TARGETS_NEEDING_MANAGED_ATTRIBUTE_NAMES`. Not `TARGETS_NEEDING_FULL_STATUS`, which is `mail_server` only. Neither of the two is checked — see the warning above |
+| `apps/web/src/connectors/api.ts` | **three times** — the union, the array, `CONNECTOR_TARGET_LABEL` |
+| `apps/web/src/connectors/config-fields.ts` | its own `SCIM_TARGETS`, which fills `TARGET_CONFIG_FIELDS` for every slot |
+
+No new adapter, no new field spec, and no new copy beyond the display name.

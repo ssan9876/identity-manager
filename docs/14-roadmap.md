@@ -278,12 +278,9 @@ four items are now either done or unblocked.
 **Removed from this list: "M16, the business-roles evaluator."** M15 through M19 are all
 in the tree.
 
-Two smaller things worth knowing, neither large enough to rank:
+One smaller thing worth knowing, not large enough to rank:
 
 - **No target has been moved to `entitled_only`.** Business roles govern group membership
   today; the account-provisioning half of the design is built but dormant by default, on
   purpose (decision 9). Migrating the first target is a deliberate operator act preceded
   by a simulation, not a code change.
-- **[11 — Operations](11-operations.md) lists only two of the five CLIs.** `role-reconcile`
-  and `hr:sync` are missing from its table. Not audited further here; flagged because an
-  operator reading that chapter will not learn that the role sweep exists.

@@ -1028,7 +1028,10 @@ screen is for.
 An outbound edge reads **Not configured**, **Disabled**, **Enabled, never synced** or
 **Live**, plus its population: *All users*, *Only entitled users*, or *Applications, not
 people*. Targets that are unconfigured or off are collapsed behind a *"show N targets not
-currently receiving data"* toggle — on a fresh install, eleven of thirteen.
+currently receiving data"* toggle — on a fresh install, **twelve of thirteen**, because
+migration `0011` seeds exactly one `connector_targets` row (`keycloak`) and no migration
+seeds another. The console's own comment in `DataFlowsPage.tsx` still says eleven; that
+comment is stale.
 
 **It is deliberately not a health dashboard.** No live reachability check runs here, and a
 dormant edge and a broken one look the same on purpose: *"is it working right now"* is the

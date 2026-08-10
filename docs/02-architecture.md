@@ -136,10 +136,13 @@ attempts, nextAttemptAt, lastError)`.
   `sso_app_protocol` is `('openid-connect', 'saml')` — and `organization` is a Keycloak
   realm.
 - **There is no `deleted` event type.** No *principal* is ever deleted: a user terminates
-  at `deactivated`, and groups and org units have no `DELETE` route at all. Removal of a
-  person propagates as `status_changed` carrying `deactivated`. Membership **edges** are
-  the exception — `DELETE /groups/:id/members/:userId` really does delete the row — and
-  that propagates as `membership_changed`, not as a deletion event.
+  at `deactivated`, and neither a group nor an org unit has a `DELETE` route that removes
+  the thing itself — `org-units.controller.ts` has no `@Delete` at all, and
+  `groups.controller.ts` has two that delete no group. Removal of a person propagates as
+  `status_changed` carrying `deactivated`. **Edges** are the exception, and there are two
+  of them: `DELETE /groups/:id/members/:userId` and
+  `DELETE /groups/:id/child-groups/:childId` both really do hard-delete their row, and each
+  propagates as `membership_changed`, not as a deletion event.
 - **Fan-out happens at write time, and is aggregate-aware.** `OutboxWriter.record`
   reads the enabled `connector_targets` rows for the aggregate's own organization (see
   the next bullet — that scoping happens first), then filters that list through
@@ -246,8 +249,10 @@ they are **not** guarded the same way.
   builds a plan, and applies it. **Dry run is the default**; `--apply` is explicit. It is
   deliberately never put on a timer.
 
-The **blast-radius** rail belongs to `target-reconcile` alone
-(`outbox/target-reconciliation.job.ts`, `evaluateBlastRadius`). A run halts if it would
+Of the three reconcilers, the **blast-radius** rail belongs to `target-reconcile` alone
+(`outbox/target-reconciliation.job.ts`, `evaluateBlastRadius`) — but not to it alone
+system-wide: the inbound `hr:sync` path calls the same `evaluateBlastRadius`, with its own
+threshold and floor (`hr/hr-feed.ts`, `evaluateHrRun`). A run halts if it would
 mutate more than `blastRadiusThreshold` percent of the target's population **and** more
 than `blastRadiusFloor` principals in absolute terms. Both conditions must hold — so a
 small real batch proceeds at a scary-looking percentage, while a large one still halts at
@@ -366,6 +371,8 @@ apps/web/src/
   hr/ organizations/ recertification/ sso-apps/
   groups/ imports/ org-units/ people/ roles/ self-service/
   shell/            AppShell, nav, toasts, theme, confirm dialog, permission gating
+  styles/           tokens.css, base.css, components.css — tokens.css is the
+                    design-system contract every feature stylesheet is checked against
 ```
 
 ## Design decisions worth knowing
@@ -377,9 +384,13 @@ apps/web/src/
   resolves `constructor` / `__proto__` / `toString` to inherited, truthy values that
   defeat a `?? fallback`. The convention is applied throughout — around sixty call sites
   in `apps/api/src` and `apps/web/src` today — and a null-prototype catalog plus
-  `Object.hasOwn` removes the hazard at its source. (The "this bit the project four
-  times" figure this note used to carry is a historical count that cannot be re-derived
-  from the tree; treat it as an anecdote, not a measurement.)
+  `Object.hasOwn` removes the hazard at its source. **This bit the project four times.**
+  That figure is a running tally the code itself keeps and enumerates: `authz/actions.ts`
+  names the first three (the attribute validator's two `__proto__` findings, then the
+  `ROLE_PERMISSIONS`/`ROLE_RANK` finding that closed it) and
+  `connectors/connector-registry.ts` adds the fourth (`jml/rule-engine.ts`'s `closedSet`
+  and `CONDITION_FIELD_EXTRACTORS`). One later comment, `common/cross-tenant.ts`, says
+  *five* without naming a fifth — so four is the enumerated floor, not a ceiling.
 - **The connector target catalog has one canonical source, and one guarded copy.**
   In the API, `ALL_CONNECTOR_TARGETS` (`connectors/connector.ts`) is the array and the
   `ConnectorTarget` union derives from it; `test/connector-target-catalog.spec.ts`

@@ -362,10 +362,10 @@ than rows of a single `scim` target because **`(organization_id, target)` is
 invariant of the outbox and correlation design, not an accident of naming. Naming each
 application is what lets one organization provision Slack *and* Zoom *and* Box without
 breaking that invariant, and it gives each slot its own credential, attribute mappings,
-enable/disable, dry run and blast-radius settings. Adding a seventh application is a
-list entry in `ALL_CONNECTOR_TARGETS`, a value in each pgEnum, a migration, one line in
-`ConnectorRegistry` and one in the console's `TARGET_CONFIG_FIELDS` — **no new adapter
-logic**.
+enable/disable, dry run and blast-radius settings. Adding a seventh needs **no new adapter
+logic**, but it touches eight files across eleven edits, and two of those are caught by no
+compiler and no guard. That list is not repeated here — it lives in
+[09 — Connectors and sync](09-connectors-and-sync.md#adding-a-new-target).
 
 **`keycloak_sso` is a different interface family.** It implements `SsoConnector`, not
 `DirectoryConnector`, and it carries no principals: it registers OIDC and SAML clients
@@ -627,9 +627,14 @@ recertification campaign.
 
 ### `role_conflicts`
 
-Separation-of-duties pairs (migration 0034), enforced by `business-roles/sod-checker.ts`.
-A conflicting pair of roles held by one person is a standing violation the controller
-sweeps for after every change.
+Separation-of-duties pairs (migration 0034), enforced by `business-roles/sod-checker.ts`
+in two halves. **Detective, and on demand:** a conflicting pair held by one person is a
+standing violation reported when something asks — `GET /business-roles/conflicts/violations`
+and the `role-reconcile` sweep both call `SodChecker.listStandingViolations`. Nothing
+scans continuously, and no ordinary role write triggers a sweep. **Preventive:**
+`POST /business-roles/:id/publish` refuses when the recorded simulation's SoD-violation
+count is non-zero **or `null`** (a simulation predating SoD checking), so a draft that
+would create a violation cannot reach production without re-simulating first.
 
 ### Related tables that grew out of this area
 
