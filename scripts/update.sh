@@ -274,10 +274,24 @@ else
 fi
 
 # Against the API directly: isolates "the app is up" from "nginx routes to it".
-if curl -fsS --max-time 10 "http://127.0.0.1:${IDM_PORT}/health" >/dev/null 2>&1; then
+#
+# POLLED, not sampled once. `systemctl is-active` above reports a Type=simple
+# unit as active the moment the process is forked, but Nest needs several more
+# seconds to bind the port. Verified on a real host 2026-08-10: the one-shot
+# version printed "did NOT respond" for a service whose /health answered 200 a
+# few seconds later, so a perfectly good upgrade reported failure.
+API_OK=0
+for _ in $(seq 1 60); do
+  if curl -fsS --max-time 5 "http://127.0.0.1:${IDM_PORT}/health" >/dev/null 2>&1; then
+    API_OK=1; break
+  fi
+  sleep 1
+done
+if [[ "$API_OK" == "1" ]]; then
   ok "API health endpoint responding on :${IDM_PORT}"
 else
-  warn "API health endpoint did NOT respond on :${IDM_PORT}"
+  warn "API health endpoint did NOT respond on :${IDM_PORT} after 60s"
+  warn "  journalctl -u idm-api -n 50 --no-pager"
   FAILED=1
 fi
 
@@ -287,7 +301,20 @@ fi
 # headers at all.
 CURL_URL="https://127.0.0.1/"
 [[ "$IDM_SCHEME" == "http" ]] && CURL_URL="http://127.0.0.1/"
-HEADERS="$(curl -sIk --max-time 10 -H "Host: ${IDM_HOSTNAME}" "$CURL_URL" 2>/dev/null || true)"
+# Polled for the same reason, one layer up. `systemctl reload nginx` returns as
+# soon as the master accepts the signal, while workers started under the
+# PREVIOUS config keep answering for a moment. On the same 2026-08-10 run a
+# single probe read that stale response and reported all three headers missing
+# on a host that had just been repaired correctly — the most damaging false
+# alarm this script can raise, because this check exists precisely to catch a
+# re-render that did NOT happen. Retry until the headers appear; a genuine
+# failure still costs only the 15s it takes to give up.
+HEADERS=""
+for _ in $(seq 1 15); do
+  HEADERS="$(curl -sIk --max-time 5 -H "Host: ${IDM_HOSTNAME}" "$CURL_URL" 2>/dev/null || true)"
+  grep -qi '^X-Frame-Options:' <<<"$HEADERS" && break
+  sleep 1
+done
 if [[ -z "$HEADERS" ]]; then
   warn "nginx did not answer on $CURL_URL with Host: ${IDM_HOSTNAME}"
   FAILED=1

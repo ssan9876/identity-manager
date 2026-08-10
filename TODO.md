@@ -473,24 +473,35 @@ Two traps worth knowing, both of which made a working fix look broken:
       `apps/web/e2e/organizations.spec.ts` has never executed, because it needs
       the stack with `KEYCLOAK_PROVISION_*` configured.
 
-- [ ] **`idm-lifecycle.timer` / `idm-reconcile.timer` are not installed on the
-      live host** — only `idm-api.service` is. `scripts/update.sh` now closes
-      this generically: it renders EVERY unit in `deploy/systemd/` and
-      `enable --now`s every `.timer` it finds, so a release that adds a timer
-      reaches hosts without anyone remembering to. Still open because nothing
-      has run it against the live host yet.
+- [x] **`idm-lifecycle.timer` / `idm-reconcile.timer` are installed and active.**
+      `scripts/install.sh` enables both on a fresh host, and `scripts/update.sh`
+      closes it generically for existing ones: it renders EVERY unit in
+      `deploy/systemd/` and `enable --now`s every `.timer` it finds, so a release
+      that adds a timer reaches hosts without anyone remembering to. Confirmed on
+      ct:211 2026-08-10 — both timers `enabled` and `active`, including
+      `idm-lifecycle` after its unit files were deliberately deleted and restored
+      by a single `update.sh` run.
 
-- [ ] **`scripts/update.sh` has never been executed.** Written 2026-08-09 to
-      automate the upgrade procedure in `docs/11-operations.md`, and checked
-      line by line against `install.sh` — same placeholders, same template
-      paths, same build assertions, same `db:migrate` invocation, and it now
-      re-asserts the `sites-enabled` symlink `install.sh` creates. `bash -n`
-      passes. **None of that is a run.** It has not been executed against any
-      host, not even a clone. The parts with no static substitute for a real
-      run: reading `server_name`/`ssl_certificate` back off a live vhost,
-      `su -s /bin/bash idm -c "git …"` under a root shell, the `pg_dump | gzip`
-      as `postgres`, and the ERR-trap rollback text. Verify the same way the
-      last upgrade was: clone the live LXC, snapshot first, run it there.
+- [x] **`scripts/update.sh` verified on real infrastructure.** Run 2026-08-10
+      against ct:211 on proxmox-02 (Ubuntu 24.04, fresh `install.sh` from
+      `feat/host-updater`, Keycloak on ct:210). The deployed host was damaged
+      deliberately first — the four security headers stripped from the vhost and
+      the change reloaded, `/etc/nginx/conf.d/idm-log.conf` deleted, the
+      `idm-lifecycle` timer and service units deleted, and the `sites-enabled`
+      symlink removed — and every one was repaired by a single run. The
+      `sites-enabled` re-assertion and the generic `deploy/systemd/` loop both
+      did what they were added to do; the timer came back `enabled` and `active`.
+
+      **It also found two real bugs, both in the verifier, both invisible to
+      static review.** The health probe and the security-header probe each
+      sampled once, immediately after `systemctl restart` / `reload`:
+      `systemctl is-active` reports a Type=simple unit active the moment the
+      process forks (Nest binds the port seconds later), and `reload nginx`
+      returns while workers under the previous config are still answering. The
+      run therefore reported "API health did NOT respond" and all three headers
+      "MISSING" on a host that was in fact fully repaired — a false red from the
+      one check whose entire purpose is catching a re-render that did not
+      happen. Both now poll. Fixed and re-verified in the same session.
 
 ## Housekeeping
 
