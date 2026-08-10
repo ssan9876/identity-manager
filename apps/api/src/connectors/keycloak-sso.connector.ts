@@ -20,6 +20,7 @@ export interface SsoAdminApi {
   createClient(rep: KeycloakClientRepresentation): Promise<string>
   updateClient(uuid: string, rep: KeycloakClientRepresentation): Promise<void>
   assertGroupMembershipMapper(uuid: string): Promise<void>
+  assertSamlGroupAttributeMapper(uuid: string): Promise<void>
   mintClientSecret(uuid: string): Promise<string>
   health(): Promise<ConnectorHealth>
 }
@@ -39,7 +40,8 @@ const MANAGED_KEYS = [
 ] as const
 
 /**
- * Asserts an Identity Manager `sso_apps` row into Keycloak as an OIDC client.
+ * Asserts an Identity Manager `sso_apps` row into Keycloak as an OIDC or
+ * SAML client, per the row's immutable `protocol`.
  *
  * READ-MODIFY-WRITE, never blind overwrite. Keycloak's client update takes a
  * FULL ClientRepresentation, so this reads the current one and overlays only
@@ -88,7 +90,10 @@ export class KeycloakSsoConnector implements SsoConnector {
     if (desired.groupsClaim) {
       ops.push({
         kind: 'update',
-        description: `assert the "groups" mapper on "${desired.clientId}"`,
+        description:
+          desired.protocol === 'saml'
+            ? `assert the "groups" attribute-statement mapper on "${desired.clientId}"`
+            : `assert the "groups" mapper on "${desired.clientId}"`,
       })
     }
 
@@ -100,17 +105,30 @@ export class KeycloakSsoConnector implements SsoConnector {
 
     if (existing === null || existing.id === undefined) {
       const uuid = await this.admin.createClient(this.merge({ clientId: desired.clientId }, desired))
-      if (desired.groupsClaim) {
-        await this.admin.assertGroupMembershipMapper(uuid)
-      }
+      await this.assertGroupsMapper(uuid, desired)
       return { externalId: uuid }
     }
 
     await this.admin.updateClient(existing.id, this.merge(existing, desired))
-    if (desired.groupsClaim) {
-      await this.admin.assertGroupMembershipMapper(existing.id)
-    }
+    await this.assertGroupsMapper(existing.id, desired)
     return { externalId: existing.id }
+  }
+
+  /**
+   * One flag, two realisations: the OIDC `groups` claim mapper or the SAML
+   * `groups` attribute-statement mapper, per protocol. Both admin methods
+   * are check-then-create, so asserting twice is a no-op — the convergence
+   * property `applyApp` promises holds through the mapper too.
+   */
+  private async assertGroupsMapper(uuid: string, desired: DesiredSsoApp): Promise<void> {
+    if (!desired.groupsClaim) {
+      return
+    }
+    if (desired.protocol === 'saml') {
+      await this.admin.assertSamlGroupAttributeMapper(uuid)
+    } else {
+      await this.admin.assertGroupMembershipMapper(uuid)
+    }
   }
 
   async health(): Promise<ConnectorHealth> {
@@ -138,6 +156,9 @@ export class KeycloakSsoConnector implements SsoConnector {
     current: KeycloakClientRepresentation,
     desired: DesiredSsoApp,
   ): KeycloakClientRepresentation {
+    if (desired.protocol === 'saml') {
+      return this.mergeSaml(current, desired)
+    }
     return {
       ...current,
       clientId: desired.clientId,
@@ -159,6 +180,87 @@ export class KeycloakSsoConnector implements SsoConnector {
       },
     }
   }
+
+  /**
+   * The SAML overlay. Same read-modify-write discipline as OIDC — only the
+   * keys this system masters are written; a hand-set attribute survives.
+   *
+   * Keycloak 26 keeps a SAML client's settings in the `attributes` map:
+   *
+   *  - `saml_assertion_consumer_url_post` — the primary ACS endpoint (POST
+   *    binding). Every ACS URL additionally lands in `redirectUris`, which
+   *    is how Keycloak scopes the set of ACS destinations it will accept.
+   *  - `saml.assertion.signature` / `saml.server.signature` — sign the
+   *    individual assertions / the response document. The document is
+   *    ALWAYS signed; assertion signing follows the app's flag.
+   *  - `saml_name_id_format` — 'email' | 'persistent' | 'username', stored
+   *    by Keycloak as these exact strings.
+   *  - `saml.client.signature` + `saml.signing.certificate` — ON exactly
+   *    when the SP supplied a certificate: requiring signatures without a
+   *    verification key would brick the client, and holding a key without
+   *    requiring signatures silently verifies nothing. Coupling them makes
+   *    the inconsistent states unrepresentable. The stored value is the PEM
+   *    stripped to base64 DER, which is the shape Keycloak keeps. When the
+   *    certificate is REMOVED, the stale attribute is deleted rather than
+   *    left behind — a lingering key on a client that no longer requires
+   *    signatures is exactly the confusing half-state read-modify-write can
+   *    otherwise preserve forever.
+   *
+   * Asserting the same desired state twice writes byte-identical attributes,
+   * preserving the convergence property planApp's diff depends on.
+   */
+  private mergeSaml(
+    current: KeycloakClientRepresentation,
+    desired: DesiredSsoApp,
+  ): KeycloakClientRepresentation {
+    const acsUrls = desired.samlAcsUrls ?? []
+    const certificate =
+      desired.samlSpCertificate === null || desired.samlSpCertificate === undefined
+        ? null
+        : stripPemToBase64(desired.samlSpCertificate)
+
+    const attributes: Record<string, string> = {
+      ...(current.attributes ?? {}),
+      saml_assertion_consumer_url_post: acsUrls[0] ?? '',
+      'saml.assertion.signature': desired.samlSignAssertions === true ? 'true' : 'false',
+      'saml.server.signature': 'true',
+      saml_name_id_format: desired.samlNameIdFormat ?? 'email',
+      'saml.client.signature': certificate === null ? 'false' : 'true',
+      ...(certificate === null ? {} : { 'saml.signing.certificate': certificate }),
+    }
+    if (certificate === null) {
+      delete attributes['saml.signing.certificate']
+    }
+
+    return {
+      ...current,
+      clientId: desired.clientId,
+      name: desired.name,
+      description: desired.description,
+      protocol: 'saml',
+      // A SAML SP has no "public client" auth model; the local row is
+      // created with false and this keeps a hand-edit from surviving.
+      publicClient: false,
+      enabled: desired.enabled,
+      standardFlowEnabled: true,
+      redirectUris: [...acsUrls],
+      webOrigins: [],
+      attributes,
+    }
+  }
+}
+
+/**
+ * PEM to the single-line base64 DER Keycloak stores in
+ * `saml.signing.certificate`. The PEM shape was already vetted by
+ * `pemCertificateProblem` before the value could reach the database, so this
+ * is a pure reformat, not a validation.
+ */
+function stripPemToBase64(pem: string): string {
+  return pem
+    .replace(/-----BEGIN CERTIFICATE-----/, '')
+    .replace(/-----END CERTIFICATE-----/, '')
+    .replace(/\s+/g, '')
 }
 
 function requiredString(config: Record<string, unknown>, key: string): string {

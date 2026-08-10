@@ -1115,6 +1115,13 @@ export class SyncWorker implements OnApplicationShutdown {
       webOrigins: app.webOrigins,
       groupsClaim: app.groupsClaim,
       enabled: app.enabled,
+      // SAML-only; null on every OIDC row. Mapped null -> undefined so the
+      // desired state carries "not a SAML app" the way DesiredSsoApp spells
+      // it, rather than three nulls a connector would have to re-interpret.
+      samlAcsUrls: app.samlAcsUrls ?? undefined,
+      samlSpCertificate: app.samlSpCertificate,
+      samlSignAssertions: app.samlSignAssertions ?? undefined,
+      samlNameIdFormat: app.samlNameIdFormat ?? undefined,
       existingExternalId,
     })
 

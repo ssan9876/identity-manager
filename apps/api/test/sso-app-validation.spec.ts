@@ -3,7 +3,10 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   RESERVED_CLIENT_IDS,
+  acsUrlProblem,
   clientIdProblem,
+  entityIdProblem,
+  pemCertificateProblem,
   redirectUriProblem,
   webOriginProblem,
 } from '../src/sso-apps/sso-app-validation'
@@ -88,5 +91,94 @@ describe('reserved client ids', () => {
     for (const clientId of created) {
       expect(RESERVED_CLIENT_IDS).toContain(clientId)
     }
+  })
+})
+
+describe('SAML entity id rails', () => {
+  it.each([
+    'https://sp.example.com/saml/metadata',
+    'http://sp.internal/metadata',
+    'urn:example:sp:hr-suite',
+  ])('accepts %s', (entityId) => {
+    expect(entityIdProblem(entityId)).toBeNull()
+  })
+
+  it.each([
+    ['', 'empty'],
+    ['   ', 'whitespace only'],
+    ['not a uri', 'not a URI'],
+    ['https://sp.example.com/*', 'a wildcard'],
+    ['mailto:sp@example.com', 'a non-http, non-urn scheme'],
+  ])('rejects %s (%s)', (entityId) => {
+    expect(entityIdProblem(entityId)).not.toBeNull()
+  })
+
+  it('rejects an entity id over the 1024-character SAML limit', () => {
+    expect(entityIdProblem(`https://sp.example.com/${'a'.repeat(1024)}`)).not.toBeNull()
+  })
+
+  it('applies the reserved denylist — the entity id IS the Keycloak clientId', () => {
+    // Entity id "idm-console" would register over the console's own client:
+    // the same takeover clientIdProblem exists to stop, reachable through
+    // the SAML door if this check were missing.
+    for (const reserved of RESERVED_CLIENT_IDS) {
+      expect(entityIdProblem(reserved)).not.toBeNull()
+    }
+    expect(entityIdProblem('IDM-Console')).not.toBeNull()
+  })
+})
+
+describe('ACS URL rails', () => {
+  // STRICTER than redirect URIs, by design: the ACS receives the signed
+  // assertion itself, so a wrong destination is the credential delivered to
+  // the attacker, and SAML has no wildcard semantics at all.
+  it.each([
+    'https://sp.example.com/saml/acs',
+    'http://localhost:8080/saml/acs',
+    'http://127.0.0.1:3000/acs',
+  ])('accepts %s', (uri) => {
+    expect(acsUrlProblem(uri)).toBeNull()
+  })
+
+  it.each([
+    ['http://sp.example.com/acs', 'plain http on a non-localhost host'],
+    ['https://sp.example.com/*', 'a wildcard — even in the path'],
+    ['https://*.example.com/acs', 'a wildcard host'],
+    ['not-a-url', 'an unparseable value'],
+    ['ftp://sp.example.com/acs', 'a non-http scheme'],
+  ])('rejects %s (%s)', (uri) => {
+    expect(acsUrlProblem(uri)).not.toBeNull()
+  })
+
+  it('names the offending value verbatim', () => {
+    expect(acsUrlProblem('http://sp.example.com/acs')).toContain('http://sp.example.com/acs')
+  })
+})
+
+describe('SP certificate rails', () => {
+  const pem =
+    '-----BEGIN CERTIFICATE-----\nMIIBszCCARygAwIBAgIBATANBgkqhkiG9w0BAQsFADAA\n-----END CERTIFICATE-----'
+
+  it('accepts a well-shaped PEM certificate', () => {
+    expect(pemCertificateProblem(pem)).toBeNull()
+  })
+
+  it('accepts surrounding whitespace — certificates arrive by paste', () => {
+    expect(pemCertificateProblem(`\n  ${pem}\n`)).toBeNull()
+  })
+
+  it('rejects a private key — the SP must never send us one', () => {
+    const key = '-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----'
+    expect(pemCertificateProblem(key)).toMatch(/PRIVATE KEY/)
+  })
+
+  it('rejects a bare base64 body without PEM markers', () => {
+    expect(pemCertificateProblem('MIIBszCCARygAwIBAgIBATANBgkqhkiG9w0BAQsFADAA')).not.toBeNull()
+  })
+
+  it('rejects a mangled body', () => {
+    expect(
+      pemCertificateProblem('-----BEGIN CERTIFICATE-----\nnot base64 !!\n-----END CERTIFICATE-----'),
+    ).not.toBeNull()
   })
 })

@@ -473,15 +473,37 @@ export interface DirectoryConnector {
  * `KeycloakSsoConnector.findExisting`.
  */
 export interface DesiredSsoApp {
+  /**
+   * For OIDC, the OAuth client id; for SAML, the SP's ENTITY ID — Keycloak
+   * keys a SAML client by entity id in this same field, which is why the
+   * local schema stores both in one `client_id` column (db/schema/sso-apps).
+   */
   clientId: string
   name: string
   description: string
-  protocol: 'openid-connect'
+  protocol: 'openid-connect' | 'saml'
+  /** Always false for 'saml' — a SAML SP has no "public client" auth model. */
   publicClient: boolean
   redirectUris: readonly string[]
   webOrigins: readonly string[]
+  /**
+   * Group membership in the token/assertion: realised as the OIDC `groups`
+   * claim mapper or the SAML `groups` attribute-statement mapper, per
+   * `protocol`. One flag because it is one question.
+   */
   groupsClaim: boolean
   enabled: boolean
+  /**
+   * SAML only, and REQUIRED there (the controller cannot create a SAML row
+   * without them); undefined for 'openid-connect'. Optional at the type
+   * level because a discriminated union over `protocol` would force every
+   * existing OIDC call site to narrow before touching fields SAML does not
+   * change — the connector re-checks `protocol` before reading these.
+   */
+  samlAcsUrls?: readonly string[]
+  samlSpCertificate?: string | null
+  samlSignAssertions?: boolean
+  samlNameIdFormat?: 'email' | 'persistent' | 'username'
   existingExternalId?: string
 }
 

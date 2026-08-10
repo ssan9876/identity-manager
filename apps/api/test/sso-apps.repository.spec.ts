@@ -33,9 +33,45 @@ describe('SsoAppsRepository', () => {
     expect(created.enabled).toBe(true)
     expect(created.groupsClaim).toBe(true)
     expect(created.redirectUris).toEqual(['https://billing.example.com/callback'])
+    // The SAML columns exist on every row and are null for OIDC.
+    expect(created.protocol).toBe('openid-connect')
+    expect(created.samlAcsUrls).toBeNull()
+    expect(created.samlSpCertificate).toBeNull()
+    expect(created.samlSignAssertions).toBeNull()
+    expect(created.samlNameIdFormat).toBeNull()
 
     const found = await repo.findById(created.id)
     expect(found?.name).toBe('Billing Portal')
+  })
+
+  it('round-trips a SAML application, entity id in the clientId column', async () => {
+    const created = await ctx.db.transaction((tx) =>
+      repo.create(
+        {
+          clientId: 'https://hr.example.com/saml/metadata',
+          name: 'HR Suite',
+          description: '',
+          protocol: 'saml',
+          publicClient: false,
+          redirectUris: [],
+          webOrigins: [],
+          groupsClaim: true,
+          samlAcsUrls: ['https://hr.example.com/saml/acs'],
+          samlSpCertificate: null,
+          samlSignAssertions: true,
+          samlNameIdFormat: 'persistent',
+        },
+        tx,
+      ),
+    )
+
+    const found = await repo.findById(created.id)
+    expect(found?.protocol).toBe('saml')
+    expect(found?.clientId).toBe('https://hr.example.com/saml/metadata')
+    expect(found?.samlAcsUrls).toEqual(['https://hr.example.com/saml/acs'])
+    expect(found?.samlSignAssertions).toBe(true)
+    expect(found?.samlNameIdFormat).toBe('persistent')
+    expect(found?.publicClient).toBe(false)
   })
 
   it('rejects a duplicate client_id at the DATABASE level', async () => {

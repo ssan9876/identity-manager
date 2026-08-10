@@ -148,6 +148,33 @@ describe('SyncWorker — sso_app aggregate', () => {
     })
   })
 
+  it('carries the SAML columns into the desired state', async () => {
+    const app = await seedApp({
+      clientId: 'https://hr.example.com/saml/metadata',
+      protocol: 'saml',
+      redirectUris: [],
+      webOrigins: [],
+      samlAcsUrls: ['https://hr.example.com/saml/acs'],
+      samlSpCertificate: null,
+      samlSignAssertions: true,
+      samlNameIdFormat: 'email',
+    })
+    await enqueue(app.id)
+
+    await worker.runOnce()
+
+    expect(lastDesired).toMatchObject({
+      clientId: 'https://hr.example.com/saml/metadata',
+      protocol: 'saml',
+      samlAcsUrls: ['https://hr.example.com/saml/acs'],
+      samlSignAssertions: true,
+      samlNameIdFormat: 'email',
+    })
+    // null -> undefined at the worker boundary: DesiredSsoApp spells "no
+    // certificate" as undefined-or-null, and the row's null passes through.
+    expect(lastDesired?.samlSpCertificate ?? null).toBeNull()
+  })
+
   it('passes the stored external id back so a renamed clientId still correlates', async () => {
     // Without this the connector would fall back to looking the client up by
     // clientId, and an admin who renamed it in Keycloak would get an orphan

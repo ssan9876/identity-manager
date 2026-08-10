@@ -132,3 +132,109 @@ export function webOriginProblem(origin: string): string | null {
 
   return null
 }
+
+// ---------------------------------------------------------------------------
+// SAML. Same contract as everything above: pure, null for acceptable, a
+// reason NAMING the offending value otherwise, collectable into one
+// ValidationError.
+// ---------------------------------------------------------------------------
+
+/**
+ * A SAML entity id is, per the spec, a URI — in practice either an absolute
+ * URL or a URN. It maps onto the Keycloak client's `clientId`, which is why
+ * the RESERVED_CLIENT_IDS denylist applies here too: entity id "idm-console"
+ * would otherwise register over the console's own client, the exact takeover
+ * that list exists to stop. (No real SP names its entity id after a bare
+ * Keycloak client, but the check costs nothing and the failure it prevents
+ * is a realm takeover.)
+ */
+export function entityIdProblem(entityId: string): string | null {
+  if (entityId.trim().length === 0) {
+    return 'entityId: must not be empty'
+  }
+  if (RESERVED_CLIENT_IDS.some((reserved) => reserved.toLowerCase() === entityId.toLowerCase())) {
+    return `entityId: "${entityId}" is reserved — it maps onto the Keycloak clientId of a client this system depends on for its own security`
+  }
+  // The spec caps entityID at 1024 characters; Keycloak stores longer ones
+  // happily, but an SP that follows the spec will truncate and then never
+  // match, which is the confusing failure. Reject it here instead.
+  if (entityId.length > 1024) {
+    return `entityId: "${entityId.slice(0, 64)}…" exceeds the SAML limit of 1024 characters`
+  }
+  if (entityId.includes(WILDCARD)) {
+    return `entityId: "${entityId}" contains a wildcard — an entity id is an exact identifier`
+  }
+  if (/^urn:[a-z0-9][a-z0-9-]{0,31}:/i.test(entityId)) {
+    return null
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(entityId)
+  } catch {
+    return `entityId: "${entityId}" must be an absolute URI (https URL or urn:)`
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return `entityId: "${entityId}" must be an http(s) URL or a urn:`
+  }
+  return null
+}
+
+const LOCALHOST_HOSTNAMES = ['localhost', '127.0.0.1', '[::1]']
+
+/**
+ * Stricter than `redirectUriProblem`, deliberately. An OIDC redirect target
+ * is protected downstream by the authorization code exchange; a SAML ACS URL
+ * receives the SIGNED ASSERTION ITSELF, so a wrong destination is not a
+ * detour — it is the credential delivered to the attacker. Hence: https
+ * required (http only for the localhost forms, for local SP development),
+ * and NO wildcards anywhere — SAML has no wildcard semantics, so a `*` here
+ * is either a typo or an attempt to widen the destination set.
+ */
+export function acsUrlProblem(uri: string): string | null {
+  if (uri.includes(WILDCARD)) {
+    return `acsUrls: "${uri}" contains a wildcard — SAML has no wildcard matching; list every ACS URL exactly`
+  }
+
+  let parsed: URL
+  try {
+    parsed = new URL(uri)
+  } catch {
+    return `acsUrls: "${uri}" is not a valid absolute URL`
+  }
+
+  if (parsed.protocol === 'http:') {
+    if (!LOCALHOST_HOSTNAMES.includes(parsed.hostname === '::1' ? '[::1]' : parsed.hostname)) {
+      return `acsUrls: "${uri}" must use https — an assertion posted over http is readable in transit (http is permitted only for localhost)`
+    }
+    return null
+  }
+  if (parsed.protocol !== 'https:') {
+    return `acsUrls: "${uri}" must use https`
+  }
+  return null
+}
+
+/**
+ * Shape only — this does not verify the certificate chains, is unexpired, or
+ * even parses as X.509; Keycloak rejects garbage base64 on its side and the
+ * sync surfaces that as a dead letter an operator can see. What IS rejected
+ * here is the pastes that LOOK right and fail later confusingly: a private
+ * key (which must never be sent to us at all), a PEM with the wrong block
+ * label, or a mangled body.
+ */
+export function pemCertificateProblem(pem: string): string | null {
+  if (/PRIVATE KEY/.test(pem)) {
+    return 'spCertificate: contains a PRIVATE KEY block — the SP must keep its private key; only the certificate belongs here'
+  }
+  const match = /^-----BEGIN CERTIFICATE-----\r?\n([\s\S]+?)\r?\n-----END CERTIFICATE-----\s*$/.exec(
+    pem.trim(),
+  )
+  if (match === null) {
+    return 'spCertificate: must be one PEM certificate — a base64 body between "-----BEGIN CERTIFICATE-----" and "-----END CERTIFICATE-----"'
+  }
+  const body = match[1].replace(/\s+/g, '')
+  if (body.length === 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(body)) {
+    return 'spCertificate: the PEM body is not valid base64'
+  }
+  return null
+}

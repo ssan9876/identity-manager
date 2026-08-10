@@ -36,6 +36,20 @@ function stubJwtGuard(getUsername: () => string): CanActivate {
 
 const SECRET_SENTINEL = 'MINTED-SECRET-SENTINEL-do-not-store'
 
+const TEST_PEM =
+  '-----BEGIN CERTIFICATE-----\nMIIBszCCARygAwIBAgIBATANBgkqhkiG9w0BAQsFADAA\n-----END CERTIFICATE-----'
+
+const VALID_SAML_BODY = {
+  protocol: 'saml',
+  entityId: 'https://hr.example.com/saml/metadata',
+  name: 'HR Suite',
+  description: 'HR SaaS',
+  acsUrls: ['https://hr.example.com/saml/acs'],
+  signAssertions: true,
+  nameIdFormat: 'email',
+  groupsClaim: true,
+}
+
 const VALID_BODY = {
   clientId: 'billing-portal',
   name: 'Billing Portal',
@@ -352,6 +366,161 @@ describe('SsoAppsController', () => {
 
     expect(res.body.secret).toBe(SECRET_SENTINEL)
     expect(mintCalls).toEqual(['uuid-from-keycloak'])
+  })
+
+  // =========================================================================
+  // SAML
+  // =========================================================================
+
+  it('creates a SAML application — entity id as clientId, audit + one outbox row', async () => {
+    await asSuperAdmin()
+    await enableSsoTarget()
+
+    const res = await request(app.getHttpServer()).post('/sso-apps').send(VALID_SAML_BODY).expect(201)
+    expect(res.body.protocol).toBe('saml')
+    expect(res.body.clientId).toBe('https://hr.example.com/saml/metadata')
+    expect(res.body.publicClient).toBe(false)
+    expect(res.body.samlAcsUrls).toEqual(['https://hr.example.com/saml/acs'])
+    expect(res.body.samlNameIdFormat).toBe('email')
+    expect(res.body.samlSignAssertions).toBe(true)
+
+    const audit = await ctx.pool.query(
+      `SELECT action FROM audit_log WHERE resource_id = $1`, [res.body.id],
+    )
+    expect(audit.rows.map((r) => r.action)).toEqual(['sso_app:create'])
+
+    const events = await ctx.pool.query(
+      `SELECT target, aggregate_type FROM outbox_events WHERE aggregate_id = $1`, [res.body.id],
+    )
+    expect(events.rows).toEqual([{ target: 'keycloak_sso', aggregate_type: 'sso_app' }])
+  })
+
+  it('rejects an OIDC-only field on a SAML create, NAMING it', async () => {
+    await asSuperAdmin()
+    const res = await request(app.getHttpServer())
+      .post('/sso-apps')
+      .send({ ...VALID_SAML_BODY, redirectUris: ['https://hr.example.com/cb'] })
+      .expect(400)
+    expect(JSON.stringify(res.body)).toMatch(/redirectUris/)
+  })
+
+  it('rejects a SAML-only field on an OIDC create, NAMING it', async () => {
+    await asSuperAdmin()
+    const res = await request(app.getHttpServer())
+      .post('/sso-apps')
+      .send({ ...VALID_BODY, acsUrls: ['https://hr.example.com/saml/acs'] })
+      .expect(400)
+    expect(JSON.stringify(res.body)).toMatch(/acsUrls/)
+  })
+
+  it('rejects a reserved entity id — it maps onto the Keycloak clientId', async () => {
+    await asSuperAdmin()
+    const res = await request(app.getHttpServer())
+      .post('/sso-apps')
+      .send({ ...VALID_SAML_BODY, entityId: 'idm-console' })
+      .expect(400)
+    expect(JSON.stringify(res.body)).toMatch(/reserved/)
+  })
+
+  it('rejects a plain-http ACS URL on a non-localhost host, and reports every bad one', async () => {
+    await asSuperAdmin()
+    const res = await request(app.getHttpServer())
+      .post('/sso-apps')
+      .send({ ...VALID_SAML_BODY, acsUrls: ['http://hr.example.com/acs', 'https://hr.example.com/*'] })
+      .expect(400)
+    const body = JSON.stringify(res.body)
+    expect(body).toMatch(/http:\/\/hr.example.com\/acs/)
+    expect(body).toMatch(/wildcard/)
+  })
+
+  it('accepts an http ACS URL for localhost — local SP development', async () => {
+    await asSuperAdmin()
+    await enableSsoTarget()
+    await request(app.getHttpServer())
+      .post('/sso-apps')
+      .send({ ...VALID_SAML_BODY, acsUrls: ['http://localhost:8080/saml/acs'] })
+      .expect(201)
+  })
+
+  it('rejects a malformed SP certificate by name', async () => {
+    await asSuperAdmin()
+    const res = await request(app.getHttpServer())
+      .post('/sso-apps')
+      .send({ ...VALID_SAML_BODY, spCertificate: 'not a pem' })
+      .expect(400)
+    expect(JSON.stringify(res.body)).toMatch(/spCertificate/)
+  })
+
+  it('409s on a duplicate entity id', async () => {
+    await asSuperAdmin()
+    await enableSsoTarget()
+    await request(app.getHttpServer()).post('/sso-apps').send(VALID_SAML_BODY).expect(201)
+    await request(app.getHttpServer()).post('/sso-apps').send(VALID_SAML_BODY).expect(409)
+  })
+
+  it('PATCH on a SAML app rejects OIDC fields and protocol by name', async () => {
+    await asSuperAdmin()
+    await enableSsoTarget()
+    const created = await request(app.getHttpServer()).post('/sso-apps').send(VALID_SAML_BODY).expect(201)
+
+    const uris = await request(app.getHttpServer())
+      .patch(`/sso-apps/${created.body.id}`)
+      .send({ redirectUris: ['https://hr.example.com/cb'] })
+      .expect(400)
+    expect(JSON.stringify(uris.body)).toMatch(/redirectUris/)
+
+    // Switching protocol in place is a new application, not an edit.
+    const protocol = await request(app.getHttpServer())
+      .patch(`/sso-apps/${created.body.id}`)
+      .send({ protocol: 'openid-connect' })
+      .expect(400)
+    expect(JSON.stringify(protocol.body)).toMatch(/protocol/)
+  })
+
+  it('PATCH edits SAML fields and emits an updated event', async () => {
+    await asSuperAdmin()
+    await enableSsoTarget()
+    const created = await request(app.getHttpServer()).post('/sso-apps').send(VALID_SAML_BODY).expect(201)
+
+    const res = await request(app.getHttpServer())
+      .patch(`/sso-apps/${created.body.id}`)
+      .send({ acsUrls: ['https://hr.example.com/saml/acs-v2'], nameIdFormat: 'persistent' })
+      .expect(200)
+    expect(res.body.samlAcsUrls).toEqual(['https://hr.example.com/saml/acs-v2'])
+    expect(res.body.samlNameIdFormat).toBe('persistent')
+
+    const events = await ctx.pool.query(
+      `SELECT event_type FROM outbox_events WHERE aggregate_id = $1 ORDER BY id`, [created.body.id],
+    )
+    expect(events.rows.map((r) => r.event_type)).toEqual(['created', 'updated'])
+  })
+
+  it('PATCH spCertificate: null removes the certificate', async () => {
+    await asSuperAdmin()
+    await enableSsoTarget()
+    const created = await request(app.getHttpServer())
+      .post('/sso-apps')
+      .send({ ...VALID_SAML_BODY, spCertificate: TEST_PEM })
+      .expect(201)
+    expect(created.body.samlSpCertificate).toBe(TEST_PEM)
+
+    const res = await request(app.getHttpServer())
+      .patch(`/sso-apps/${created.body.id}`)
+      .send({ spCertificate: null })
+      .expect(200)
+    expect(res.body.samlSpCertificate).toBeNull()
+  })
+
+  it('409s when minting a client secret for a SAML application', async () => {
+    // SAML SPs authenticate assertions by signature; there is no secret.
+    await asSuperAdmin()
+    await enableSsoTarget()
+    const created = await request(app.getHttpServer()).post('/sso-apps').send(VALID_SAML_BODY).expect(201)
+
+    const res = await request(app.getHttpServer())
+      .post(`/sso-apps/${created.body.id}/client-secret`)
+      .expect(409)
+    expect(JSON.stringify(res.body)).toMatch(/SAML/)
   })
 
   it('never persists the minted secret anywhere', async () => {
