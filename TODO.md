@@ -384,18 +384,20 @@ state of each.
 - [ ] **CS-M6.** `vite@5.4.21` + `esbuild@0.21.5` dev-server advisories, unfixed on
       the 5.x line. Developer workstations only, but this project's dev platform is
       Windows, where the path-traversal case is live.
-- [ ] **`Referrer-Policy: same-origin` still sends the search term to the API.**
-      Surfaced while fixing CS-L3. The access log no longer retains it, and the
-      request is same-origin so it terminates at nginx — not a live exposure. But
-      `same-origin-when-cross-origin` or `strict-origin-when-cross-origin` would
-      remove the term from the request itself rather than only from what gets
-      written down. Deferred because both vhost header blocks were just rewritten
-      for CS-M1 and this is a different header and a different finding.
-- [ ] **Remaining item-10 residuals** — `Cf`-category Unicode in display names,
-      unknown `role_key` yielding an unmapped 500, admin-path audit `before`
-      snapshot unlocked, `effective-members` never re-narrowing,
-      `ConnectorTargetsRepository.upsert` lost update, `simulate()` ignoring
-      `rule.trigger`, no structured logger, inert JML triggers.
+- [x] **`Referrer-Policy` is `no-referrer`, and this item was stale.** It claimed
+      the header was still `same-origin` and offered
+      `same-origin-when-cross-origin` / `strict-origin-when-cross-origin` as the
+      remedies. Checked 2026-08-10: both vhost templates already send
+      `no-referrer`, and the comment block in `deploy/nginx/idm.conf` had already
+      worked through — and rejected — every alternative this item proposed.
+      `same-origin-when-cross-origin` **is not a Referrer-Policy token at all**,
+      so a browser would ignore it and fall back to its default;
+      `strict-origin-when-cross-origin` still sends the full URL on same-origin
+      requests, which is precisely the case that leaked the search term.
+      `no-referrer` is the only value at least as strict as `same-origin` in
+      every direction, and nothing here reads a `Referer` — the API authorizes
+      from the bearer token, CORS never applies (one origin), and the OIDC
+      redirect is driven by query parameters and PKCE.
 
 ## Verified against a real deployment
 
