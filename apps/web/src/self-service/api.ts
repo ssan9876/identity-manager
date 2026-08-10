@@ -86,3 +86,83 @@ export function updateSelfProfile(accessToken: string, patch: SelfUpdatePatch): 
     body: JSON.stringify(patch),
   })
 }
+
+// ---------------------------------------------------------------------------
+// Access-request catalogue (apps/api/src/access-requests) — all routes are
+// authentication-only and self-scoped: the API resolves the requester from
+// the verified JWT, so nothing here ever sends a user id.
+// ---------------------------------------------------------------------------
+
+export type AccessRequestState = 'pending' | 'approved' | 'denied' | 'cancelled'
+
+/** Mirrors the catalogue entries `GET /access-requests/catalogue` returns. */
+export interface CatalogueRole {
+  id: string
+  name: string
+  description: string | null
+}
+
+/** Mirrors AccessRequestWithContext (access-requests.repository.ts). */
+export interface AccessRequest {
+  id: string
+  organizationId: string
+  requesterUserId: string
+  subjectUserId: string
+  businessRoleId: string
+  justification: string
+  state: AccessRequestState
+  approverResolver: 'manager_of_subject' | 'role_holder:super_admin'
+  decidedBy: string | null
+  decidedAt: string | null
+  decisionComment: string | null
+  requestedExpiresAt: string | null
+  createdAt: string
+  updatedAt: string
+  businessRoleName: string
+  subjectUsername: string
+  subjectDisplayName: string
+}
+
+export function fetchCatalogue(accessToken: string): Promise<{ roles: CatalogueRole[] }> {
+  return authorizedRequest<{ roles: CatalogueRole[] }>('/access-requests/catalogue', accessToken)
+}
+
+export function fetchMyRequests(accessToken: string): Promise<{ requests: AccessRequest[] }> {
+  return authorizedRequest<{ requests: AccessRequest[] }>('/access-requests/mine', accessToken)
+}
+
+export function fetchApprovalsInbox(accessToken: string): Promise<{ requests: AccessRequest[] }> {
+  return authorizedRequest<{ requests: AccessRequest[] }>('/access-requests/inbox', accessToken)
+}
+
+export function createAccessRequest(
+  accessToken: string,
+  input: { businessRoleId: string; justification: string; requestedExpiresAt: string | null },
+): Promise<AccessRequest> {
+  return authorizedRequest<AccessRequest>('/access-requests', accessToken, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export function cancelAccessRequest(accessToken: string, id: string): Promise<AccessRequest> {
+  return authorizedRequest<AccessRequest>(`/access-requests/${id}/cancel`, accessToken, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+}
+
+export function decideAccessRequest(
+  accessToken: string,
+  id: string,
+  decision: 'approve' | 'deny',
+  comment: string | null,
+): Promise<AccessRequest> {
+  return authorizedRequest<AccessRequest>(`/access-requests/${id}/${decision}`, accessToken, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ comment }),
+  })
+}

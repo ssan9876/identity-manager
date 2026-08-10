@@ -21,6 +21,7 @@ import PersonDetailPage from './people/PersonDetailPage'
 import OrgUnitsPage from './org-units/OrgUnitsPage'
 import OrganizationsPage from './organizations/OrganizationsPage'
 import RolesCatalogPage from './roles/RolesCatalogPage'
+import ApprovalsPage from './self-service/ApprovalsPage'
 import SelfServicePage from './self-service/SelfServicePage'
 import AppShell from './shell/AppShell'
 import { BRAND, BrandLockup, BrandMark } from './brand'
@@ -218,6 +219,7 @@ export default function App() {
           <Route path="/connectors" element={<ConnectorsListPage />} />
           <Route path="/connectors/:target" element={<TargetDetailPage />} />
           <Route path="/self" element={<SelfServicePage />} />
+          <Route path="/approvals" element={<ApprovalsPage />} />
         </Route>
       </Routes>
     </ToastProvider>

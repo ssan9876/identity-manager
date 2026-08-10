@@ -38,3 +38,92 @@
 .self-service__actions {
   margin-top: var(--space-2);
 }
+
+/* --------------------------------------------------------------------------
+   Access-request catalogue (Request access section on /self, and /approvals,
+   which reuses these row classes). Tokens only, like everything above.
+   -------------------------------------------------------------------------- */
+
+.catalogue__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.catalogue__row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.catalogue__row-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.catalogue__row-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.catalogue__role-name {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.catalogue__role-description {
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.catalogue__row-side {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.catalogue__request-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+}
+
+.catalogue__request-actions {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.catalogue__requests-heading {
+  margin: var(--space-4) 0 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.approvals__decision {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.approvals__decision .input {
+  flex: 1 1 12rem;
+}
