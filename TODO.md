@@ -57,9 +57,9 @@ Recorded because none of it was visible as a merge conflict:
 
 Spec: `docs/archive/specs/2026-08-08-business-roles-entitlements-design.md`
 Plan: `docs/archive/plans/2026-08-08-business-roles-entitlements.md` (20 tasks)
-Detail: `docs/TODO-business-roles.md` — still accurate for tasks 9–20.
+Detail: `docs/archive/TODO-business-roles.md` — still accurate for tasks 9–20.
 
-Task 8 (the reconciler) **is now green: 19/19**. `docs/TODO-business-roles.md`
+Task 8 (the reconciler) **is now green: 19/19**. `docs/archive/TODO-business-roles.md`
 describes five failures and diagnoses them as cross-test contamination; that
 diagnosis was right and its fix (a per-seed unique `jobTitle`) is in the merged
 code. Treat that file's "5 of 19 fail" section as history.

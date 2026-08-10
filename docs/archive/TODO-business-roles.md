@@ -1,5 +1,7 @@
 # TODO — Business Roles and Entitlements (sub-project 4)
 
+> **Historical working document.** Superseded by the merged code and by `TODO.md` at the repository root; kept for the record and not maintained.
+
 **Branch:** `feat/business-roles-entitlements-wt` (pushed to origin)
 **Worktree:** `D:\identity-manager-business-roles`
 **Spec:** `docs/archive/specs/2026-08-08-business-roles-entitlements-design.md`
