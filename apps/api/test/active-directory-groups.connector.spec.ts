@@ -83,7 +83,7 @@ describe('ActiveDirectoryConnector groups and membership (Milestone 11, Task 6)'
     orgUnitId = (await new OrgUnitsRepository(ctx.db).createRoot(`AD Groups Root ${randomUUID()}`)).id
     await ctx.pool.query(
       `INSERT INTO connector_targets (target, enabled, config) VALUES ('active_directory', true, $1)
-       ON CONFLICT (target) DO UPDATE SET enabled = true, config = $1`,
+       ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true, config = $1`,
       [JSON.stringify(baseConfig())],
     )
   }, 300_000)

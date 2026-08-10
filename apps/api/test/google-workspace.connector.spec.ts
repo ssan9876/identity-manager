@@ -668,7 +668,7 @@ describe('GoogleWorkspaceConnector (Milestone 13, Task 8)', () => {
 
       await ctx.pool.query(
         `INSERT INTO connector_targets (target, enabled, config) VALUES ('google_workspace', true, $1)
-         ON CONFLICT (target) DO UPDATE SET enabled = true, config = $1`,
+         ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true, config = $1`,
         [JSON.stringify(baseConfig())],
       )
     })
@@ -816,7 +816,7 @@ describe('GoogleWorkspaceConnector (Milestone 13, Task 8)', () => {
       orgUnitId = (await new OrgUnitsRepository(ctx.db).createRoot(`Google Isolation Root ${randomUUID()}`)).id
       await ctx.pool.query(
         `INSERT INTO connector_targets (target, enabled, config) VALUES ('google_workspace', true, $1)
-         ON CONFLICT (target) DO UPDATE SET enabled = true, config = $1`,
+         ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true, config = $1`,
         [JSON.stringify(baseConfig())],
       )
     })

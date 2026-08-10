@@ -1,15 +1,12 @@
 import { Injectable } from '@nestjs/common'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type { ConnectorTarget } from '../connectors/connector'
 import { connectorTargets } from '../db/schema/connector-targets'
-import { groups } from '../db/schema/groups'
-import { orgUnits } from '../db/schema/org-units'
-import { organizations } from '../db/schema/organizations'
 import { outboxEvents } from '../db/schema/outbox-events'
 import { userTargetAccounts } from '../db/schema/user-target-accounts'
-import { users } from '../db/schema/users'
 import * as schema from '../db/schema/index'
+import { resolveAggregateOrganizationId } from './aggregate-organization'
 import { targetsForAggregate } from './target-fanout'
 
 /**
@@ -188,31 +185,50 @@ export class OutboxWriter {
    * there is no pool handle here it COULD reach for by mistake.
    */
   async record(tx: DbHandle, event: OutboxEvent): Promise<void> {
+    // ORGANIZATION-AWARE FAN-OUT — per-organization connector targets.
+    // WHICH organization's catalog governs this event is derived from the
+    // aggregate's own row (see resolveAggregateOrganizationId's doc comment
+    // for why it is derived, never caller-supplied), and the enabled-target
+    // read below is scoped to exactly that organization's rows. An
+    // organization with no row for a target gets NO row for it — absence
+    // means "not configured", and it NEVER falls back to another
+    // organization's row: that fallback would fan one tenant's people into
+    // a directory configured for a different tenant's estate, which is the
+    // precise bug the (organization_id, target) key exists to prevent.
+    //
+    // This REPLACES the former hard-coded "a tenant reaches keycloak and
+    // nothing else" rule (`belongsToMasterTenant`): that rule existed only
+    // because `connector_targets` was keyed by target alone, so every
+    // non-keycloak configuration necessarily belonged to the platform. A
+    // tenant now fans out to whichever targets ITS OWN catalog enables —
+    // for a freshly provisioned tenant that is still `keycloak` alone
+    // (`POST /organizations` seeds exactly that row), so the previous
+    // behaviour is the default, not a special case.
+    //
+    // An UNKNOWN organization (`null` — the aggregate row is missing, which
+    // should be unreachable since `record` runs inside the transaction that
+    // just wrote it) fans out to NOTHING: when "which tenant's directory
+    // should this account be created in?" has no answer, the conservative
+    // answer is "none of them".
+    const organizationId = await resolveAggregateOrganizationId(tx, event.aggregateType, event.aggregateId)
+    if (organizationId === null) {
+      return
+    }
+
     const enabledTargets = await tx
       .select({ target: connectorTargets.target, provisioningMode: connectorTargets.provisioningMode })
       .from(connectorTargets)
-      .where(eq(connectorTargets.enabled, true))
+      .where(and(eq(connectorTargets.enabled, true), eq(connectorTargets.organizationId, organizationId)))
       .orderBy(connectorTargets.target)
 
-    // Aggregate-shape filter FIRST (sso_app vs everything else), then the
+    // Aggregate-shape filter (sso_app vs everything else), then the
     // entitlement filter below. Order matters only for cost: a
     // `keycloak_sso`-only event never pays for a `user_target_accounts`
     // read, because `sso_app` is not a `user` aggregate anyway.
-    const aggregateTargets = targetsForAggregate(
+    const tenantTargets = targetsForAggregate(
       event.aggregateType,
       enabledTargets.map(({ target }) => target),
     )
-
-    // ORGANIZATION-AWARE FAN-OUT (organizations milestone, Task 13). A
-    // TENANT's mutations reach `keycloak` and nothing else — see
-    // `belongsToMasterTenant` below for the whole reasoning. Applied AFTER
-    // the aggregate-shape filter and BEFORE the entitlement filter purely
-    // for cost: a tenant event that is already down to `keycloak` alone can
-    // never be an `entitled_only` target, so it never pays for the
-    // `user_target_accounts` read below.
-    const tenantTargets = (await this.belongsToMasterTenant(tx, event))
-      ? aggregateTargets
-      : aggregateTargets.filter((target) => target === 'keycloak')
 
     // Only a `user` aggregate has an account entitlement to consult, and
     // only an `entitled_only` target consults one — see this method's own
@@ -261,103 +277,5 @@ export class OutboxWriter {
         target,
       })),
     )
-  }
-
-  /**
-   * Whether this event's aggregate belongs to the MASTER organization — or
-   * to no organization at all, which is the same thing for fan-out purposes.
-   *
-   * WHY A TENANT REACHES KEYCLOAK AND NOTHING ELSE. Per-organization
-   * connector targets do not exist: `connector_targets` is keyed by TARGET
-   * alone, so there is exactly one Active Directory configuration, one Entra
-   * configuration, one Google configuration and one mail-server
-   * configuration for the whole system, and every one of them belongs to
-   * whoever runs the platform. Fanning a tenant out to those would push that
-   * tenant's people into a directory configured for a DIFFERENT tenant —
-   * creating real accounts, with real addresses, in someone else's estate.
-   * Keycloak is the one target that is genuinely per-organization, because a
-   * realm is (`organizations.realm`, and `KeycloakAdminClientFactory`
-   * resolves a client per realm). Master keeps today's behaviour exactly,
-   * bit for bit — which is what lets every pre-existing assertion in
-   * test/outbox-emission.spec.ts stand unmodified as the regression net for
-   * that claim.
-   *
-   * DERIVED HERE, from the aggregate's own row, rather than passed in by the
-   * caller. This is a deliberate deviation from the milestone plan, which
-   * had `OutboxEvent` gain an `organizationId` field threaded through all
-   * two dozen `record` call sites. Deriving it is strictly safer for the
-   * same reason `SyncWorker` reconciles by re-reading rather than replaying
-   * `payload`: there is exactly ONE implementation of "which tenant is
-   * this", it cannot be forgotten by a call site added later, and it cannot
-   * disagree with the row that was actually written. A caller-supplied field
-   * would have made cross-tenant fan-out — the precise failure this method
-   * exists to prevent — a single mistyped argument away, at any of those
-   * sites, forever.
-   *
-   * The mapping below is TOTAL over `ALL_OUTBOX_AGGREGATE_TYPES`, and the
-   * compiler enforces that: the `switch` returns from every arm, so adding a
-   * seventh aggregate type without classifying it here fails to compile
-   * rather than silently defaulting to one answer or the other.
-   *
-   *  - `user`/`group`/`org_unit` carry `organization_id` themselves.
-   *  - `membership` is a pure edge with no id of its own; its `aggregateId`
-   *    is the PARENT GROUP's id (see GroupsController's own doc comment on
-   *    that choice), so it resolves through `groups`.
-   *  - `organization` IS its own tenant — the row named by `aggregateId` is
-   *    the answer, no join needed.
-   *  - `sso_app` has no `organization_id` column and deliberately never will
-   *    in this milestone: an SSO application is registered in the master
-   *    realm and is platform-level, so it takes master's fan-out. That is
-   *    also moot in practice — `targetsForAggregate` has already narrowed it
-   *    to `keycloak_sso` alone before this runs.
-   *
-   * A MISSING ROW answers `false` (tenant treatment, Keycloak only), not
-   * `true`. It should be unreachable — `record` is always called inside the
-   * transaction that just wrote the row it describes — so reaching it means
-   * something is wrong, and the conservative answer to "which tenant's
-   * directory should this account be created in?" when the answer is unknown
-   * is "none of the shared ones". The event is still written, so nothing is
-   * silently dropped and an operator can see it.
-   *
-   * Same `tx` as everything else here — see `record`'s own CONNECTION
-   * DISCIPLINE note.
-   */
-  private async belongsToMasterTenant(tx: DbHandle, event: OutboxEvent): Promise<boolean> {
-    switch (event.aggregateType) {
-      case 'sso_app':
-        return true
-      case 'organization': {
-        const [row] = await tx
-          .select({ isMaster: organizations.isMaster })
-          .from(organizations)
-          .where(eq(organizations.id, event.aggregateId))
-        return row?.isMaster ?? false
-      }
-      case 'user': {
-        const [row] = await tx
-          .select({ isMaster: organizations.isMaster })
-          .from(users)
-          .innerJoin(organizations, eq(organizations.id, users.organizationId))
-          .where(eq(users.id, event.aggregateId))
-        return row?.isMaster ?? false
-      }
-      case 'group':
-      case 'membership': {
-        const [row] = await tx
-          .select({ isMaster: organizations.isMaster })
-          .from(groups)
-          .innerJoin(organizations, eq(organizations.id, groups.organizationId))
-          .where(eq(groups.id, event.aggregateId))
-        return row?.isMaster ?? false
-      }
-      case 'org_unit': {
-        const [row] = await tx
-          .select({ isMaster: organizations.isMaster })
-          .from(orgUnits)
-          .innerJoin(organizations, eq(organizations.id, orgUnits.organizationId))
-          .where(eq(orgUnits.id, event.aggregateId))
-        return row?.isMaster ?? false
-      }
-    }
   }
 }

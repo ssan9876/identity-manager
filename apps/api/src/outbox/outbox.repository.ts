@@ -3,6 +3,29 @@ import { and, desc, eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import * as schema from '../db/schema/index'
 import { outboxEvents } from '../db/schema/outbox-events'
+
+/**
+ * A WHERE fragment matching events whose AGGREGATE belongs to
+ * `organizationId` — the dead-letter view's organization dimension
+ * (per-organization connector targets). The per-aggregate-type resolution
+ * mirrors `resolveAggregateOrganizationId` (aggregate-organization.ts)
+ * exactly, pushed into SQL so the filter composes with pagination instead
+ * of resolving every dead letter application-side: `user`/`group`/
+ * `org_unit` rows carry their own organization, a `membership` event is
+ * anchored on the parent GROUP's id, and `sso_app`/`organization` events
+ * are platform-level and belong to MASTER.
+ */
+function aggregateOrganizationFilter(organizationId: string) {
+  return sql`(
+    CASE ${outboxEvents.aggregateType}
+      WHEN 'user' THEN (SELECT u.organization_id FROM users u WHERE u.id = ${outboxEvents.aggregateId})
+      WHEN 'group' THEN (SELECT g.organization_id FROM groups g WHERE g.id = ${outboxEvents.aggregateId})
+      WHEN 'membership' THEN (SELECT g.organization_id FROM groups g WHERE g.id = ${outboxEvents.aggregateId})
+      WHEN 'org_unit' THEN (SELECT ou.organization_id FROM org_units ou WHERE ou.id = ${outboxEvents.aggregateId})
+      ELSE (SELECT o.id FROM organizations o WHERE o.is_master)
+    END
+  ) = ${organizationId}::uuid`
+}
 import type { DbHandle, OutboxAggregateType, OutboxEventType, OutboxTarget } from './outbox.writer'
 
 /**
@@ -230,15 +253,17 @@ export class OutboxRepository {
    */
   async listFailed(
     db: NodePgDatabase<typeof schema>,
-    options: { limit: number; offset: number; target?: OutboxTarget },
+    options: { limit: number; offset: number; target?: OutboxTarget; organizationId?: string },
   ): Promise<DeadLetterEvent[]> {
     const rows = await db
       .select()
       .from(outboxEvents)
       .where(
-        options.target === undefined
-          ? eq(outboxEvents.status, 'failed')
-          : and(eq(outboxEvents.status, 'failed'), eq(outboxEvents.target, options.target)),
+        and(
+          eq(outboxEvents.status, 'failed'),
+          options.target === undefined ? undefined : eq(outboxEvents.target, options.target),
+          options.organizationId === undefined ? undefined : aggregateOrganizationFilter(options.organizationId),
+        ),
       )
       .orderBy(desc(outboxEvents.id))
       .limit(options.limit)
@@ -265,14 +290,19 @@ export class OutboxRepository {
    * codebase already uses (e.g. UsersRepository.list/count's own
    * scopePaths).
    */
-  async countFailed(db: NodePgDatabase<typeof schema>, options: { target?: OutboxTarget } = {}): Promise<number> {
+  async countFailed(
+    db: NodePgDatabase<typeof schema>,
+    options: { target?: OutboxTarget; organizationId?: string } = {},
+  ): Promise<number> {
     const [row] = await db
       .select({ value: sql<number>`count(*)::int` })
       .from(outboxEvents)
       .where(
-        options.target === undefined
-          ? eq(outboxEvents.status, 'failed')
-          : and(eq(outboxEvents.status, 'failed'), eq(outboxEvents.target, options.target)),
+        and(
+          eq(outboxEvents.status, 'failed'),
+          options.target === undefined ? undefined : eq(outboxEvents.target, options.target),
+          options.organizationId === undefined ? undefined : aggregateOrganizationFilter(options.organizationId),
+        ),
       )
 
     return row?.value ?? 0

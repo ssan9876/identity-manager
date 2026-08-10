@@ -1,4 +1,4 @@
-import { authorizedRequest } from '../api/client'
+import { authorizedRequest, buildQuery } from '../api/client'
 
 /**
  * Mirrors `ALL_CONNECTOR_TARGETS` (apps/api/src/connectors/connector.ts).
@@ -73,6 +73,8 @@ export type ConnectorHealthStatus = 'not_configured' | 'disabled' | 'failing' | 
 
 /** Mirrors `ConnectorTargetSummary`. */
 export interface ConnectorTargetSummary {
+  /** Per-organization connector targets: which organization's row this summary describes — (organization_id, target) is the table's identity. */
+  organizationId: string
   target: ConnectorTarget
   /** Whether a `connector_targets` row exists at all — distinct from `enabled`: a target can be configured and deliberately switched off. */
   configured: boolean
@@ -86,12 +88,31 @@ export interface ConnectorTargetSummary {
   lastSuccessfulSyncAt: string | null
 }
 
-export function fetchConnectorTargets(accessToken: string): Promise<ConnectorTargetSummary[]> {
-  return authorizedRequest<ConnectorTargetSummary[]>('/connector-targets', accessToken)
+/**
+ * `organizationId` omitted means MASTER — the platform operator's own
+ * catalog, exactly what every call here meant before organizations owned
+ * their own rows (per-organization connector targets: `connector_targets`'
+ * identity is (organization_id, target)).
+ */
+export function fetchConnectorTargets(
+  accessToken: string,
+  organizationId?: string,
+): Promise<ConnectorTargetSummary[]> {
+  return authorizedRequest<ConnectorTargetSummary[]>(
+    `/connector-targets${buildQuery({ organizationId })}`,
+    accessToken,
+  )
 }
 
-export function fetchConnectorTarget(accessToken: string, target: ConnectorTarget): Promise<ConnectorTargetSummary> {
-  return authorizedRequest<ConnectorTargetSummary>(`/connector-targets/${target}`, accessToken)
+export function fetchConnectorTarget(
+  accessToken: string,
+  target: ConnectorTarget,
+  organizationId?: string,
+): Promise<ConnectorTargetSummary> {
+  return authorizedRequest<ConnectorTargetSummary>(
+    `/connector-targets/${target}${buildQuery({ organizationId })}`,
+    accessToken,
+  )
 }
 
 /** A `config` patch value: a present scalar SETS that key; `null` DELETES it from the stored config (a merge, never a wholesale replace — see ConnectorTargetsRepository.upsert's own doc comment). */
@@ -108,12 +129,17 @@ export function updateConnectorTarget(
   accessToken: string,
   target: ConnectorTarget,
   patch: ConnectorTargetPatch,
+  organizationId?: string,
 ): Promise<ConnectorTargetSummary> {
-  return authorizedRequest<ConnectorTargetSummary>(`/connector-targets/${target}`, accessToken, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch),
-  })
+  return authorizedRequest<ConnectorTargetSummary>(
+    `/connector-targets/${target}${buildQuery({ organizationId })}`,
+    accessToken,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    },
+  )
 }
 
 /** Mirrors `ConnectorOperationKind`/`ConnectorOperation` (connectors/connector.ts). */
@@ -156,6 +182,8 @@ export interface BlastRadiusEvaluation {
 
 /** Mirrors `TargetReconciliationReport` (outbox/target-reconciliation.job.ts) exactly. */
 export interface TargetReconciliationReport {
+  /** The organization whose catalog and population this run covered. */
+  organizationId: string
   target: ConnectorTarget
   populationSize: number
   toMutate: PlannedPrincipal[]
@@ -187,12 +215,17 @@ export function runReconcile(
   accessToken: string,
   target: ConnectorTarget,
   options: ReconcileOptions,
+  organizationId?: string,
 ): Promise<TargetReconciliationReport> {
-  return authorizedRequest<TargetReconciliationReport>(`/connector-targets/${target}/reconcile`, accessToken, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(options),
-  })
+  return authorizedRequest<TargetReconciliationReport>(
+    `/connector-targets/${target}/reconcile${buildQuery({ organizationId })}`,
+    accessToken,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(options),
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------

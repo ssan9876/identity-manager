@@ -600,7 +600,7 @@ describe('ActiveDirectoryConnector (Milestone 11, Task 5)', () => {
 
       await ctx.pool.query(
         `INSERT INTO connector_targets (target, enabled, config) VALUES ('active_directory', true, $1)
-         ON CONFLICT (target) DO UPDATE SET enabled = true, config = $1`,
+         ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true, config = $1`,
         [JSON.stringify(baseConfig())],
       )
     })
@@ -772,7 +772,7 @@ describe('ActiveDirectoryConnector (Milestone 11, Task 5)', () => {
       ).id
       await ctx.pool.query(
         `INSERT INTO connector_targets (target, enabled, config) VALUES ('active_directory', true, $1)
-         ON CONFLICT (target) DO UPDATE SET enabled = true, config = $1`,
+         ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true, config = $1`,
         [JSON.stringify(baseConfig())],
       )
     })

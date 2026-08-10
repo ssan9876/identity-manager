@@ -528,7 +528,7 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
       process.env[ECHO_SECRET_NAME] = 'echo-dispatch-test-secret'
       await ctx.pool.query(
         `INSERT INTO connector_targets (target, enabled, config) VALUES ('echo', true, $1)
-         ON CONFLICT (target) DO UPDATE SET enabled = true, config = $1`,
+         ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true, config = $1`,
         [JSON.stringify({ credentialSecretName: ECHO_SECRET_NAME })],
       )
     }
@@ -689,7 +689,7 @@ describe('SyncWorker (Milestone 4, Task 3)', () => {
       process.env[ECHO_SECRET_NAME] = 'default-deny-test-secret'
       await ctx.pool.query(
         `INSERT INTO connector_targets (target, enabled, config) VALUES ('echo', true, $1)
-         ON CONFLICT (target) DO UPDATE SET enabled = true, config = $1`,
+         ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true, config = $1`,
         [JSON.stringify({ credentialSecretName: ECHO_SECRET_NAME })],
       )
     }

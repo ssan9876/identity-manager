@@ -166,7 +166,7 @@ async function configureTargets(spec: Partial<Record<ConnectorTarget, Provisioni
     await ctx.pool.query(
       `INSERT INTO connector_targets (target, enabled, provisioning_mode, config)
          VALUES ($1, true, $2, $3::jsonb)
-       ON CONFLICT (target) DO UPDATE
+       ON CONFLICT (organization_id, target) DO UPDATE
          SET enabled = true, provisioning_mode = EXCLUDED.provisioning_mode, config = EXCLUDED.config`,
       [target, mode, JSON.stringify(target === 'echo' ? { credentialSecretName: 'CONNECTOR_BR_SYNC_ECHO_SECRET' } : {})],
     )
@@ -682,7 +682,7 @@ describe('target reconciliation and provisioning mode (Milestone 18, Task 15)', 
     await ctx.pool.query(
       `INSERT INTO connector_targets (target, enabled, provisioning_mode, config, blast_radius_threshold, blast_radius_floor)
          VALUES ('echo', true, $1, $2::jsonb, $3, $4)
-       ON CONFLICT (target) DO UPDATE
+       ON CONFLICT (organization_id, target) DO UPDATE
          SET enabled = true, provisioning_mode = $1, config = $2::jsonb,
              blast_radius_threshold = $3, blast_radius_floor = $4`,
       [

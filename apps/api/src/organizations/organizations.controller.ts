@@ -12,6 +12,7 @@ import { ConflictError, ForbiddenError, NotConfiguredError, NotFoundError } from
 import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
 import { noNulChar } from '../common/http/safe-string'
+import { ConnectorTargetsRepository } from '../connectors/connector-targets.repository'
 import { type Page, parsePageQuery } from '../common/pagination'
 import * as schema from '../db/schema/index'
 import type { Organization } from '../db/schema/organizations'
@@ -99,6 +100,7 @@ export class OrganizationsController {
     @Inject(OrgUnitsRepository) private readonly orgUnits: OrgUnitsRepository,
     @Inject(PermissionEngine) private readonly engine: PermissionEngine,
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
+    @Inject(ConnectorTargetsRepository) private readonly connectorTargets: ConnectorTargetsRepository,
     @Inject(OutboxWriter) private readonly outboxWriter: OutboxWriter,
     @Inject(KeycloakAdminClientFactory) private readonly factory: KeycloakAdminClientFactory,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
@@ -159,6 +161,38 @@ export class OrganizationsController {
       // `POST /org-units` requires a `parentId` precisely so no second route
       // can make a second root. See OrgUnitsController.create's doc comment.
       await this.orgUnits.createRoot(input.name, tx, organization.id)
+
+      // Per-organization connector targets: fan-out is governed by the
+      // tenant's OWN (organization_id, target) rows now, so a tenant with
+      // no row fans out to NOTHING — including Keycloak, which would leave
+      // its realm empty forever. Every tenant therefore starts with its own
+      // `keycloak` row, enabled — the exact per-tenant equivalent of the
+      // master seed the original connector_targets migration performed, and
+      // the same "keycloak is the one genuinely per-organization target"
+      // reasoning that used to be hard-coded into OutboxWriter's
+      // tenant-narrowing. Audited as its own `connector_target:configure`
+      // row (below), the same action the admin PATCH route writes, so the
+      // seeded row's provenance is answerable like any other configure.
+      const seededKeycloak = await this.connectorTargets.upsert(tx, organization.id, 'keycloak', {
+        enabled: true,
+      })
+      await this.auditWriter.record(tx, {
+        actorUserId: request.actor.userId,
+        action: 'connector_target:configure',
+        resourceType: 'connector_target',
+        // Mirrors ConnectorTargetsController.update: audit_log.resource_id
+        // is uuid-typed and names no row here; the pair travels in `after`.
+        resourceId: null,
+        before: null,
+        after: {
+          organizationId: seededKeycloak.organizationId,
+          target: seededKeycloak.target,
+          enabled: seededKeycloak.enabled,
+          config: seededKeycloak.config,
+          blastRadiusThreshold: seededKeycloak.blastRadiusThreshold,
+          blastRadiusFloor: seededKeycloak.blastRadiusFloor,
+        },
+      })
 
       await this.auditWriter.record(tx, {
         actorUserId: request.actor.userId,

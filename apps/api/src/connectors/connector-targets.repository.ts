@@ -4,6 +4,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { DB_CLIENT } from '../common/db.token'
 import { connectorTargets } from '../db/schema/connector-targets'
 import { externalIdentities } from '../db/schema/external-identities'
+import { users } from '../db/schema/users'
 import * as schema from '../db/schema/index'
 import type { DbHandle } from '../outbox/outbox.writer'
 import type { ConnectorTarget } from './connector'
@@ -23,6 +24,8 @@ import type { ConnectorTarget } from './connector'
 export { ALL_CONNECTOR_TARGETS } from './connector'
 
 export interface ConnectorTargetRow {
+  /** Which organization's row this is — the FIRST half of the table's (organization_id, target) identity. Per-organization connector targets: an organization with no row for a target is not configured for it, and NOTHING falls back to another organization's row. */
+  organizationId: string
   target: ConnectorTarget
   /** `false` when no `connector_targets` row exists at all — Task 2's own doc comment: "no row" and "a row with enabled = false" are behaviourally identical to every consumer, but the CONSOLE needs to tell them apart, so an admin sees "never configured" rather than a row that looks like someone deliberately disabled it. */
   configured: boolean
@@ -70,8 +73,9 @@ const CONNECTOR_TARGET_LOCK_NAMESPACE = 0x1d3a_0003
 const DEFAULT_BLAST_RADIUS_THRESHOLD = 20
 const DEFAULT_BLAST_RADIUS_FLOOR = 5
 
-function defaultRow(target: ConnectorTarget): ConnectorTargetRow {
+function defaultRow(organizationId: string, target: ConnectorTarget): ConnectorTargetRow {
   return {
+    organizationId,
     target,
     configured: false,
     enabled: false,
@@ -117,12 +121,19 @@ export interface ConnectorTargetPatch {
 export class ConnectorTargetsRepository {
   constructor(@Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>) {}
 
-  /** Every REAL row in `connector_targets`, keyed by target — never the full `ALL_CONNECTOR_TARGETS` catalog (a caller that wants the complete, always-five-entries list merges this against that catalog itself — see ConnectorTargetsController.list). */
-  async listAll(db: NodePgDatabase<typeof schema> = this.db): Promise<Map<ConnectorTarget, ConnectorTargetRow>> {
-    const rows = await db.select().from(connectorTargets)
+  /** Every REAL row in `connector_targets` FOR ONE ORGANIZATION, keyed by target — never the full `ALL_CONNECTOR_TARGETS` catalog (a caller that wants the complete list merges this against that catalog itself — see ConnectorTargetsController.list). Scoped to `organizationId` because the table's identity is (organization_id, target): another organization's rows are a different catalog entirely, never a fallback. */
+  async listAll(
+    organizationId: string,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<Map<ConnectorTarget, ConnectorTargetRow>> {
+    const rows = await db
+      .select()
+      .from(connectorTargets)
+      .where(eq(connectorTargets.organizationId, organizationId))
     const byTarget = new Map<ConnectorTarget, ConnectorTargetRow>()
     for (const row of rows) {
       byTarget.set(row.target, {
+        organizationId: row.organizationId,
         target: row.target,
         configured: true,
         enabled: row.enabled,
@@ -134,13 +145,22 @@ export class ConnectorTargetsRepository {
     return byTarget
   }
 
-  /** One target's row, or a synthetic "never configured" default (see `defaultRow`) when none exists — never `null`, since every target in `ALL_CONNECTOR_TARGETS` is a valid thing to ask about even before an admin has touched it. */
-  async findOne(target: ConnectorTarget, db: NodePgDatabase<typeof schema> = this.db): Promise<ConnectorTargetRow> {
-    const [row] = await db.select().from(connectorTargets).where(eq(connectorTargets.target, target)).limit(1)
+  /** One (organization, target) row, or a synthetic "never configured" default (see `defaultRow`) when none exists — never `null`, since every target in `ALL_CONNECTOR_TARGETS` is a valid thing to ask about for any organization even before an admin has touched it. Absence is answered for THIS organization alone: no other organization's row is ever consulted. */
+  async findOne(
+    organizationId: string,
+    target: ConnectorTarget,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<ConnectorTargetRow> {
+    const [row] = await db
+      .select()
+      .from(connectorTargets)
+      .where(and(eq(connectorTargets.organizationId, organizationId), eq(connectorTargets.target, target)))
+      .limit(1)
     if (row === undefined) {
-      return defaultRow(target)
+      return defaultRow(organizationId, target)
     }
     return {
+      organizationId: row.organizationId,
       target: row.target,
       configured: true,
       enabled: row.enabled,
@@ -165,17 +185,30 @@ export class ConnectorTargetsRepository {
    * together, the same discipline every other mutation in this codebase
    * follows.
    */
-  async upsert(tx: DbHandle, target: ConnectorTarget, patch: ConnectorTargetPatch): Promise<ConnectorTargetRow> {
-    // Serialize this target's read-merge-write against any concurrent one —
-    // finding INT-H4 residual. Taken BEFORE the read, or the read it is
-    // meant to protect has already happened. See
+  async upsert(
+    tx: DbHandle,
+    organizationId: string,
+    target: ConnectorTarget,
+    patch: ConnectorTargetPatch,
+  ): Promise<ConnectorTargetRow> {
+    // Serialize this (organization, target)'s read-merge-write against any
+    // concurrent one — finding INT-H4 residual. Taken BEFORE the read, or
+    // the read it is meant to protect has already happened. See
     // CONNECTOR_TARGET_LOCK_NAMESPACE for why this is an advisory lock and
-    // not `SELECT ... FOR UPDATE`.
+    // not `SELECT ... FOR UPDATE`. Keyed on the PAIR (`organizationId || ':'
+    // || target`) now that the table's identity is the pair — two different
+    // organizations editing the SAME target name are editing different rows
+    // and must not serialize against each other. `:` is unambiguous: a uuid
+    // cannot contain one.
     await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(${CONNECTOR_TARGET_LOCK_NAMESPACE}, hashtext(${target}::text))`,
+      sql`SELECT pg_advisory_xact_lock(${CONNECTOR_TARGET_LOCK_NAMESPACE}, hashtext(${organizationId}::text || ':' || ${target}::text))`,
     )
 
-    const [existingRow] = await tx.select().from(connectorTargets).where(eq(connectorTargets.target, target)).limit(1)
+    const [existingRow] = await tx
+      .select()
+      .from(connectorTargets)
+      .where(and(eq(connectorTargets.organizationId, organizationId), eq(connectorTargets.target, target)))
+      .limit(1)
     const current = existingRow ?? {
       enabled: false,
       config: {} as Record<string, unknown>,
@@ -197,13 +230,13 @@ export class ConnectorTargetsRepository {
 
     await tx
       .insert(connectorTargets)
-      .values({ target, ...next })
+      .values({ organizationId, target, ...next })
       .onConflictDoUpdate({
-        target: connectorTargets.target,
+        target: [connectorTargets.organizationId, connectorTargets.target],
         set: { ...next, updatedAt: new Date() },
       })
 
-    return { target, configured: true, ...next }
+    return { organizationId, target, configured: true, ...next }
   }
 
   /**
@@ -223,13 +256,25 @@ export class ConnectorTargetsRepository {
    * question this console answers separately via `health()`.
    */
   async lastSuccessfulSyncAt(
+    organizationId: string,
     target: ConnectorTarget,
     db: NodePgDatabase<typeof schema> = this.db,
   ): Promise<Date | null> {
+    // Joined through `users` so the answer is scoped to THIS organization's
+    // own people — `external_identities` has no organization column of its
+    // own, and a sync that landed for another organization's principal says
+    // nothing about this organization's configuration of the same target.
     const [row] = await db
       .select({ last: sql<Date | null>`max(${externalIdentities.lastSyncedAt})` })
       .from(externalIdentities)
-      .where(and(eq(externalIdentities.system, target), eq(externalIdentities.syncState, 'synced')))
+      .innerJoin(users, eq(users.id, externalIdentities.userId))
+      .where(
+        and(
+          eq(externalIdentities.system, target),
+          eq(externalIdentities.syncState, 'synced'),
+          eq(users.organizationId, organizationId),
+        ),
+      )
     return row?.last ?? null
   }
 }

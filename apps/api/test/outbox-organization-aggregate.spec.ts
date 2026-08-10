@@ -50,7 +50,7 @@ describe('the organization outbox aggregate (Organizations, Task 10)', () => {
       for (const target of targets) {
         await ctx.pool.query(
           `INSERT INTO connector_targets (target, enabled) VALUES ($1, true)
-           ON CONFLICT (target) DO UPDATE SET enabled = true`,
+           ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true`,
           [target],
         )
       }

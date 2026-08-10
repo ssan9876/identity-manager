@@ -79,7 +79,7 @@ describe('secret resolution never leaks the resolved value (Milestone 10, Task 2
   async function insertConnectorTarget(target: string, config: Record<string, unknown>): Promise<void> {
     await ctx.pool.query(
       `INSERT INTO connector_targets (target, enabled, config) VALUES ($1, true, $2)
-       ON CONFLICT (target) DO UPDATE SET config = $2`,
+       ON CONFLICT (organization_id, target) DO UPDATE SET config = $2`,
       [target, JSON.stringify(config)],
     )
   }
@@ -112,7 +112,12 @@ describe('secret resolution never leaks the resolved value (Milestone 10, Task 2
 
       // ---- 2. HEALTH — the resolved value is used only to prove resolution
       // succeeds; `detail` must describe success without repeating it.
-      const connector = await ctx.db.transaction((tx) => registry.resolve('echo', tx))
+      // Per-organization connector targets: resolution is by (organization,
+      // target); the row above landed in MASTER via the 0033 default.
+      const { rows: masterRows } = await ctx.pool.query<{ id: string }>(
+        'SELECT id FROM organizations WHERE is_master',
+      )
+      const connector = await ctx.db.transaction((tx) => registry.resolve('echo', tx, masterRows[0].id))
       const health = await connector.health()
       expect(health.ok).toBe(true) // sanity: this run really did resolve the real secret
       assertNoLeak(JSON.stringify(health), sentinelValue, 'health() response body')

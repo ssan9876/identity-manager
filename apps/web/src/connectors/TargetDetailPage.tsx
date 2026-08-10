@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useAuth } from 'react-oidc-context'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { DeadLettersTab } from '../audit/DeadLettersTab'
 import { formatDateTime } from '../format'
@@ -16,6 +16,7 @@ import { EnabledBadge, HealthBadge } from './badges'
 import { ConfigurationTab } from './ConfigurationTab'
 import './Connectors.css'
 import { DryRunTab } from './DryRunTab'
+import { OrganizationScopeSelector } from './OrganizationScopeSelector'
 
 type TabKey = 'configuration' | 'dead-letters' | 'dry-run'
 const TABS: { key: TabKey; label: string }[] = [
@@ -44,6 +45,27 @@ export default function TargetDetailPage() {
   const accessToken = auth.user?.access_token
   const permissions = useSelfPermissions()
 
+  // Per-organization connector targets: the scope this whole page reads and
+  // writes through — carried in the URL (`?organizationId=`) so a link from
+  // `/connectors` (already scoped to an organization) lands here already
+  // scoped, and so reloading this page keeps the same scope rather than
+  // silently falling back to master. `undefined`/absent means master, the
+  // same contract every connector-targets API call uses.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const rawOrganizationId = searchParams.get('organizationId')
+  const organizationId = rawOrganizationId === null ? undefined : rawOrganizationId
+  const canListOrganizations = permissions.status === 'ready' && permissions.actions.has('organization:read')
+
+  function setOrganizationId(next: string | undefined): void {
+    const params = new URLSearchParams(searchParams)
+    if (next === undefined) {
+      params.delete('organizationId')
+    } else {
+      params.set('organizationId', next)
+    }
+    setSearchParams(params, { replace: true })
+  }
+
   const [summary, setSummary] = useState<ConnectorTargetSummary | null>(null)
   const [loadError, setLoadError] = useState<{ status?: number; message: string } | null>(null)
   const [activeTab, setActiveTab] = useState<TabKey>('configuration')
@@ -62,7 +84,7 @@ export default function TargetDetailPage() {
     let cancelled = false
     setLoadError(null)
 
-    fetchConnectorTarget(accessToken, target)
+    fetchConnectorTarget(accessToken, target, organizationId)
       .then((res) => {
         if (!cancelled) setSummary(res)
       })
@@ -77,7 +99,7 @@ export default function TargetDetailPage() {
     return () => {
       cancelled = true
     }
-  }, [accessToken, target, refreshToken])
+  }, [accessToken, target, refreshToken, organizationId])
 
   function activateTab(key: TabKey) {
     setActiveTab(key)
@@ -146,6 +168,12 @@ export default function TargetDetailPage() {
         &larr; Connectors
       </Link>
 
+      <OrganizationScopeSelector
+        canListOrganizations={canListOrganizations}
+        selectedOrganizationId={organizationId}
+        onChange={setOrganizationId}
+      />
+
       <header className="person-detail__header">
         <div className="person-detail__title-row">
           <h1 className="text-subject" data-testid="target-detail-name">
@@ -196,7 +224,13 @@ export default function TargetDetailPage() {
         tabIndex={0}
         className="tabpanel"
       >
-        <ConfigurationTab target={target} summary={summary} canManage={canManage} onSaved={(next) => setSummary(next)} />
+        <ConfigurationTab
+          target={target}
+          summary={summary}
+          canManage={canManage}
+          organizationId={organizationId}
+          onSaved={(next) => setSummary(next)}
+        />
       </div>
       <div
         id="target-panel-dead-letters"
@@ -206,7 +240,7 @@ export default function TargetDetailPage() {
         tabIndex={0}
         className="tabpanel"
       >
-        <DeadLettersTab fixedTarget={target} />
+        <DeadLettersTab fixedTarget={target} organizationId={organizationId} />
       </div>
       <div
         id="target-panel-dry-run"
@@ -216,7 +250,12 @@ export default function TargetDetailPage() {
         tabIndex={0}
         className="tabpanel"
       >
-        <DryRunTab target={target} canManage={canManage} onApplied={() => setRefreshToken((t) => t + 1)} />
+        <DryRunTab
+          target={target}
+          canManage={canManage}
+          organizationId={organizationId}
+          onApplied={() => setRefreshToken((t) => t + 1)}
+        />
       </div>
     </div>
   )

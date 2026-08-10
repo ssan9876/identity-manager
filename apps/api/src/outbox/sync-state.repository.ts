@@ -5,6 +5,7 @@ import { DB_CLIENT } from '../common/db.token'
 import * as schema from '../db/schema/index'
 import { connectorTargets } from '../db/schema/connector-targets'
 import { externalIdentities } from '../db/schema/external-identities'
+import { users } from '../db/schema/users'
 import { GroupsRepository } from '../groups/groups.repository'
 import type { OutboxTarget } from './outbox.writer'
 
@@ -206,9 +207,30 @@ export class SyncStateRepository {
     }
     const ids = [...new Set(userIds)]
 
-    const targets = await this.enabledTargets()
+    // Per-organization connector targets: which targets weigh on a user's
+    // badge is decided by THEIR OWN organization's enabled rows —
+    // (organization_id, target) is `connector_targets`' identity, and the
+    // writer only ever fans a user out to their own organization's targets,
+    // so weighing a tenant's person against another organization's
+    // mail_server would paint them permanently pending for a target they
+    // can never reach.
+    const targetsByOrganization = await this.enabledTargetsByOrganization()
+    const organizationByUser = new Map<string, string>()
+    for (const row of await this.db
+      .select({ id: users.id, organizationId: users.organizationId })
+      .from(users)
+      .where(inArray(users.id, ids))) {
+      organizationByUser.set(row.id, row.organizationId)
+    }
+
+    // The union feeds the batched event/identity reads below; each user's
+    // own per-target loop then only walks their own organization's list. The
+    // union is safe for the group/membership halves too: an edge's members
+    // share the group's organization (0029's composite FKs), so a troubled
+    // event can only ever name same-organization users.
+    const targets = [...new Set([...targetsByOrganization.values()].flat())]
     if (targets.length === 0) {
-      // No target is enabled, so nothing can be asserted anywhere and no
+      // No target is enabled anywhere, so nothing can be asserted and no
       // claim of health would be honest. Matches the pre-existing fallback
       // for a user with no events and no identity row.
       for (const userId of ids) result.set(userId, 'pending')
@@ -246,8 +268,18 @@ export class SyncStateRepository {
     // nothing -- which a naive "missing row means pending" reading would
     // turn into a permanently yellow badge for every mail-exempt person.
     const troubledUsers = new Map<string, 'pending' | 'failed'>()
+    const usersWithNoEnabledTarget = new Set<string>()
     for (const userId of ids) {
-      for (const target of targets) {
+      const organizationId = organizationByUser.get(userId)
+      const userTargets = organizationId === undefined ? [] : (targetsByOrganization.get(organizationId) ?? [])
+      if (userTargets.length === 0) {
+        // THIS user's organization has nothing enabled — same "no claim of
+        // health would be honest" fallback as the global empty case above,
+        // applied per organization.
+        usersWithNoEnabledTarget.add(userId)
+        continue
+      }
+      for (const target of userTargets) {
         const key = perTargetKey(userId, target)
         const state = perTargetState(eventByUserTarget.get(key), identityByUserSystem.get(key))
         if (state !== 'synced') raiseWorst(troubledUsers, userId, state)
@@ -288,6 +320,10 @@ export class SyncStateRepository {
     }
 
     for (const userId of ids) {
+      if (usersWithNoEnabledTarget.has(userId)) {
+        result.set(userId, 'pending')
+        continue
+      }
       const worst = worseOf(troubledUsers.get(userId), affectedByGroup.get(userId))
       // No `?? identityByUser.get(userId)` tail any more: the per-target loop
       // above already folded every enabled target's identity row in, so
@@ -297,13 +333,22 @@ export class SyncStateRepository {
     return result
   }
 
-  /** Targets an operator currently has switched on. The SAME `WHERE enabled = true` read `OutboxWriter.record` uses to decide fan-out, so this read model can never weigh a target the writer would not even emit for. */
-  private async enabledTargets(): Promise<OutboxTarget[]> {
+  /** Targets each organization currently has switched on, keyed by organization — the SAME `WHERE enabled = true` read `OutboxWriter.record` uses to decide fan-out (now organization-scoped there too), so this read model can never weigh a target the writer would not even emit for. */
+  private async enabledTargetsByOrganization(): Promise<Map<string, OutboxTarget[]>> {
     const rows = await this.db
-      .select({ target: connectorTargets.target })
+      .select({ organizationId: connectorTargets.organizationId, target: connectorTargets.target })
       .from(connectorTargets)
       .where(eq(connectorTargets.enabled, true))
-    return rows.map((row) => row.target)
+    const byOrganization = new Map<string, OutboxTarget[]>()
+    for (const row of rows) {
+      const list = byOrganization.get(row.organizationId)
+      if (list === undefined) {
+        byOrganization.set(row.organizationId, [row.target])
+      } else {
+        list.push(row.target)
+      }
+    }
+    return byOrganization
   }
 
   /**

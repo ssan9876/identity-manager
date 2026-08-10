@@ -970,7 +970,7 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
         // restored before the next test runs.
         await ctx.pool.query(
           `INSERT INTO connector_targets (target, enabled) VALUES ('active_directory', false)
-           ON CONFLICT (target) DO UPDATE SET enabled = false`,
+           ON CONFLICT (organization_id, target) DO UPDATE SET enabled = false`,
         )
 
         try {
@@ -998,7 +998,7 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
 
         await ctx.pool.query(
           `INSERT INTO connector_targets (target, enabled) VALUES ('active_directory', true)
-           ON CONFLICT (target) DO UPDATE SET enabled = true`,
+           ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true`,
         )
 
         try {
@@ -1037,7 +1037,7 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
 
         await ctx.pool.query(
           `INSERT INTO connector_targets (target, enabled) VALUES ('active_directory', true)
-           ON CONFLICT (target) DO UPDATE SET enabled = true`,
+           ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true`,
         )
 
         try {
@@ -1084,13 +1084,26 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
     // land them in the MASTER organization (the only one migration 0025
     // creates), so all of them are already the master half of this claim and
     // stand here UNMODIFIED. What is new below is the tenant half: an
-    // organization other than master reaches `keycloak` and nothing else,
-    // because there is exactly one Active Directory / Entra / Google / mail
-    // configuration in `connector_targets` for the whole system and it
-    // belongs to the platform, not to any tenant.
+    // organization other than master reaches `keycloak` and nothing else —
+    // originally because there was exactly one Active Directory / Entra /
+    // Google / mail configuration for the whole system and it belonged to
+    // the platform; now (per-organization connector targets) because the
+    // tenant's OWN catalog holds exactly the `keycloak` row
+    // POST /organizations seeds. Master's enabled Active Directory row is
+    // still asserted NOT to reach any tenant fixture below — the same
+    // cross-estate property, enforced by the (organization_id, target) key
+    // instead of a hard-coded rule.
     // =====================================================================
     describe('organization-aware fan-out (Task 13)', () => {
-      /** A second organization, with its own root org unit — the shape POST /organizations produces. */
+      /**
+       * A second organization, with its own root org unit — the shape
+       * POST /organizations produces, INCLUDING its own enabled `keycloak`
+       * `connector_targets` row (per-organization connector targets:
+       * fan-out is governed by the tenant's OWN (organization_id, target)
+       * rows, and OrganizationsController.create seeds exactly this row —
+       * without it a tenant fans out to NOTHING, which is a different test
+       * than the one below).
+       */
       async function makeTenant(label: string): Promise<{ id: string; rootId: string }> {
         const tag = nextTag().toLowerCase()
         const [org] = await ctx.db
@@ -1098,6 +1111,10 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
           .values({ slug: `${label}-${tag}`, name: `${label} ${tag}`, realm: `${label}-${tag}` })
           .returning()
         const root = await orgUnitsRepo().createRoot(`${label} ${tag} Root`, ctx.db, org!.id)
+        await ctx.pool.query(
+          `INSERT INTO connector_targets (organization_id, target, enabled) VALUES ($1, 'keycloak', true)`,
+          [org!.id],
+        )
         return { id: org!.id, rootId: root.id }
       }
 
@@ -1105,7 +1122,7 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
       async function withActiveDirectoryEnabled(body: () => Promise<void>): Promise<void> {
         await ctx.pool.query(
           `INSERT INTO connector_targets (target, enabled) VALUES ('active_directory', true)
-           ON CONFLICT (target) DO UPDATE SET enabled = true`,
+           ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true`,
         )
         try {
           await body()

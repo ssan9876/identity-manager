@@ -20,6 +20,7 @@ import {
 } from '../src/keycloak/keycloak-admin-client.factory'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { OrganizationsController } from '../src/organizations/organizations.controller'
+import { ConnectorTargetsRepository } from '../src/connectors/connector-targets.repository'
 import { OrganizationsRepository } from '../src/organizations/organizations.repository'
 import { OutboxWriter } from '../src/outbox/outbox.writer'
 import { UsersRepository } from '../src/users/users.repository'
@@ -104,6 +105,7 @@ describe('OrganizationsController (Task 12)', () => {
         KeycloakAdminClientFactory,
         OrganizationsRepository,
         OrgUnitsRepository,
+        ConnectorTargetsRepository,
         PermissionEngine,
         AuditWriter,
         OutboxWriter,
@@ -164,6 +166,10 @@ describe('OrganizationsController (Task 12)', () => {
     // audit_log is append-only and its actor FK is `restrict`, so a blanket
     // delete would fail rather than clean up.
     await ctx.pool.query('DELETE FROM outbox_events')
+    // 0033: tenants own connector_targets rows (seeded keycloak) with an FK
+    // to organizations — cleared first or the organizations delete below
+    // trips the FK.
+    await ctx.pool.query('DELETE FROM connector_targets WHERE organization_id <> $1', [masterId])
     await ctx.pool.query("DELETE FROM org_units WHERE organization_id <> $1", [masterId])
     await ctx.pool.query('DELETE FROM organizations WHERE NOT is_master')
   })

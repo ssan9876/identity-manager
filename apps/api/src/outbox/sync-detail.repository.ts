@@ -3,6 +3,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { DB_CLIENT } from '../common/db.token'
 import { connectorTargets } from '../db/schema/connector-targets'
+import { users } from '../db/schema/users'
 import { externalIdentities } from '../db/schema/external-identities'
 import * as schema from '../db/schema/index'
 import { GroupsRepository } from '../groups/groups.repository'
@@ -119,10 +120,24 @@ export class SyncDetailRepository {
   ) {}
 
   async describeForUser(userId: string): Promise<UserSyncDetail> {
-    const targetRows = await this.db
-      .select({ target: connectorTargets.target })
-      .from(connectorTargets)
-      .where(eq(connectorTargets.enabled, true))
+    // Per-organization connector targets: the panel lists the targets THIS
+    // user's own organization has enabled — the same organization-scoped
+    // read `OutboxWriter.record` fans out by, so the panel never shows a
+    // target the writer would not even emit for against this person.
+    const [userRow] = await this.db
+      .select({ organizationId: users.organizationId })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1)
+    const targetRows =
+      userRow === undefined
+        ? []
+        : await this.db
+            .select({ target: connectorTargets.target })
+            .from(connectorTargets)
+            .where(
+              and(eq(connectorTargets.enabled, true), eq(connectorTargets.organizationId, userRow.organizationId)),
+            )
     const targets = targetRows.map((row) => row.target)
 
     const syncState = await this.syncStates.resolveForUser(userId)

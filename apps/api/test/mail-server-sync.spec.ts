@@ -168,7 +168,7 @@ describe('mail server connector (DB-backed)', () => {
       await ctx.db
         .insert(connectorTargets)
         .values({ target: 'echo', enabled: true, config: { credentialSecretName: 'CONNECTOR_ECHO_SECRET' } })
-        .onConflictDoUpdate({ target: connectorTargets.target, set: { enabled: true } })
+        .onConflictDoUpdate({ target: [connectorTargets.organizationId, connectorTargets.target], set: { enabled: true } })
       process.env.CONNECTOR_ECHO_SECRET = 'test-secret'
     }
 
@@ -216,7 +216,7 @@ describe('mail server connector (DB-backed)', () => {
       await ctx.db
         .insert(connectorTargets)
         .values({ target: 'echo', enabled: true, config: { credentialSecretName: 'CONNECTOR_ECHO_SECRET' } })
-        .onConflictDoUpdate({ target: connectorTargets.target, set: { enabled: true } })
+        .onConflictDoUpdate({ target: [connectorTargets.organizationId, connectorTargets.target], set: { enabled: true } })
       process.env.CONNECTOR_ECHO_SECRET = 'test-secret'
 
       const user = await makeUserWithStatus('active')
@@ -262,10 +262,13 @@ describe('mail server connector (DB-backed)', () => {
             tokenSecretName: 'CONNECTOR_MAIL_SERVER_TOKEN',
           },
         })
-        .onConflictDoUpdate({ target: connectorTargets.target, set: { enabled: true } })
+        .onConflictDoUpdate({ target: [connectorTargets.organizationId, connectorTargets.target], set: { enabled: true } })
 
       const registry = new ConnectorRegistry(unusedKeycloak())
-      const connector = await ctx.db.transaction((tx) => registry.resolve('mail_server', tx))
+      const { rows: masterRows } = await ctx.pool.query<{ id: string }>(
+        'SELECT id FROM organizations WHERE is_master',
+      )
+      const connector = await ctx.db.transaction((tx) => registry.resolve('mail_server', tx, masterRows[0].id))
 
       expect(connector).toBeInstanceOf(MailServerConnector)
     })

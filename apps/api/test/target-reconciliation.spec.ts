@@ -196,7 +196,7 @@ describe('TargetReconciliationJob (Milestone 10, Task 4)', () => {
     await ctx.pool.query(
       `INSERT INTO connector_targets (target, enabled, config, blast_radius_threshold, blast_radius_floor)
        VALUES ('echo', true, $1, $2, $3)
-       ON CONFLICT (target) DO UPDATE SET enabled = true, config = $1, blast_radius_threshold = $2, blast_radius_floor = $3`,
+       ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true, config = $1, blast_radius_threshold = $2, blast_radius_floor = $3`,
       [JSON.stringify({ credentialSecretName: ECHO_SECRET_NAME }), thresholdPercent, floor],
     )
   }

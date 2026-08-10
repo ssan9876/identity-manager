@@ -8,6 +8,7 @@ import { PermissionGuard, type AuthorizedRequest } from '../authz/permission.gua
 import { RequirePermission } from '../authz/require-permission.decorator'
 import { DB_CLIENT } from '../common/db.token'
 import { ForbiddenError, ValidationError } from '../common/errors'
+import { parseId } from '../common/http/parse-id'
 import { type Page, parsePageQuery } from '../common/pagination'
 import * as schema from '../db/schema/index'
 import type { OutboxTarget } from './outbox.writer'
@@ -91,10 +92,17 @@ export class OutboxController {
     await this.requireGlobalAuditGrant(request)
     const page = parsePageQuery(query)
     const target = parseOptionalTarget(query.target)
+    // `?organizationId=` — the dead-letter view's organization dimension
+    // (per-organization connector targets): only events whose AGGREGATE
+    // belongs to that organization. Omitted means every organization,
+    // unchanged from before this dimension existed — this endpoint already
+    // requires a GLOBAL audit:read grant, so there is no scope to narrow
+    // by default.
+    const organizationId = query.organizationId === undefined ? undefined : parseId(query.organizationId, 'organizationId')
 
     const [items, total] = await Promise.all([
-      this.outbox.listFailed(this.db, { ...page, target }),
-      this.outbox.countFailed(this.db, { target }),
+      this.outbox.listFailed(this.db, { ...page, target, organizationId }),
+      this.outbox.countFailed(this.db, { target, organizationId }),
     ])
 
     return { items, total, limit: page.limit, offset: page.offset }

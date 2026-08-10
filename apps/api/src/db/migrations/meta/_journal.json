@@ -232,6 +232,13 @@
       "when": 1786310227408,
       "tag": "0032_organizations_slug_index",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1786313442699,
+      "tag": "0033_connector_targets_per_organization",
+      "breakpoints": true
     }
   ]
 }
