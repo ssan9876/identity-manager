@@ -7,6 +7,12 @@ import {
   evaluateBlastRadius,
   type BlastRadiusEvaluation,
 } from '../outbox/target-reconciliation.job'
+import {
+  DEFAULT_HR_MAX_PAGES,
+  HR_MAX_PAGES_CEILING,
+  readPath,
+  type HrJsonPagination,
+} from './hr-fetch'
 
 /**
  * PURE feed-transform and guard logic for HR inbound sync — no database, no
@@ -131,6 +137,139 @@ export function applyColumnMapping(parsed: ParsedCsv, mapping: Record<string, st
 export function mapFeedCsv(feedCsv: string, mapping: Record<string, string>): string {
   const mapped = applyColumnMapping(parseCsv(feedCsv), mapping)
   return serializeCsv(mapped.headers, mapped.rows)
+}
+
+/**
+ * The JSON counterpart of `applyColumnMapping` + `serializeCsv`: fetched
+ * records -> the SAME mapped CSV text `mapFeedCsv` produces, so a
+ * `rest_json` source rejoins the existing pipeline at exactly the point a
+ * `csv_url` source does. Everything downstream — preview, per-row
+ * validation, the row cap, the blast-radius guard, commit — is reused
+ * untouched and cannot tell the two kinds apart. That is the whole point: a
+ * second feed kind must not become a second code path through the parts
+ * that actually write to people.
+ *
+ * The mapping's SOURCE keys are dot-paths into each record (`name.first`,
+ * `emails.0.value`), resolved through `hr-fetch.ts`'s `readPath` — own
+ * properties and array indices only, never an inherited member. Its TARGET
+ * values are import-pipeline column names, exactly as for CSV. Unmapped
+ * fields are DROPPED, for the identical reason `applyColumnMapping`
+ * documents: an HR API's payload carries dozens of payroll/benefits fields
+ * this system has no business ingesting, and the pipeline treats every
+ * unknown header as a custom attribute whose validation then fails every
+ * row.
+ *
+ * Two whole-file errors, both deliberately NOT per-row:
+ *
+ *  - A mapped path absent from EVERY record. This is the JSON analogue of
+ *    `applyColumnMapping`'s missing-header error and means the same thing —
+ *    the mapping does not describe this feed. Absent from SOME records is
+ *    normal (optional fields) and yields an empty value, which the pipeline
+ *    then validates per row as it always has.
+ *  - A mapped path that resolves to an object or array. The pipeline's
+ *    columns are flat strings, so there is no honest coercion: silently
+ *    writing `[object Object]` would corrupt a person's record, and blanking
+ *    it would be quiet data loss. A subtree at a mapped path means the PATH
+ *    is wrong, which is structural, not row-specific.
+ */
+export function mapJsonFeed(records: readonly unknown[], mapping: Record<string, string>): string {
+  const sourcePaths = Object.keys(mapping)
+  const headers = sourcePaths.map((path) => mapping[path])
+  const seen = new Set<string>()
+  const issues: string[] = []
+
+  const rows = records.map((record, index) => {
+    // Object.create(null) — same reason as csv.ts's own row object and
+    // `applyColumnMapping`'s: a mapped TARGET header named `__proto__` must
+    // become a genuine own key, not a silent no-op through an inherited
+    // accessor.
+    const row: Record<string, string> = Object.create(null)
+    for (const path of sourcePaths) {
+      const value = readPath(record, path)
+      if (value === undefined || value === null) {
+        row[mapping[path]] = ''
+        continue
+      }
+      seen.add(path)
+      if (typeof value === 'object') {
+        issues.push(
+          `feed: mapped path "${path}" resolves to ${Array.isArray(value) ? 'an array' : 'an object'} ` +
+            `in record ${index + 1} — map a scalar field, not a subtree`,
+        )
+        row[mapping[path]] = ''
+        continue
+      }
+      // string / number / boolean, stringified exactly as the pipeline would
+      // have received them in a CSV cell.
+      row[mapping[path]] = String(value)
+    }
+    return row
+  })
+
+  if (records.length > 0) {
+    const neverSeen = sourcePaths.filter((path) => !seen.has(path))
+    if (neverSeen.length > 0) {
+      issues.push(`feed: mapped path(s) absent from every record: ${neverSeen.join(', ')}`)
+    }
+  }
+
+  // Report at most a handful — a wrong mapping against a 10,000-person feed
+  // would otherwise produce one issue per record, which is unreadable and
+  // says nothing the first few do not.
+  if (issues.length > 0) throw new ValidationError(issues.slice(0, 5))
+
+  return serializeCsv(headers, rows)
+}
+
+/** Applied when a `rest_json` source names no pagination — one request, no paging. */
+const DEFAULT_PAGINATION: HrJsonPagination = { mode: 'none' }
+
+const paginationSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('none') }),
+  z.object({
+    mode: z.literal('page'),
+    pageParam: mappingValueSchema,
+    startPage: z.number().int().min(0).default(1),
+    sizeParam: mappingValueSchema.nullable().default(null),
+    pageSize: z.number().int().min(1).max(10_000).nullable().default(null),
+    maxPages: z.number().int().min(1).max(HR_MAX_PAGES_CEILING).default(DEFAULT_HR_MAX_PAGES),
+  }),
+  z.object({
+    mode: z.literal('cursor'),
+    nextPath: mappingValueSchema,
+    cursorParam: mappingValueSchema.nullable().default(null),
+    maxPages: z.number().int().min(1).max(HR_MAX_PAGES_CEILING).default(DEFAULT_HR_MAX_PAGES),
+  }),
+])
+
+const jsonFeedConfigSchema = z
+  .object({
+    /** The empty string means the response body IS the record array. */
+    recordsPath: noNulChar(z.string().max(MAPPING_KEY_MAX)).default(''),
+    pagination: paginationSchema.default(DEFAULT_PAGINATION),
+  })
+  .strict()
+
+export interface JsonFeedConfig {
+  recordsPath: string
+  pagination: HrJsonPagination
+}
+
+/**
+ * Validates the `rest_json` half of `hr_sources.config`. The pagination
+ * union is CLOSED and parsed HERE, so `HrSyncService` never dispatches on a
+ * raw mode string read back out of jsonb — the same discipline as the source
+ * `kind` lookup itself, and the reason `HrJsonPagination` is a discriminated
+ * union rather than a bag of optional fields.
+ */
+export function parseJsonFeedConfig(value: unknown): JsonFeedConfig {
+  const parsed = jsonFeedConfigSchema.safeParse(value ?? {})
+  if (!parsed.success) {
+    throw new ValidationError(
+      parsed.error.issues.map((issue) => `config.${issue.path.join('.') || 'root'}: ${issue.message}`),
+    )
+  }
+  return parsed.data
 }
 
 export interface HrGuardConfig {

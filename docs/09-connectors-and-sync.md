@@ -61,6 +61,12 @@ empty object.
 | `entra_id` | ✅ | flattened via `$ref` | Graph `id` |
 | `google_workspace` | ✅ | flattened via Members API | Google `id` |
 | `mail_server` | ✅ | — | **our** `users.id` |
+| `scim_slack` | ✅ | flattened via `/Groups` | SCIM `id` |
+| `scim_zoom` | ✅ | flattened via `/Groups` | SCIM `id` |
+| `scim_atlassian` | ✅ | flattened via `/Groups` | SCIM `id` |
+| `scim_box` | ✅ | flattened via `/Groups` | SCIM `id` |
+| `scim_snowflake` | ✅ | flattened via `/Groups` | SCIM `id` |
+| `scim_generic` | ✅ | flattened via `/Groups` | SCIM `id` |
 | `echo` | ✅ | ✅ | in-repo, for testing the spine |
 | `keycloak_sso` | — | — | Keycloak **client** UUID (applications, not people) |
 
@@ -208,6 +214,55 @@ MAIL_SERVER_BASE_URL=... MAIL_SMOKE_EMAIL=someone@a-hosted-domain \
 
 `MAIL_SMOKE_EMAIL` must be in a domain the mail server **already hosts**; it never
 auto-creates domains.
+
+### SCIM 2.0 — the six `scim_*` slots
+
+Six target values, **one** adapter class (`connectors/scim.connector.ts`). SCIM 2.0
+(RFC 7643 schema, RFC 7644 protocol) is what most SaaS applications expose for exactly
+this, and the protocol is identical across them — only the base URL, the credential and
+the write mode differ, all of which are configuration.
+
+**Why slots rather than instances.** `connector_targets`' primary key is
+`(organization_id, target)` and `external_identities` is unique per `(user_id, system)`.
+One configured instance per target value is a load-bearing invariant of the outbox and
+correlation design, not an accident. Naming each application as its own target value is
+what lets one organization provision Slack *and* Zoom *and* Box without touching that
+invariant — and each slot keeps its own credential, its own attribute mappings, its own
+enable/disable, its own dry run and its own blast-radius settings.
+
+Adding a seventh application is a migration widening the two pgEnums, one entry in
+`SCIM_TARGETS` (`connector-registry.ts`), and one label in the console — **no new
+adapter logic**.
+
+| Config key | Meaning |
+|---|---|
+| `baseUrl` | The SCIM service root, e.g. `https://api.slack.com/scim/v2` |
+| `tokenSecretName` | Names the `CONNECTOR_*` variable holding a static bearer token |
+| `writeMode` | `patch` (default) or `put` |
+| `tokenUrl`, `clientId`, `clientSecretName`, `scope` | OAuth2 client-credentials, for services that mint short-lived tokens |
+
+Set **either** `tokenSecretName` or the OAuth2 group — configuring both is refused
+rather than resolved by precedence.
+
+`writeMode` matters on day one: PATCH is an *optional* SCIM feature a service advertises
+in `/ServiceProviderConfig`, and a service that lacks it rejects every write until this
+is switched to `put`. In `patch` mode a de-mapped attribute is actively **removed**
+(RFC 7644 §3.5.2.2), the same partial-update clearing gap Graph and the Admin SDK have;
+in `put` mode the whole resource is replaced, which self-clears.
+
+Correlation is on the SCIM `id`, which RFC 7643 §3.1 makes service-assigned and
+immutable — never `userName`, which is as mutable here as a UPN is in Entra. Groups are
+**flat**: one remote SCIM group per local group. RFC 7643 §4.2 does permit a group to
+contain a group, but the mainstream services these slots target do not implement it, so
+this connector does not implement `DirectoryGroupConnector` — the same choice Keycloak,
+Entra and Google already make.
+
+`disable` sets `active: false`. RFC 7644 §3.6 defines `DELETE /Users/{id}` and this
+connector has no code path that can emit it.
+
+Unlike Entra — whose `POST /users` requires a `passwordProfile` — RFC 7643 §4.1.1 makes
+`password` optional, so a SCIM user is created without one and no credential for the
+provisioned person is ever generated or sent.
 
 ### Echo
 
@@ -365,6 +420,65 @@ Defaults are 20% and 5, both tunable per target. `--force` overrides and is sepa
 audited. Every reconcile invocation is audited, dry runs included, so "who ran this
 against this target, and what did it do" is always answerable.
 
+## Inbound sources — where data comes FROM
+
+Everything above is outbound. The inbound half is `hr_sources`: **pull-based** feeds
+this system fetches on a schedule or on demand. The standing rule is that nothing
+writes into this system except its own API — an HR feed is never a pushed webhook and
+never inbound SCIM; the table only describes where *we* go to fetch.
+
+| Kind | What it reads |
+|---|---|
+| `csv_url` | An HTTPS URL serving CSV |
+| `rest_json` | An HTTPS JSON API, with optional pagination |
+
+`rest_json` is deliberately **generic** rather than one kind per vendor. Workday RaaS,
+BambooHR, HiBob, SuccessFactors and Personio all serve JSON over HTTPS and differ only
+in where the record array sits, how pages are walked, and what the fields are called —
+all three of which are configuration:
+
+| Config key | Meaning |
+|---|---|
+| `recordsPath` | Dot-path to the array of people, e.g. `data.items`. Blank means the body *is* the array |
+| `pagination.mode` | `none`, `page` (a page-number query parameter), or `cursor` (follow a next-page field) |
+
+The column mapping's **source** keys are dot-paths into each record (`name.first`,
+`emails.0.value`); its target values are import-pipeline columns, exactly as for CSV.
+Unmapped fields are dropped — an HR payload's payroll fields must not reach the
+pipeline as unknown custom attributes.
+
+Both kinds converge on the **same mapped CSV** before anything else runs, so the
+preview, per-row validation, row cap, blast-radius guard and commit are one code path
+that cannot tell the two apart. A second feed kind must never become a second route
+through the parts that write to people.
+
+Two safety properties worth knowing:
+
+- The byte ceiling spans the **whole run**, not each page — a per-page cap would let an
+  N-page feed allocate N times the ceiling. Page count is separately bounded, because an
+  upstream returning a cheap self-referential next-link costs almost no bytes.
+- A mistyped `recordsPath` **fails loudly** rather than reading as an empty feed.
+  Downstream, "the HR system has no people" is indistinguishable from a real,
+  catastrophic emptying.
+
+Feed credentials follow the same rule as every connector: `auth_secret_name` stores the
+NAME of a `CONNECTOR_*` environment variable, resolved through the same `resolveSecret`,
+and is never logged, thrown or returned.
+
+## The data-flow map
+
+`GET /api/data-flows` (console: **Data flows**) answers the question neither the
+Connectors page nor the attribute mapping editor does — *what leaves this system, and to
+whom*. One response carries every inbound source, every outbound target, and the
+attributes riding each outbound edge, for one organization.
+
+It stores nothing new; every fact already lives in `hr_sources`, `connector_targets` and
+`attribute_target_mappings`. It deliberately makes **no live health check**: that is the
+Connectors page's question, and doing it here would mean an outbound HTTP call per
+target on every page load, and would make the map of the estate unavailable exactly when
+part of the estate is down. Disabled mappings are shown rather than hidden — "this used
+to flow and no longer does" is precisely what the screen is for.
+
 ## Adding a new target
 
 1. Add the value to the `outbox_target` **and** `external_identity_system` pgEnums, in a
@@ -384,3 +498,7 @@ against this target, and what did it do" is always answerable.
 
 A target present in the wider union but absent from the registry fails **safely** rather
 than silently.
+
+If the target speaks **SCIM 2.0**, steps 3–5 collapse: add it to `SCIM_TARGETS` in
+`connector-registry.ts` and give it a label and the shared field spec in the console.
+There is no new adapter to write.

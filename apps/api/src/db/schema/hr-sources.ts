@@ -15,16 +15,25 @@ import { organizations } from './organizations'
 
 /**
  * The kinds of upstream HR system a source can be. A CLOSED set, enforced by
- * Postgres at the column level — exactly one kind ships today (`csv_url`: an
- * HTTPS URL serving CSV), and the enum exists so a real HR API (Workday,
- * BambooHR, ...) can be added later as a NEW value plus a new fetch
- * implementation, without a schema redesign. Same caveat as `jml_trigger`
+ * Postgres at the column level. Same caveat as `jml_trigger`
  * (db/schema/jml-rules.ts): `ALTER TYPE ... ADD VALUE` is ordinary SQL, so
  * application code treats a value read back from this column as untrusted
  * input and dispatches through an allowlisted lookup, never Drizzle's
- * compile-time-only typing.
+ * compile-time-only typing — see `HrSyncService`'s own `FEED_LOADERS`.
+ *
+ * `rest_json` is the second kind, and exactly the one this enum's original
+ * comment anticipated ("so a real HR API (Workday, BambooHR, ...) can be
+ * added later as a NEW value plus a new fetch implementation, without a
+ * schema redesign"). It is deliberately GENERIC rather than one value per
+ * vendor: Workday RaaS, BambooHR, HiBob, SuccessFactors and Personio all
+ * serve JSON over HTTPS and differ only in where the record array sits, how
+ * pages are walked, and what the fields are called — all three of which are
+ * CONFIGURATION (`config.recordsPath`, `config.pagination`, and
+ * `column_mapping` respectively), not code. A per-vendor enum value would
+ * multiply the fetch implementations this comment exists to avoid
+ * multiplying.
  */
-export const hrSourceKind = pgEnum('hr_source_kind', ['csv_url'])
+export const hrSourceKind = pgEnum('hr_source_kind', ['csv_url', 'rest_json'])
 
 /**
  * What the LAST sync run of a source concluded. Closed set, one value per
@@ -111,6 +120,23 @@ export const hrSources = pgTable(
      * (hr/hr-feed.ts): flat string->string, no duplicate targets.
      */
     columnMapping: jsonb('column_mapping').$type<Record<string, string>>().notNull().default({}),
+
+    /**
+     * KIND-SPECIFIC, non-secret settings. Empty for `csv_url`, which needs
+     * none; for `rest_json` it carries `recordsPath` (where the record array
+     * sits in the response) and `pagination` (the closed union in
+     * hr-fetch.ts), validated by `parseJsonFeedConfig` (hr/hr-feed.ts) at
+     * both write time and read time.
+     *
+     * NO SECRET EVER LANDS HERE, exactly as for `auth_secret_name` above and
+     * `connector_targets.config` — a credential is referenced by the NAME of
+     * a `CONNECTOR_*` environment variable and resolved at point of use.
+     * Separate from `column_mapping` on purpose: that column has one fixed
+     * meaning across every kind (source field -> import column), while this
+     * one means different things per kind, and merging them would make a
+     * mapping key collide with a setting name.
+     */
+    config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
 
     /** Default FALSE, like `jml_rules.enabled`/`connector_targets.enabled`: a freshly created source cannot COMMIT anything until deliberately enabled. Preview-only runs are allowed while disabled — that is how an operator validates the mapping before switching it on. */
     enabled: boolean('enabled').notNull().default(false),

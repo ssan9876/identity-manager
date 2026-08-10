@@ -37,6 +37,87 @@ export interface ConfigFieldSpec {
  * one a test harness set directly), it simply is not surfaced as a field
  * an admin edits day to day.
  */
+
+/**
+ * Every SCIM slot takes the SAME fields — the protocol is identical and only
+ * the values differ — so they are generated from one spec rather than copied
+ * six times. A hand-copied list is exactly the "catalog drift" defect
+ * connector.ts's own doc comment records, and it would be six chances to get
+ * one wrong.
+ *
+ * `baseUrl` is the SCIM service root. `tokenSecretName` covers the common
+ * static-bearer case; the OAuth2 trio below it is for services that mint
+ * short-lived tokens instead. Neither is a credential BOX — both name an
+ * environment variable, per this file's own `secret-name` doc comment.
+ * `writeMode` is surfaced because PATCH is an OPTIONAL SCIM feature and a
+ * service that lacks it rejects every write until this is switched to `put`
+ * — a real, first-day configuration decision, not a tuning knob.
+ */
+const SCIM_TARGETS = [
+  'scim_slack',
+  'scim_zoom',
+  'scim_atlassian',
+  'scim_box',
+  'scim_snowflake',
+  'scim_generic',
+] as const satisfies readonly ConnectorTarget[]
+
+/** Derived from the array so the two cannot drift — the same shape `ALL_CONNECTOR_TARGETS` uses on the API side. */
+type ScimTarget = (typeof SCIM_TARGETS)[number]
+
+const SCIM_FIELDS: ConfigFieldSpec[] = [
+  {
+    key: 'baseUrl',
+    label: 'SCIM base URL',
+    type: 'string',
+    required: true,
+    placeholder: 'https://api.example.com/scim/v2',
+    hint: 'The SCIM 2.0 service root — the URL that /Users and /Groups hang off. A trailing slash is trimmed.',
+  },
+  {
+    key: 'tokenSecretName',
+    label: 'Bearer token environment variable',
+    type: 'secret-name',
+    required: false,
+    placeholder: 'CONNECTOR_SCIM_SLACK_TOKEN',
+    hint: 'For a service that issues a long-lived token. Set this OR the three OAuth2 fields below, never both.',
+  },
+  {
+    key: 'writeMode',
+    label: 'Write mode',
+    type: 'string',
+    required: false,
+    placeholder: 'patch',
+    hint: 'patch (default) or put. PATCH is optional in SCIM — switch to put if this service advertises no PATCH support.',
+  },
+  {
+    key: 'tokenUrl',
+    label: 'OAuth2 token URL',
+    type: 'string',
+    required: false,
+    hint: 'Only for services that mint short-lived tokens from client credentials. Leave blank when using a bearer token.',
+  },
+  { key: 'clientId', label: 'OAuth2 client ID', type: 'string', required: false },
+  {
+    key: 'clientSecretName',
+    label: 'OAuth2 client secret environment variable',
+    type: 'secret-name',
+    required: false,
+    placeholder: 'CONNECTOR_SCIM_CLIENT_SECRET',
+  },
+  { key: 'scope', label: 'OAuth2 scope', type: 'string', required: false },
+]
+
+function scimTargetFields(): Record<ScimTarget, ConfigFieldSpec[]> {
+  const fields = {} as Record<ScimTarget, ConfigFieldSpec[]>
+  for (const target of SCIM_TARGETS) {
+    // A fresh array per slot: one shared reference would let a future
+    // in-place edit for one application silently change all six.
+    fields[target] = SCIM_FIELDS.map((field) => ({ ...field }))
+  }
+  return fields
+}
+
 export const TARGET_CONFIG_FIELDS: Record<ConnectorTarget, ConfigFieldSpec[]> = {
   keycloak: [],
   // SSO applications. A SEPARATE credential from the `keycloak` target's
@@ -209,4 +290,5 @@ export const TARGET_CONFIG_FIELDS: Record<ConnectorTarget, ConfigFieldSpec[]> = 
       hint: 'Names the variable holding the FULL downloaded service-account key JSON, not a bare private key.',
     },
   ],
+  ...scimTargetFields(),
 }

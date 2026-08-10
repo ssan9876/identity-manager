@@ -20,8 +20,8 @@ import { OrgUnitsRepository } from '../org-units/org-units.repository'
 import { OutboxWriter } from '../outbox/outbox.writer'
 import type { BlastRadiusEvaluation } from '../outbox/target-reconciliation.job'
 import { UsersRepository } from '../users/users.repository'
-import { evaluateHrRun, mapFeedCsv } from './hr-feed'
-import { DEFAULT_HR_FETCH_MAX_BYTES, fetchFeedCsv } from './hr-fetch'
+import { evaluateHrRun, mapFeedCsv, mapJsonFeed, parseJsonFeedConfig } from './hr-feed'
+import { DEFAULT_HR_FETCH_MAX_BYTES, fetchFeedCsv, fetchFeedJson } from './hr-fetch'
 import { HrSourcesRepository, type HrRunOutcome } from './hr-sources.repository'
 
 /** DI token for `HrSyncConfig` — same reasoning as IMPORTS_CONFIG (a plain TS interface erases at runtime). */
@@ -40,6 +40,100 @@ export interface HrSyncConfig {
 }
 
 const DEFAULT_HR_SYNC_CONFIG: HrSyncConfig = { maxFetchBytes: DEFAULT_HR_FETCH_MAX_BYTES }
+
+/**
+ * What one FETCH phase produced, before any mapping. Kept as a union rather
+ * than collapsing both kinds to CSV inside the fetch step, because the two
+ * phases must keep reporting DIFFERENT outcomes: a transport problem is
+ * `fetch_failed` ("nothing was previewed"), while a mapping that does not fit
+ * the feed is `preview_failed`. Collapsing them would relabel every
+ * bad-mapping run as an upstream outage and send an operator hunting for a
+ * network fault that does not exist.
+ */
+type FeedPayload =
+  | { kind: 'csv_url'; text: string }
+  | { kind: 'rest_json'; records: readonly unknown[] }
+
+interface FeedLoader {
+  /** Network phase. Anything thrown here is recorded as `fetch_failed`. */
+  fetch(source: HrSource, config: HrSyncConfig): Promise<FeedPayload>
+  /** Pure transform to the import pipeline's CSV. Anything thrown here is recorded as `preview_failed`. */
+  toCsv(payload: FeedPayload, source: HrSource): string
+}
+
+/** Both kinds resolve their credential the same way — a header name plus the NAME of a `CONNECTOR_*` environment variable, or nothing at all. */
+function authFor(source: HrSource) {
+  return source.authHeaderName !== null && source.authSecretName !== null
+    ? { headerName: source.authHeaderName, secretName: source.authSecretName }
+    : null
+}
+
+/**
+ * Source kind -> how to read it. `Object.create(null)` plus `Object.hasOwn`
+ * before indexing (see `loaderFor`), never a bare lookup: `source.kind` is
+ * read back out of a Postgres enum column, and "a Postgres enum column can
+ * hold any label a migration ever added, past or future"
+ * (jml/rule-engine.ts) — the same prototype-chain-bypass hazard
+ * `ConnectorRegistry.factories` documents at length, for the same reason.
+ * `hr_source_kind`'s own doc comment states the rule this satisfies:
+ * dispatch through an allowlisted lookup, never Drizzle's compile-time-only
+ * typing.
+ *
+ * The `satisfies` on the literal is what makes a newly-added kind a COMPILE
+ * error here rather than a runtime "unsupported source kind" in production.
+ */
+const FEED_LOADERS: Record<HrSource['kind'], FeedLoader> = Object.assign(
+  Object.create(null) as Record<HrSource['kind'], FeedLoader>,
+  {
+    csv_url: {
+      async fetch(source: HrSource, config: HrSyncConfig): Promise<FeedPayload> {
+        return {
+          kind: 'csv_url',
+          text: await fetchFeedCsv(source.url, {
+            auth: authFor(source),
+            maxBytes: config.maxFetchBytes,
+            fetchImpl: config.fetchImpl,
+          }),
+        }
+      },
+      toCsv(payload: FeedPayload, source: HrSource): string {
+        // Narrowing, not a cast: `run` always pairs a payload with the
+        // loader that produced it, and this keeps that invariant checkable.
+        if (payload.kind !== 'csv_url') throw new Error('feed payload/kind mismatch')
+        return mapFeedCsv(payload.text, source.columnMapping)
+      },
+    },
+    rest_json: {
+      async fetch(source: HrSource, config: HrSyncConfig): Promise<FeedPayload> {
+        const feedConfig = parseJsonFeedConfig(source.config)
+        return {
+          kind: 'rest_json',
+          records: await fetchFeedJson(source.url, {
+            auth: authFor(source),
+            maxBytes: config.maxFetchBytes,
+            fetchImpl: config.fetchImpl,
+            recordsPath: feedConfig.recordsPath,
+            pagination: feedConfig.pagination,
+          }),
+        }
+      },
+      toCsv(payload: FeedPayload, source: HrSource): string {
+        if (payload.kind !== 'rest_json') throw new Error('feed payload/kind mismatch')
+        return mapJsonFeed(payload.records, source.columnMapping)
+      },
+    },
+  } satisfies Record<HrSource['kind'], FeedLoader>,
+)
+
+/** Resolves a source's loader, refusing an unrecognised kind loudly rather than defaulting to CSV — a target absent from the catalog must never be silently misprocessed as another one (the exact failure mode `ConnectorRegistry.resolve` refuses for connectors). */
+function loaderFor(source: HrSource): FeedLoader {
+  if (!Object.hasOwn(FEED_LOADERS, source.kind)) {
+    throw new ValidationError([
+      `source: unsupported feed kind "${source.kind}" — supported kinds: ${Object.keys(FEED_LOADERS).join(', ')}`,
+    ])
+  }
+  return FEED_LOADERS[source.kind]
+}
 
 export interface HrSyncOptions {
   /** `false` (the default posture everywhere this is invoked): preview only, write nothing about any user. */
@@ -141,16 +235,16 @@ export class HrSyncService {
     await this.sources.recordRunStarted(source.id)
 
     // ------------------------------------------------------------------ fetch
-    let feedCsv: string
+    // Kind-dispatched through the allowlisted `FEED_LOADERS` catalog — the
+    // ONLY place this service branches on `source.kind`. Everything after
+    // this point is identical for every feed kind, which is what keeps a new
+    // kind from becoming a second code path through the parts that write to
+    // people.
+    let payload: FeedPayload
+    let loader: FeedLoader
     try {
-      feedCsv = await fetchFeedCsv(source.url, {
-        auth:
-          source.authHeaderName !== null && source.authSecretName !== null
-            ? { headerName: source.authHeaderName, secretName: source.authSecretName }
-            : null,
-        maxBytes: this.config.maxFetchBytes,
-        fetchImpl: this.config.fetchImpl,
-      })
+      loader = loaderFor(source)
+      payload = await loader.fetch(source, this.config)
     } catch (error) {
       return this.finishFailed(source, options, 'fetch_failed', error)
     }
@@ -158,7 +252,7 @@ export class HrSyncService {
     // -------------------------------------------------------- map + preview
     let preview: ImportPreviewResponse
     try {
-      const csv = mapFeedCsv(feedCsv, source.columnMapping)
+      const csv = loader.toCsv(payload, source)
       preview = await this.imports.preview({ csv }, this.asRequest(options.actor))
     } catch (error) {
       return this.finishFailed(source, options, 'preview_failed', error)
@@ -206,7 +300,10 @@ export class HrSyncService {
     // The SAME mapped csv the preview ran on — re-resolved by `commit`
     // itself (both routes share resolveRow), exactly as a human operator
     // pressing "commit" after "preview" re-resolves through the HTTP API.
-    const csv = mapFeedCsv(feedCsv, source.columnMapping)
+    // Re-mapped from the SAME already-fetched payload, so this is never a
+    // second trip to the upstream: a feed that changed between preview and
+    // commit must not be what gets committed.
+    const csv = loader.toCsv(payload, source)
     const commit = await this.imports.commit({ csv }, this.asRequest(options.actor))
 
     const report: HrSyncReport = {

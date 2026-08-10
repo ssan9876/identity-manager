@@ -6,6 +6,7 @@ import BusinessRoleDetailPage from './business-roles/BusinessRoleDetailPage'
 import BusinessRolesPage from './business-roles/BusinessRolesPage'
 import MiningPage from './business-roles/MiningPage'
 import ConnectorsListPage from './connectors/ConnectorsListPage'
+import DataFlowsPage from './connectors/DataFlowsPage'
 import CreateSsoAppPage from './sso-apps/CreateSsoAppPage'
 import SsoAppDetailPage from './sso-apps/SsoAppDetailPage'
 import SsoAppsListPage from './sso-apps/SsoAppsListPage'
@@ -226,6 +227,7 @@ export default function App() {
           <Route path="/organizations" element={<OrganizationsPage />} />
           <Route path="/connectors" element={<ConnectorsListPage />} />
           <Route path="/connectors/:target" element={<TargetDetailPage />} />
+          <Route path="/data-flows" element={<DataFlowsPage />} />
           <Route path="/hr-sources" element={<HrSourcesPage />} />
           <Route path="/self" element={<SelfServicePage />} />
           <Route path="/approvals" element={<ApprovalsPage />} />

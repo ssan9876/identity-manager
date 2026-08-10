@@ -23,6 +23,12 @@ export type ConnectorTarget =
   | 'google_workspace'
   | 'echo'
   | 'mail_server'
+  | 'scim_slack'
+  | 'scim_zoom'
+  | 'scim_atlassian'
+  | 'scim_box'
+  | 'scim_snowflake'
+  | 'scim_generic'
   | 'keycloak_sso'
 
 export const ALL_CONNECTOR_TARGETS: readonly ConnectorTarget[] = [
@@ -32,6 +38,12 @@ export const ALL_CONNECTOR_TARGETS: readonly ConnectorTarget[] = [
   'google_workspace',
   'echo',
   'mail_server',
+  'scim_slack',
+  'scim_zoom',
+  'scim_atlassian',
+  'scim_box',
+  'scim_snowflake',
+  'scim_generic',
   'keycloak_sso',
 ]
 
@@ -53,6 +65,14 @@ export const CONNECTOR_TARGET_LABEL: Record<ConnectorTarget, string> = {
   google_workspace: 'Google Workspace',
   echo: 'Echo (in-repo test target)',
   mail_server: 'Mail server',
+  // Six SCIM 2.0 slots, one adapter class. The label names the APPLICATION,
+  // not the protocol — an operator configures "Slack", not "SCIM slot 1".
+  scim_slack: 'Slack (SCIM)',
+  scim_zoom: 'Zoom (SCIM)',
+  scim_atlassian: 'Atlassian (SCIM)',
+  scim_box: 'Box (SCIM)',
+  scim_snowflake: 'Snowflake (SCIM)',
+  scim_generic: 'Generic SCIM 2.0',
   keycloak_sso: 'Keycloak (SSO applications)',
 }
 

@@ -28,7 +28,7 @@ import { auditLog } from '../db/schema/audit-log'
 import type { HrSource } from '../db/schema/hr-sources'
 import * as schema from '../db/schema/index'
 import { organizations } from '../db/schema/organizations'
-import { parseColumnMapping } from './hr-feed'
+import { parseColumnMapping, parseJsonFeedConfig } from './hr-feed'
 import {
   HrSourcesRepository,
   type CreateHrSourceInput,
@@ -66,12 +66,17 @@ const createBodySchema = z
   .object({
     organizationId: z.string().uuid(),
     name: noNulChar(z.string().min(1).max(255)),
-    kind: z.literal('csv_url'),
+    kind: z.enum(['csv_url', 'rest_json']),
     url: urlSchema,
     auth: authSchema.nullable().optional(),
     // Validated by parseColumnMapping, not here — see its doc comment for
     // why a z.record() would silently DROP a `__proto__` source column.
     columnMapping: z.unknown().optional(),
+    // Kind-specific settings. Validated per kind by `parseSourceConfig`
+    // below, not here — `csv_url` accepts none at all, and `rest_json`'s own
+    // closed pagination union lives with the code that dispatches on it
+    // (hr-feed.ts's `parseJsonFeedConfig`).
+    config: z.unknown().optional(),
     enabled: z.boolean().optional(),
     blastRadiusThreshold: z.number().int().min(1).max(100).optional(),
     blastRadiusFloor: z.number().int().min(0).optional(),
@@ -84,6 +89,7 @@ const patchBodySchema = z
     url: urlSchema.optional(),
     auth: authSchema.nullable().optional(),
     columnMapping: z.unknown().optional(),
+    config: z.unknown().optional(),
     enabled: z.boolean().optional(),
     blastRadiusThreshold: z.number().int().min(1).max(100).optional(),
     blastRadiusFloor: z.number().int().min(0).optional(),
@@ -91,6 +97,41 @@ const patchBodySchema = z
   .strict()
 
 const previewBodySchema = z.object({}).strict().optional()
+
+/**
+ * Validates `config` FOR THIS SOURCE'S KIND, at write time — so a malformed
+ * pagination block is a named 400 on the configure screen rather than a
+ * `fetch_failed` run at 2am, exactly the reasoning the `CONNECTOR_*` secret
+ * name check above already follows ("an operator learns about a bad name at
+ * configure time").
+ *
+ * `csv_url` accepts NO settings at all rather than ignoring stray keys: a
+ * `recordsPath` silently accepted on a CSV source would read, on the screen
+ * and in the audit row, as though it were doing something.
+ *
+ * The kind lookup is `Object.hasOwn` over a null-prototype catalog for the
+ * same reason `HrSyncService.FEED_LOADERS` is — the value is a Postgres enum
+ * label, and this function is also reachable with a kind read back out of
+ * storage (PATCH, which cannot change `kind`).
+ */
+const CONFIG_PARSERS: Record<HrSource['kind'], (value: unknown) => Record<string, unknown>> =
+  Object.assign(Object.create(null) as Record<HrSource['kind'], (value: unknown) => Record<string, unknown>>, {
+    csv_url: (value: unknown) => {
+      if (value === undefined || value === null) return {}
+      if (typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > 0) {
+        throw new ValidationError(['config: a csv_url source takes no configuration'])
+      }
+      return {}
+    },
+    rest_json: (value: unknown) => ({ ...parseJsonFeedConfig(value) }),
+  } satisfies Record<HrSource['kind'], (value: unknown) => Record<string, unknown>>)
+
+function parseSourceConfig(kind: HrSource['kind'], value: unknown): Record<string, unknown> {
+  if (!Object.hasOwn(CONFIG_PARSERS, kind)) {
+    throw new ValidationError([`kind: unsupported feed kind "${kind}"`])
+  }
+  return CONFIG_PARSERS[kind](value)
+}
 
 /**
  * What every read/write returns. Everything on the row is non-secret BY
@@ -112,6 +153,7 @@ export interface HrSourceView {
   authHeaderName: string | null
   authSecretName: string | null
   columnMapping: Record<string, string>
+  config: Record<string, unknown>
   enabled: boolean
   blastRadiusThreshold: number
   blastRadiusFloor: number
@@ -133,6 +175,7 @@ function toView(row: HrSource): HrSourceView {
     authHeaderName: row.authHeaderName,
     authSecretName: row.authSecretName,
     columnMapping: row.columnMapping,
+    config: row.config,
     enabled: row.enabled,
     blastRadiusThreshold: row.blastRadiusThreshold,
     blastRadiusFloor: row.blastRadiusFloor,
@@ -156,6 +199,7 @@ function snapshotSource(row: HrSource): Record<string, unknown> {
     authHeaderName: row.authHeaderName,
     authSecretName: row.authSecretName,
     columnMapping: row.columnMapping,
+    config: row.config,
     enabled: row.enabled,
     blastRadiusThreshold: row.blastRadiusThreshold,
     blastRadiusFloor: row.blastRadiusFloor,
@@ -260,6 +304,7 @@ export class HrSourcesController {
     await this.requireGlobalManageGrant(request)
     const parsed = parseBody(createBodySchema, body)
     const columnMapping = parseColumnMapping(parsed.columnMapping ?? {})
+    const config = parseSourceConfig(parsed.kind, parsed.config)
 
     // Existence checked up front so the operator gets a named 400 rather
     // than a raw FK violation surfacing as a 500.
@@ -280,6 +325,7 @@ export class HrSourcesController {
       authHeaderName: parsed.auth?.headerName ?? null,
       authSecretName: parsed.auth?.secretName ?? null,
       columnMapping,
+      config,
       enabled: parsed.enabled,
       blastRadiusThreshold: parsed.blastRadiusThreshold,
       blastRadiusFloor: parsed.blastRadiusFloor,
@@ -317,6 +363,10 @@ export class HrSourcesController {
       url: parsed.url,
       auth: parsed.auth,
       columnMapping: parsed.columnMapping !== undefined ? parseColumnMapping(parsed.columnMapping) : undefined,
+      // Validated against the STORED kind — `kind` is not patchable, and
+      // re-reading it here is what stops a rest_json config being accepted
+      // onto a csv_url source.
+      config: parsed.config !== undefined ? parseSourceConfig(source.kind, parsed.config) : undefined,
       enabled: parsed.enabled,
       blastRadiusThreshold: parsed.blastRadiusThreshold,
       blastRadiusFloor: parsed.blastRadiusFloor,

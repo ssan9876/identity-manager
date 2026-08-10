@@ -101,6 +101,24 @@ export const outboxTarget = pgEnum('outbox_target', [
   // addresses a principal by OUR user id rather than by an id of its own —
   // see `DesiredUser.userId`'s doc comment (connectors/connector.ts).
   'mail_server',
+  // SCIM 2.0 application slots. SIX target values, ONE adapter class
+  // (connectors/scim.connector.ts) — the protocol is identical and only the
+  // base URL, the credential and the write mode differ per application. They
+  // are separate TARGET VALUES rather than rows of one `scim` target because
+  // (organization_id, target) is `connector_targets`' primary key and
+  // (user_id, system) is unique in `external_identities`: one configured
+  // instance per target value is a load-bearing invariant of the outbox and
+  // correlation design, so naming each application is what lets one
+  // organization provision Slack AND Zoom AND Box without touching it.
+  // Adding a seventh is this list, `external_identity_system`, a migration,
+  // one line in ConnectorRegistry and one in the console's field catalog —
+  // no new adapter logic.
+  'scim_slack',
+  'scim_zoom',
+  'scim_atlassian',
+  'scim_box',
+  'scim_snowflake',
+  'scim_generic',
   // SSO applications. Carries no principals — see DIRECTORY_TARGETS
   // (connectors/connector.ts) for which surfaces must exclude it.
   'keycloak_sso',
