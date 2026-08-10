@@ -4,6 +4,7 @@ import { Route, Routes } from 'react-router-dom'
 import AuditPage from './audit/AuditPage'
 import BusinessRoleDetailPage from './business-roles/BusinessRoleDetailPage'
 import BusinessRolesPage from './business-roles/BusinessRolesPage'
+import MiningPage from './business-roles/MiningPage'
 import ConnectorsListPage from './connectors/ConnectorsListPage'
 import CreateSsoAppPage from './sso-apps/CreateSsoAppPage'
 import SsoAppDetailPage from './sso-apps/SsoAppDetailPage'
@@ -212,6 +213,8 @@ export default function App() {
           <Route path="/groups/:id/edit" element={<EditGroupPage />} />
           <Route path="/roles" element={<RolesCatalogPage />} />
           <Route path="/business-roles" element={<BusinessRolesPage />} />
+          {/* Static before dynamic, though the router ranks them anyway: /mining is a page, not a role id. */}
+          <Route path="/business-roles/mining" element={<MiningPage />} />
           <Route path="/business-roles/:id" element={<BusinessRoleDetailPage />} />
           <Route path="/recertification" element={<RecertificationPage />} />
           <Route path="/recertification/:id" element={<RecertCampaignDetailPage />} />

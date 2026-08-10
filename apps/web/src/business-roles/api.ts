@@ -260,6 +260,89 @@ export function draftStateOf(role: Pick<BusinessRole, 'draftDefinition' | 'simul
   return role.simulatedAt === null ? 'pending-simulation' : 'ready-to-publish'
 }
 
+/**
+ * ROLE MINING — the console's mirror of the `mining/*` routes on
+ * `BusinessRolesController`. Every shape below is written against the API's
+ * own `MiningReport`/`MiningCandidateReport`, not guessed.
+ *
+ * Mining is READ-ONLY analysis: running it changes nothing, and adopting a
+ * recommendation only creates a DISABLED role with a pre-filled DRAFT that
+ * still has to walk the same simulate → publish gate as a hand-typed one.
+ */
+
+/** A capped, named sample of a residual list. `count` is always the true total. */
+export interface MiningPersonSample {
+  count: number
+  sample: { userId: string; username: string }[]
+  truncated: boolean
+}
+
+export interface MiningCandidate {
+  conditions: RoleCondition[]
+  /** Of the people the formula matches, the share already manual members. */
+  precision: number
+  /** Of the group's manual members, the share the formula matches. */
+  coverage: number
+  score: number
+  cohortSize: number
+  matchedCount: number
+  /** People the formula matches who are NOT members today — publishing would grant them the group. */
+  gained: MiningPersonSample
+  /** Members the formula does NOT describe — the role would never cover them (their manual rows survive). */
+  lost: MiningPersonSample
+}
+
+export interface MiningGroupRecommendation {
+  groupId: string
+  groupName: string
+  memberCount: number
+  candidates: MiningCandidate[]
+}
+
+export interface MiningReport {
+  scannedUsers: number
+  manualMemberships: number
+  groupsExamined: number
+  params: {
+    minPrecision: number
+    minCoverage: number
+    maxCandidatesPerGroup: number
+    scopeOrgUnitId: string | null
+  }
+  recommendations: MiningGroupRecommendation[]
+}
+
+export interface MiningRunParams {
+  minPrecision: number
+  minCoverage: number
+  scopeOrgUnitId: string | null
+}
+
+/** Mirrors `miningQuerySchema` — `.strict()`, so only these names are ever sent. */
+export function runRoleMining(accessToken: string, params: MiningRunParams): Promise<MiningReport> {
+  const query = new URLSearchParams({
+    minPrecision: String(params.minPrecision),
+    minCoverage: String(params.minCoverage),
+  })
+  if (params.scopeOrgUnitId !== null) query.set('scopeOrgUnitId', params.scopeOrgUnitId)
+  return authorizedRequest<MiningReport>(
+    `/business-roles/mining/recommendations?${query.toString()}`,
+    accessToken,
+  )
+}
+
+/** Mirrors `miningDraftBodySchema` — creates a disabled role carrying the recommendation as its DRAFT, nothing more. */
+export function adoptMiningRecommendation(
+  accessToken: string,
+  input: { name: string; description: string | null; groupId: string; conditions: RoleCondition[] },
+): Promise<BusinessRoleDetail> {
+  return authorizedRequest<BusinessRoleDetail>('/business-roles/mining/drafts', accessToken, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
 /** A grant, in the words an admin uses — group NAME where the console knows it, never a bare uuid. */
 export function describeGrant(
   grant: RoleGrant,
