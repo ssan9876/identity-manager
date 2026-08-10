@@ -28,7 +28,7 @@ nothing except make the index unusable for an ordinary equality lookup.
 
 For a **tenant**, `realm` and `slug` are the same string by construction and stay that
 way: `POST /organizations` inserts `realm: input.slug`, and no repository method updates
-either column afterwards (`OrganizationsRepository.setStatus` is the only update path).
+either column afterwards — `OrganizationsRepository.setStatus` is its only update method.
 That is what makes the realm name predictable from the API surface (`/realms/acme`) and
 lets one format CHECK serve both.
 
@@ -59,8 +59,8 @@ organization_id = $1`.
 `audit_log` it is nullable, because rows predating organizations have none and
 platform-level actions legitimately have none.
 
-They are not the only tables that carry it. `jml_rules` (0030), `connector_targets`
-(0033), `business_roles` and `role_conflicts` (0034), `access_requests` (0036),
+They are not the only tables that carry it. `jml_rules` and `business_roles` (both 0030),
+`connector_targets` (0033), `role_conflicts` (0034), `access_requests` (0036),
 `recert_campaigns` (0037), `recert_items` (0038) and `hr_sources` (0040) each carry a
 `NOT NULL organization_id` too. The referential action is **not** uniform, so check the
 schema rather than assuming: most are `ON DELETE RESTRICT`, `connector_targets` declares
@@ -129,6 +129,11 @@ population. If a tenant-facing API is ever added, this decision has to be revisi
 | `organization_id` | uuid → `organizations.id` | `NOT NULL`, `ON DELETE RESTRICT` |
 | `created_at` / `updated_at` | timestamptz | |
 
+`org_units_path_unique` is the one uniqueness index migration 0028 did **not** rescope
+per tenant: it is still global on `path` alone. A root org unit's path is `toLabel(name)`,
+a single label, so two organizations created with the same name collide on it — the
+per-tenant uniqueness that now governs `users` and `groups` does not extend here.
+
 The `ltree` path is what makes scope checks a single indexed containment query rather
 than a recursive walk. Scope is transitive: an actor scoped to `acme.sales` reaches
 `acme.sales.emea` and everything below it.
@@ -141,9 +146,11 @@ schema, and the handler's whole authorization check is
 `assertCanIn(actor, 'org_unit:create', parsed.parentId)` — does the actor's grant cover
 the org unit the new one would live under? The old root branch (a `parentId`-less body
 gated on a *global* grant of `org_unit:create`) was removed with multi-tenancy: a root
-now belongs to an organization, which owns exactly one, so the only thing that creates a
-root is creating the organization. `OrgUnitsRepository.createRoot` survives as the method
-`POST /organizations` calls, and is unreachable from HTTP.
+now belongs to an organization, which owns exactly one, so a root is no longer something
+an HTTP caller can ask for. `OrgUnitsRepository.createRoot` survives, unreachable from
+HTTP, with two callers: `POST /organizations`, which gives each new tenant its one root;
+and `pnpm bootstrap:admin`, which mints a root only if the database has no org unit at
+all, so re-running it never scatters extras.
 
 ### `users` — people
 
@@ -502,8 +509,33 @@ nullable columns would let the same field be mapped to the same target without l
 
 **Absence of a row is what makes default-deny structural** — not a column default. A
 field with no mapping row for a target does not reach that target's attribute bag at all,
-and `enabled = false` on an existing row is behaviourally indistinguishable from no row:
-every read in `AttributeTargetMappingsRepository` excludes both identically.
+and neither does one whose only row has `enabled = false`: `listForTarget`, the read the
+sync worker uses, carries `AND atm.enabled = true` on **both** branches of its `UNION
+ALL`, so a disabled mapping never appears in the array `buildTargetAttributes` iterates.
+
+**Disabling a row and deleting it are not equivalent, though.** Two reads deliberately
+do not filter on `enabled`:
+
+- `listAllRemoteNamesForTarget` returns every `remote_name` ever configured for a target,
+  enabled or not. `SyncWorker` feeds it into `DesiredUser.managedAttributeRemoteNames`
+  for the nine targets in `TARGETS_NEEDING_MANAGED_ATTRIBUTE_NAMES` —
+  `active_directory`, `entra_id`, `google_workspace` and all six `scim_*` slots — whose
+  write APIs are partial updates, where omitting a key leaves the old value in place.
+  Those connectors turn the list into `clearCandidates` and **actively clear** any remote
+  name they are no longer sending. So *disabling* a mapping clears the now-stale value in
+  the target; *deleting* the row drops that remote name out of the list, and the stale
+  value stays behind indefinitely. Keycloak and the mail server are absent from the list
+  because their writes replace the whole object and self-clear; a SCIM slot in
+  `writeMode: 'put'` self-clears the same way, so `ScimConnector` uses the list only on
+  its PATCH path.
+- `listAllRows`, the console editor's read, returns disabled rows too, carrying `enabled`
+  — the editor must show a disabled mapping *distinctly from no mapping at all*.
+
+Two code comments claim otherwise and should not be trusted here: the schema's
+(`db/schema/attribute-target-mappings.ts:55-60`) says disabling and deleting are
+"behaviourally indistinguishable … by construction", and
+`AttributeTargetMappingsRepository.remove`'s repeats it while citing only `listForTarget`.
+Both predate the clearing mechanism.
 
 Read that scope precisely. What this table governs is `DesiredUser.attributes`, the
 per-target bag. It does **not** govern the core identity fields every connector receives
