@@ -260,6 +260,20 @@
       "when": 1786620100000,
       "tag": "0036_access_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1786620200000,
+      "tag": "0037_recert_campaigns",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1786620300000,
+      "tag": "0038_recert_items",
+      "breakpoints": true
     }
   ]
 }

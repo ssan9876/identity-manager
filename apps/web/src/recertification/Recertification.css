@@ -1,0 +1,100 @@
+/* Shared by RecertificationPage and RecertCampaignDetailPage. The header
+   shape comes from `.page-header` (styles/components.css); only what is
+   specific to these two screens lives here. */
+
+.recert__section {
+  margin-top: var(--space-6);
+}
+
+.recert__section-heading {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: var(--space-3);
+}
+
+/* The create form is a raised toolbar-class surface above the table — the
+   same relationship BusinessRolesPage's own create form has with its list,
+   and PeopleListPage's filter row has with its results. Not a modal:
+   docs/design-system.md bans "modal as first thought". */
+.recert__create {
+  margin-bottom: var(--space-5);
+  padding: var(--space-5);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.recert__create-heading {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.recert__create-hint {
+  margin-top: var(--space-1);
+  max-width: 68ch;
+  font-size: var(--text-base);
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+.recert__create-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.recert__create-name {
+  flex: 1 1 16rem;
+  min-width: 12rem;
+}
+
+.recert__create-fields .input {
+  width: 100%;
+}
+
+.recert__optional {
+  font-weight: 400;
+  color: var(--ink-subtle);
+}
+
+.recert__create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+/* The mandatory exception reason, and a formula item's "why" note — the
+   whole reason this column exists. Wrapped rather than truncated: a
+   reviewer must be able to read the entire justification without a hover
+   or a second click. */
+.recert__reason {
+  max-width: 32rem;
+  text-wrap: pretty;
+}
+
+.recert__row-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.recert__breadcrumb {
+  margin-bottom: var(--space-3);
+}
+
+.recert__header-badges {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.recert__progress {
+  font-size: var(--text-base);
+  color: var(--ink-muted);
+}

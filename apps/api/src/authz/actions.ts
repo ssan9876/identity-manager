@@ -25,6 +25,8 @@ export type Action =
   | 'sso_app:manage'
   | 'business_role:read'
   | 'business_role:manage'
+  | 'recert:read'
+  | 'recert:manage'
   | 'organization:read'
   | 'organization:create'
   | 'organization:update'
@@ -66,6 +68,19 @@ export const ALL_ACTIONS: readonly Action[] = [
   // BusinessRolesController.requireGlobalGrant.
   'business_role:read',
   'business_role:manage',
+  // Recertification campaigns. GLOBAL GRANT ONLY for `recert:manage`, on
+  // exactly business_role:manage's terms: a campaign belongs to no org
+  // unit, its review set spans every role in scope and therefore the whole
+  // directory, so there is nothing for a scoped grant to narrow to. See
+  // RecertCampaignsController.requireGlobalManageGrant.
+  //
+  // NOTE the reviewer surface is deliberately NOT an action at all:
+  // deciding an item is gated on IDENTITY (the item's own resolved
+  // reviewer, or a global recert:manage holder), because reviewers are
+  // ordinary managers who legitimately hold no role in this catalog — the
+  // same "works with no role at all" posture as SelfServiceController.
+  'recert:read',
+  'recert:manage',
   // Organizations milestone, Task 12 -- tenants. GLOBAL GRANT ONLY, for the
   // same reason as the audit log, dead letters, connector targets, SSO
   // applications and business roles: an organization has no CONTAINING org
@@ -152,6 +167,12 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly Action[]> = Object.assig
       // to read it. `business_role:manage` is deliberately NOT here: see
       // super_admin's own note below, and `role:assign`'s identical posture.
       'business_role:read',
+      // Recertification campaigns, read only, mirroring business_role:read
+      // exactly and for the same reason: a campaign's items DESCRIBE who
+      // holds what and who attested it — the "why does this person have
+      // this" investigation surface — while opening or closing a campaign
+      // (`recert:manage`) stays super_admin's alone.
+      'recert:read',
     ],
     help_desk: ['user:read', 'user:update', 'group:read', 'org_unit:read'],
     // Milestone 14, Task 9 — connector admin console. `connector:read` joins
@@ -176,8 +197,14 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly Action[]> = Object.assig
     // `connector:manage` already set -- publishing a formula is a
     // structural, directory-wide capability with outsized blast radius,
     // not ordinary directory work.
-    auditor: [...READ_ONLY_ACTIONS, 'audit:read', 'connector:read', 'business_role:read'],
-    read_only: [...READ_ONLY_ACTIONS, 'business_role:read'],
+    // `recert:read` joins both read sets on business_role:read's exact
+    // terms: an attestation record is the purest possible instance of the
+    // auditor's "what happened" visibility, and it is a pure read —
+    // campaign items describe decisions, they neither confer access nor
+    // decide anything. `recert:manage` is super_admin's alone (reachable
+    // only through ALL_ACTIONS above).
+    auditor: [...READ_ONLY_ACTIONS, 'audit:read', 'connector:read', 'business_role:read', 'recert:read'],
+    read_only: [...READ_ONLY_ACTIONS, 'business_role:read', 'recert:read'],
   } satisfies Record<RoleKey, readonly Action[]>,
 )
 

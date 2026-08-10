@@ -34,8 +34,16 @@ export interface NavItem {
    * super_admin holds it — nobody else can act on roles anyway), `user:create`
    * (bulk import creates/updates users), `audit:read` (the auditor role's
    * whole purpose, per docs/product-brief.md).
+   *
+   * OPTIONAL since recertification: an item with NO action is visible to
+   * every authenticated user. Exactly one item uses this — Recertification
+   * — because its "My reviews" queue belongs to whoever a campaign
+   * resolved as a reviewer, and reviewers are ordinary managers holding no
+   * role in the catalog at all (the API's RecertReviewsController is
+   * authentication-only for the same reason). The campaigns half of that
+   * page still gates itself on `recert:read` internally.
    */
-  action: Action
+  action?: Action
   icon: (props: { className?: string }) => ReactElement
 }
 
@@ -157,6 +165,19 @@ function OrganizationsIcon({ className }: { className?: string }) {
   )
 }
 
+/** A checked list — reviews worked through one row at a time. Deliberately unlike BusinessRolesIcon's bracket-over-rows: roles are the rule, recertification is the audit of what the rule granted. */
+function RecertificationIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)}>
+      <rect x="3" y="2.5" width="14" height="15" rx="1.5" />
+      <path d="M6.2 7.2l1.2 1.2 2.2-2.2" />
+      <path d="M11.5 7.5H14" />
+      <path d="M6.2 12.2l1.2 1.2 2.2-2.2" />
+      <path d="M11.5 12.5H14" />
+    </svg>
+  )
+}
+
 export const NAV_ITEMS: NavItem[] = [
   { key: 'people', label: 'People', path: '/people', group: 'directory', action: 'user:read', icon: PeopleIcon },
   { key: 'groups', label: 'Groups', path: '/groups', group: 'directory', action: 'group:read', icon: GroupsIcon },
@@ -177,6 +198,18 @@ export const NAV_ITEMS: NavItem[] = [
     group: 'access',
     action: 'business_role:read',
     icon: BusinessRolesIcon,
+  },
+  // NOT permission-gated — the only such item (see NavItem.action's own
+  // comment): the "My reviews" queue must reach managers who hold no role
+  // at all, exactly as "My Profile" does. The campaign list inside the
+  // page gates itself on `recert:read`, and every mutating control on
+  // `recert:manage`, which the API re-decides anyway.
+  {
+    key: 'recertification',
+    label: 'Recertification',
+    path: '/recertification',
+    group: 'access',
+    icon: RecertificationIcon,
   },
   { key: 'import', label: 'Import', path: '/import', group: 'operations', action: 'user:create', icon: ImportIcon },
   { key: 'audit', label: 'Audit', path: '/audit', group: 'operations', action: 'audit:read', icon: AuditIcon },

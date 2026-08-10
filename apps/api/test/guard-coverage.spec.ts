@@ -30,18 +30,30 @@ const OPEN_BY_DESIGN = new Set(['HealthController'])
 /*
  * `AccessRequestsController` (self-service access-request catalogue) joins
  * on the same terms as `SelfServiceController`: every route serves the
- * authenticated caller as themselves â€” browsing the catalogue, requesting a
+ * authenticated caller as themselves — browsing the catalogue, requesting a
  * role, cancelling their own request, and deciding requests as the RESOLVED
  * APPROVER (an ordinary manager holding no admin role and no permission
  * grant at all). Gating it behind PermissionGuard would lock every ordinary
  * employee out of the catalogue and every manager out of their own inbox.
  * Its authorization is per-route and in-handler, from server-resolved facts
- * only â€” see that controller's own class doc comment.
+ * only — see that controller's own class doc comment.
+ *
+ * `RecertReviewsController` joins on the same terms: a recertification
+ * campaign's resolved reviewers are ordinary managers who legitimately hold
+ * NO role in the static catalog, so gating the reviewer surface behind
+ * `PermissionGuard`/`@RequirePermission` would lock every one of them out of
+ * the queue that was just assigned to them. Authorization there is
+ * IDENTITY-based per item instead — the caller must BE the item's resolved
+ * reviewer (or hold a global recert:manage grant), resolved exclusively from
+ * the verified JWT principal, and nobody may decide an item about their own
+ * access. The OPERATOR surface (`RecertCampaignsController`) is fully
+ * permission-guarded and is NOT exempted here.
  */
 const AUTHENTICATION_ONLY = new Set([
   'MeController',
   'SelfServiceController',
   'AccessRequestsController',
+  'RecertReviewsController',
 ])
 
 type Ctor = new (...args: never[]) => unknown
@@ -114,6 +126,8 @@ describe('guard coverage', () => {
         'OrgUnitsController',
         'OrganizationsController',
         'OutboxController',
+        'RecertCampaignsController',
+        'RecertReviewsController',
         'RoleAssignmentsController',
         'SelfServiceController',
         'SsoAppsController',
