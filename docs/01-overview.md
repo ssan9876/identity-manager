@@ -8,7 +8,8 @@ more real organisations. It is the **system of record** for:
 - **People** — who exists, their profile, their manager, their lifecycle state.
 - **Org structure** — a hierarchical tree of org units, stored as a Postgres `ltree`.
 - **Groups** — including groups nested inside other groups.
-- **Entitlements** — who is in which group, and (in progress) why.
+- **Entitlements** — who is in which group, and **why**: business roles derive membership
+  from a formula, and every granted membership carries its provenance.
 - **Administrative authority** — who may do what, and over which part of the tree.
 - **The record of change** — an append-only audit log of every mutation.
 
@@ -41,7 +42,13 @@ target:
 | **Entra ID** | Users via Microsoft Graph, correlated by Graph's immutable `id` |
 | **Google Workspace** | Users via the Admin SDK, correlated by Google's immutable `id` |
 | **Mail server** | Mailbox provisioning, keyed by *this* system's user id |
+| **SCIM 2.0 applications** | Slack, Zoom, Atlassian, Box, Snowflake and a generic slot — six target values sharing one adapter |
+| **Keycloak SSO clients** | OIDC and SAML application registrations. Carries no principals |
 | **Echo** | An in-repo target that exercises the whole spine without a vendor |
+
+Every target is configured **per organization**: `connector_targets` is keyed by
+`(organization_id, target)`, and an organization with no row for a target is simply not
+configured for it. Nothing falls back to another organization's row.
 
 The worker never replays a delta. It reads the current row from Postgres and asserts
 full desired state, so a replayed or out-of-order event converges to the same place.
@@ -67,7 +74,25 @@ commit would — the same permission checks, the same lookups — and reports wh
 be created, what would be updated, and what would fail and why. Import is idempotent
 on `employeeId`, and every audit row from one commit shares a `batchId`.
 
-### 6. Records everything
+### 6. Decides who *should* have what
+
+A **business role** owns a membership formula over a closed vocabulary of user fields and
+a set of entitlements, and a reconciler continuously makes the two agree — on every user
+write, and in a sweep across every user regardless of status. Nothing a role does takes
+effect until that exact draft has been simulated and the simulation matched by hash.
+Memberships carry provenance, so the engine only ever revokes what it granted and a
+hand-added membership survives a role that says otherwise. Conflicting roles can be
+declared as a segregation-of-duties rule that blocks a publish before it happens, roles
+can be marked requestable and flow through an approvals inbox, and campaigns can put every
+holder in front of a reviewer.
+
+### 7. Pulls people in from HR
+
+HR sources fetch a CSV-over-HTTPS or REST/JSON feed from an upstream system of record and
+map it onto the same import pipeline the console uses, with the fetch, preview and commit
+phases reported separately so a transport failure never reads as a bad mapping.
+
+### 8. Records everything
 
 `audit_log` is append-only at the database level by **two independent mechanisms**:
 the runtime database role has no `UPDATE`/`DELETE`/`TRUNCATE` privilege on it at all,
@@ -89,13 +114,11 @@ out to Keycloak's Account Console for password and MFA.
 ## What it is not
 
 - **Not a multi-tenant SaaS control plane.** It *is* multi-tenant as of the
-  organizations milestone — every directory row belongs to an `organizations` row, and
-  each tenant gets its own Keycloak realm — but every administrator is a **platform
-  operator** authenticating against the master realm, and there is no tenant-facing API
-  surface. A tenant's people reach **Keycloak only**: `connector_targets` is keyed by
-  target name, so the one Active Directory / Entra / Google / mail configuration in the
-  system belongs to the platform, and fanning a tenant out to it would create real
-  accounts inside somebody else's estate.
+  organizations milestone — every directory row belongs to an `organizations` row, each
+  tenant gets its own Keycloak realm, and each tenant now has its **own** connector
+  configuration per target — but every administrator is a **platform operator**
+  authenticating against the master realm, and there is no tenant-facing API surface. A
+  tenant's own admin has no route to call.
 - **Not a credential store.** No password field exists anywhere in the schema, and the
   console has an end-to-end test asserting no password input is ever rendered.
 - **Not multi-forest / multi-domain AD.** Explicitly out of scope: one domain per

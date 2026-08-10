@@ -13,7 +13,7 @@ first pass; jump straight to a chapter once you know the shape.
 | 06 | [Configuration](06-configuration.md) | You need to know what every environment variable and setting does. |
 | 07 | [Admin guide](07-admin-guide.md) | You are using the console to do the job — with full walkthroughs. |
 | 08 | [Authorization model](08-authorization.md) | You are deciding who gets what, or debugging a 403. |
-| 09 | [Connectors and sync](09-connectors-and-sync.md) | You are wiring up AD, Entra, Google Workspace, or the mail server. |
+| 09 | [Connectors and sync](09-connectors-and-sync.md) | You are wiring up AD, Entra, Google Workspace, a SCIM application, or the mail server. |
 | 10 | [API reference](10-api-reference.md) | You are calling the HTTP API directly. |
 | 11 | [Operations](11-operations.md) | It is running and something needs doing — upgrades, CLIs, backups, incidents. |
 | 12 | [Security model](12-security.md) | You are assessing it, or you need to know what is not yet safe. |
@@ -43,11 +43,16 @@ out the way they did in more depth than a reference chapter should carry.
 
 An identity provider run by one operator for one or more organisations, each with its
 own Keycloak realm. Postgres is the system of record for people, org structure, groups and lifecycle state. Keycloak owns
-credentials, MFA, sessions and SSO. Connectors push mastered identity outward into
-Active Directory, Entra ID, Google Workspace and a mail server. A React admin console
-is the surface an IT administrator actually works in.
+credentials, MFA, sessions and SSO. Business roles decide who *should* have what, and a
+reconciler keeps reality matching. Connectors push mastered identity outward into
+Active Directory, Entra ID, Google Workspace, SCIM applications and a mail server. A React
+admin console is the surface an IT administrator actually works in.
 
-Identity data flows one way: **out of this system**. Nothing downstream writes back.
+**Nothing downstream writes back.** Every connector is one-way and outbound; a change made
+in AD or Entra is overwritten, not adopted. The one inbound edge is an **HR source**,
+which pulls a feed from an upstream system of record and commits it through the same
+preview-then-commit import pipeline the console uses. `GET /data-flows` shows both
+directions on one page.
 
 ```
 pnpm setup:all         # Postgres + Keycloak in Docker, deps, migrations
