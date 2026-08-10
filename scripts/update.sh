@@ -124,7 +124,14 @@ echo "    service : $IDM_USER, port $IDM_PORT" >&2
 git_as_idm() { su -s /bin/bash "$IDM_USER" -c "cd '$REPO_ROOT' && git $*"; }
 
 if [[ "${SKIP_PULL:-0}" == "1" ]]; then
-  warn "SKIP_PULL=1 — rebuilding and re-rendering whatever is on disk"
+  # Both paths set SKIP_PULL, so distinguish them: after a hand-over the tree
+  # HAS just been pulled, and saying otherwise sends someone reading the log
+  # looking for why their upgrade did not fetch anything.
+  if [[ -n "${IDM_UPDATE_REEXECED:-}" ]]; then
+    info "continuing under the updated scripts/update.sh"
+  else
+    warn "SKIP_PULL=1 — rebuilding and re-rendering whatever is on disk"
+  fi
   # After a re-exec this must stay the commit the host was on BEFORE the pull,
   # not the one it has now, or the rollback advice points at the broken build.
   PREV_COMMIT="${IDM_UPDATE_PREV_COMMIT:-$(git_as_idm rev-parse HEAD)}"
