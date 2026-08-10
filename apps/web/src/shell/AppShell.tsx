@@ -339,6 +339,14 @@ export default function AppShell() {
 
           <div className="topbar__identity">
             <ThemeToggle />
+            {/* Beside My Profile, not in the permission-gated left nav: the
+                approvals inbox belongs to every authenticated user (an
+                ordinary manager holds no admin permission at all — the API
+                resolves who may decide, and an empty inbox is a valid
+                state), exactly the reasoning that keeps /self up here. */}
+            <Link className="topbar__profile-link" to="/approvals" data-testid="topbar-approvals">
+              Approvals
+            </Link>
             <Link className="topbar__profile-link" to="/self" data-testid="topbar-my-profile">
               My Profile
             </Link>

@@ -13,6 +13,7 @@ import {
   type SelfProfile,
   type SelfUpdatePatch,
 } from './api'
+import CatalogueSection from './CatalogueSection'
 import './SelfServicePage.css'
 
 type FieldValues = Record<string, string>
@@ -259,6 +260,13 @@ export default function SelfServicePage() {
         >
           Manage password &amp; MFA
         </a>
+      </section>
+
+      <section className="self-service__section" aria-labelledby="self-catalogue-heading">
+        <h2 id="self-catalogue-heading" className="text-title">
+          Request access
+        </h2>
+        <CatalogueSection />
       </section>
 
       <section className="self-service__section" aria-labelledby="self-groups-heading">

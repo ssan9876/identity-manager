@@ -92,6 +92,20 @@ const patchBodySchema = z
   .strict()
 
 /**
+ * `PUT /:id/requestable`'s whole body. A dedicated, separately-audited verb
+ * route in the enable/disable mould rather than a `patchBodySchema` field:
+ * `requestable` is what publishes a role into the self-service catalogue
+ * (access-request catalogue, migration 0035), and that act should be as
+ * visible in the audit log as enable/disable are — never smuggled into a
+ * rename.
+ */
+const requestableBodySchema = z
+  .object({
+    requestable: z.boolean(),
+  })
+  .strict()
+
+/**
  * `reason` is REQUIRED, and that is the point of the field rather than
  * ceremony: `business_role_exceptions.reason` is NOT NULL because an
  * unexplained exception is exactly what a later recertification campaign
@@ -198,6 +212,7 @@ function snapshotRole(role: BusinessRoleRow): Record<string, unknown> {
     name: role.name,
     description: role.description,
     enabled: role.enabled,
+    requestable: role.requestable,
     draftDefinition: role.draftDefinition,
     simulatedAt: role.simulatedAt?.toISOString() ?? null,
     simulatedDraftHash: role.simulatedDraftHash,
@@ -763,6 +778,42 @@ export class BusinessRolesController {
       principalsRevoked: enabled ? 0 : reconciliation.changed,
       principalsGranted: enabled ? reconciliation.changed : 0,
     }
+  }
+
+  /**
+   * Publish a role into (or withdraw it from) the self-service
+   * access-request catalogue. NOT the kill switch and NOT a revocation:
+   * withdrawing only stops NEW requests — nothing is granted or revoked, so
+   * unlike enable/disable there is no reconciliation sweep to run.
+   */
+  @Put(':id/requestable')
+  @RequirePermission('business_role:manage')
+  async setRequestable(
+    @Param('id') rawId: string,
+    @Body() body: unknown,
+    @Req() request: AuthorizedRequest,
+  ) {
+    await this.requireGlobalManageGrant(request)
+    const id = parseId(rawId)
+    const parsed = parseBody(requestableBodySchema, body)
+
+    return this.db.transaction(async (tx) => {
+      const before = await this.roles.findById(id, tx)
+      if (before === null) throw new NotFoundError('business role', id)
+
+      const after = await this.roles.setRequestable(id, parsed.requestable, tx)
+
+      await this.auditWriter.record(tx, {
+        actorUserId: request.actor.userId,
+        action: 'business_role:requestable_set',
+        resourceType: 'business_role',
+        resourceId: id,
+        before: { requestable: before.requestable },
+        after: { requestable: after.requestable },
+      })
+
+      return after
+    })
   }
 
   /**

@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common'
+import { AccessRequestsController } from './access-requests/access-requests.controller'
+import { AccessRequestsRepository } from './access-requests/access-requests.repository'
 import { JWT_GUARD_OPTIONS, JwtGuard, type JwtGuardOptions } from './auth/jwt.guard'
 import { MeController } from './auth/me.controller'
 import { AttributeDefinitionsController } from './attributes/attribute-definitions.controller'
@@ -73,6 +75,9 @@ import { UsersRepository } from './users/users.repository'
     RoleAssignmentsController,
     ImportsController,
     SelfServiceController,
+    // Self-service access-request catalogue: /access-requests (authentication-
+    // only, like SelfServiceController — see guard-coverage.spec.ts).
+    AccessRequestsController,
     OutboxController,
     AttributeDefinitionsController,
     AuditController,
@@ -285,6 +290,7 @@ import { UsersRepository } from './users/users.repository'
     // safe for every boot, exactly as for SyncWorker/TargetReconciliationJob
     // above.
     BusinessRolesRepository,
+    AccessRequestsRepository,
     RoleReconciler,
     // Segregation of duties over business roles: the conflicts catalogue and
     // the standing-violations checker BusinessRolesController now injects.
