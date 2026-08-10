@@ -13,7 +13,7 @@ first pass; jump straight to a chapter once you know the shape.
 | 06 | [Configuration](06-configuration.md) | You need to know what every environment variable and setting does. |
 | 07 | [Admin guide](07-admin-guide.md) | You are using the console to do the job — with full walkthroughs. |
 | 08 | [Authorization model](08-authorization.md) | You are deciding who gets what, or debugging a 403. |
-| 09 | [Connectors and sync](09-connectors-and-sync.md) | You are wiring up AD, Entra, Google Workspace, a SCIM application, or the mail server. |
+| 09 | [Connectors and sync](09-connectors-and-sync.md) | You are wiring up AD, Entra, Google Workspace, a SCIM application, the mail server, or an OIDC/SAML application registration. |
 | 10 | [API reference](10-api-reference.md) | You are calling the HTTP API directly. |
 | 11 | [Operations](11-operations.md) | It is running and something needs doing — upgrades, CLIs, backups, incidents. |
 | 12 | [Security model](12-security.md) | You are assessing it, or you need to know what is not yet safe. |
@@ -22,13 +22,22 @@ first pass; jump straight to a chapter once you know the shape.
 
 ## Design references
 
-These two are contracts the code holds itself to, not narrative documentation.
+These three are contracts the code holds itself to, not narrative documentation.
 Source comments across the repository cite them by name.
 
 - [Product brief](product-brief.md) — who this is for, the scene it is used in, and what
   it must do well. Decides the interface's priorities.
 - [Design system](design-system.md) — the visual system: colour tokens in both themes,
   type scale, layout, component states, motion, and the explicit bans.
+- [Brand](brand.md) — the product name, the mark, and what the brand is explicitly not
+  allowed to rename.
+
+> **The console calls the product Keystone.** `apps/web/src/brand/index.tsx` is the
+> single source of truth for that name, so the sign-in gate, the top bar and the browser
+> tab all read "Keystone" while these chapters say "Identity Manager". Deliberate: the
+> brand is a UI layer only. The repository, the packages (`@idm/api`, `@idm/web`), the
+> Keycloak realm and client ids, the env vars and the systemd units all keep the
+> `identity-manager` / `idm-*` names. See [Brand](brand.md).
 
 ## Archive
 
@@ -45,8 +54,9 @@ An identity provider run by one operator for one or more organisations, each wit
 own Keycloak realm. Postgres is the system of record for people, org structure, groups and lifecycle state. Keycloak owns
 credentials, MFA, sessions and SSO. Business roles decide who *should* have what, and a
 reconciler keeps reality matching. Connectors push mastered identity outward into
-Active Directory, Entra ID, Google Workspace, SCIM applications and a mail server. A React
-admin console is the surface an IT administrator actually works in.
+Active Directory, Entra ID, Google Workspace, six SCIM applications and a mail server, and
+register OIDC and SAML applications back into Keycloak. A React admin console is the
+surface an IT administrator actually works in.
 
 **Nothing downstream writes back.** Every connector is one-way and outbound; a change made
 in AD or Entra is overwritten, not adopted. The one inbound edge is an **HR source**,

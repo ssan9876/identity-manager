@@ -31,8 +31,14 @@ You should land on a People list showing at least the admin user you just bootst
 > **Why `setup:all` and not `setup`?** `pnpm setup` is a genuine, unrelated pnpm
 > built-in that writes `PNPM_HOME`/`PATH` changes to *your shell profile*. A bare
 > `pnpm setup` silently runs pnpm's own command instead of this project's script. No
-> pnpm built-in command name contains a colon, which is why `setup:all`,
-> `bootstrap:admin` and `db:migrate` all work as written with no `run` needed.
+> pnpm built-in command name contains a colon, which is why `setup:all` and
+> `bootstrap:admin` work as written above with no `run` needed.
+>
+> **`db:migrate` is not a root script.** It lives in `apps/api/package.json` only, so at
+> the repo root it is `pnpm --filter @idm/api db:migrate`. The root `package.json`
+> defines exactly nine scripts: `setup:all`, `bootstrap:admin`, `dev`, `build`,
+> `typecheck`, `test`, `check:docs`, `verify` and `verify:quick`. Everything else in
+> this document is reached through `--filter`.
 
 ## What each command does
 
@@ -50,8 +56,9 @@ You should land on a People list showing at least the admin user you just bootst
   console's Vite config; Vite only ever reads `.env` from its own project directory,
   never the repo root). It never overwrites an existing `.env`.
 - **Runs `pnpm install`.**
-- **Runs `db:migrate`**, which applies the schema **and** provisions the runtime
-  database role. That is not a no-op step — see [02 — Architecture](02-architecture.md#the-two-database-roles).
+- **Runs `pnpm --filter @idm/api run db:migrate`**, which applies the schema **and**
+  provisions the runtime database role. That is not a no-op step — see
+  [02 — Architecture](02-architecture.md#the-two-database-roles).
 
 It ends by printing exactly what to run next.
 
@@ -77,8 +84,9 @@ pnpm bootstrap:admin someone@else.com   # or bootstrap any other Keycloak userna
 already existed, and a repeat run never fails or duplicates anything.
 
 It is a local operator script, like `db:migrate`, not an HTTP endpoint. It talks to
-the database directly and grants a privilege no request is ever allowed to grant
-itself. See [12 — Security model](12-security.md#why-bootstrapadmin-is-not-a-backdoor).
+the database directly — as the **runtime** role, not the owner — and grants a privilege
+no request is ever allowed to grant itself. See
+[12 — Security model](12-security.md#why-bootstrapadmin-is-not-a-backdoor).
 
 ### 3. `pnpm dev`
 
@@ -109,30 +117,56 @@ Compose stack. It contains a realm named `identity-manager` with:
 > **Never import this file into a real Keycloak.** It contains a working account whose
 > password is committed to a public repository, plus a client secret of
 > `idm_sync_dev_secret_change_me` and a password-grant test client. Use
-> `scripts/keycloak-setup.sh` instead, which builds the same realm through the Admin
-> API with generated secrets and no seeded human user.
+> `scripts/keycloak-setup.sh` instead, which builds the realm through the Admin API with
+> generated secrets, no seeded human user, and no `idm-test-client` at all. It creates
+> `idm-api`, `idm-console`, `idm-sync-service` and `idm-sso-admin` — plus
+> `idm-provisioner` in the master realm, but only under `SETUP_PROVISIONER=1`.
 
 The `.dev.json` suffix, the realm's `sslRequired: "external"`, and `idm-test-client`
-shipping `"enabled": false` are all deliberate — finding SEC-L5. `pnpm smoke:dev` and
-the Testcontainers harness enable the test client themselves via the stack's bootstrap
-admin (`apps/api/scripts/dev-test-client.ts`) and the smoke script switches it back off
-when it finishes, so nothing you run leaves a password grant live. Nothing else in the
-dev flow touches it, and `keycloak/realm-import/README.md` explains why it could not
-simply be deleted.
+shipping `"enabled": false` are all deliberate — finding SEC-L5. `pnpm smoke:dev` and the
+Testcontainers harness each enable the test client for themselves through
+`setDevTestClientEnabled` (`apps/api/scripts/dev-test-client.ts`), using a bootstrap
+admin. They then diverge, deliberately: `smoke:dev` runs against the long-lived Compose
+stack, so it records the flag's previous value and restores it in a `finally` — a run that
+found the client disabled leaves it disabled, and a failure to restore prints a loud
+warning rather than being swallowed. The Testcontainers harness does **not** restore it,
+because its Keycloak is a disposable container destroyed at the end of the suite. Either
+way nothing you run leaves a password grant live in a Keycloak that outlives it. Nothing
+else in the dev flow touches the client, and `keycloak/realm-import/README.md` explains
+why it could not simply be deleted.
 
 ## Verifying it works
 
 ```bash
-pnpm verify:quick                  # typecheck + build — no containers, fast
-pnpm verify                        # the full gate: typecheck, build, the API suite
-pnpm test                          # unit + integration tests across all packages
+pnpm verify:quick                  # every gate except the API suite — no containers
+pnpm verify                        # the same gates plus the API suite (needs Docker)
+pnpm check:docs                    # the documentation guard on its own
+pnpm test                          # pnpm -r test — the API suite plus the web checks
 pnpm --filter @idm/api smoke:dev   # boots the real dev server and hits it over HTTP
 pnpm --filter @idm/web test:e2e    # Playwright end-to-end tests
 ```
 
-`pnpm test` runs each package's Postgres-backed tests against disposable
-Testcontainers, independent of the Compose stack. `smoke:dev` and the Playwright suite
-exercise the app the way a human would, against the running Compose stack.
+`scripts/verify.mjs` runs its stages in this order, stopping at the first failure:
+
+| Stage | What it runs | In `verify:quick`? |
+|---|---|---|
+| typecheck | `pnpm -r run typecheck` | yes |
+| lint | only if an ESLint config exists — this repo has none, so it logs and skips | yes (skipped) |
+| build | `pnpm -r build` | yes |
+| web checks | `pnpm --filter @idm/web test` | yes |
+| docs checks | `pnpm run check:docs` | yes |
+| API suite | `pnpm --filter @idm/api test` | **no** |
+
+So `verify:quick` skips **exactly one** stage — the API suite, the only one that needs
+Docker. (`verify.mjs`'s own startup line still calls that "typecheck + build only",
+which predates the web-checks and docs-checks stages.)
+
+The two package `test` scripts are not the same kind of thing. `@idm/api`'s is
+`vitest run`: Postgres-backed, one disposable Testcontainers database per spec file,
+independent of the Compose stack, and slow. `@idm/web`'s is three static checks with no
+browser and no database — the CSS design-token check, the connector-target catalogue
+drift check, and the CSP hash check. `smoke:dev` and the Playwright suite are the ones
+that exercise the app the way a human would, against the running Compose stack.
 
 ## Common first-run problems
 
@@ -153,5 +187,7 @@ pnpm setup:all
 pnpm bootstrap:admin
 ```
 
-Run `db:migrate` after every fresh volume — it applies the schema *and* provisions the
-runtime role, which the Compose file deliberately does not create.
+`setup:all` re-runs the migration for you, which matters after every fresh volume: it
+applies the schema *and* provisions the runtime role, which the Compose file deliberately
+does not create. If you brought the stack up by hand instead, run
+`pnpm --filter @idm/api db:migrate` yourself.

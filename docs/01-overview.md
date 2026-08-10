@@ -17,6 +17,13 @@ It is deliberately **not** a credential store. Keycloak owns passwords, MFA, ses
 and SSO (OIDC/SAML) to downstream applications. The two systems never share write
 access to each other's domain.
 
+> **The console you open calls it Keystone.** `apps/web/src/brand/index.tsx` holds that
+> name and every screen reads it from there, so the sign-in gate and the browser tab say
+> "Keystone" while these chapters say "Identity Manager". The brand is a UI layer only —
+> the repository, the packages, the Keycloak realm and client ids, the env vars and the
+> systemd units all keep the `identity-manager` / `idm-*` names. See
+> [Brand](brand.md).
+
 ## What it does
 
 ### 1. Masters identity
@@ -31,9 +38,12 @@ route for a user anywhere in the API.
 
 ### 2. Pushes identity outward
 
-Every mutation also writes a row to a transactional **outbox**. A background
-**sync worker** drains that outbox and asserts desired state into every enabled
-target:
+A mutation to anything the worker synchronises — a user, a group, a membership edge, an
+org unit, an SSO application, an organization — also writes a row to a transactional
+**outbox**, in the same transaction. (Configuration-only writes, such as editing a
+connector target, an attribute mapping or an HR source, are audited but produce no outbox
+row: there is nothing to push.) A background **sync worker** drains that outbox and
+asserts desired state into every enabled target:
 
 | Target | What it receives |
 |---|---|
@@ -63,9 +73,12 @@ is written too, as the durability fallback if that inline call fails.
 ### 4. Automates joiners, movers and leavers
 
 Date-driven transitions (`start_date` reaches today → activate; `end_date` reaches
-today → deactivate) and event-driven rules run through an on-demand lifecycle job.
-Rules are **data, never code** — a closed vocabulary of triggers, operators and
-actions, enforced by a static source scan in the test suite.
+today → deactivate) and event-driven rules run through a lifecycle job. It has no
+in-process scheduler: `scripts/install.sh` renders `idm-lifecycle.service` and
+`idm-lifecycle.timer` from `deploy/systemd/` and enables the timer, which fires at 02:00
+daily; `pnpm --filter @idm/api jml:lifecycle` runs the same pass on demand. Rules are
+**data, never code** — a closed vocabulary of triggers, operators and actions, enforced
+by a static source scan in the test suite.
 
 ### 5. Imports in bulk, safely
 
@@ -77,14 +90,25 @@ on `employeeId`, and every audit row from one commit shares a `batchId`.
 ### 6. Decides who *should* have what
 
 A **business role** owns a membership formula over a closed vocabulary of user fields and
-a set of entitlements, and a reconciler continuously makes the two agree — on every user
-write, and in a sweep across every user regardless of status. Nothing a role does takes
-effect until that exact draft has been simulated and the simulation matched by hash.
+a set of entitlements, and a reconciler makes the two agree. Per user, it runs inside the
+writing transaction itself: unconditionally on `POST /users`; on `PATCH /users/:id`
+whenever the body names a field a role can key on; on setting or clearing a role
+exception; on approving an access request; and on a recertification decision that expires
+an include-exception. Publishing, enabling or disabling a role instead runs a
+**role-scoped** sweep (`reconcileRole`) immediately after that write commits, and reports
+what it changed in the response. It is deliberately **not** re-run by
+`POST /users/:id/activate` or `/deactivate`; a status change is picked up by the
+`role-reconcile` sweep, which walks every user regardless of status — and which ships
+**no systemd unit**, so nothing runs it until you do. Nothing a role does takes effect
+until that exact draft has been simulated and the simulation matched by hash.
 Memberships carry provenance, so the engine only ever revokes what it granted and a
 hand-added membership survives a role that says otherwise. Conflicting roles can be
-declared as a segregation-of-duties rule that blocks a publish before it happens, roles
-can be marked requestable and flow through an approvals inbox, and campaigns can put every
-holder in front of a reviewer.
+declared as a segregation-of-duties rule, and a draft whose simulation reports even one
+violation cannot be published; roles can be marked requestable and flow through a
+catalogue and an approvals inbox; campaigns can put every holder in front of a reviewer;
+and a miner reads the directory's existing manual memberships and proposes candidate
+roles (`GET /business-roles/mining/recommendations`) that still go through the same
+draft/simulate/publish gate.
 
 ### 7. Pulls people in from HR
 
@@ -108,8 +132,10 @@ on the phone.
 **The help-desk operator** — scoped to one part of the tree. Reads and makes small
 changes. Structurally cannot see or touch anything outside their scope.
 
-**Every employee** — sees only `/self`: their own profile, their groups, and a link
-out to Keycloak's Account Console for password and MFA.
+**Every employee** — sees only `/self`: their own profile, their groups, their roles and
+resolved permissions, and a link out to Keycloak's Account Console for password and MFA.
+`PATCH /self` is deliberately narrow — `location` plus attributes explicitly marked
+`self_editable`, and naming any other field is a 400 that names it, never a silent drop.
 
 ## What it is not
 
@@ -135,7 +161,7 @@ out to Keycloak's Account Console for password and MFA.
 | Validation | Zod at every HTTP boundary |
 | Auth | Keycloak 26 — OIDC, JWT verified with `jose` |
 | Console | React 18, Vite 5, React Router 7, `oidc-client-ts` |
-| Directory I/O | `ldapts` (AD), `fetch` (Graph, Google, mail server) |
+| Directory I/O | `ldapts` (AD), `fetch` (Graph, Google, SCIM, mail server, Keycloak Admin REST) |
 | Tests | Vitest + Testcontainers (API), Playwright (console E2E) |
 | Packaging | pnpm workspace, two packages: `@idm/api`, `@idm/web` |
 
