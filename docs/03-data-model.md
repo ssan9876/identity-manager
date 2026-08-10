@@ -1,8 +1,11 @@
 # 03 — Data model
 
-Every table lives in its own file under `apps/api/src/db/schema/`, re-exported from
-`index.ts` (which is what drizzle-kit reads to discover the schema). Migrations are
-generated with `db:generate` and applied with `db:migrate`.
+Tables are declared in modules under `apps/api/src/db/schema/`, all re-exported from
+`index.ts` (which is what drizzle-kit reads to discover the schema). Most modules hold
+exactly one table, but not all: `business-roles.ts` declares five and `group-members.ts`
+two, so read the module, not the filename. Migrations are generated with `db:generate`
+and applied with `db:migrate`; there are **43** of them today, the latest being
+`0042_scim_targets.sql`.
 
 ## Tenancy
 
@@ -13,8 +16,8 @@ generated with `db:generate` and applied with `db:migrate`.
 | `id` | uuid PK | |
 | `slug` | varchar(63) | Unique. A **DNS label** (`organizations_slug_format` CHECK), because it becomes the Keycloak realm name |
 | `name` | varchar(255) | |
-| `realm` | varchar(63) | The Keycloak realm. Always equal to `slug`. Nullable for **master alone** (`organizations_realm_present` CHECK) |
-| `status` | enum | `active` \| `suspended` |
+| `realm` | varchar(63) | The Keycloak realm. Equal to `slug` **for every tenant** — see below for master, where it is not. Nullable for **master alone** (`organizations_realm_present` CHECK) |
+| `status` | `organization_status` enum | `active` \| `suspended`, default `active`. Exactly two values — nothing has widened it since 0024 |
 | `is_master` | boolean | Exactly one row may be true (`organizations_master_unique`, a partial unique index) |
 | `realm_provisioned_at` | timestamptz | Stamped by the sync worker once the realm genuinely exists. `NULL` means "provisioning" |
 | `created_at` / `updated_at` | timestamptz | |
@@ -23,13 +26,25 @@ generated with `db:generate` and applied with `db:migrate`.
 the format CHECK already forbids any uppercase character, so folding the case did
 nothing except make the index unusable for an ordinary equality lookup.
 
-**Master** is the platform's own organization, created by migration 0025 and pinned at
-startup: `adoptMasterRealm` records which realm `KEYCLOAK_ISSUER` names and refuses to
-start if that ever disagrees with what is already stored — re-pointing it would strand
-every existing user in a realm where none of their accounts exist. Master's realm
-already exists, so nothing provisions it and `realm_provisioned_at` stays `NULL`
-forever. Master cannot be suspended: doing so would disable the realm every
-administrator, including whoever asked, signs in through.
+For a **tenant**, `realm` and `slug` are the same string by construction and stay that
+way: `POST /organizations` inserts `realm: input.slug`, and no repository method updates
+either column afterwards (`OrganizationsRepository.setStatus` is the only update path).
+That is what makes the realm name predictable from the API surface (`/realms/acme`) and
+lets one format CHECK serve both.
+
+**Master is the exception, and the two genuinely differ there.** Master is the platform's
+own organization, inserted by migration 0025 with `slug = 'master'` and `realm = NULL`,
+then pinned at first startup: `adoptMasterRealm` writes whichever realm `KEYCLOAK_ISSUER`
+names — `identity-manager` in the shipped realm import, *not* `master` — and refuses to
+start if that ever disagrees with what is already stored, because re-pointing it would
+strand every existing user in a realm where none of their accounts exist. So do not read
+`slug` where you mean `realm` on the master row. (`master` is separately a reserved slug
+for tenants: it is Keycloak's own administrative realm, which this system must never
+provision into.) Master's realm already exists, so nothing provisions it and
+`realm_provisioned_at` stays `NULL` forever — `SyncWorker.requireProvisionedRealm`
+exempts master from the "wait for provisioning" deferral for exactly that reason. Master
+cannot be suspended: doing so would disable the realm every administrator, including
+whoever asked, signs in through.
 
 There is **no delete**, and there is no `root_org_unit_id` column — that would form a
 foreign-key cycle with `org_units.organization_id`, and "non-null unless master" cannot
@@ -44,6 +59,19 @@ organization_id = $1`.
 `audit_log` it is nullable, because rows predating organizations have none and
 platform-level actions legitimately have none.
 
+They are not the only tables that carry it. `jml_rules` (0030), `connector_targets`
+(0033), `business_roles` and `role_conflicts` (0034), `access_requests` (0036),
+`recert_campaigns` (0037), `recert_items` (0038) and `hr_sources` (0040) each carry a
+`NOT NULL organization_id` too. The referential action is **not** uniform, so check the
+schema rather than assuming: most are `ON DELETE RESTRICT`, `connector_targets` declares
+no action at all (Postgres' default `NO ACTION`) and additionally defaults the column to
+`master_organization_id()`, and `recert_items` has no single-column FK on it whatsoever —
+its `organization_id` is constrained only through the composite keys below.
+
+`outbox_events` deliberately carries **no** `organization_id`. It has an `organization`
+*aggregate type*, which is a different thing: an event's tenant is whatever the
+aggregate's own row says.
+
 The column alone would not stop a cross-tenant reference — a user in Acme could still
 name a manager in Globex, and every id involved would be perfectly valid. What stops it
 is that **every such reference is a composite foreign key including `organization_id`**:
@@ -57,15 +85,27 @@ is that **every such reference is a composite foreign key including `organizatio
 | `gum_group_organization_fk` / `gum_user_organization_fk` | A membership edge joining one tenant's group to another's person |
 | `ggm_parent_organization_fk` / `ggm_child_organization_fk` | A nesting edge bridging two tenants — which would be a silent privilege bridge, since a nested group grants its parent's members everything the child grants |
 
+Those eight are migration 0029's, and they are the whole of the **directory**'s
+cross-tenant defence. The later entitlement tables repeat the pattern with seven more of
+their own — `rc_role_a_organization_fk` / `rc_role_b_organization_fk` (0034),
+`access_requests_subject_organization_fk` / `access_requests_role_organization_fk`
+(0036), and `recert_items_campaign_organization_fk` / `_subject_` / `_reviewer_` (0038)
+— fifteen composite keys in total across the schema.
+
 `MATCH SIMPLE` semantics mean a NULL in either column satisfies the constraint outright,
 which is exactly right for a root org unit (no parent), a global group (no org unit) and
 most users (no manager recorded): none of those can be cross-tenant, because they point
 at nothing at all.
 
-Each of these reaches an API caller as a **409** naming the relationship
-(`common/cross-tenant.ts`), never as an untranslated SQLSTATE 23503 — which would be an
+Each of the **eight in the table above** reaches an API caller as a **409** naming the
+relationship, never as an untranslated SQLSTATE 23503 — which would be an
 indistinguishable-from-a-crash 500 on a request that was refused for a perfectly
-comprehensible reason.
+comprehensible reason. `common/cross-tenant.ts`'s `MESSAGE_BY_CONSTRAINT` map holds
+exactly those eight names and matches on the constraint name, never on the SQLSTATE
+alone (every single-column FK on the same tables reports the identical 23503, and several
+of those have 404 translations that must not be replaced by a 409). The seven later
+composite keys are **not** in that map: a violation of one of them still falls through
+as an untranslated 23503.
 
 `organization_id` is **exposed on GET responses**, deliberately. The API has no response
 DTOs, so Drizzle returns the column regardless; rather than adding explicit column lists
@@ -85,36 +125,64 @@ population. If a tenant-facing API is ever added, this decision has to be revisi
 | `id` | uuid PK | |
 | `name` | varchar(255) | |
 | `parent_id` | uuid → `org_units.id` | `ON DELETE RESTRICT`; `NULL` for a root |
-| `path` | `ltree` | e.g. `acme.sales.emea` — **unique**, GiST-indexed |
+| `path` | `ltree` | e.g. `acme.sales.emea` — **unique** (`org_units_path_unique`), and separately GiST-indexed (`org_units_path_gist`) |
+| `organization_id` | uuid → `organizations.id` | `NOT NULL`, `ON DELETE RESTRICT` |
 | `created_at` / `updated_at` | timestamptz | |
 
 The `ltree` path is what makes scope checks a single indexed containment query rather
 than a recursive walk. Scope is transitive: an actor scoped to `acme.sales` reaches
 `acme.sales.emea` and everything below it.
 
-There is no update or delete route for an org unit. Creating a **root** requires a
-global grant of `org_unit:create`; creating a **child** requires the grant to cover the
-parent.
+`OrgUnitsController` exposes exactly four routes — `GET /org-units`, `GET /org-units/:id`,
+`GET /org-units/:id/subtree` and `POST /org-units`. There is no update and no delete.
+
+**`POST /org-units` only ever creates a child.** `parentId` is required by the request
+schema, and the handler's whole authorization check is
+`assertCanIn(actor, 'org_unit:create', parsed.parentId)` — does the actor's grant cover
+the org unit the new one would live under? The old root branch (a `parentId`-less body
+gated on a *global* grant of `org_unit:create`) was removed with multi-tenancy: a root
+now belongs to an organization, which owns exactly one, so the only thing that creates a
+root is creating the organization. `OrgUnitsRepository.createRoot` survives as the method
+`POST /organizations` calls, and is unreachable from HTTP.
 
 ### `users` — people
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | |
-| `status` | enum | `pending` · `active` · `suspended` · `deactivated` |
-| `primary_email` | varchar(320) | unique on `lower(...)` |
-| `username` | varchar(128) | unique on `lower(...)`; **this is the Keycloak join key** |
-| `first_name`, `last_name`, `display_name` | varchar(128/256) | |
-| `employee_id` | varchar(64) | unique when not null — the CSV import's idempotency key |
+| `status` | `user_status` enum | `pending` · `active` · `suspended` · `deactivated`, default `pending` |
+| `primary_email` | varchar(320) | unique per organization on `lower(...)` — see below |
+| `username` | varchar(128) | unique per organization on `lower(...)`; **this is the Keycloak join key** |
+| `first_name`, `last_name`, `display_name` | varchar(128/128/256) | all `NOT NULL` |
+| `employee_id` | varchar(64) | nullable; unique per organization when not null — the CSV import's match key |
 | `job_title`, `location` | varchar(255) | nullable |
 | `org_unit_id` | uuid → `org_units.id` | `RESTRICT`; **required** |
-| `manager_id` | uuid → `users.id` | `SET NULL`; self-referential |
+| `organization_id` | uuid → `organizations.id` | `NOT NULL`, `RESTRICT`. Derived from the org unit at write time, never taken from the request |
+| `manager_id` | uuid → `users.id` | `SET NULL`; self-referential. The *composite* FK spells it `ON DELETE SET NULL (manager_id)` — the Postgres 15+ column-list form — because a bare `SET NULL` would try to null `organization_id` too and every manager deletion would fail |
 | `start_date`, `end_date` | date | drive the JML lifecycle job |
 | `attributes` | jsonb | custom attributes, validated against `attribute_definitions` |
 | `created_at`, `updated_at`, `deactivated_at` | timestamptz | |
 
+**All three unique indexes lead with `organization_id`** — `users_primary_email_unique`
+is `(organization_id, lower(primary_email))`, `users_username_unique` is
+`(organization_id, lower(username))`, and `users_employee_id_unique` is
+`(organization_id, employee_id)` partial on `employee_id IS NOT NULL`. Uniqueness is
+per-tenant, not global: two tenants may each employ a `jsmith`, and a global index would
+let whichever onboarded first permanently deny the name to every other tenant. Inside one
+organization the case-insensitive behaviour is unchanged — `jsmith` and `JSmith` still
+collide. The index *names* are unchanged from the pre-tenancy schema on purpose: the
+users and groups repositories match on exactly those strings to turn a 23505 into a 409,
+so renaming one would silently turn a 409 into a 500.
+
 **`deactivated` is terminal.** There is no `DELETE` route for a user anywhere in the
-API, and status transitions are constrained by an allow-list in the repository.
+API, and status transitions are constrained by `ALLOWED_TRANSITIONS`, an allow-list in
+`UsersRepository`: `pending → active | deactivated`, `active → suspended | deactivated`,
+`suspended → active | deactivated`, and `deactivated → ∅`. Nothing transitions *into*
+`pending`, which is only ever the column default. Note that although `suspended` is a
+legal transition in that table, **no code path in this application ever sets it for a
+user** — `changeStatus` is reachable only for `active` and `deactivated` today, and
+`deactivated_at` is stamped in the same update when `deactivated` is the target.
+(Organizations are different: they have a real suspend endpoint.)
 
 `username` is how an authenticated Keycloak principal is matched to a local row
 (`preferred_username`). This is documented in the code as interim — `external_identities`
@@ -125,27 +193,36 @@ stores the Keycloak subject and is intended to become the authoritative mapping.
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | |
-| `name` | varchar(255) | unique on `lower(...)` |
+| `name` | varchar(255) | unique per organization on `lower(...)` — `groups_name_unique` is `(organization_id, lower(name))`, for the same per-tenant reason as `users` |
 | `description` | varchar(1024) | nullable |
-| `org_unit_id` | uuid → `org_units.id` | **nullable — `NULL` means the group is global** |
-| `attributes` | jsonb | |
+| `org_unit_id` | uuid → `org_units.id` | **nullable — `NULL` means the group is global**; `RESTRICT` |
+| `organization_id` | uuid → `organizations.id` | `NOT NULL`, `RESTRICT`. Derived from the target org unit, or **master** when the group is global |
+| `attributes` | jsonb | `NOT NULL DEFAULT '{}'` |
 
-A group with `org_unit_id = NULL` is global: visible to, and writable by, any actor
-holding the relevant action regardless of their own scope. Creating one requires a
-**global** grant of `group:create`, because local group membership is pushed into real
-Keycloak groups — a downstream authorization primitive.
+A group with `org_unit_id = NULL` is global: readable from any scope under `group:read`,
+and writable by any actor holding the relevant action regardless of their own scope.
+Creating one requires a **global** grant of `group:create` (`GroupsController.create`
+checks `scopePathsFor` and refuses a scoped grant outright), because local group
+membership is pushed into real Keycloak groups — a downstream authorization primitive.
+
+"Global" is global *within one organization* in the schema's terms: a global group still
+carries a `NOT NULL organization_id`, and it is master's.
 
 ### `group_user_members` and `group_group_members`
 
-Membership edges. Both are composite-primary-key join tables with `ON DELETE CASCADE`.
+Membership edges. Both are join tables with a composite primary key over their two
+endpoints — `(group_id, user_id)` and `(parent_group_id, child_group_id)` — and both
+endpoint FKs are `ON DELETE CASCADE`. Both also carry a `NOT NULL organization_id` on
+the **edge itself**, derived from the group being written to, never from the actor: an
+actor may legitimately be a platform operator in master acting on another tenant's group.
 
 `group_user_members` additionally carries **provenance**:
 
 | Column | Notes |
 |---|---|
-| `grant_source` | `manual` or `business_role` — default `manual` |
-| `granted_by` | uuid → `users.id`, `SET NULL` |
-| `granted_at` | timestamptz |
+| `grant_source` | `manual` or `business_role` — `NOT NULL DEFAULT 'manual'` |
+| `granted_by` | uuid → `users.id`, `SET NULL` — nullable |
+| `granted_at` | timestamptz, `NOT NULL DEFAULT now()` |
 
 The rule these columns exist for: **the reconciler only ever revokes what it granted.**
 A hand-added membership survives a role that says otherwise. The `NOT NULL DEFAULT
@@ -166,13 +243,21 @@ members of every group nested inside it, recursively.
 
 | Column | Notes |
 |---|---|
+| `id` | uuid PK |
 | `user_id` | uuid → `users.id`, cascade |
-| `role_key` | enum: `super_admin` · `user_admin` · `help_desk` · `auditor` · `read_only` |
-| `scope_org_unit_id` | uuid → `org_units.id`, cascade — **`NULL` means global** |
+| `role_key` | `role_key` enum, **five** values: `super_admin` · `user_admin` · `help_desk` · `auditor` · `read_only` |
+| `scope_org_unit_id` | uuid → `org_units.id`, cascade — nullable, and **`NULL` means global** |
+| `created_at` | timestamptz |
+
+There is no `organization_id` here: a role assignment is anchored on the user and the
+scope org unit, both of which already carry one.
 
 Two *partial* unique indexes, not one: Postgres does not treat `NULL`s as equal, so a
 single unique index over `(user, role, scope)` would permit unlimited duplicate global
-assignments.
+assignments. `role_assignments_scoped_unique` covers `(user_id, role_key,
+scope_org_unit_id)` where the scope is not null; `role_assignments_global_unique` covers
+`(user_id, role_key)` where it is. Because neither partial index can serve a plain
+`WHERE user_id = ?`, a third, non-unique `role_assignments_user_idx` exists for that.
 
 What each role may do is **not** in the database — see `apps/api/src/authz/actions.ts`
 and [08 — Authorization model](08-authorization.md).
@@ -188,9 +273,21 @@ and [08 — Authorization model](08-authorization.md).
 | `action` | varchar(64) — e.g. `user:create`, `role:assign`, `import:preview` |
 | `resource_type` | varchar(64) |
 | `resource_id` | uuid, nullable, **no FK** (it points at one of several tables) |
-| `before` / `after` | jsonb snapshots, explicitly-named fields only |
-| `batch_id` | uuid, nullable — set once per CSV import commit, on every row it produces |
+| `before` / `after` | jsonb, both nullable — snapshots of explicitly-named fields only, never a whole row |
+| `batch_id` | uuid, nullable, **no FK** — set once per CSV import commit, on every row it produces |
+| `organization_id` | uuid → `organizations.id`, `RESTRICT` — **nullable**, and never backfilled |
 | `created_at` | timestamptz, indexed |
+
+Four indexes: `audit_log_created_idx`, `audit_log_resource_idx` on
+`(resource_type, resource_id)`, `audit_log_actor_idx` and `audit_log_batch_idx`.
+
+The snapshots are built by named functions, not by copying a row — `snapshotUser` lists
+its fifteen fields literally. On top of that, `snapshotUserForAudit` replaces the value
+of any attribute whose definition is flagged `sensitive` with the literal string
+`[redacted]`, **in the audit log only**: outbox payloads still carry the real value,
+because a connector cannot provision a mailbox quota it is not given. There is no
+retrofit once a value has been written here, which is why the control is "do not write
+it" rather than "redact it later".
 
 `ON DELETE RESTRICT` rather than `SET NULL` is deliberate: `SET NULL` would make
 Postgres issue an internal `UPDATE` against an append-only table, which the trigger
@@ -207,13 +304,21 @@ owner). Defeating one mechanism is not enough.
 | Column | Notes |
 |---|---|
 | `id` | bigserial PK — also the ordering key |
-| `aggregate_type` | `user` · `group` · `membership` · `org_unit` |
+| `aggregate_type` | `outbox_aggregate_type` — **six** values: `user` · `group` · `membership` · `org_unit` · `sso_app` · `organization` |
 | `aggregate_id` | uuid, no FK (depends on `aggregate_type`) |
-| `event_type` | `created` · `updated` · `status_changed` · `membership_changed` |
-| `payload` | jsonb — diagnostic context, never replayed as a delta |
-| `target` | the `outbox_target` enum — **thirteen** values, listed in [The target catalog](#the-target-catalog) below |
-| `status` | `pending` · `processing` · `done` · `failed` |
-| `attempts`, `next_attempt_at`, `last_error` | retry bookkeeping |
+| `event_type` | `created` · `updated` · `status_changed` · `membership_changed`. There is deliberately no `deleted`: removal propagates as `status_changed` carrying `deactivated` |
+| `payload` | jsonb `NOT NULL` — diagnostic context, never replayed as a delta |
+| `target` | the `outbox_target` enum — **thirteen** values, listed in [The target catalog](#the-target-catalog) below. Defaults to `keycloak` |
+| `status` | `pending` · `processing` · `done` · `failed`, default `pending` |
+| `attempts`, `next_attempt_at`, `last_error` | retry bookkeeping. `attempts` defaults to 0 and `next_attempt_at` to `now()`, so a freshly written event is immediately claimable with no separate activation step |
+| `created_at` | timestamptz |
+
+`sso_app` and `organization` are the two aggregates that describe something other than a
+principal or a grouping of principals, and fan-out is filtered on the aggregate type
+before any row is written (`outbox/target-fanout.ts`): an `sso_app` fans out to
+`keycloak_sso` alone, an `organization` to `keycloak` alone (an organization *is* a
+realm, and nothing else in the catalog has a realm concept), and every other aggregate
+to every enabled target **except** `keycloak_sso`.
 
 Two indexes: the claim index `(status, next_attempt_at)` and the ordering index
 `(aggregate_type, aggregate_id, target, id)`. The column order in the second is
@@ -365,13 +470,14 @@ method. Disabling sets `enabled = false` here and on the Keycloak client.
 
 | Column | Notes |
 |---|---|
-| `key` | varchar(64) — unique per `applies_to` |
-| `label` | display name |
+| `key` | varchar(64) — unique per `applies_to` (`attribute_definitions_key_scope_unique`, the table's only unique index) |
+| `label` | varchar(255) — display name |
 | `data_type` | `string` · `number` · `boolean` · `date` · `enum` |
-| `required`, `default_value`, `validation_rules` | validation inputs |
-| `applies_to` | `user` or `group` |
-| `sort_order`, `is_active` | display control |
+| `required`, `default_value`, `validation_rules` | validation inputs. `required` defaults false; `default_value` is nullable jsonb; `validation_rules` is `NOT NULL DEFAULT '{}'` |
+| `applies_to` | `user` or `group` — default `user` |
+| `sort_order`, `is_active` | display control — default `0` and `true` |
 | `self_editable` | **default false** — whether `PATCH /self` may touch it |
+| `sensitive` | **default false** (migration 0026) — withhold this attribute's *value* from `audit_log` snapshots. Governs the audit log only; outbox payloads still carry real values |
 
 There is **no write endpoint** for this table. Definitions are seeded or managed
 directly in the database today; `GET /attribute-definitions` is read-only.
@@ -382,17 +488,34 @@ The opt-in that turns default-deny into propagation, per `(field, target)` pair.
 
 | Column | Notes |
 |---|---|
-| `attribute_definition_id` **XOR** `core_field` | exactly one, enforced by `CHECK` |
-| `core_field` | `given_name` · `surname` · `title` · `department` |
-| `target` | which connector target |
-| `remote_name` | what the field is called *there* |
-| `enabled` | toggle without deleting |
+| `attribute_definition_id` **XOR** `core_field` | exactly one, enforced by the `attribute_target_mappings_exactly_one_source` CHECK — literally `(a IS NULL) <> (b IS NULL)` |
+| `core_field` | `attribute_core_field` enum: `given_name` · `surname` · `title` · `department` |
+| `target` | the `outbox_target` enum — which connector target |
+| `remote_name` | varchar(255) `NOT NULL` — what the field is called *there* |
+| `enabled` | `NOT NULL DEFAULT true` — toggle without deleting |
+
+Uniqueness is again two *partial* indexes rather than one:
+`attribute_target_mappings_attribute_target_unique` on `(attribute_definition_id, target)`
+where the definition id is not null, and `attribute_target_mappings_core_field_target_unique`
+on `(core_field, target)` where the core field is not null. One index spanning both
+nullable columns would let the same field be mapped to the same target without limit.
 
 **Absence of a row is what makes default-deny structural** — not a column default. A
-field with no mapping row for a target cannot reach that target at all. The core-field
+field with no mapping row for a target does not reach that target's attribute bag at all,
+and `enabled = false` on an existing row is behaviourally indistinguishable from no row:
+every read in `AttributeTargetMappingsRepository` excludes both identically.
+
+Read that scope precisely. What this table governs is `DesiredUser.attributes`, the
+per-target bag. It does **not** govern the core identity fields every connector receives
+unconditionally as top-level `DesiredUser` members — `username`, `email`, `firstName`,
+`lastName` and `enabled`. So a `given_name` mapping row is what lets a *non-Keycloak*
+target receive the value inside its attribute bag under its own remote name (AD's
+`givenName`, say); it is not what makes a first name propagate at all. The core-field
 names deliberately use AD/LDAP vocabulary (`given_name`, `surname`) rather than this
 codebase's own column names, because the whole point of a remote-name mapping is that
-the local identifier need not match any one target's vocabulary.
+the local identifier need not match any one target's vocabulary. `department` is the one
+core field that is not a plain column read: it is the **name of the user's current org
+unit**.
 
 ## Lifecycle automation
 
@@ -400,14 +523,15 @@ the local identifier need not match any one target's vocabulary.
 
 | Column | Notes |
 |---|---|
-| `name` | |
+| `name` | varchar(255) |
+| `organization_id` | uuid → `organizations.id`, `NOT NULL`, `RESTRICT` (migration 0030). A rule's actions are taken *against a person*, so an untenanted rule would be one tenant's admin deactivating another's staff |
 | `enabled` | **default false** — cannot be enabled until simulated at least once |
-| `trigger` | `user_created` · `user_attribute_changed` · `start_date_reached` · `end_date_reached` |
-| `condition_field` | a `users` column, or `attributes.<key>` — closed by an application allow-list, not a Postgres enum |
-| `condition_operator` | `equals` · `not_equals` · `in` |
-| `condition_value` | jsonb, nullable |
-| `action` | `add_to_group` · `remove_from_group` · `set_attribute` · `deactivate` |
-| `action_params` | jsonb |
+| `trigger` | `jml_trigger`: `user_created` · `user_attribute_changed` · `start_date_reached` · `end_date_reached` |
+| `condition_field` | varchar(128) — a `users` column, or `attributes.<key>`. Closed by an application allow-list (`rule-engine.ts`'s `CONDITION_FIELD_EXTRACTORS`), not a Postgres enum |
+| `condition_operator` | `jml_condition_operator`: `equals` · `not_equals` · `in` |
+| `condition_value` | jsonb, nullable — a rule may legitimately compare against the JSON literal `null`, and the engine treats a SQL NULL read-back identically |
+| `action` | `jml_action`: `add_to_group` · `remove_from_group` · `set_attribute` · `deactivate`. **The two group actions are dead labels** — business roles own group membership now, `RuleApplier`'s dispatch map holds only `set_attribute` and `deactivate`, and `rule-engine.ts`'s closed `KNOWN_ACTIONS` set rejects the other two. Postgres cannot drop an enum value, so they survive in the type; migration 0027 is a guard that refuses to run if any stored row still uses one |
+| `action_params` | jsonb, `NOT NULL DEFAULT '{}'` |
 | `simulated_at` | `NULL` = never simulated; the durable half of the enable gate |
 
 Rules are **data, never code**. The engine treats every value read back from these
