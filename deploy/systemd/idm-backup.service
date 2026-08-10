@@ -1,0 +1,68 @@
+[Unit]
+Description=Identity Manager database backup
+Documentation=file://@REPO_ROOT@/docs/11-operations.md
+# No network-online.target, unlike the lifecycle and reconcile units: those
+# talk to Keycloak, this talks to a Postgres on the same host over its local
+# socket. Requiring the network would only add a way for the backup to be
+# skipped on a host whose uplink is down — which is a host that especially
+# wants a backup.
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+# oneshot, not simple: this runs to completion and exits. systemd records the
+# exit code, so a dump that failed shows as a failed unit instead of a night
+# with no backup that nobody notices until the restore.
+Type=oneshot
+
+# postgres, NOT @IDM_USER@. The dump is taken over Postgres' local peer
+# authentication, the same route docs/11-operations.md documents by hand
+# (`sudo -u postgres pg_dump`). The idm runtime role deliberately does not hold
+# the privileges a whole-database dump needs — db:migrate grants it SELECT and
+# INSERT on audit_log and nothing more, which is half of what keeps that table
+# append-only — so a dump taken as that user would fail, or worse, succeed with
+# tables missing.
+User=postgres
+Group=postgres
+WorkingDirectory=@REPO_ROOT@
+
+# systemd reads this as root and passes it down, which is the point: .env is
+# 0640 idm:idm and postgres cannot open it. The script wants one value out of
+# it, DATABASE_URL, to learn which database this host actually named.
+EnvironmentFile=@REPO_ROOT@/.env
+
+ExecStart=/bin/bash @REPO_ROOT@/scripts/backup.sh
+
+# --- Hardening --------------------------------------------------------------
+# Same block as the other units, with one deliberate difference: ReadWritePaths
+# names the backup directory. ProtectSystem=strict makes the whole filesystem
+# read-only otherwise, which is exactly right for a job whose only legitimate
+# write is the dump it just took. Overriding BACKUP_DIR therefore needs a
+# matching drop-in — see docs/11-operations.md.
+NoNewPrivileges=true
+# Safe here because Debian and Ubuntu put the Postgres socket in
+# /run/postgresql, not /tmp. A distribution that used /tmp would need this off.
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/backups/identity-manager
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+# AF_UNIX carries the local socket; the INET families are kept so a host whose
+# DATABASE_URL points at 127.0.0.1:5432 (or a separate database host) still
+# works rather than failing with a confusing connection error.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=idm-backup
+
+# Deliberately NO [Install] section. This unit is triggered by
+# idm-backup.timer and must never be enabled directly: `systemctl enable` on a
+# oneshot service asks systemd to run it once at boot and never again, which
+# for a backup means exactly one dump per reboot and none in between.

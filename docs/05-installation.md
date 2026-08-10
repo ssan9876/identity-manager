@@ -64,10 +64,14 @@ bash scripts/install.sh
    `apps/web/.env`.
 5. `pnpm install --frozen-lockfile` and `pnpm build`, asserting both bundles exist.
 6. Runs `db:migrate` — schema **and** runtime-role grants.
-7. Installs `idm-api.service` and enables it, plus the two scheduled jobs —
+7. Installs every unit in `deploy/systemd/` and enables `idm-api.service` plus each
+   timer it finds there — currently `idm-backup.timer` (daily `pg_dump`, 01:00),
    `idm-lifecycle.timer` (daily JML pass, 02:00) and `idm-reconcile.timer` (daily
    Keycloak reconciliation, 03:00). It enables the **timers**; the oneshot services
-   behind them are never enabled directly. See
+   behind them are never enabled directly. Both the render and the enable are by glob
+   rather than by name, so a release that adds a timer reaches fresh installs and
+   upgraded hosts alike. It also creates `/var/backups/identity-manager` (0700, owned
+   by `postgres`) for the dumps to land in. See
    [11 — Operations](11-operations.md#scheduled-work).
 8. Generates a self-signed certificate if running HTTPS and none was supplied,
    configures nginx to serve the bundle and proxy `/api`, and reloads it.
@@ -280,7 +284,8 @@ and leave HTTP/2 out.
 | Code | `/opt/identity-manager` |
 | Config | `/opt/identity-manager/.env` (0640, owned by `idm`) |
 | Service | `idm-api.service` — API **and** outbox worker in one process |
-| Timers | `idm-lifecycle.timer` (02:00) and `idm-reconcile.timer` (03:00), each firing a oneshot service |
+| Timers | `idm-backup.timer` (01:00), `idm-lifecycle.timer` (02:00) and `idm-reconcile.timer` (03:00), each firing a oneshot service |
+| Backups | `/var/backups/identity-manager` (0700, owned by `postgres`) — newest 7 scheduled and 7 pre-update dumps |
 | Web bundle | `/opt/identity-manager/apps/web/dist`, served by nginx |
 | nginx vhost | `/etc/nginx/sites-available/idm.conf` |
 | nginx log format | `/etc/nginx/conf.d/idm-log.conf` — defines `idm_noquery`, which the vhost references |
@@ -345,14 +350,21 @@ KEYCLOAK_URL=https://kc.example.com KC_ADMIN_USER=admin KC_ADMIN_PASS=... \
 ## Upgrading
 
 ```bash
-cd /opt/identity-manager
-sudo -u idm git pull
-sudo -u idm pnpm install --frozen-lockfile
-sudo -u idm pnpm build
-sudo -u idm bash -c 'set -a && . .env && set +a && pnpm --filter @idm/api db:migrate'
-systemctl restart idm-api
+sudo bash /opt/identity-manager/scripts/update.sh
 ```
 
-Run `db:migrate` **before** restarting: it applies schema changes *and* re-asserts the
-runtime role's grants, so a migration that adds a table also grants the runtime role
-access to it.
+That is the whole procedure, and it is the **only** supported one. Do not upgrade
+with a bare `git pull` + `restart`: `deploy/` is a set of templates, and nothing
+copies them onto a running host except `install.sh` and `update.sh`. A pull-only
+upgrade therefore ships the repository's security fixes while the machine keeps
+serving the old nginx config — confirmed, not hypothetical.
+
+`update.sh` pulls, rebuilds, `pg_dump`s the database, migrates, re-renders every
+template under `deploy/`, restarts `idm-api` and then verifies the result,
+discovering this host's hostname, port, scheme and certificate paths from what is
+already installed. Full detail, environment variables and rollback:
+[11 — Operations](11-operations.md#upgrading-a-deployed-host).
+
+It runs `db:migrate` **before** restarting, which matters: migrations apply schema
+changes *and* re-assert the runtime role's grants, so a migration that adds a table
+also grants the runtime role access to it.

@@ -384,18 +384,20 @@ state of each.
 - [ ] **CS-M6.** `vite@5.4.21` + `esbuild@0.21.5` dev-server advisories, unfixed on
       the 5.x line. Developer workstations only, but this project's dev platform is
       Windows, where the path-traversal case is live.
-- [ ] **`Referrer-Policy: same-origin` still sends the search term to the API.**
-      Surfaced while fixing CS-L3. The access log no longer retains it, and the
-      request is same-origin so it terminates at nginx — not a live exposure. But
-      `same-origin-when-cross-origin` or `strict-origin-when-cross-origin` would
-      remove the term from the request itself rather than only from what gets
-      written down. Deferred because both vhost header blocks were just rewritten
-      for CS-M1 and this is a different header and a different finding.
-- [ ] **Remaining item-10 residuals** — `Cf`-category Unicode in display names,
-      unknown `role_key` yielding an unmapped 500, admin-path audit `before`
-      snapshot unlocked, `effective-members` never re-narrowing,
-      `ConnectorTargetsRepository.upsert` lost update, `simulate()` ignoring
-      `rule.trigger`, no structured logger, inert JML triggers.
+- [x] **`Referrer-Policy` is `no-referrer`, and this item was stale.** It claimed
+      the header was still `same-origin` and offered
+      `same-origin-when-cross-origin` / `strict-origin-when-cross-origin` as the
+      remedies. Checked 2026-08-10: both vhost templates already send
+      `no-referrer`, and the comment block in `deploy/nginx/idm.conf` had already
+      worked through — and rejected — every alternative this item proposed.
+      `same-origin-when-cross-origin` **is not a Referrer-Policy token at all**,
+      so a browser would ignore it and fall back to its default;
+      `strict-origin-when-cross-origin` still sends the full URL on same-origin
+      requests, which is precisely the case that leaked the search term.
+      `no-referrer` is the only value at least as strict as `same-origin` in
+      every direction, and nothing here reads a `Referer` — the API authorizes
+      from the bearer token, CORS never applies (one origin), and the OIDC
+      redirect is driven by query parameters and PKCE.
 
 ## Verified against a real deployment
 
@@ -473,9 +475,52 @@ Two traps worth knowing, both of which made a working fix look broken:
       `apps/web/e2e/organizations.spec.ts` has never executed, because it needs
       the stack with `KEYCLOAK_PROVISION_*` configured.
 
-- [ ] **`idm-lifecycle.timer` / `idm-reconcile.timer` are not installed on the
-      live host** — only `idm-api.service` is. They arrive with the deploy/
-      re-render described above.
+- [x] **`idm-lifecycle.timer` / `idm-reconcile.timer` are installed and active.**
+      `scripts/install.sh` enables both on a fresh host, and `scripts/update.sh`
+      closes it generically for existing ones: it renders EVERY unit in
+      `deploy/systemd/` and `enable --now`s every `.timer` it finds, so a release
+      that adds a timer reaches hosts without anyone remembering to. Confirmed on
+      ct:211 2026-08-10 — both timers `enabled` and `active`, including
+      `idm-lifecycle` after its unit files were deliberately deleted and restored
+      by a single `update.sh` run.
+
+- [x] **`scripts/update.sh` verified on real infrastructure.** Run 2026-08-10
+      against ct:211 on proxmox-02 (Ubuntu 24.04, fresh `install.sh` from this
+      branch; Keycloak on ct:210, realm created by `keycloak-setup.sh`). Both
+      containers were snapshotted first (`blank_pre_install`, `pre_idm_realm`).
+
+      **Repair proven, not assumed.** The deployed host was damaged deliberately
+      and the damage confirmed live before each run: the four security headers
+      stripped from the vhost and reloaded (verified absent from real responses),
+      `/etc/nginx/conf.d/idm-log.conf` deleted, the `idm-lifecycle` timer and
+      service units deleted, and the `sites-enabled` symlink removed. One run
+      repaired every one of them — headers back, log format back, symlink back,
+      timer back to `enabled` **and** `active`. The `sites-enabled` re-assertion
+      and the generic `deploy/systemd/` loop each did what they were added for.
+
+      **Three real bugs, none of them findable by reading the script.**
+      1. The health probe sampled once, immediately after `systemctl restart`.
+         `is-active` reports a Type=simple unit active the moment the process
+         forks; Nest binds the port seconds later. Now polls to 60s.
+      2. The security-header probe sampled once, immediately after
+         `systemctl reload nginx`, which returns while workers under the old
+         config are still answering. It reported all three headers MISSING on a
+         host it had just repaired correctly — a false red from the one check
+         whose whole purpose is catching a re-render that did not happen. Now
+         polls to 15s.
+      3. **The script replaced itself mid-run.** It pulls into the checkout it
+         is executing from, and bash reads a script incrementally by byte
+         offset. A run that pulled fix (1)+(2) then executed the PRE-fix
+         verifier and reported the exact failures that commit had eliminated;
+         the ugly case is bash resuming mid-line on a fragment. It now execs the
+         new copy when the pull moves `scripts/update.sh`, carrying the pre-pull
+         commit across so the rollback advice still names the right one.
+
+      Final state: four runs, the last two fully green end to end, including a
+      genuine pull, a self-update hand-over, migrate, re-render, restart and all
+      seven verification checks. Console serves `ed88933`, `/api/users` 401s
+      unauthenticated, and the OIDC issuer and API base are correctly baked into
+      the bundle.
 
 ## Housekeeping
 

@@ -242,9 +242,7 @@ su -s /bin/bash "$IDM_USER" -c "cd '$REPO_ROOT' && set -a && . '$ENV_FILE' && se
 ok "database migrated, runtime role provisioned"
 
 # --- systemd ----------------------------------------------------------------
-info "installing systemd unit"
-sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" -e "s|@IDM_USER@|$IDM_USER|g" \
-  "$REPO_ROOT/deploy/systemd/idm-api.service" >/etc/systemd/system/idm-api.service
+info "installing systemd units"
 
 # The lifecycle pass (joiner activation on start_date, leaver deactivation on
 # end_date) is a oneshot script driven by a timer, not a daemon. Before this
@@ -258,10 +256,27 @@ sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" -e "s|@IDM_USER@|$IDM_USER|g" \
 # reconcile pass notices. Several security findings park their residual risk
 # on "reconciliation will catch it", which is only true if something runs it
 # — and until this existed, nothing on any host did.
-for unit in idm-lifecycle.service idm-lifecycle.timer idm-reconcile.service idm-reconcile.timer; do
+#
+# Every unit in the directory, not a hardcoded list — the same loop
+# scripts/update.sh runs, and for the same reason. A release that adds a unit
+# would otherwise land in the repo and never reach systemd on a fresh install:
+# it would be installed on upgraded hosts (update.sh is generic) and missing on
+# newly built ones, which is the worst of the two failure modes because the new
+# host looks healthy.
+for unit_path in "$REPO_ROOT"/deploy/systemd/*; do
+  unit="$(basename "$unit_path")"
   sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" -e "s|@IDM_USER@|$IDM_USER|g" \
-    "$REPO_ROOT/deploy/systemd/$unit" >"/etc/systemd/system/$unit"
+    "$unit_path" >"/etc/systemd/system/$unit"
 done
+
+# Where the pre-update and scheduled dumps go. Created here rather than by
+# scripts/backup.sh because that script runs as postgres, under
+# ProtectSystem=strict with this as its single ReadWritePaths entry — a unit
+# whose ReadWritePaths does not exist refuses to start at all. Owned by
+# postgres so the unprivileged backup can write into it, 0700 because a dump
+# is every name, email address and entitlement in the system in one file.
+install -d -m 0700 -o postgres -g postgres /var/backups/identity-manager
+
 # A self-signed Keycloak certificate makes Node refuse the JWKS fetch, and
 # every token then fails verification with 401 despite being perfectly valid.
 # NODE_EXTRA_CA_CERTS trusts THAT ONE certificate; NODE_TLS_REJECT_UNAUTHORIZED=0
@@ -280,10 +295,16 @@ fi
 
 systemctl daemon-reload
 systemctl enable idm-api >/dev/null
-# The TIMER, not the service: `systemctl enable` on a Type=oneshot unit asks
-# systemd to run it once at boot and never again.
-systemctl enable --now idm-lifecycle.timer >/dev/null
-systemctl enable --now idm-reconcile.timer >/dev/null
+# The TIMERS, not the services: `systemctl enable` on a Type=oneshot unit asks
+# systemd to run it once at boot and never again. Enabled by glob rather than
+# by name for the same reason the render loop above is generic — a timer added
+# to deploy/systemd/ reaches upgraded hosts through update.sh's identical loop,
+# and a by-name list here is how it would silently miss every fresh install.
+for timer_path in "$REPO_ROOT"/deploy/systemd/*.timer; do
+  [[ -e "$timer_path" ]] || continue
+  timer="$(basename "$timer_path")"
+  systemctl enable --now "$timer" >/dev/null 2>&1 || warn "could not enable $timer"
+done
 
 # --- nginx ------------------------------------------------------------------
 # Console and API are served from ONE origin. That is deliberate: the API calls
