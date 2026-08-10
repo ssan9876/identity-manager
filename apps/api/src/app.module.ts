@@ -49,6 +49,9 @@ import { OrganizationConnector } from './connectors/organization.connector'
 import { OrganizationsController } from './organizations/organizations.controller'
 import { OrganizationsRepository } from './organizations/organizations.repository'
 import { OutboxController } from './outbox/outbox.controller'
+import { RecertCampaignsController } from './recertification/recert-campaigns.controller'
+import { RecertReviewsController } from './recertification/recert-reviews.controller'
+import { RecertRepository } from './recertification/recert.repository'
 import { OutboxRepository } from './outbox/outbox.repository'
 import { OutboxWriter } from './outbox/outbox.writer'
 import { SyncStateRepository } from './outbox/sync-state.repository'
@@ -94,6 +97,16 @@ import { UsersRepository } from './users/users.repository'
     // SsoAppsController and BusinessRolesController above: an organization
     // belongs to no org unit, so a scoped grant has nothing to narrow to.
     OrganizationsController,
+    // Recertification campaigns over business-role entitlements. Two
+    // controllers, deliberately split along the same line as the rest of
+    // the API: RecertCampaignsController is the OPERATOR surface
+    // (recert:read / recert:manage, the latter global-grant-only on
+    // BusinessRolesController's exact terms), while RecertReviewsController
+    // is the REVIEWER surface — authentication-only, like
+    // SelfServiceController, because a campaign's resolved reviewers are
+    // ordinary managers who legitimately hold no role in the catalog.
+    RecertCampaignsController,
+    RecertReviewsController,
   ],
   providers: [
     {
@@ -292,6 +305,10 @@ import { UsersRepository } from './users/users.repository'
     // safe to register unconditionally for every boot; app.module.spec.ts is
     // the guard that it actually resolves.
     RoleReconciliationJob,
+    // Recertification — campaign/item row access for the two controllers
+    // above. No I/O at construction (it only stores the injected handle),
+    // so registering it unconditionally is safe for every boot.
+    RecertRepository,
   ],
 })
 export class AppModule {}

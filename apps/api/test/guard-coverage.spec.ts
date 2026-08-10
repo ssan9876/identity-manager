@@ -27,7 +27,22 @@ const OPEN_BY_DESIGN = new Set(['HealthController'])
  * hardening: an ordinary employee with zero grants would be locked out of
  * their own profile.
  */
-const AUTHENTICATION_ONLY = new Set(['MeController', 'SelfServiceController'])
+// `RecertReviewsController` joins on SelfServiceController's exact terms:
+// a recertification campaign's resolved reviewers are ordinary managers who
+// legitimately hold NO role in the static catalog, so gating the reviewer
+// surface behind `PermissionGuard`/`@RequirePermission` would lock every
+// one of them out of the queue that was just assigned to them.
+// Authorization there is IDENTITY-based per item instead — the caller must
+// BE the item's resolved reviewer (or hold a global recert:manage grant),
+// resolved exclusively from the verified JWT principal, and nobody may
+// decide an item about their own access. The OPERATOR surface
+// (`RecertCampaignsController`) is fully permission-guarded and is NOT
+// exempted here.
+const AUTHENTICATION_ONLY = new Set([
+  'MeController',
+  'SelfServiceController',
+  'RecertReviewsController',
+])
 
 type Ctor = new (...args: never[]) => unknown
 
@@ -98,6 +113,8 @@ describe('guard coverage', () => {
         'OrgUnitsController',
         'OrganizationsController',
         'OutboxController',
+        'RecertCampaignsController',
+        'RecertReviewsController',
         'RoleAssignmentsController',
         'SelfServiceController',
         'SsoAppsController',
