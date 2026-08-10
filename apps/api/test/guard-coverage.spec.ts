@@ -93,6 +93,7 @@ describe('guard coverage', () => {
         'ConnectorTargetsController',
         'GroupsController',
         'HealthController',
+        'HrSourcesController',
         'ImportsController',
         'MeController',
         'OrgUnitsController',

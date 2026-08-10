@@ -13,6 +13,7 @@ import CreateGroupPage from './groups/CreateGroupPage'
 import EditGroupPage from './groups/EditGroupPage'
 import GroupDetailPage from './groups/GroupDetailPage'
 import GroupsListPage from './groups/GroupsListPage'
+import HrSourcesPage from './hr/HrSourcesPage'
 import ImportPage from './imports/ImportPage'
 import CreateUserPage from './people/CreateUserPage'
 import EditUserPage from './people/EditUserPage'
@@ -217,6 +218,7 @@ export default function App() {
           <Route path="/organizations" element={<OrganizationsPage />} />
           <Route path="/connectors" element={<ConnectorsListPage />} />
           <Route path="/connectors/:target" element={<TargetDetailPage />} />
+          <Route path="/hr-sources" element={<HrSourcesPage />} />
           <Route path="/self" element={<SelfServicePage />} />
         </Route>
       </Routes>

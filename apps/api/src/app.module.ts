@@ -32,6 +32,9 @@ import { createDbClient } from './db/client'
 import { GroupsController } from './groups/groups.controller'
 import { GroupsRepository } from './groups/groups.repository'
 import { HealthController } from './health/health.controller'
+import { HrSourcesController } from './hr/hr-sources.controller'
+import { HrSourcesRepository } from './hr/hr-sources.repository'
+import { HrSyncService } from './hr/hr-sync.service'
 import { IMPORTS_CONFIG, ImportsController, type ImportsConfig } from './imports/imports.controller'
 import {
   KEYCLOAK_FACTORY_CONFIG,
@@ -94,6 +97,12 @@ import { UsersRepository } from './users/users.repository'
     // SsoAppsController and BusinessRolesController above: an organization
     // belongs to no org unit, so a scoped grant has nothing to narrow to.
     OrganizationsController,
+    // HR inbound feed — pull-based sources feeding the EXISTING import
+    // pipeline (hr/hr-sources.controller.ts). CRUD-minus-delete, run
+    // history, and "run preview now"; every mutating route requires a
+    // GLOBAL connector:manage grant, same reasoning as
+    // ConnectorTargetsController above.
+    HrSourcesController,
   ],
   providers: [
     {
@@ -181,6 +190,12 @@ import { UsersRepository } from './users/users.repository'
     RoleAssignmentsRepository,
     AuditWriter,
     AuditRepository,
+    // HR inbound feed. HrSyncService performs no I/O at construction (it
+    // only builds an ImportsController from the same collaborators the HTTP
+    // one gets) — safe to register unconditionally, same property as
+    // KeycloakAdminClient below.
+    HrSourcesRepository,
+    HrSyncService,
     OutboxWriter,
     // Milestone 4, Task 4: registering these three constructs (never
     // network I/O — see each class's own constructor) a real SyncWorker

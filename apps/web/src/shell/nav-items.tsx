@@ -157,6 +157,18 @@ function OrganizationsIcon({ className }: { className?: string }) {
   )
 }
 
+/** An arrow pulling inward from an outside system into a person row — a PULL-based inbound feed, deliberately the mirror of ConnectorsIcon's outward push. */
+function HrSourcesIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)}>
+      <rect x="2.5" y="3" width="6" height="6" rx="1" />
+      <path d="M8.5 6h5.5M11.5 3.5 14 6l-2.5 2.5" />
+      <circle cx="15" cy="13.5" r="2" />
+      <path d="M11.5 17.5c0-1.9 1.5-3 3.5-3s3.5 1.1 3.5 3" />
+    </svg>
+  )
+}
+
 export const NAV_ITEMS: NavItem[] = [
   { key: 'people', label: 'People', path: '/people', group: 'directory', action: 'user:read', icon: PeopleIcon },
   { key: 'groups', label: 'Groups', path: '/groups', group: 'directory', action: 'group:read', icon: GroupsIcon },
@@ -184,6 +196,18 @@ export const NAV_ITEMS: NavItem[] = [
   // gates visibility exactly like every other item here: super_admin and
   // auditor see it, nobody else does (authz/actions.ts).
   { key: 'connectors', label: 'Connectors', path: '/connectors', group: 'operations', action: 'connector:read', icon: ConnectorsIcon },
+  // HR inbound feeds — pull-based sources feeding the import pipeline.
+  // Gated on `connector:read`, exactly like Connectors above: super_admin
+  // and auditor see it; every mutating control inside is additionally
+  // gated on a GLOBAL `connector:manage` grant by the API itself.
+  {
+    key: 'hr-sources',
+    label: 'HR sources',
+    path: '/hr-sources',
+    group: 'operations',
+    action: 'connector:read',
+    icon: HrSourcesIcon,
+  },
   // Organizations milestone, Task 15 — the tenant roster. In `operations`
   // rather than `directory`: an organization is not a thing you look people
   // up in, it is a thing the platform operator provisions and suspends,
