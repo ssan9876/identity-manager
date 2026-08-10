@@ -4,9 +4,17 @@
 >
 > **The adversarial security audit for this build is incomplete.**
 >
-> Four dimensions ran — authentication/authorization, injection, integrity/concurrency,
-> and secrets — and their findings were fixed across five waves. But two planned
-> dimensions never ran, and roughly twenty findings remain unverified.
+> Five dimensions ran — authentication/authorization, injection, integrity/concurrency,
+> secrets, and client-side/supply-chain ([`archive/audits/audit-client-supply-chain.md`](archive/audits/audit-client-supply-chain.md),
+> dated 2026-08-08) — and their findings were fixed across five waves plus the
+> follow-up work in [Recently closed findings](#recently-closed-findings) below.
+>
+> Planned dimensions remain unrun and a number of findings are still unverified.
+> The specific count — *two dimensions never ran, roughly twenty findings
+> unverified* — is carried forward from the audit record
+> ([`archive/README.md`](archive/README.md)) and was **not independently re-counted
+> in this pass**. It predates the closures recorded below, so treat it as an upper
+> bound rather than a current figure.
 >
 > **Installing this on an internal or lab network is reasonable. Exposing it to
 > untrusted users is not, yet.** The full record is in [`archive/audits/`](archive/audits/).
@@ -178,9 +186,96 @@ Each shipped at least once and was caught late. Worth probing for recurrences.
    unconditionally and a typo'd action, a dropped role and a wrong-typed rank all
    compiled clean. Fixed with `satisfies` on the literal.
 
+## Recently closed findings
+
+Kept here rather than deleted. A closed finding that still explains the original
+defect is how the next person avoids reintroducing it.
+
+### ReDoS in the attribute validator — closed by `6b75107`
+
+**What it was.** `attribute-validator.ts` called `new RegExp(rules.pattern)` on a
+pattern read straight out of `attribute_definitions.validation_rules` — admin-authored
+jsonb — and executed it against user input. A regex is a program, so this was the
+system running admin-supplied code against its own directory. Measured on the pre-fix
+code: `^(a+)+$` blocked the event loop for **12.5 seconds** on a 28-character input and
+**96.7 seconds** at 33 characters, cost doubling per added character. One Node process
+serves the whole API and drains the outbox, so that is a total outage, not a slow
+request.
+
+**What closed it.** `6b75107` — *fix(security): close the attribute-validator ReDoS with
+a closed vocabulary*. Caller-supplied regex is gone entirely, replaced by
+`validationRules.format`: a closed vocabulary of named validators written as static
+literals in `apps/api/src/attributes/attribute-formats.ts`, each backtracking-free by
+construction. RE2 bindings, static rejection of catastrophic constructs, and a
+worker-per-match were each considered and rejected in that commit message.
+
+**What the code does now** (`apps/api/src/attributes/attribute-validator.ts`, lines
+117-140). A definition row still carrying `pattern` **fails closed and loudly**: it
+throws an `AttributeValidationError` naming the key and the replacement vocabulary,
+mapping to a 400. It is never silently ignored — ignoring it would drop a constraint an
+admin deliberately set, which is a fail-*open* weakening dressed up as a security fix.
+An unrecognised `format` fails closed for the same reason. The format catalog is
+null-prototype and indexed with `Object.hasOwn` (defect class 2 above).
+
+`new RegExp` is now absent from `apps/api/src/` altogether, which a static source scan
+asserts — a stronger guarantee than "we checked the pattern was safe". The scan strips
+comments first, so the two files that explain at length why the constructor is gone do
+not trip it.
+
+**This therefore no longer gates the `attribute_definitions` write path.** The previous
+entry made adding that write path conditional on the ReDoS being fixed; it is fixed. The
+write path is still absent — `attributes/attribute-definitions.controller.ts` exposes a
+single `@Get()` and nothing else — but that is now a feature gap, not a security hold.
+
+### CS-M2, no Content-Security-Policy — closed 2026-08-10 by `02c0aa0`
+
+**What it was.** There was no Content-Security-Policy anywhere on the console, while the
+access *and* refresh token live in `sessionStorage`. One script injection anywhere became
+total admin session theft with nothing in the way.
+
+**What closed it.** `02c0aa0` — *feat(web): serve a Content-Security-Policy with a
+build-derived script hash*, shipped 2026-08-10 and live on the deployment. The policy is
+generated from the **built** `dist/index.html` on every build by the vite plugin in
+`apps/web/vite.config.ts` (the reasoning lives in `apps/web/scripts/csp.mjs`), written
+next to it as `dist/csp.conf`, and `include`d by both nginx vhosts —
+`deploy/nginx/idm.conf` and `deploy/nginx/idm-tls.conf` — at every level that declares
+`add_header`, because nginx's `add_header` inheritance discards inherited headers the
+moment a nested level declares one of its own. That inheritance rule is CS-M1, the same
+trap, which is why the include is repeated rather than set once.
+
+**The trap it caught, worth carrying forward.** The console's `index.html` carries an
+inline pre-paint theme script that must run before any bundled JS exists, so it needs a
+`sha256` hash source. The HTML parser **normalises every CRLF and every lone CR to a
+single LF** while preprocessing the input stream, before any element's text content
+exists — and CSP hashes the script's *source text*, i.e. the post-parse text. Hashing the
+raw bytes of a Windows checkout, where git checks `index.html` out with CRLF, therefore
+yields a hash that matches nothing and blocks the very script it was written for:
+observed here as `sha256-yH5Rqspb…` computed while Chromium demanded `sha256-0pH0FSFd…`,
+producing a blank console shell. On the Linux deploy host the file is already LF, so the
+mistake would have been **invisible there and fatal on every Windows-built artifact**.
+`scriptSourceText()` in `csp.mjs` normalises before hashing, which is what makes both
+platforms agree with the browser and with each other. The hash is derived on every build
+and never written by hand, so it cannot go stale either.
+
+CS-M2's *other* half is unchanged and deliberate: the tokens still live in
+`sessionStorage` (`apps/web/src/auth/oidc-config.ts`, which pins `stateStore` there too
+per finding SEC-L1, and now sets `revokeTokensOnSignout: true`). The CSP is what closed
+the exploitability gap, not a change of storage.
+
+### `POST /users/:id/activate` — shipped `803bcf9`, 2026-08-08
+
+Previously listed as absent. It exists: `apps/api/src/users/users.controller.ts:938`,
+gated on the `user:activate` action. It deliberately does *not* pre-check
+`current.status` (`changeStatus` decides transition legality in one atomic conditional
+UPDATE, so a pre-check would be a second, racy authority on the same question), does
+*not* call Keycloak inline (unlike `deactivate`, where a live session on a deactivated
+user cannot wait for the outbox), and does *not* fire `start_date_reached` JML rules —
+that remains `LifecycleJob`'s job, not a hand-click's.
+
 ## Known open items
 
-Verify these still hold before looking elsewhere.
+Verify these still hold before looking elsewhere. Each entry states what was checked to
+confirm it is still open.
 
 - **`manage-clients` is realm-wide, and the mitigation is application-level.**
   Registering SSO applications requires `manage-clients`, which Keycloak does not scope
@@ -196,23 +291,42 @@ Verify these still hold before looking elsewhere.
   structural boundaries elsewhere in this document.** The runtime database role cannot
   violate append-only no matter what code runs; this list holds only as long as the
   code consulting it is correct. Treat it as an open risk, not a solved problem.
+  Still true as written: `RESERVED_CLIENT_IDS` in
+  `apps/api/src/sso-apps/sso-app-validation.ts:36` names all four clients plus
+  Keycloak's built-ins, is applied case-insensitively to both a `clientId` (line 57) and
+  a SAML `entityId` (line 155), and `apps/api/test/sso-app-validation.spec.ts` carries
+  the source scan. The Keycloak-side half — that `manage-clients` cannot be scoped to
+  "clients this principal created" — is a property of Keycloak, not of this repository,
+  and is carried forward from the 2026-08-08 audit rather than independently
+  re-verified here.
 
-- **ReDoS in the attribute validator.** `new RegExp(rules.pattern)` compiles an
-  unvalidated database-sourced pattern. Measured: `^(a+)+$` blocked the event loop for
-  **96.7 seconds** on a 33-character input. Currently unreachable because
-  `attribute_definitions` has no write path — **confirm that is still true** before
-  adding one.
 - **Principal resolution uses `username`**, deliberately, rather than
-  `external_identities`. A username change is an identity change.
-- **No suspend/activate HTTP endpoint** — status transitions come from lifecycle
-  automation and deactivation only.
+  `external_identities`. A username change is an identity change. Still true:
+  `JwtGuard` hands `preferred_username` downstream (`auth/jwt.guard.ts`, lines 78-116)
+  and `PermissionEngine.resolveActor` resolves it with
+  `lower(users.username) = lower($1)` (`authz/permission.engine.ts:66`), failing closed
+  on `status <> 'active'` (line 73).
+- **No *suspend* HTTP endpoint.** A user reaches `suspended` only through lifecycle
+  automation: the controller exposes no suspend route, and `PATCH /users/:id` does not
+  accept `status` at all — its `.strict()` body schema has no such key
+  (`users/users.controller.ts`, `updateUserBodySchema`). `activate` and `deactivate`
+  *do* exist as routes; this entry previously claimed no activate endpoint either, which
+  was wrong — see [Recently closed findings](#recently-closed-findings).
 - **Group-rename fan-out re-syncs only *current* effective members**; reconciliation is
-  the backstop.
+  the backstop. Still true, and documented as a known limit in the code:
+  `outbox/sync.worker.ts`, lines 1102-1140 — a user removed from the group in the same
+  window, before the event is processed, is not fanned out to, because nothing records
+  who was a member *before* the removal. `ReconciliationJob` is the general backstop for
+  both that and the read-model side.
 - **`PATCH /self` merges** rather than replacing, diverging from the admin convention.
-  Deliberate — it prevents a self-service edit erasing admin-set attributes.
+  Deliberate — it prevents a self-service edit erasing admin-set attributes. Still true:
+  `self-service/self-service.controller.ts`, lines 342-394.
 - **The self-editable core allow-list is only `location`.** `firstName`, `lastName` and
-  `jobTitle` were deliberately excluded as an impersonation surface.
-- **The JML `deactivate` action performs synchronous Keycloak revocation.**
+  `jobTitle` were deliberately excluded as an impersonation surface. Still true:
+  `SELF_EDITABLE_CORE_FIELDS = ['location']`, `self-service/self-service.controller.ts:48`.
+- **The JML `deactivate` action performs synchronous Keycloak revocation.** Still true:
+  `jml/rule-applier.ts:262` calls `revokeKeycloakAccessBestEffort` once the transaction
+  has committed, matching `UsersController.deactivate`'s contract.
 - **System-actor writes bypass `PermissionEngine`, and one such path IS user-facing.**
   Jobs that run as the system actor (`LifecycleJob`, `RuleApplier`,
   `ReconciliationJob.enqueueRepair`, `SyncWorker`) write with `actorUserId` null and no
@@ -233,13 +347,25 @@ Verify these still hold before looking elsewhere.
   permission-checked, scope-narrowed, audited and outboxed in one transaction") does not
   hold for this route. The same is true, less dramatically, of
   `PATCH /connector-targets/:target` and the `attribute-target-mappings` routes, which
-  audit but never outbox. (Finding CAR-system-actor,
-  `docs/archive/audits/carried-findings-verification.md`.)
+  audit but never outbox. Re-verified: `requireGlobalManageGrant` and the
+  `@Post(':target/reconcile')` handler are at
+  `apps/api/src/connectors/connector-targets.controller.ts` lines 221 and 347-389, and
+  the handler's own doc comment states the same gap in the same terms. (Finding
+  CAR-system-actor,
+  [`archive/audits/carried-findings-verification.md`](archive/audits/carried-findings-verification.md).)
 - **`user_created` / `user_attribute_changed` JML triggers exist but nothing auto-fires
-  them.**
-- **Bulk import references org units and managers by UUID**, not by name.
+  them.** Still true: both are in the `jml_trigger` pgEnum (`db/schema/jml-rules.ts`,
+  lines 25-26) and in `rule-engine.ts`'s union, but the only caller of `matchRules` is
+  `LifecycleJob.fireTriggerRules`, whose trigger parameter is typed literally
+  `'start_date_reached' | 'end_date_reached'` (`jml/lifecycle.job.ts:279`). No other
+  dispatch site exists in `apps/api/src`.
+- **Bulk import references org units and managers by UUID**, not by name. Still true:
+  `imports/import-row.ts`, lines 71 and 73 — both parsed with `.uuid('must be a UUID')`.
 - **`GET /me` returns 200 for a non-active principal** — documented as safe rather than
-  fixed, because it echoes only claims the caller's own token already contains.
+  fixed, because it echoes only claims the caller's own token already contains. Still
+  true, and stated as such in the handler's own doc comment (`auth/me.controller.ts`,
+  lines 5-38): `/me` is a pure JWT-claims echo and explicitly not a session-validity
+  check. `GET /self` is the route that resolves through `resolveActor` and fails closed.
 
 ## Why `bootstrap:admin` is not a backdoor
 
