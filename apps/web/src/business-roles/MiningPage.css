@@ -1,0 +1,190 @@
+/* Role mining — semantic tokens only (check-css-tokens gates raw colours). */
+
+.mining__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+  padding: var(--space-5);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.mining__threshold {
+  flex: 0 1 10rem;
+}
+
+.mining__scope {
+  flex: 1 1 16rem;
+  min-width: 12rem;
+}
+
+.mining__control-hint {
+  margin-top: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--ink-subtle);
+}
+
+.mining__run {
+  display: flex;
+  align-items: flex-end;
+  /* Line the button up with the inputs, which sit under their labels. */
+  padding-top: var(--space-5);
+}
+
+.mining__summary {
+  margin-bottom: var(--space-4);
+  color: var(--ink-muted);
+}
+
+.mining__skeletons {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.mining__group {
+  margin-bottom: var(--space-6);
+}
+
+.mining__group-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.mining__group-name {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.mining__candidate {
+  margin-bottom: var(--space-4);
+  padding: var(--space-5);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.mining__candidate-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.mining__formula {
+  font-size: var(--text-md);
+  color: var(--ink);
+  max-width: 60ch;
+  text-wrap: pretty;
+}
+
+.mining__condition-field,
+.mining__condition-value {
+  font-weight: 600;
+}
+
+.mining__and {
+  color: var(--ink-subtle);
+}
+
+.mining__scores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  margin-top: var(--space-4);
+}
+
+.mining__score dt {
+  font-size: var(--text-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-subtle);
+}
+
+.mining__score dd {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.mining__score-hint {
+  max-width: 26ch;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+
+.mining__residuals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.mining__residual {
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.mining__residual-heading {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.mining__residual-count {
+  margin-left: var(--space-1);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+}
+
+.mining__residual-empty {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+
+.mining__residual-people {
+  margin-top: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  list-style: none;
+  padding: 0;
+}
+
+.mining__residual-more {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--ink-subtle);
+}
+
+.mining__adopt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+.mining__adopt-name {
+  flex: 1 1 20rem;
+}
+
+.mining__adopt-name .input {
+  width: 100%;
+}
+
+.mining__adopt-actions {
+  display: flex;
+  gap: var(--space-3);
+}

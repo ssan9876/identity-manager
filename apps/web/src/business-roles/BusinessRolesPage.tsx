@@ -215,16 +215,25 @@ export default function BusinessRolesPage() {
             directory before it can be published.
           </p>
         </div>
-        {canManage && !creating && (
-          <button
-            type="button"
-            className="btn btn--primary"
-            onClick={() => setCreating(true)}
-            data-testid="new-business-role"
-          >
-            New business role
-          </button>
-        )}
+        <div className="business-roles__header-actions">
+          {/* Mining requires the same global business_role:manage grant as
+              adopting its output, so the entry point follows canManage. */}
+          {canManage && (
+            <Link to="/business-roles/mining" className="btn btn--secondary" data-testid="open-mining">
+              Mining
+            </Link>
+          )}
+          {canManage && !creating && (
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={() => setCreating(true)}
+              data-testid="new-business-role"
+            >
+              New business role
+            </button>
+          )}
+        </div>
       </div>
 
       {creating && canManage && (

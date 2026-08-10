@@ -61,3 +61,9 @@
   gap: var(--space-3);
   margin-top: var(--space-4);
 }
+
+.business-roles__header-actions {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
