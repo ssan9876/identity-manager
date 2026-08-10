@@ -7,6 +7,7 @@ import { useSelfPermissions } from '../shell/permissions'
 import { AttributeMappingsEditor } from './AttributeMappingsEditor'
 import { CONNECTOR_TARGET_LABEL, fetchConnectorTargets, type ConnectorTargetSummary } from './api'
 import { EnabledBadge, HealthBadge } from './badges'
+import { OrganizationScopeSelector } from './OrganizationScopeSelector'
 import './Connectors.css'
 
 type TabKey = 'targets' | 'mappings'
@@ -31,7 +32,15 @@ function SkeletonRows() {
   )
 }
 
-function TargetsTab() {
+function TargetsTab({
+  canListOrganizations,
+  organizationId,
+  onOrganizationChange,
+}: {
+  canListOrganizations: boolean
+  organizationId: string | undefined
+  onOrganizationChange: (organizationId: string | undefined) => void
+}) {
   const auth = useAuth()
   const accessToken = auth.user?.access_token
 
@@ -46,7 +55,7 @@ function TargetsTab() {
     setLoading(true)
     setLoadError(null)
 
-    fetchConnectorTargets(accessToken)
+    fetchConnectorTargets(accessToken, organizationId)
       .then((res) => {
         if (!cancelled) setTargets(res)
       })
@@ -65,21 +74,34 @@ function TargetsTab() {
     return () => {
       cancelled = true
     }
-  }, [accessToken, retryToken])
+  }, [accessToken, retryToken, organizationId])
+
+  const orgScope = (
+    <OrganizationScopeSelector
+      canListOrganizations={canListOrganizations}
+      selectedOrganizationId={organizationId}
+      onChange={onOrganizationChange}
+    />
+  )
 
   if (loadError !== null) {
     return (
-      <div className="error-panel" role="alert">
-        <p className="error-panel__message">{loadError}</p>
-        <button type="button" className="btn btn--secondary" onClick={() => setRetryToken((t) => t + 1)}>
-          Try again
-        </button>
-      </div>
+      <>
+        {orgScope}
+        <div className="error-panel" role="alert">
+          <p className="error-panel__message">{loadError}</p>
+          <button type="button" className="btn btn--secondary" onClick={() => setRetryToken((t) => t + 1)}>
+            Try again
+          </button>
+        </div>
+      </>
     )
   }
 
   return (
-    <div className="table-wrap">
+    <>
+      {orgScope}
+      <div className="table-wrap">
       <table className="table" data-testid="connector-targets-table">
         <thead>
           <tr>
@@ -97,7 +119,11 @@ function TargetsTab() {
             targets.map((target) => (
               <tr key={target.target} data-testid="connector-target-row">
                 <td>
-                  <Link to={`/connectors/${target.target}`} className="row-link" data-testid={`connector-target-link-${target.target}`}>
+                  <Link
+                    to={`/connectors/${target.target}${organizationId !== undefined ? `?organizationId=${organizationId}` : ''}`}
+                    className="row-link"
+                    data-testid={`connector-target-link-${target.target}`}
+                  >
                     {CONNECTOR_TARGET_LABEL[target.target]}
                   </Link>
                 </td>
@@ -119,6 +145,7 @@ function TargetsTab() {
         </tbody>
       </table>
     </div>
+    </>
   )
 }
 
@@ -138,9 +165,13 @@ export default function ConnectorsListPage() {
   const permissions = useSelfPermissions()
   const [activeTab, setActiveTab] = useState<TabKey>('targets')
   const tabRefs = useRef<Record<TabKey, HTMLButtonElement | null>>({ targets: null, mappings: null })
+  // Per-organization connector targets: `undefined` means MASTER, the same
+  // "omitted means master" contract every connector-targets API call uses.
+  const [organizationId, setOrganizationId] = useState<string | undefined>(undefined)
 
   const canRead = permissions.status === 'ready' && permissions.actions.has('connector:read')
   const canManage = permissions.status === 'ready' && permissions.actions.has('connector:manage')
+  const canListOrganizations = permissions.status === 'ready' && permissions.actions.has('organization:read')
 
   function activateTab(key: TabKey) {
     setActiveTab(key)
@@ -217,7 +248,11 @@ export default function ConnectorsListPage() {
         tabIndex={0}
         className="tabpanel"
       >
-        <TargetsTab />
+        <TargetsTab
+          canListOrganizations={canListOrganizations}
+          organizationId={organizationId}
+          onOrganizationChange={setOrganizationId}
+        />
       </div>
       <div
         id="connectors-panel-mappings"

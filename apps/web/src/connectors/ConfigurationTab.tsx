@@ -34,11 +34,14 @@ export function ConfigurationTab({
   target,
   summary,
   canManage,
+  organizationId,
   onSaved,
 }: {
   target: ConnectorTarget
   summary: ConnectorTargetSummary
   canManage: boolean
+  /** Per-organization connector targets: which organization's row this save writes to. `undefined` means master. */
+  organizationId?: string
   onSaved: (next: ConnectorTargetSummary) => void
 }) {
   const auth = useAuth()
@@ -96,12 +99,17 @@ export function ConfigurationTab({
     setSubmitting(true)
     setError(null)
     try {
-      const next = await updateConnectorTarget(accessToken, target, {
-        enabled,
-        config: configPatch,
-        blastRadiusThreshold: thresholdNum,
-        blastRadiusFloor: floorNum,
-      })
+      const next = await updateConnectorTarget(
+        accessToken,
+        target,
+        {
+          enabled,
+          config: configPatch,
+          blastRadiusThreshold: thresholdNum,
+          blastRadiusFloor: floorNum,
+        },
+        organizationId,
+      )
       showToast(`Saved configuration for ${CONNECTOR_TARGET_LABEL[target]}.`)
       onSaved(next)
     } catch (cause) {

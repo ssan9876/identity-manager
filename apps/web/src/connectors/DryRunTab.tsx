@@ -102,10 +102,13 @@ function PlanTable({ report }: { report: TargetReconciliationReport }) {
 export function DryRunTab({
   target,
   canManage,
+  organizationId,
   onApplied,
 }: {
   target: ConnectorTarget
   canManage: boolean
+  /** Per-organization connector targets: which organization's population and catalog this plan/apply covers. `undefined` means master. */
+  organizationId?: string
   onApplied: () => void
 }) {
   const auth = useAuth()
@@ -121,7 +124,7 @@ export function DryRunTab({
     setDryRun({ status: 'loading' })
     setApply({ status: 'idle' })
     try {
-      const report = await runReconcile(accessToken, target, { dryRun: true })
+      const report = await runReconcile(accessToken, target, { dryRun: true }, organizationId)
       setDryRun({ status: 'ready', report })
     } catch (cause) {
       setDryRun({
@@ -135,7 +138,7 @@ export function DryRunTab({
     if (accessToken === undefined) return
     setApply({ status: 'loading' })
     try {
-      const report = await runReconcile(accessToken, target, { dryRun: false, force })
+      const report = await runReconcile(accessToken, target, { dryRun: false, force }, organizationId)
       setApply({ status: 'ready', report })
       setOverrideOpen(false)
       if (!report.halted) {

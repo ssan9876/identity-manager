@@ -129,7 +129,10 @@ function AffectedCell({ event, people }: { event: DeadLetterEvent; people: Map<s
  * in every other respect — same intro text, same pagination, same empty/
  * error states.
  */
-export function DeadLettersTab({ fixedTarget }: { fixedTarget?: ConnectorTarget } = {}) {
+export function DeadLettersTab({
+  fixedTarget,
+  organizationId,
+}: { fixedTarget?: ConnectorTarget; organizationId?: string } = {}) {
   const auth = useAuth()
   const accessToken = auth.user?.access_token
 
@@ -151,7 +154,7 @@ export function DeadLettersTab({ fixedTarget }: { fixedTarget?: ConnectorTarget 
     setLoading(true)
     setLoadError(null)
 
-    fetchDeadLetters(accessToken, { limit: LIMIT, offset, target: effectiveTarget })
+    fetchDeadLetters(accessToken, { limit: LIMIT, offset, target: effectiveTarget, organizationId })
       .then(async (res) => {
         if (cancelled) return
         setPage(res)
@@ -186,7 +189,7 @@ export function DeadLettersTab({ fixedTarget }: { fixedTarget?: ConnectorTarget 
     return () => {
       cancelled = true
     }
-  }, [accessToken, offset, retryToken, effectiveTarget])
+  }, [accessToken, offset, retryToken, effectiveTarget, organizationId])
 
   const total = page?.total ?? 0
   const rangeStart = total === 0 ? 0 : offset + 1
