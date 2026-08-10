@@ -175,7 +175,7 @@ describe('GET /users/:id/sync', () => {
   async function enableTarget(target: 'mail_server' | 'echo'): Promise<void> {
     await ctx.pool.query(
       `INSERT INTO connector_targets (target, enabled) VALUES ($1, true)
-       ON CONFLICT (target) DO UPDATE SET enabled = true`,
+       ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true`,
       [target],
     )
   }

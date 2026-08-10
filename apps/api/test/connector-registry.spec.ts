@@ -33,13 +33,29 @@ describe('ConnectorRegistry (Milestone 10, Task 2)', () => {
   async function insertConnectorTarget(target: string, config: Record<string, unknown>): Promise<void> {
     await ctx.pool.query(
       `INSERT INTO connector_targets (target, enabled, config) VALUES ($1, true, $2)
-       ON CONFLICT (target) DO UPDATE SET config = $2`,
+       ON CONFLICT (organization_id, target) DO UPDATE SET config = $2`,
       [target, JSON.stringify(config)],
     )
   }
 
   async function deleteConnectorTarget(target: string): Promise<void> {
     await ctx.pool.query('DELETE FROM connector_targets WHERE target = $1', [target])
+  }
+
+  /**
+   * Per-organization connector targets: `ConnectorRegistry.resolve*` now
+   * takes the aggregate's organization — REQUIRED, so a forgotten argument
+   * is a compile error rather than a silent cross-tenant config read. These
+   * tests all exercise the platform's own (master's) catalog, which is
+   * where the 0033 default lands every organization-less insert above.
+   */
+  let cachedMasterOrganizationId: string | null = null
+  async function masterOrganizationId(): Promise<string> {
+    if (cachedMasterOrganizationId === null) {
+      const { rows } = await ctx.pool.query<{ id: string }>('SELECT id FROM organizations WHERE is_master')
+      cachedMasterOrganizationId = rows[0].id
+    }
+    return cachedMasterOrganizationId
   }
 
   // =========================================================================
@@ -58,7 +74,7 @@ describe('ConnectorRegistry (Milestone 10, Task 2)', () => {
       const registry = new ConnectorRegistry(unreachableKeycloak())
 
       await ctx.db.transaction(async (tx) => {
-        await expect(registry.resolve('constructor' as ConnectorTarget, tx)).rejects.toThrow(
+        await expect(registry.resolve('constructor' as ConnectorTarget, tx, await masterOrganizationId())).rejects.toThrow(
           /no connector registered for target "constructor"/,
         )
       })
@@ -69,7 +85,7 @@ describe('ConnectorRegistry (Milestone 10, Task 2)', () => {
       async (key) => {
         const registry = new ConnectorRegistry(unreachableKeycloak())
         await ctx.db.transaction(async (tx) => {
-          await expect(registry.resolve(key as ConnectorTarget, tx)).rejects.toThrow(
+          await expect(registry.resolve(key as ConnectorTarget, tx, await masterOrganizationId())).rejects.toThrow(
             `no connector registered for target "${key}"`,
           )
         })
@@ -87,11 +103,11 @@ describe('ConnectorRegistry (Milestone 10, Task 2)', () => {
 
       try {
         await ctx.db.transaction(async (tx) => {
-          const keycloakConnector = await registry.resolve('keycloak', tx)
+          const keycloakConnector = await registry.resolve('keycloak', tx, await masterOrganizationId())
           expect(keycloakConnector).toBeDefined()
           expect(typeof keycloakConnector.apply).toBe('function')
 
-          const echoConnector = await registry.resolve('echo', tx)
+          const echoConnector = await registry.resolve('echo', tx, await masterOrganizationId())
           expect(echoConnector).toBeDefined()
           expect(typeof echoConnector.apply).toBe('function')
 
@@ -99,7 +115,7 @@ describe('ConnectorRegistry (Milestone 10, Task 2)', () => {
           // request/response proof lives in entra-id.connector.spec.ts; this
           // only proves the REGISTRY resolves it at all, mirroring how
           // `active_directory`'s own registration is proven here too.
-          const entraConnector = await registry.resolve('entra_id', tx)
+          const entraConnector = await registry.resolve('entra_id', tx, await masterOrganizationId())
           expect(entraConnector).toBeDefined()
           expect(typeof entraConnector.apply).toBe('function')
 
@@ -107,7 +123,7 @@ describe('ConnectorRegistry (Milestone 10, Task 2)', () => {
           // `GoogleWorkspaceConnector` request/response proof lives in
           // google-workspace.connector.spec.ts; this only proves the
           // REGISTRY resolves it at all.
-          const googleConnector = await registry.resolve('google_workspace', tx)
+          const googleConnector = await registry.resolve('google_workspace', tx, await masterOrganizationId())
           expect(googleConnector).toBeDefined()
           expect(typeof googleConnector.apply).toBe('function')
         })
@@ -133,7 +149,7 @@ describe('ConnectorRegistry (Milestone 10, Task 2)', () => {
     it('resolve() rejects a target with no registered connector at all, with a clear error', async () => {
       const registry = new ConnectorRegistry(unreachableKeycloak())
       await ctx.db.transaction(async (tx) => {
-        await expect(registry.resolve('definitely_not_a_real_target' as ConnectorTarget, tx)).rejects.toThrow(
+        await expect(registry.resolve('definitely_not_a_real_target' as ConnectorTarget, tx, await masterOrganizationId())).rejects.toThrow(
           'no connector registered for target "definitely_not_a_real_target"',
         )
       })
@@ -149,7 +165,7 @@ describe('ConnectorRegistry (Milestone 10, Task 2)', () => {
       const registry = new ConnectorRegistry(unreachableKeycloak())
       await deleteConnectorTarget('echo') // ensure no row
 
-      const connector = await ctx.db.transaction((tx) => registry.resolve('echo', tx))
+      const connector = await ctx.db.transaction(async (tx) => registry.resolve('echo', tx, await masterOrganizationId()))
       const health = await connector.health()
 
       expect(health.ok).toBe(false)
@@ -163,7 +179,7 @@ describe('ConnectorRegistry (Milestone 10, Task 2)', () => {
       await insertConnectorTarget('echo', { credentialSecretName: secretName })
 
       try {
-        const connector = await ctx.db.transaction((tx) => registry.resolve('echo', tx))
+        const connector = await ctx.db.transaction(async (tx) => registry.resolve('echo', tx, await masterOrganizationId()))
         const health = await connector.health()
         expect(health.ok).toBe(false)
         expect(health.detail).toContain(secretName)
@@ -181,11 +197,11 @@ describe('ConnectorRegistry (Milestone 10, Task 2)', () => {
 
       await insertConnectorTarget('echo', { credentialSecretName: firstSecretName })
       try {
-        const first = await ctx.db.transaction((tx) => registry.resolve('echo', tx))
+        const first = await ctx.db.transaction(async (tx) => registry.resolve('echo', tx, await masterOrganizationId()))
         expect((await first.health()).ok).toBe(false)
 
         await insertConnectorTarget('echo', { credentialSecretName: secondSecretName })
-        const second = await ctx.db.transaction((tx) => registry.resolve('echo', tx))
+        const second = await ctx.db.transaction(async (tx) => registry.resolve('echo', tx, await masterOrganizationId()))
         expect((await second.health()).ok).toBe(true)
       } finally {
         await deleteConnectorTarget('echo')
@@ -201,8 +217,8 @@ describe('ConnectorRegistry (Milestone 10, Task 2)', () => {
       await insertConnectorTarget('echo', { credentialSecretName: secretName })
 
       try {
-        const resolvedA = await ctx.db.transaction((tx) => registry.resolve('echo', tx))
-        const resolvedB = await ctx.db.transaction((tx) => registry.resolve('echo', tx))
+        const resolvedA = await ctx.db.transaction(async (tx) => registry.resolve('echo', tx, await masterOrganizationId()))
+        const resolvedB = await ctx.db.transaction(async (tx) => registry.resolve('echo', tx, await masterOrganizationId()))
         expect(resolvedA).toBe(echoConnector)
         expect(resolvedB).toBe(echoConnector)
       } finally {

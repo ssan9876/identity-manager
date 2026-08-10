@@ -614,7 +614,7 @@ describe('EntraIdConnector (Milestone 12, Task 7)', () => {
 
       await ctx.pool.query(
         `INSERT INTO connector_targets (target, enabled, config) VALUES ('entra_id', true, $1)
-         ON CONFLICT (target) DO UPDATE SET enabled = true, config = $1`,
+         ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true, config = $1`,
         [JSON.stringify(baseConfig())],
       )
     })
@@ -762,7 +762,7 @@ describe('EntraIdConnector (Milestone 12, Task 7)', () => {
       orgUnitId = (await new OrgUnitsRepository(ctx.db).createRoot(`Entra Isolation Root ${randomUUID()}`)).id
       await ctx.pool.query(
         `INSERT INTO connector_targets (target, enabled, config) VALUES ('entra_id', true, $1)
-         ON CONFLICT (target) DO UPDATE SET enabled = true, config = $1`,
+         ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true, config = $1`,
         [JSON.stringify(baseConfig())],
       )
     })

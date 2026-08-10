@@ -1,14 +1,15 @@
 import { sql } from 'drizzle-orm'
-import { boolean, check, integer, jsonb, pgTable, timestamp } from 'drizzle-orm/pg-core'
+import { boolean, check, integer, jsonb, pgTable, primaryKey, timestamp, uuid } from 'drizzle-orm/pg-core'
+import { organizations } from './organizations'
 import { outboxTarget } from './outbox-events'
 import { provisioningMode } from './user-target-accounts'
 
 /**
  * Milestone 10, Task 1 — the catalog `OutboxWriter.record` reads to decide
  * which target(s) a fresh mutation fans out to (see outbox.writer.ts's own
- * doc comment). One row per `outbox_target` enum value — `target` IS the
+ * doc comment). One row per `outbox_target` enum value — (organization_id, target) IS the
  * primary key, not a surrogate `id`, because there is exactly one
- * configuration per target in this system: "Multi-forest and multi-domain AD
+ * configuration per target PER ORGANIZATION in this system: "Multi-forest and multi-domain AD
  * topologies" are explicitly out of scope (see
  * docs/archive/specs/2026-08-06-directory-connectors-design.md, "Out of
  * scope") — single domain per configured target, so a natural key is both
@@ -50,7 +51,28 @@ import { provisioningMode } from './user-target-accounts'
 export const connectorTargets = pgTable(
   'connector_targets',
   {
-    target: outboxTarget('target').primaryKey(),
+    /**
+     * Per-organization connector targets (organizations multi-tenancy): the
+     * table's identity is (organization_id, target), so each organization
+     * owns its OWN catalog of configured targets. An organization with no
+     * row for a target is simply not configured for it and never fans out
+     * to it — absence NEVER falls back to another organization's row; that
+     * fallback would push one tenant's people into a directory configured
+     * for a different tenant's estate, the exact bug this key exists to
+     * make unrepresentable.
+     *
+     * The DEFAULT is the `master_organization_id()` SQL function (migration
+     * 0033): an INSERT that names no organization lands in MASTER, exactly
+     * where every row this table could previously hold conceptually lived.
+     * A write-time convenience only — no read path resolves across
+     * organizations.
+     */
+    organizationId: uuid('organization_id')
+      .notNull()
+      .default(sql`master_organization_id()`)
+      .references(() => organizations.id),
+
+    target: outboxTarget('target').notNull(),
 
     enabled: boolean('enabled').notNull().default(false),
 
@@ -105,6 +127,11 @@ export const connectorTargets = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    // The identity swap this milestone exists for — see `organizationId`'s
+    // own doc comment. Same constraint NAME as the original single-column
+    // PK (Postgres's default `connector_targets_pkey`), swapped in place by
+    // migration 0033.
+    pk: primaryKey({ name: 'connector_targets_pkey', columns: [table.organizationId, table.target] }),
     // Belt-and-braces, same posture `attribute_target_mappings_exactly_one_source`
     // documents (db/schema/attribute-target-mappings.ts): no admin write
     // endpoint exists for this table yet (Milestone 14 adds one), but the

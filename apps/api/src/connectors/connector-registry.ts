@@ -1,5 +1,5 @@
 import { Inject, Injectable, Optional } from '@nestjs/common'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { connectorTargets } from '../db/schema/connector-targets'
 import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
 import { KeycloakAdminClientFactory } from '../keycloak/keycloak-admin-client.factory'
@@ -284,14 +284,23 @@ export class ConnectorRegistry {
   async resolve(
     target: ConnectorTarget,
     tx: DbHandle,
-    // Organizations milestone, Task 14 — OPTIONAL and TRAILING, so every
-    // pre-existing two-argument call site keeps compiling and keeps its
-    // exact previous behaviour. Meaningful for `keycloak` alone: it names
-    // the REALM this particular event's principal lives in, which for a
-    // tenant is not the realm the single injected `KeycloakAdminClient` is
-    // bound to. Every other target is realm-blind (Active Directory, Entra,
-    // Google and the mail server have no realm concept — see
-    // target-fanout.ts), and a tenant never reaches them anyway (Task 13).
+    // Per-organization connector targets: WHICH organization's row of
+    // `connector_targets` this resolution reads. REQUIRED, never defaulted
+    // — a default (to master, or to anything) would mean a call site that
+    // forgot to derive the aggregate's organization silently resolved
+    // another organization's credentials and estate, which is the exact
+    // cross-tenant account-creation bug the (organization_id, target) key
+    // exists to prevent. An organization with NO row for `target` resolves
+    // with an EMPTY config — the same clean, loud MissingSecretError-style
+    // failure a globally-unconfigured target always produced — never
+    // another organization's config.
+    organizationId: string,
+    // Organizations milestone, Task 14 — OPTIONAL and TRAILING. Meaningful
+    // for `keycloak` alone: it names the REALM this particular event's
+    // principal lives in, which for a tenant is not the realm the single
+    // injected `KeycloakAdminClient` is bound to. Every other target is
+    // realm-blind (Active Directory, Entra, Google and the mail server have
+    // no realm concept — see target-fanout.ts).
     realm: string | null = null,
   ): Promise<DirectoryConnector> {
     if (!Object.hasOwn(this.factories, target)) {
@@ -323,7 +332,7 @@ export class ConnectorRegistry {
       return new KeycloakConnector(this.keycloakFactory.forRealm(realm))
     }
 
-    const config = await this.loadConfig(target, tx)
+    const config = await this.loadConfig(organizationId, target, tx)
     const factory = this.factories[target as ImplementedConnectorTarget]
     return factory(config)
   }
@@ -363,21 +372,29 @@ export class ConnectorRegistry {
    * an unimplemented user-facing target is (`resolve`'s own thrown error,
    * above).
    */
-  async resolveGroupConnector(target: ConnectorTarget, tx: DbHandle): Promise<DirectoryGroupConnector | null> {
+  async resolveGroupConnector(
+    target: ConnectorTarget,
+    tx: DbHandle,
+    organizationId: string,
+  ): Promise<DirectoryGroupConnector | null> {
     if (!Object.hasOwn(this.groupFactories, target)) {
       return null
     }
-    const config = await this.loadConfig(target, tx)
+    const config = await this.loadConfig(organizationId, target, tx)
     const factory = this.groupFactories[target as ImplementedGroupConnectorTarget]
     return factory(config)
   }
 
   /** The one Postgres read every `resolve*` method needs — `connector_targets.config` for `target`, via the CALLER's own `tx` (see `resolve`'s own doc comment on connection discipline). `undefined`/no row resolves to an empty config, same as before this was extracted. */
-  async resolveSsoConnector(target: ConnectorTarget, tx: DbHandle): Promise<SsoConnector | null> {
+  async resolveSsoConnector(
+    target: ConnectorTarget,
+    tx: DbHandle,
+    organizationId: string,
+  ): Promise<SsoConnector | null> {
     if (!Object.hasOwn(this.ssoFactories, target)) {
       return null
     }
-    const config = await this.loadConfig(target, tx)
+    const config = await this.loadConfig(organizationId, target, tx)
     return this.ssoFactories[target as ImplementedSsoConnectorTarget](config)
   }
 
@@ -391,21 +408,29 @@ export class ConnectorRegistry {
    * is in fact perfectly healthy -- an operator would go hunting for a
    * Keycloak outage that does not exist.
    */
-  async healthFor(target: ConnectorTarget, tx: DbHandle): Promise<ConnectorHealth> {
-    const sso = await this.resolveSsoConnector(target, tx)
+  async healthFor(target: ConnectorTarget, tx: DbHandle, organizationId: string): Promise<ConnectorHealth> {
+    const sso = await this.resolveSsoConnector(target, tx, organizationId)
     if (sso !== null) {
       return sso.health()
     }
-    const connector = await this.resolve(target, tx)
+    const connector = await this.resolve(target, tx, organizationId)
     return connector.health()
   }
 
-  private async loadConfig(target: ConnectorTarget, tx: DbHandle): Promise<Record<string, unknown>> {
+  private async loadConfig(
+    organizationId: string,
+    target: ConnectorTarget,
+    tx: DbHandle,
+  ): Promise<Record<string, unknown>> {
     const [row] = await tx
       .select({ config: connectorTargets.config })
       .from(connectorTargets)
-      .where(eq(connectorTargets.target, target))
+      .where(and(eq(connectorTargets.organizationId, organizationId), eq(connectorTargets.target, target)))
       .limit(1)
+    // No row for THIS organization resolves to an empty config — a clean,
+    // loud failure the first time a secret is needed. NEVER another
+    // organization's row: that fallback is the cross-estate bug the
+    // composite key exists to prevent.
     return row?.config ?? {}
   }
 }
