@@ -752,9 +752,11 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       const res = await request(app.getHttpServer()).get('/self/permissions').expect(200)
       // Milestone 17, Task 11: read_only also holds business_role:read — a role
       // formula DESCRIBES access rather than conferring it, so it is readable by
-      // everyone who can already see the memberships it explains.
+      // everyone who can already see the memberships it explains. It also
+      // holds recert:read on the same terms — an attestation record is a pure
+      // read describing a decision, not conferring or deciding anything.
       expect([...res.body.actions].sort()).toEqual(
-        ['user:read', 'group:read', 'org_unit:read', 'business_role:read'].sort(),
+        ['user:read', 'group:read', 'org_unit:read', 'business_role:read', 'recert:read'].sort(),
       )
     })
 
@@ -783,7 +785,8 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       // audit:read already grants — see authz/actions.ts's own doc comment).
       // Milestone 17, Task 11 adds business_role:read to auditor for the same
       // reason it is on read_only: seeing WHY someone holds a membership is
-      // part of reviewing that they should.
+      // part of reviewing that they should. recert:read joins on the same
+      // terms: an attestation record is a pure read describing a decision.
       expect([...actions].sort()).toEqual(
         [
           'user:read',
@@ -793,6 +796,7 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
           'audit:read',
           'connector:read',
           'business_role:read',
+          'recert:read',
         ].sort(),
       )
     })

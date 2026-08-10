@@ -20,8 +20,10 @@ import { PermissionGuard } from '../src/authz/permission.guard'
 import { RoleAssignmentsRepository } from '../src/authz/role-assignments.repository'
 import { BusinessRolesController } from '../src/business-roles/business-roles.controller'
 import { BusinessRolesRepository } from '../src/business-roles/business-roles.repository'
+import { RoleConflictsRepository } from '../src/business-roles/role-conflicts.repository'
 import { RoleReconciler } from '../src/business-roles/role-reconciler'
 import { RoleReconciliationJob } from '../src/business-roles/role-reconciliation.job'
+import { SodChecker } from '../src/business-roles/sod-checker'
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { auditLog } from '../src/db/schema/audit-log'
@@ -85,6 +87,8 @@ describe('AccessRequestsController (access-request catalogue)', () => {
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         AccessRequestsRepository,
         BusinessRolesRepository,
+        RoleConflictsRepository,
+        SodChecker,
         RoleReconciler,
         RoleReconciliationJob,
         UsersRepository,
