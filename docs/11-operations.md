@@ -250,17 +250,36 @@ sudo -u idm pnpm install --frozen-lockfile
 sudo -u idm pnpm build
 sudo -u idm pnpm --filter @idm/api run db:migrate
 sudo systemctl restart idm-api
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
-`deploy/` is a set of TEMPLATES; nothing copies them onto a running host except
-`scripts/install.sh`. A `git pull` therefore updates the repository and changes
-nothing about how the machine actually serves traffic:
+That last line is **not optional after a rebuild**. The console's
+`Content-Security-Policy` carries the sha256 of the inline pre-paint theme
+script in `apps/web/dist/index.html`; the build regenerates it into
+`apps/web/dist/csp.conf`, which both vhosts `include`. nginx reads that file
+when it loads its configuration, so between `pnpm build` and the reload it is
+still serving the PREVIOUS build's hash. If `index.html` changed in the pull,
+the policy then blocks the very script it was written for and the console
+renders an empty shell, with the only clue in the browser's console. Reloading
+costs nothing and closes that window; `nginx -t` first, because a build that
+failed leaves no `csp.conf` and the include will then refuse to load.
+
+`scripts/update.sh` re-renders and reloads nginx on every run, so it closes
+that window for you. This hazard belongs to the manual path only — which is
+one more reason to prefer the script.
+
+**And the manual path is still not sufficient.** `deploy/` is a set of
+TEMPLATES; nothing copies them onto a running host except `scripts/install.sh`
+and `scripts/update.sh`. A `git pull` therefore updates the repository and
+changes nothing about how the machine actually serves traffic. Anything below
+`deploy/` needs re-rendering by hand, or by running one of those two scripts:
 
 | Changed in the repo | Reaches a running host only via |
 |---|---|
 | `deploy/nginx/*.conf` | re-rendering into `/etc/nginx/sites-available/idm.conf` |
 | `deploy/nginx/idm-log.conf` | copying to `/etc/nginx/conf.d/` |
 | `deploy/systemd/*` | re-rendering into `/etc/systemd/system/` + `daemon-reload` |
+| `apps/web/index.html` (its inline script) | `pnpm build` **and** `systemctl reload nginx` — the CSP hash lives in `apps/web/dist/csp.conf`, which nginx only re-reads on reload |
 
 This matters concretely: an upgrade that pulls the CS-M1 security-header fix and
 the CS-L3 log-format fix, and then only restarts `idm-api`, leaves a console
@@ -323,6 +342,26 @@ answered by a different server block and will appear to have no headers at all:
 ```bash
 curl -sIk -H "Host: <hostname>" https://127.0.0.1/ | grep -i x-frame-options
 ```
+
+And confirm the CSP hash the browser is being given is the hash of the script it
+is being given — the one check that catches a policy left behind by an earlier
+build:
+
+```bash
+curl -sIk -H "Host: <hostname>" https://127.0.0.1/ | grep -io "sha256-[A-Za-z0-9+/=]*"
+node -e '
+  const fs=require("fs"),c=require("crypto");
+  const h=fs.readFileSync("/opt/identity-manager/apps/web/dist/index.html","utf8");
+  for (const m of h.replace(/<!--[\s\S]*?-->/g,"").matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi))
+    if (!/\bsrc\s*=/i.test(m[1]))
+      console.log("sha256-"+c.createHash("sha256").update(m[2].replace(/\r\n?/g,"\n")).digest("base64"));
+'
+```
+
+The two must print the same string. If they differ, nginx has not been reloaded
+since the last build; the console will be showing an empty page. (`\r\n` is
+normalized to `\n` because the HTML parser does that before CSP hashes the
+script's source text.)
 
 ## Monitoring
 
