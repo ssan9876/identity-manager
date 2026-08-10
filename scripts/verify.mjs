@@ -34,11 +34,17 @@
 //                     build` for the web console — proves both packages
 //                     actually produce their real build artifacts, not just
 //                     that --noEmit is happy
-//   4. web tokens  — `pnpm --filter @idm/web test` (apps/web/scripts/
-//                     check-css-tokens.mjs): fails if any CSS file under
-//                     apps/web/src, other than styles/tokens.css, contains a
-//                     raw colour literal (Milestone 9, Task 2's own "prove
-//                     it"). No containers, so this runs under --quick too.
+//   4. web checks  — `pnpm --filter @idm/web test`, which runs BOTH of
+//                     apps/web/scripts/: check-css-tokens.mjs fails if any CSS
+//                     file under apps/web/src, other than styles/tokens.css,
+//                     contains a raw colour literal (Milestone 9, Task 2's own
+//                     "prove it"); check-connector-targets.mjs fails if the
+//                     console's hand-copied connector-target catalogue (union,
+//                     ALL_CONNECTOR_TARGETS and CONNECTOR_TARGET_LABEL) has
+//                     drifted from the API's `ALL_CONNECTOR_TARGETS` — the
+//                     drift that once shipped a live target the console could
+//                     not disable. Neither needs containers, so this stage
+//                     runs under --quick too.
 //   5. API suite   — `pnpm --filter @idm/api test` (vitest + Testcontainers,
 //                     ~756 tests, ~150s). SKIPPED by `--quick`: this is the
 //                     only stage that needs Docker containers, and the one
@@ -121,7 +127,7 @@ async function main() {
 
   stage('build', 'pnpm', ['run', 'build'])
 
-  stage('web tokens', 'pnpm', ['--filter', '@idm/web', 'run', 'test'])
+  stage('web checks', 'pnpm', ['--filter', '@idm/web', 'run', 'test'])
 
   if (quick) {
     log('--quick: skipping the API suite (needs Docker/Testcontainers).')

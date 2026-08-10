@@ -14,7 +14,18 @@ import { authorizedRequest, buildQuery } from '../api/client'
  *
  * There is no shared package between the two apps, so unlike the API side
  * this copy cannot derive from the source and must be updated BY HAND
- * whenever a target is added. Check it whenever `outbox_target` grows.
+ * whenever a target is added.
+ *
+ * You are no longer expected to REMEMBER that.
+ * apps/web/scripts/check-connector-targets.mjs — run by this package's `test`
+ * script, i.e. by `pnpm verify`'s "web checks" stage and by CI's Verify step —
+ * parses the API's `ALL_CONNECTOR_TARGETS` and fails if the union below, the
+ * `ALL_CONNECTOR_TARGETS` below it, or `CONNECTOR_TARGET_LABEL` has drifted
+ * from it in either direction. All three are checked separately: a target
+ * present in the union but unlabelled is the `undefined`-in-the-UI half of
+ * the same bug, and `Record<ConnectorTarget, string>` cannot catch it while
+ * the union is stale too. If that script fails, its output names the exact
+ * edits to make here.
  */
 export type ConnectorTarget =
   | 'keycloak'

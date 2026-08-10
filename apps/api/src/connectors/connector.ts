@@ -33,6 +33,16 @@ import type { UserStatus } from '../users/users.repository'
 // imports `ALL_CONNECTOR_TARGETS` rather than retyping it — do not reintroduce
 // a literal list of targets anywhere; `test/connector-target-catalog.spec.ts`
 // asserts this array matches the `outbox_target` pgEnum in BOTH directions.
+//
+// The web console is the one consumer that CANNOT import this array — there is
+// no shared package — so it keeps a hand-copied mirror in
+// apps/web/src/connectors/api.ts. That mirror is no longer unguarded:
+// apps/web/scripts/check-connector-targets.mjs parses THIS declaration and
+// fails `pnpm verify` (and CI) if the console's union, array or label record
+// has drifted. Adding a target below therefore fails the gate with the exact
+// console edits spelled out, rather than shipping a target nobody can disable.
+// That script anchors on the literal text `export const ALL_CONNECTOR_TARGETS =
+// [` — if you rename or reformat this declaration, update its anchor too.
 export const ALL_CONNECTOR_TARGETS = [
   'keycloak',
   'active_directory',
