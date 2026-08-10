@@ -70,6 +70,14 @@ empty object.
 | `echo` | ✅ | ✅ | in-repo, for testing the spine |
 | `keycloak_sso` | — | — | Keycloak **client** UUID (applications, not people) |
 
+Thirteen values, and the list is closed: `ALL_CONNECTOR_TARGETS` in
+`connectors/connector.ts` is the single source of truth, `outbox_target` and
+`external_identity_system` are two pgEnums holding the same thirteen labels, and
+`test/connector-target-catalog.spec.ts` asserts the array and the enums match in **both**
+directions. The six `scim_*` rows above are six target values sharing **one** adapter —
+see [SCIM 2.0](#scim-20--the-six-scim_-slots) below for why they are separate values
+rather than rows of a single `scim` target.
+
 `keycloak_sso` is the one target that carries no principals at all. Everything that
 walks users — the attribute mapping editor and `pnpm target-reconcile` — iterates
 `DIRECTORY_TARGETS` (`connectors/connector.ts`), which is `ALL_CONNECTOR_TARGETS`
@@ -95,14 +103,29 @@ imply the sync worker could call it.
 
 ### Keycloak (SSO applications) — `keycloak_sso`
 
-Registers OIDC clients from `sso_apps`. Configured with `baseUrl`, `realm`, `clientId`
-(`idm-sso-admin`) and `credentialSecretName`
+Registers **OIDC and SAML 2.0** clients from `sso_apps`. Which one a row is comes from
+its immutable `protocol` column (`openid-connect` or `saml`, the latter added by
+migration 0039); the connector writes that string into the `ClientRepresentation`
+verbatim and takes a different merge path per protocol. Configured with `baseUrl`,
+`realm`, `clientId` (`idm-sso-admin`) and `credentialSecretName`
 (`CONNECTOR_KEYCLOAK_SSO_CLIENT_SECRET`).
 
+For a SAML row, Keycloak 26 keeps the SP's settings in the client's `attributes` map,
+so `mergeSaml` writes `saml_assertion_consumer_url_post` (the first `saml_acs_urls`
+entry), `saml.assertion.signature`, `saml.server.signature`, `saml_name_id_format` and —
+only when an SP certificate is configured — `saml.client.signature` plus
+`saml.signing.certificate`. The SP's **entity id** is the row's `client_id`: Keycloak
+keys a SAML client by entity id in the same field, so there is no second value to drift.
+
 The realm **must** be the same one the console authenticates against — an application
-registered elsewhere is invisible to every account this system masters. The two
-targets carry that value separately, so `health()` should compare it against
-`KEYCLOAK_ISSUER` rather than trusting an admin to keep them aligned by hand.
+registered elsewhere is invisible to every account this system masters. The two targets
+carry that value separately.
+
+> **Not enforced today.** `KeycloakSsoConnector.health()` delegates straight to
+> `KeycloakAdminClient.health()`, which only forces a fresh token request; it does not
+> compare the configured `realm` against `KEYCLOAK_ISSUER`. A code comment in the
+> console's `config-fields.ts` claims it does — that comment is wrong. Keeping the two
+> aligned is an operator's job until the comparison is actually implemented.
 
 Two Keycloak behaviours the implementation handles explicitly:
 
@@ -120,9 +143,11 @@ Two Keycloak behaviours the implementation handles explicitly:
 
 ### Keycloak
 
-The only target enabled by default, and the only one seeded by migration. Reached
-through the Admin REST API using the `KEYCLOAK_ADMIN_CLIENT_ID`/`_SECRET`
-client-credentials grant.
+The only target enabled by default, and the only one ever seeded: by migration for the
+**master** organization, and by `POST /organizations` — as its own audited
+`connector_target:configure` row — for every new tenant, since a tenant with no row
+would fan out to nothing and leave its realm empty forever. Reached through the Admin
+REST API using the `KEYCLOAK_ADMIN_CLIENT_ID`/`_SECRET` client-credentials grant.
 
 Pushes the user's profile, `enabled` state, mapped attributes, and group membership
 (creating groups as needed). Also the target of the **synchronous** disable + session
@@ -191,8 +216,16 @@ quota-exceeded reasons.
 
 ### Mail server
 
-The one target that is not a general-purpose directory. Configuration: `baseUrl` and
-`tokenSecretName`.
+The one target that is not a general-purpose directory. Configuration: `baseUrl`,
+`tokenSecretName` and `allowAdminProvisioning`.
+
+`allowAdminProvisioning` is **off by default and is a privilege escalation switch.**
+With it on, a person whose mapped `mail_admin_role` attribute reads `domain_admin` or
+`superadmin` is also provisioned as an administrator of their own email domain — derived
+from their own address, so it covers administering the domain you are in and nothing
+wider. Turning it on accepts that `user:update` becomes equivalent to granting
+mail-admin rights; a deployment that leaves it off cannot be escalated through this path
+at all.
 
 It addresses a principal by **this system's own `users.id`** —
 `PUT /provisioning/identities/{external_id}` where that key is our uuid. Keying on the
@@ -230,9 +263,12 @@ what lets one organization provision Slack *and* Zoom *and* Box without touching
 invariant — and each slot keeps its own credential, its own attribute mappings, its own
 enable/disable, its own dry run and its own blast-radius settings.
 
-Adding a seventh application is a migration widening the two pgEnums, one entry in
-`SCIM_TARGETS` (`connector-registry.ts`), and one label in the console — **no new
-adapter logic**.
+Adding a seventh application is five small edits and **no new adapter logic**: the value
+in `ALL_CONNECTOR_TARGETS` (`connectors/connector.ts`), a migration widening both
+pgEnums (`outbox_target` and `external_identity_system`), one entry in `SCIM_TARGETS`
+(`connector-registry.ts`), and one label plus the shared field spec in the console's
+`TARGET_CONFIG_FIELDS`. `apps/web/scripts/check-connector-targets.mjs` fails
+`pnpm verify` with the exact console edits spelled out if you miss the last one.
 
 | Config key | Meaning |
 |---|---|
@@ -423,9 +459,16 @@ against this target, and what did it do" is always answerable.
 ## Inbound sources — where data comes FROM
 
 Everything above is outbound. The inbound half is `hr_sources`: **pull-based** feeds
-this system fetches on a schedule or on demand. The standing rule is that nothing
-writes into this system except its own API — an HR feed is never a pushed webhook and
-never inbound SCIM; the table only describes where *we* go to fetch.
+this system fetches on demand. The standing rule is that nothing writes into this
+system except its own API — an HR feed is never a pushed webhook and never inbound
+SCIM; the table only describes where *we* go to fetch.
+
+**There is no scheduler in this repository.** A run happens when something invokes it:
+`POST /hr-sources/:id/preview` from the console, or the `hr:sync` CLI, which an operator
+drives from their own timer unit if they want it periodic. `hr:sync` **dry-runs by
+default** — `--commit` is the only way it writes anything about a person, `--actor=<username>`
+is required so every audit row it writes names a real active user, and `--allow-partial`
+and `--force` are the two guard overrides, each of which does nothing without `--commit`.
 
 | Kind | What it reads |
 |---|---|
@@ -467,7 +510,7 @@ and is never logged, thrown or returned.
 
 ## The data-flow map
 
-`GET /api/data-flows` (console: **Data flows**) answers the question neither the
+`GET /data-flows` (console: **Data flows**) answers the question neither the
 Connectors page nor the attribute mapping editor does — *what leaves this system, and to
 whom*. One response carries every inbound source, every outbound target, and the
 attributes riding each outbound edge, for one organization.

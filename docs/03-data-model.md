@@ -211,7 +211,7 @@ owner). Defeating one mechanism is not enough.
 | `aggregate_id` | uuid, no FK (depends on `aggregate_type`) |
 | `event_type` | `created` · `updated` · `status_changed` · `membership_changed` |
 | `payload` | jsonb — diagnostic context, never replayed as a delta |
-| `target` | `keycloak` · `active_directory` · `entra_id` · `google_workspace` · `echo` · `mail_server` |
+| `target` | the `outbox_target` enum — **thirteen** values, listed in [The target catalog](#the-target-catalog) below |
 | `status` | `pending` · `processing` · `done` · `failed` |
 | `attempts`, `next_attempt_at`, `last_error` | retry bookkeeping |
 
@@ -220,6 +220,49 @@ Two indexes: the claim index `(status, next_attempt_at)` and the ordering index
 load-bearing — the equality columns must lead and the ordering column must trail, or
 the plan degrades to a full scan of every id for the aggregate.
 
+### The target catalog
+
+`outbox_target` and `external_identity_system` are two pgEnums holding the **same
+thirteen labels, in the same order**, and that one-for-one correspondence is
+load-bearing: `SyncWorker` writes a correlation row using `event.target` directly as
+`external_identities.system`, with no mapping table between them. The canonical list in
+application code is `ALL_CONNECTOR_TARGETS` in `apps/api/src/connectors/connector.ts`;
+`test/connector-target-catalog.spec.ts` asserts the array and the pgEnum match in
+**both** directions.
+
+| Target | What it is |
+|---|---|
+| `keycloak` | The realm this system masters — users, groups, sessions |
+| `active_directory` | LDAPS, with native group nesting |
+| `entra_id` | Microsoft Graph |
+| `google_workspace` | Admin SDK Directory API |
+| `mail_server` | The mail sub-project; addresses a principal by **our** `users.id` |
+| `echo` | The in-repo target that exercises the spine without a vendor protocol |
+| `scim_slack` · `scim_zoom` · `scim_atlassian` · `scim_box` · `scim_snowflake` · `scim_generic` | Six SCIM 2.0 application slots — see below |
+| `keycloak_sso` | OIDC/SAML **application** registration. Carries no principals at all |
+
+**The six `scim_*` values share ONE adapter** (`apps/api/src/connectors/scim.connector.ts`).
+SCIM 2.0 is identical across services; only the base URL, the credential and the write
+mode differ, and all three are configuration. They are separate *target values* rather
+than rows of a single `scim` target because **`(organization_id, target)` is
+`connector_targets`' primary key and `(user_id, system)` is unique in
+`external_identities`** — one configured instance per target value is a load-bearing
+invariant of the outbox and correlation design, not an accident of naming. Naming each
+application is what lets one organization provision Slack *and* Zoom *and* Box without
+breaking that invariant, and it gives each slot its own credential, attribute mappings,
+enable/disable, dry run and blast-radius settings. Adding a seventh application is a
+list entry in `ALL_CONNECTOR_TARGETS`, a value in each pgEnum, a migration, one line in
+`ConnectorRegistry` and one in the console's `TARGET_CONFIG_FIELDS` — **no new adapter
+logic**.
+
+**`keycloak_sso` is a different interface family.** It implements `SsoConnector`, not
+`DirectoryConnector`, and it carries no principals: it registers OIDC and SAML clients
+from `sso_apps`. That is why the type `DirectoryTarget` (`ALL_CONNECTOR_TARGETS` minus
+this one value) exists, and why the attribute-mapping editor and `pnpm target-reconcile`
+iterate it rather than the full catalog. No row in `external_identities` will ever carry
+`keycloak_sso`; its correlation rows live in `external_sso_app_identities`, which reuses
+the same enum.
+
 ### `external_identities` and `external_group_identities`
 
 Correlation only — which remote object corresponds to which local row.
@@ -227,12 +270,13 @@ Correlation only — which remote object corresponds to which local row.
 | Column | Notes |
 |---|---|
 | `user_id` / `group_id` | cascade |
-| `system` | same catalog as `outbox_target` |
-| `external_id` | the target's **immutable** id — AD `objectGUID`, Graph `id`, Google `id` |
+| `system` | `external_identity_system` — the same thirteen labels as `outbox_target`, one for one |
+| `external_id` | the target's **immutable** id — AD `objectGUID`, Graph `id`, Google `id`, SCIM `id` |
 | `sync_state` | `pending` · `synced` · `failed` |
 | `last_synced_at` | timestamptz |
 
-Unique per `(user, system)` / `(group, system)`.
+Unique per `(user, system)` / `(group, system)`. That uniqueness is half of why the SCIM
+slots are separate target values: one correlated remote account per person per slot.
 
 Correlating on an immutable id, never a name or address, is what makes renames correct:
 a changed email is a rename of an existing object, not an orphan plus a new empty one.
@@ -242,42 +286,63 @@ point at.
 
 ### `connector_targets`
 
-One row per target; `target` **is** the primary key.
+One row per target **per organization**; `(organization_id, target)` **is** the primary
+key (`connector_targets_pkey`, swapped in place by migration 0033) — there is no
+surrogate `id`.
 
 | Column | Default | Notes |
 |---|---|---|
+| `organization_id` | `master_organization_id()` | → `organizations.id`. An INSERT naming no organization lands in **master**; no read path ever falls back across organizations |
+| `target` | | the `outbox_target` enum — all thirteen values above |
 | `enabled` | `false` | `OutboxWriter` fans out only to enabled targets |
 | `provisioning_mode` | `all_users` | or `entitled_only` — consults `user_target_accounts` |
 | `config` | `{}` | **non-secret only**; secrets are referenced by env-var *name* |
 | `blast_radius_threshold` | 20 | percent, `CHECK BETWEEN 1 AND 100` |
 | `blast_radius_floor` | 5 | absolute count, `CHECK >= 0` |
 
+An organization with no row for a target is simply not configured for it and never fans
+out to it. Absence never resolves to another organization's row — that fallback would
+push one tenant's people into a directory configured for a different tenant's estate,
+which is exactly what the composite key makes unrepresentable.
+
 **No secret ever lands in this table.** Reading a target through the API returns config
 with no secret field present — not redacted, *absent*, because none is stored.
 
-Only `keycloak` is seeded by migration. Postgres forbids using an enum value added by
-`ALTER TYPE ... ADD VALUE` inside the same transaction that added it, and all pending
-migrations run in one transaction on a fresh database — so the other targets simply have
-no row until something configures one. `WHERE enabled = true` treats "no row" and
-"disabled row" identically.
+`keycloak` is the only target ever seeded, and it is seeded twice over: by migration for
+**master**, and by `POST /organizations` — as its own audited `connector_target:configure`
+row — for every new tenant, because a tenant with no row would fan out to nothing and
+leave its realm empty forever. No migration seeds any other target: Postgres forbids
+using an enum value added by `ALTER TYPE ... ADD VALUE` inside the same transaction that
+added it, and all pending migrations run in one transaction on a fresh database. The
+other twelve simply have no row until something configures one. `WHERE enabled = true`
+treats "no row" and "disabled row" identically.
 
 ## SSO applications
 
 ### `sso_apps`
 
-A downstream application registered for single sign-on. THIS row is the system of
-record; the Keycloak client is a projection of it, asserted through the outbox like
-every other target.
+A downstream application registered for single sign-on, driven through the
+`keycloak_sso` target. THIS row is the system of record; the Keycloak client is a
+projection of it, asserted through the outbox like every other target.
 
 | Column | Notes |
 |---|---|
-| `client_id` | Unique. **Immutable after create** — downstream applications hard-code it |
+| `client_id` | Unique. **Immutable after create** — downstream applications hard-code it. For a SAML row this is also the SP's **entity id**: Keycloak keys a SAML client by entity id in this same field, so there is no second column to drift |
 | `name`, `description` | |
-| `protocol` | `sso_app_protocol` enum; only value is `openid-connect` |
+| `protocol` | `sso_app_protocol` enum: `openid-connect` (default) or `saml`. Settable on create, **absent from update** — changing an application's protocol in place is a different application wearing the same row |
 | `public_client` | PKCE is forced on, and is not an editable field |
 | `redirect_uris`, `web_origins` | `text[]`; a wildcard is permitted only in the path |
-| `groups_claim` | Whether to assert the `groups` protocol mapper |
+| `groups_claim` | Whether to assert group membership — one flag, two realisations: the OIDC `groups` claim mapper or the SAML group attribute statement |
 | `enabled` | |
+| `saml_acs_urls`, `saml_sp_certificate`, `saml_sign_assertions`, `saml_name_id_format` | Added by migration **0039**. Nullable, and NULL on every OIDC row — nullable rather than defaulted so an OIDC row cannot quietly carry a plausible-looking SAML configuration. `saml_name_id_format` is the `sso_app_name_id_format` enum: `email` · `persistent` · `username` |
+
+Both protocols share one table, deliberately: uniqueness, the reserved-name denylist,
+the immutability rule, correlation and outbox fan-out are all protocol-independent, and
+a second table would duplicate every one of those paths. There is deliberately **no
+CHECK** tying the SAML columns to `protocol = 'saml'` — 0039 adds `'saml'` to the enum
+and uses it nowhere, because Postgres rejects using an `ALTER TYPE ... ADD VALUE` value
+in the transaction that added it. The closed request schemas in `sso-apps.controller.ts`
+own that shape rule instead, as they already own every other rule for this table.
 
 Uniqueness on `client_id` is a database index, not merely a controller check: it is
 what every downstream application trusts, so a race must not be able to slip past it.
@@ -353,10 +418,16 @@ running code does not recognise.
 There is **no HTTP surface** for JML rules today. They are database rows plus the
 `jml:lifecycle` CLI.
 
-## Business roles — schema landed, engine not yet built
+## Business roles
 
-These tables exist and are migrated. Nothing reads them yet. See
-[14 — Roadmap](14-roadmap.md).
+The engine that reads these tables **has shipped**. `business-roles/role-evaluator.ts`
+computes the desired set, `role-reconciler.ts` applies it, `role-reconciliation.job.ts`
+sweeps, `sod-checker.ts` enforces separation of duties, and `role-miner.ts` proposes
+drafts from observed membership. `RoleReconciler` is registered in `app.module.ts` as an
+ordinary provider — deliberately **not** `@Optional()`, so a wiring mistake fails at
+boot rather than silently skipping entitlement changes. There is an HTTP surface
+(`business-roles.controller.ts`) and a `role-reconcile` CLI. See
+[14 — Roadmap](14-roadmap.md#business-roles-and-entitlements--landed).
 
 ### `business_roles`
 
@@ -397,6 +468,21 @@ an optional `expires_at`. Exceptions exist because they always happen in practic
 model that cannot hold one gets a formula bent to cover a single person, which is how
 entitlement models rot. Expiring exceptions are also the natural queue for a later
 recertification campaign.
+
+### `role_conflicts`
+
+Separation-of-duties pairs (migration 0034), enforced by `business-roles/sod-checker.ts`.
+A conflicting pair of roles held by one person is a standing violation the controller
+sweeps for after every change.
+
+### Related tables that grew out of this area
+
+Three more tables ride the same model and are **not** documented in detail here:
+`business_roles.requestable` (0035, default false — nothing is offered in the
+self-service catalogue until an administrator opts it in), `access_requests` (0036), and
+`recert_campaigns` / `recert_items` (0037, 0038). Their behaviour is described in
+[14 — Roadmap](14-roadmap.md); the schema files are `db/schema/access-requests.ts`,
+`recert-campaigns.ts` and `recert-items.ts`.
 
 ### `user_target_accounts`
 

@@ -132,6 +132,8 @@ for why that namespace is load-bearing rather than a naming convention.
 | `CONNECTOR_AD_BIND_PASSWORD` *(your choice of name)* | Active Directory bind password |
 | `CONNECTOR_ENTRA_CLIENT_SECRET` *(your choice of name)* | Entra ID client secret |
 | `CONNECTOR_GOOGLE_SERVICE_ACCOUNT_KEY` *(your choice of name)* | The **full** downloaded Google service-account key JSON, not a bare private key |
+| `CONNECTOR_SCIM_SLACK_TOKEN` *(your choice of name)* | A SCIM slot's static bearer token. **One variable per slot** — `scim_slack`, `scim_zoom`, `scim_atlassian`, `scim_box`, `scim_snowflake` and `scim_generic` each name their own, because each is a separately configured application |
+| `CONNECTOR_SCIM_CLIENT_SECRET` *(your choice of name)* | A SCIM slot's OAuth2 client secret, for a service that mints short-lived tokens instead of accepting a static bearer. Again one per slot |
 
 Nothing reads any of these unless a `connector_targets` row names it. Anything you add
 for a connector **must** start with `CONNECTOR_`; a name outside the namespace is
@@ -167,20 +169,25 @@ to it; this is why there are two files.
 
 ### Connector targets
 
-One row per target in `connector_targets`, edited through **Connectors → *target* →
-Configuration** in the console, or `PATCH /connector-targets/:target`.
+One row per target **per organization** — `(organization_id, target)` is the primary key
+of `connector_targets` — edited through **Connectors → *target* → Configuration** in the
+console, or `PATCH /connector-targets/:target`. An organization with no row for a target
+never fans out to it, and absence never falls back to another organization's row.
 
 | Setting | Notes |
 |---|---|
 | `enabled` | `OutboxWriter` fans out only to enabled targets. Disabling stops new events; it does not undo anything already delivered. |
 | `provisioning_mode` | `all_users` (default) or `entitled_only` |
-| `config` | Non-secret settings; a `PATCH` **merges** rather than replacing, so a key the form does not know about is never destroyed |
+| `config` | Non-secret settings; a `PATCH` **merges** rather than replacing, so a key the form does not know about is never destroyed. A key sent as `null` is *deleted* — that is the only way to remove one. |
 | `blast_radius_threshold` | 1–100, default 20 — percent of the population a reconcile may mutate |
 | `blast_radius_floor` | ≥ 0, default 5 — absolute count below which the guard never trips |
 
 Both blast-radius conditions must be exceeded for a run to halt.
 
-Per-target `config` keys:
+Per-target `config` keys. The console's own catalog — `TARGET_CONFIG_FIELDS` in
+`apps/web/src/connectors/config-fields.ts` — is the authoritative form spec, and
+`apps/web/scripts/check-connector-targets.mjs` fails `pnpm verify` if it drifts from
+`ALL_CONNECTOR_TARGETS`:
 
 | Target | Keys |
 |---|---|
@@ -189,11 +196,37 @@ Per-target `config` keys:
 | `active_directory` | `url` (must be `ldaps://`), `baseDN`, `bindDN`, `credentialSecretName`, `caCertificate` (PEM), `tlsServerName`, `allowInsecureTls`, `createMissingOrgUnits` |
 | `entra_id` | `tenantId`, `clientId`, `credentialSecretName` |
 | `google_workspace` | `impersonatedAdminEmail`, `domain`, `credentialSecretName` |
-| `mail_server` | `baseUrl`, `tokenSecretName` |
+| `mail_server` | `baseUrl`, `tokenSecretName`, `allowAdminProvisioning` |
+| `scim_slack`, `scim_zoom`, `scim_atlassian`, `scim_box`, `scim_snowflake`, `scim_generic` | `baseUrl`, `tokenSecretName`, `writeMode` — **or** the OAuth2 group `tokenUrl`, `clientId`, `clientSecretName`, `scope` |
+| `keycloak_sso` | `baseUrl`, `realm`, `clientId`, `credentialSecretName` |
 
 `allowInsecureTls` is the **only** way certificate verification is ever relaxed for
 Active Directory. Off by default; it should stay off outside a test lab. Plain `ldap://`
 is never accepted at all.
+
+**The six `scim_*` rows are six target values sharing one adapter**
+(`apps/api/src/connectors/scim.connector.ts`). SCIM 2.0 is identical across services, so
+only the base URL, the credential and the write mode differ — but they are separate
+target values rather than rows of a single `scim` target because
+`(organization_id, target)` is `connector_targets`' primary key and `(user_id, system)`
+is unique in `external_identities`. One configured instance per target value is a
+load-bearing invariant of the outbox and correlation design, so each application has to
+be named to get its own credential, its own attribute mappings, its own enable/disable
+and its own blast-radius settings. Set **either** `tokenSecretName` **or** the whole
+OAuth2 group; configuring both is refused rather than resolved by precedence.
+`writeMode` is `patch` (the default) or `put`, and a service that does not advertise
+PATCH in its `/ServiceProviderConfig` rejects every write until it is switched to `put`.
+
+**`keycloak_sso` is not a directory target.** It registers OIDC and SAML *applications*
+from `sso_apps` and carries no principals, so it has no attribute mappings and
+`pnpm target-reconcile` will not accept it — both surfaces iterate `DIRECTORY_TARGETS`,
+which is the catalog minus this one value. Its `realm` must be the same realm the
+console authenticates against, or every registered application is invisible to the
+accounts this system masters; that alignment is **not** checked at runtime today (see
+[09 — Connectors and sync](09-connectors-and-sync.md#keycloak-sso-applications--keycloak_sso)).
+Its `clientId` is `idm-sso-admin`, a credential holding `manage-clients` and nothing
+else — deliberately separate from the sync service account, so the user and group sync
+path structurally cannot mint or alter a client.
 
 ### Attribute definitions
 
@@ -238,8 +271,10 @@ audited. See [07 — Admin guide](07-admin-guide.md#walkthrough-12--create-and-s
 
 1. `.env`: both database URLs, all four Keycloak values, and any `CONNECTOR_*` secrets.
 2. `apps/web/.env`: issuer, client id, API base URL — then **build**.
-3. Keycloak: realm plus three clients via `keycloak-setup.sh`, including the audience
-   mapper.
+3. Keycloak: realm plus **four** clients via `keycloak-setup.sh` — `idm-api`,
+   `idm-console`, `idm-sync-service` and `idm-sso-admin` — including the audience
+   mapper. A fifth, the master-realm `idm-provisioner`, is opt-in behind
+   `SETUP_PROVISIONER=1` and is only needed to create organizations.
 4. `db:migrate` — schema **and** runtime role grants.
 5. `bootstrap:admin <your-keycloak-username>` — or everything is 403.
 6. Connector targets: configure, dry-run, then enable. Never enable first.
