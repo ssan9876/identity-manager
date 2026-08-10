@@ -125,7 +125,9 @@ git_as_idm() { su -s /bin/bash "$IDM_USER" -c "cd '$REPO_ROOT' && git $*"; }
 
 if [[ "${SKIP_PULL:-0}" == "1" ]]; then
   warn "SKIP_PULL=1 — rebuilding and re-rendering whatever is on disk"
-  PREV_COMMIT="$(git_as_idm rev-parse HEAD)"
+  # After a re-exec this must stay the commit the host was on BEFORE the pull,
+  # not the one it has now, or the rollback advice points at the broken build.
+  PREV_COMMIT="${IDM_UPDATE_PREV_COMMIT:-$(git_as_idm rev-parse HEAD)}"
 else
   BRANCH="${REPO_BRANCH:-$(git_as_idm rev-parse --abbrev-ref HEAD)}"
   [[ "$BRANCH" != "HEAD" ]] || die "the checkout is on a detached HEAD; pass REPO_BRANCH=<branch>"
@@ -150,6 +152,28 @@ else
   else
     ok "$(git_as_idm rev-list --count "$PREV_COMMIT..$NEW_COMMIT") commit(s): ${PREV_COMMIT:0:9} → ${NEW_COMMIT:0:9}"
   fi
+fi
+
+# --- Re-exec if the pull changed THIS script --------------------------------
+# bash reads a script incrementally, by byte offset, as it executes. The pull
+# above can replace this very file mid-run, after which bash keeps reading at
+# its old offset into different content — in the benign case finishing the run
+# on the OLD logic, in the ugly case resuming mid-line and executing a fragment.
+#
+# Observed on 2026-08-10: a run pulled a fix to the verification block and then
+# executed the PRE-fix verifier, reporting failures the pulled commit had been
+# written to eliminate. The update had worked; the script reporting on it was a
+# version that no longer existed on disk.
+#
+# So: if the pull moved scripts/update.sh, hand over to the new copy. SKIP_PULL
+# stops the second process pulling again, and IDM_UPDATE_REEXECED makes the
+# hand-over happen at most once.
+if [[ -z "${IDM_UPDATE_REEXECED:-}" && -n "${NEW_COMMIT:-}" && "$PREV_COMMIT" != "$NEW_COMMIT" ]]    && ! git_as_idm diff --quiet "$PREV_COMMIT" "$NEW_COMMIT" -- scripts/update.sh; then
+  info "scripts/update.sh changed in this pull — re-executing the new version"
+  export IDM_UPDATE_REEXECED=1
+  export IDM_UPDATE_PREV_COMMIT="$PREV_COMMIT"
+  export SKIP_PULL=1
+  exec bash "$REPO_ROOT/scripts/update.sh"
 fi
 
 # --- Build-time console configuration --------------------------------------
