@@ -22,6 +22,14 @@ sudo -u idm bash -c 'set -a && . .env && set +a && <command>'
 | `pnpm verify` | Full gate: typecheck → lint (if configured) → build → CSS token check → API suite |
 | `pnpm verify:quick` | Typecheck + build only — no containers |
 
+### Installed-host scripts (run as root, on the machine)
+
+| Command | What it does |
+|---|---|
+| `bash scripts/install.sh` | First install. See [05 — Installation](05-installation.md). |
+| `bash scripts/update.sh` | Upgrade in place — pull, rebuild, back up, migrate, **re-render `deploy/`**, restart, verify. See "Upgrading a deployed host" below. |
+| `bash scripts/keycloak-setup.sh` | Create/repair the realm, clients and the sync account. |
+
 ### API package (`pnpm --filter @idm/api …`)
 
 | Command | What it does |
@@ -100,8 +108,9 @@ the units themselves and the reasoning in their comments.
 > `pending` forever — and because each connector derives `desiredEnabled` from
 > `status === 'active'`, those people were asserted into Keycloak and every other target
 > as **disabled accounts** and left that way. If you are upgrading a host installed
-> before that date, run `scripts/install.sh` again (or install the two units by hand)
-> and then run one pass immediately to clear the backlog.
+> before that date, run `scripts/update.sh` (it renders every unit in `deploy/systemd/`
+> and enables every timer it finds) and then run one pass immediately to clear the
+> backlog.
 
 ### Reconciliation — installed as a daily timer
 
@@ -158,10 +167,37 @@ change made at the target.
 
 ## Upgrading a deployed host
 
-There was no documented upgrade procedure, and the obvious one is incomplete in
-a way that silently leaves security fixes unapplied. Verified end to end against
-a real deployment (Proxmox LXC, Ubuntu 24.04, PostgreSQL 16.14, upgrading a host
-that was 90 commits behind).
+```bash
+sudo bash /opt/identity-manager/scripts/update.sh
+```
+
+That is the whole procedure. It pulls, rebuilds, backs up the database,
+migrates, **re-renders everything under `deploy/` onto the machine**, restarts
+the service and then verifies the result. Run it as root, inside the host
+`scripts/install.sh` installed.
+
+It takes no arguments on purpose. The hostname, port, service user, scheme and
+certificate paths are read back off the installed unit and vhost, because
+getting one wrong by hand rewrites the vhost to serve a *different*
+`server_name` — after which requests fall through to another server block and
+the console appears to break with no error anywhere.
+
+| Variable | Effect |
+|---|---|
+| `SKIP_PULL=1` | Do not touch git — rebuild and re-render what is already on disk. This is also how you complete a rollback. |
+| `REPO_BRANCH=<branch>` | Branch to pull. Defaults to the checked-out branch. |
+| `SKIP_DB_BACKUP=1` | Skip the pre-migration `pg_dump`. |
+| `BACKUP_DIR=<path>` | Where that dump lands. Default `/var/backups/identity-manager`. |
+| `DEBUG=1` | `set -x`. |
+
+It refuses rather than guesses: a host with no `.env`, no unit or no vhost is
+not an installed host and is sent to `install.sh`; a checkout with local
+modifications is reported and left alone; a diverged branch is a situation for
+a human, not for a merge resolver.
+
+### Why this script exists rather than a documented `git pull`
+
+The obvious upgrade is incomplete in a way that fails **silently**:
 
 ```bash
 cd /opt/identity-manager
@@ -172,11 +208,9 @@ sudo -u idm pnpm --filter @idm/api run db:migrate
 sudo systemctl restart idm-api
 ```
 
-**That is not sufficient on its own.** `deploy/` is a set of TEMPLATES; nothing
-copies them onto a running host except `scripts/install.sh`. A `git pull`
-therefore updates the repository and changes nothing about how the machine
-actually serves traffic. Anything below `deploy/` needs re-rendering by hand, or
-by re-running the installer:
+`deploy/` is a set of TEMPLATES; nothing copies them onto a running host except
+`scripts/install.sh`. A `git pull` therefore updates the repository and changes
+nothing about how the machine actually serves traffic:
 
 | Changed in the repo | Reaches a running host only via |
 |---|---|
@@ -189,11 +223,47 @@ the CS-L3 log-format fix, and then only restarts `idm-api`, leaves a console
 still serving **no** `X-Frame-Options`, `X-Content-Type-Options` or
 `Referrer-Policy`, and still writing people's names and email addresses into
 `/var/log/nginx/access.log`. Both were confirmed absent after a pull-only
-upgrade, and confirmed present after re-rendering.
+upgrade, and confirmed present after re-rendering. Verified end to end against a
+real deployment (Proxmox LXC, Ubuntu 24.04, PostgreSQL 16.14, upgrading a host
+that was 90 commits behind).
 
-To re-render nginx without a full reinstall (substitute your own hostname, port
-and paths — `grep server_name /etc/nginx/sites-available/idm.conf` shows what
-this host was installed with):
+The same gap is why a host installed before the timers existed runs neither of
+them (see "Scheduled work" above). `update.sh` renders *every* unit in
+`deploy/systemd/` and enables every `.timer` it finds, so a release that adds
+one does not need this document to change.
+
+### What it verifies before claiming success
+
+Each check below corresponds to a failure this project has actually hit, and any
+of them failing exits non-zero with the rollback commands printed:
+
+- `idm-api` reaches `active` (waited for, up to 30s).
+- `/health` answers on `127.0.0.1:<port>` — isolating "the app is up" from
+  "nginx routes to it".
+- nginx answers **with the real `Host` header**, and the three security headers
+  are present in the response.
+- `/etc/nginx/conf.d/idm-log.conf` contains the `idm_noquery` format, i.e. the
+  file is the current one rather than merely present.
+
+### Rolling back
+
+Migrations in this repository are forward-only — there are no down-migrations,
+so the pre-migration dump is the only way back. To return to the previous build:
+
+```bash
+cd /opt/identity-manager
+sudo -u idm git checkout <previous-commit>     # printed by the failing run
+sudo SKIP_PULL=1 bash scripts/update.sh
+```
+
+If the failure was in `db:migrate`, restore that dump before running an older
+build against the database.
+
+### Re-rendering nginx by hand
+
+Only needed if you cannot run the script. Substitute your own hostname, port and
+paths — `grep server_name /etc/nginx/sites-available/idm.conf` shows what this
+host was installed with:
 
 ```bash
 cd /opt/identity-manager

@@ -345,14 +345,21 @@ KEYCLOAK_URL=https://kc.example.com KC_ADMIN_USER=admin KC_ADMIN_PASS=... \
 ## Upgrading
 
 ```bash
-cd /opt/identity-manager
-sudo -u idm git pull
-sudo -u idm pnpm install --frozen-lockfile
-sudo -u idm pnpm build
-sudo -u idm bash -c 'set -a && . .env && set +a && pnpm --filter @idm/api db:migrate'
-systemctl restart idm-api
+sudo bash /opt/identity-manager/scripts/update.sh
 ```
 
-Run `db:migrate` **before** restarting: it applies schema changes *and* re-asserts the
-runtime role's grants, so a migration that adds a table also grants the runtime role
-access to it.
+That is the whole procedure, and it is the **only** supported one. Do not upgrade
+with a bare `git pull` + `restart`: `deploy/` is a set of templates, and nothing
+copies them onto a running host except `install.sh` and `update.sh`. A pull-only
+upgrade therefore ships the repository's security fixes while the machine keeps
+serving the old nginx config — confirmed, not hypothetical.
+
+`update.sh` pulls, rebuilds, `pg_dump`s the database, migrates, re-renders every
+template under `deploy/`, restarts `idm-api` and then verifies the result,
+discovering this host's hostname, port, scheme and certificate paths from what is
+already installed. Full detail, environment variables and rollback:
+[11 — Operations](11-operations.md#upgrading-a-deployed-host).
+
+It runs `db:migrate` **before** restarting, which matters: migrations apply schema
+changes *and* re-assert the runtime role's grants, so a migration that adds a table
+also grants the runtime role access to it.

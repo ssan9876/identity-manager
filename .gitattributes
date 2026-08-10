@@ -1,0 +1,5 @@
+# Shell scripts run on Linux hosts. A CRLF checkout makes every one of them fail
+# with `bad interpreter: /usr/bin/env bash^M`, which reads as a missing shell
+# rather than a line ending. The committed blobs are already LF; this stops a
+# Windows workstation with core.autocrlf=true from ever committing otherwise.
+*.sh text eol=lf

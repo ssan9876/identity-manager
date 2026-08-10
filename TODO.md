@@ -474,8 +474,23 @@ Two traps worth knowing, both of which made a working fix look broken:
       the stack with `KEYCLOAK_PROVISION_*` configured.
 
 - [ ] **`idm-lifecycle.timer` / `idm-reconcile.timer` are not installed on the
-      live host** — only `idm-api.service` is. They arrive with the deploy/
-      re-render described above.
+      live host** — only `idm-api.service` is. `scripts/update.sh` now closes
+      this generically: it renders EVERY unit in `deploy/systemd/` and
+      `enable --now`s every `.timer` it finds, so a release that adds a timer
+      reaches hosts without anyone remembering to. Still open because nothing
+      has run it against the live host yet.
+
+- [ ] **`scripts/update.sh` has never been executed.** Written 2026-08-09 to
+      automate the upgrade procedure in `docs/11-operations.md`, and checked
+      line by line against `install.sh` — same placeholders, same template
+      paths, same build assertions, same `db:migrate` invocation, and it now
+      re-asserts the `sites-enabled` symlink `install.sh` creates. `bash -n`
+      passes. **None of that is a run.** It has not been executed against any
+      host, not even a clone. The parts with no static substitute for a real
+      run: reading `server_name`/`ssl_certificate` back off a live vhost,
+      `su -s /bin/bash idm -c "git …"` under a root shell, the `pg_dump | gzip`
+      as `postgres`, and the ERR-trap rollback text. Verify the same way the
+      last upgrade was: clone the live LXC, snapshot first, run it there.
 
 ## Housekeeping
 
