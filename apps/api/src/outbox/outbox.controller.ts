@@ -23,7 +23,12 @@ function parseOptionalTarget(raw: unknown): OutboxTarget | undefined {
   if (raw === undefined) return undefined
   const parsed = targetQuerySchema.safeParse(raw)
   if (!parsed.success) {
-    throw new ValidationError([`target: must be one of keycloak, active_directory, entra_id, google_workspace, echo`])
+    // DERIVED, not spelled out. A hand-written list here was stale the moment
+    // SCIM landed: it named five targets while the schema above accepted
+    // thirteen, so an operator filtering dead letters by a real target was
+    // told it did not exist — the exact failure the comment on
+    // targetQuerySchema warns about, in the message belonging to it.
+    throw new ValidationError([`target: must be one of ${ALL_CONNECTOR_TARGETS.join(', ')}`])
   }
   return parsed.data
 }

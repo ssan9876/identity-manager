@@ -853,7 +853,7 @@ Rows carry `actorUserId` (null for system actions), `action`, `resourceType`,
 
 | Query | Notes |
 |---|---|
-| `target` | One of the **thirteen** connector target names — the filter is `z.enum(ALL_CONNECTOR_TARGETS)` (`outbox/outbox.controller.ts`), so every target the outbox can write is a valid value here, each `scim_*` slot and `keycloak_sso` included. An unknown value is a 400, never a silently empty result. (The 400's *message* still names only the original five targets — a stale string in that handler, not a narrower filter.) |
+| `target` | One of the **thirteen** connector target names — the filter is `z.enum(ALL_CONNECTOR_TARGETS)` (`outbox/outbox.controller.ts`), so every target the outbox can write is a valid value here, each `scim_*` slot and `keycloak_sso` included. An unknown value is a 400, never a silently empty result. The 400's message is derived from the same catalogue, so it cannot drift from the filter. |
 | `limit`, `offset` | Standard |
 
 Rows carry the aggregate, target, attempts and `lastError`.
