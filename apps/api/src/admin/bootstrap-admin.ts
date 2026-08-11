@@ -80,11 +80,18 @@ export async function bootstrapAdmin(
 ): Promise<BootstrapAdminResult> {
   const steps: BootstrapAdminStep[] = []
 
-  // 1. Ensure SOME org unit exists — needed only as the FK target if step 2
-  // below ends up creating a brand new user; reused as-is (see
+  // 1. Ensure SOME org unit exists IN MASTER — needed only as the FK target
+  // if step 2 below ends up creating a brand new user; reused as-is (see
   // OrgUnitsRepository.findFirst's own doc comment) rather than always
   // minting a fresh root, so re-running this against a database that
   // already has one never scatters extra roots.
+  //
+  // Master, not "any org unit": `UsersRepository.create` derives
+  // `organization_id` from the org unit, and `PermissionEngine.resolveActor`
+  // only ever resolves principals within master — so a tenant's org unit
+  // here would produce a recovery admin nobody can authenticate as. Both
+  // calls below mean master (`createRoot`'s organization argument is omitted
+  // precisely because omitting it means master; see its doc comment).
   let orgUnit = await deps.orgUnits.findFirst()
   if (orgUnit === null) {
     orgUnit = await deps.orgUnits.createRoot(DEFAULT_ORG_UNIT_NAME)
@@ -95,9 +102,11 @@ export async function bootstrapAdmin(
 
   // 2. Find-or-create the local user — matched EXACTLY the way
   // `PermissionEngine.resolveActor` matches an authenticated principal:
-  // case-insensitively on `username`, never on `primaryEmail` (see
-  // UsersRepository.findByUsername's own doc comment for why the two must
-  // not be confused).
+  // case-insensitively on `username`, within the master organization, never
+  // on `primaryEmail` (see UsersRepository.findByUsername's own doc comment
+  // for why the two must not be confused, and for why an unscoped match here
+  // would let this script activate and globally privilege a TENANT's
+  // identically-named row).
   let user = await deps.users.findByUsername(username)
   if (user === null) {
     // Keycloak usernames in this realm are email addresses

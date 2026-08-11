@@ -8,6 +8,7 @@ import { RoleAssignmentsRepository } from '../src/authz/role-assignments.reposit
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { UsersRepository } from '../src/users/users.repository'
 import { withTestDatabase } from './support/pg'
+import { seedTenant } from './support/tenant'
 
 /**
  * Task 1 (task-1-brief.md): `pnpm run bootstrap:admin` is the anti-lockout
@@ -105,6 +106,50 @@ describe('bootstrapAdmin', () => {
     expect(await countRows('org_units')).toBe(1)
     const orgUnitStep = result.steps.find((step) => step.message.includes('org unit'))
     expect(orgUnitStep?.changed).toBe(false)
+  })
+
+  /**
+   * The anti-lockout script must recover access to MASTER — the realm
+   * `JwtGuard` pins and the only one whose tokens this API accepts. Both of
+   * its lookups used to be organization-blind: `findByUsername` could adopt
+   * a tenant's identically-named row (then activate it and grant it global
+   * `super_admin`), and `findFirst` could hand the newly-created recovery
+   * admin a tenant's org unit — which, since `UsersRepository.create`
+   * derives `organization_id` from the org unit, would place the recovery
+   * account in a tenant, where `resolveActor` can never find it. Either way
+   * the operator stays locked out and a tenant gains, or hosts, the most
+   * privileged account in the system.
+   */
+  async function masterOrganizationId(): Promise<string> {
+    const { rows } = await ctx.pool.query<{ id: string }>(
+      'SELECT id FROM organizations WHERE is_master',
+    )
+    return rows[0].id
+  }
+
+  it('does not adopt an identically-named user belonging to another organization', async () => {
+    const tenant = await seedTenant(ctx.db, { username: DEFAULT_BOOTSTRAP_USERNAME })
+
+    const result = await bootstrapAdmin(deps, DEFAULT_BOOTSTRAP_USERNAME)
+
+    expect(result.userId).not.toBe(tenant.userId)
+    const created = await users.findById(result.userId)
+    expect(created?.organizationId).toBe(await masterOrganizationId())
+    // The tenant's row must be left exactly as it was found — in particular
+    // it must NOT have been handed global super_admin.
+    expect(await roleAssignments.listForUser(tenant.userId)).toEqual([])
+  })
+
+  it('creates the recovery admin in master even when only another organization has an org unit', async () => {
+    // No master org unit exists at all here, so an unscoped "reuse whatever
+    // is already there" lookup has only the tenant's to offer.
+    const tenant = await seedTenant(ctx.db, { username: 'someone.else@example.com' })
+
+    const result = await bootstrapAdmin(deps, 'recovery@example.com')
+
+    expect(result.orgUnitId).not.toBe(tenant.orgUnitId)
+    const orgUnit = await orgUnits.findById(result.orgUnitId)
+    expect(orgUnit?.organizationId).toBe(await masterOrganizationId())
   })
 
   it('activates a pre-existing pending user rather than creating a new one', async () => {

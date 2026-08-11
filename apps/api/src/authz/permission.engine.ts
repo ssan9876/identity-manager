@@ -1,11 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common'
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type { Principal } from '../auth/jwt.guard'
 import { DB_CLIENT } from '../common/db.token'
 import { ForbiddenError } from '../common/errors'
 import * as schema from '../db/schema/index'
 import { orgUnits } from '../db/schema/org-units'
+import { organizations } from '../db/schema/organizations'
 import { roleAssignments } from '../db/schema/role-assignments'
 import { users } from '../db/schema/users'
 import { ROLE_PERMISSIONS, type Action, type RoleKey } from './actions'
@@ -28,12 +29,55 @@ export class PermissionEngine {
   constructor(@Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>) {}
 
   /**
-   * Maps an authenticated Keycloak principal onto a local user by username.
-   * The sync design pushes our `username` to Keycloak, so `preferred_username`
-   * is the same value by construction.
+   * Maps an authenticated Keycloak principal onto a local user by username,
+   * WITHIN THE MASTER ORGANIZATION. The sync design pushes our `username` to
+   * Keycloak, so `preferred_username` is the same value by construction.
    *
    * INTERIM: Milestone 4 introduces `external_identities`, which stores the
    * Keycloak subject and becomes the authoritative mapping. Replace this then.
+   *
+   * WHY THE ORGANIZATION PREDICATE IS NOT OPTIONAL. `users_username_unique`
+   * is `(organization_id, lower(username))` — per-TENANT, not global, since
+   * migration 0028 (see db/schema/users.ts, which explains why it must be:
+   * a global index would let whichever tenant onboarded first permanently
+   * deny a name to every other one). So two organizations may each hold a
+   * `jsmith`. This query previously matched on `lower(username)` alone with
+   * `LIMIT 1` and no `ORDER BY`, which means it did not SELECT a user so
+   * much as accept whichever candidate row the planner happened to emit
+   * first — and `userId`, `orgUnitId` and every role assignment below all
+   * follow from that row. A master-realm operator could therefore land on
+   * another tenant's row and inherit its org-unit scope, or land on a row
+   * with no grants at all and be silently 403'd out of their own system.
+   *
+   * WHICH organization, given the token does not name one: MASTER. The
+   * token cannot name one because there is only one it could ever be.
+   * `JwtGuard` pins `issuer` and `audience` to the single configured realm
+   * (`env.keycloakIssuer`), and `adoptMasterRealm` — run in main.ts BEFORE
+   * `app.listen`, against that same `env.keycloakIssuer` — binds the master
+   * organization to exactly that realm and REFUSES TO START if the two ever
+   * disagree. "The organization whose realm issued this token" is therefore
+   * provably the master organization for every token this API is capable of
+   * accepting; the predicate below is that statement, not a guess about it.
+   * Combined with the per-tenant unique index, at most one row can now
+   * match, so the result no longer depends on the plan at all.
+   *
+   * Two alternatives were considered and rejected:
+   *
+   *   - Deriving the organization from the token's issuer at runtime (carry
+   *     the issuer on `Principal`, look up `organizations.realm`). Today it
+   *     resolves to master for every accepted token, by the argument above,
+   *     so it buys no correctness — only the machinery. It becomes the right
+   *     shape the day tenant realms are accepted as issuers, which is a
+   *     deliberate design decision about how tenants authenticate (and needs
+   *     `external_identities`, Milestone 4), not something to prejudge here.
+   *
+   *   - Treating a multi-row match as an explicit error. It fails closed,
+   *     but it fails closed on the WRONG condition: a master operator named
+   *     `jsmith` would be locked out the moment any tenant onboarded its own
+   *     `jsmith`, turning a rare mis-resolution into a guaranteed, remotely
+   *     triggerable denial — and it still would not say which row was meant.
+   *     Ambiguity is only worth reporting when the answer is genuinely
+   *     unknown; here it is known.
    *
    * Fails closed: an unmatched or non-active principal is denied, never
    * treated as an anonymous or default actor. The status check below is an
@@ -51,6 +95,12 @@ export class PermissionEngine {
         status: users.status,
       })
       .from(users)
+      // `organizations_master_unique` (a partial unique index on
+      // `is_master`) guarantees at most one row on this side of the join,
+      // and `users_username_unique` guarantees at most one matching user
+      // within it — so the `LIMIT 1` below is now belt-and-braces rather
+      // than the thing deciding the answer.
+      .innerJoin(organizations, eq(users.organizationId, organizations.id))
       // Finding M-3 (docs/archive/audits/audit-authz.md): `principal.username`
       // is bound via `sql.param`, not a bare `${...}` interpolation — this
       // was the one authorization SQL site in the codebase NOT doing so (see
@@ -63,7 +113,12 @@ export class PermissionEngine {
       // fix — but `sql.param` means the shape of this query can never again
       // be altered by the VALUE of `principal.username`, regardless of what
       // any future caller of `resolveActor` passes.
-      .where(sql`lower(${users.username}) = lower(${sql.param(principal.username)})`)
+      .where(
+        and(
+          eq(organizations.isMaster, true),
+          sql`lower(${users.username}) = lower(${sql.param(principal.username)})`,
+        ),
+      )
       .limit(1)
 
     if (row === undefined) {

@@ -5,6 +5,7 @@ import { RoleAssignmentsRepository } from '../src/authz/role-assignments.reposit
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { UsersRepository } from '../src/users/users.repository'
 import { withTestDatabase } from './support/pg'
+import { seedTenant } from './support/tenant'
 
 describe('PermissionEngine', () => {
   const ctx = withTestDatabase()
@@ -122,6 +123,71 @@ describe('PermissionEngine', () => {
     await expect(
       engine.resolveActor({ subject: 'kc-1', username: 'ada', email: null }),
     ).rejects.toBeInstanceOf(ForbiddenError)
+  })
+
+  /**
+   * Cross-tenant identity resolution. `users_username_unique` became
+   * `(organization_id, lower(username))` in migration 0028, so `jsmith` may
+   * legitimately exist once per tenant — but `resolveActor` matched on
+   * `lower(username)` alone with `LIMIT 1` and no `ORDER BY`, so WHICH
+   * `jsmith` an incoming token became was whatever the planner returned
+   * first. The resolved `userId`, `orgUnitId` and role assignments all
+   * follow from that row.
+   *
+   * Every test below seeds the TENANT row FIRST, so the physical row order a
+   * sequential scan walks puts the wrong answer in front of the right one —
+   * without that, an unscoped query could pass by luck.
+   */
+  describe('cross-tenant username collisions', () => {
+    it('resolves a colliding username to the master-organization user, never another tenant\'s', async () => {
+      const tenant = await seedTenant(ctx.db, { username: 'jsmith' })
+      const master = await makeUser('jsmith', rootId)
+
+      // Sanity: the collision this test is about really does exist. If the
+      // per-tenant unique index ever reverted to a global one, the seed
+      // above would have thrown and this assertion would never be reached.
+      expect(tenant.userId).not.toBe(master.id)
+
+      const actor = await engine.resolveActor({
+        subject: 'kc-1',
+        username: 'jsmith',
+        email: null,
+      })
+
+      expect(actor.userId).toBe(master.id)
+      // The scope half of the same bug: the tenant row's org unit would have
+      // silently become this actor's scope anchor.
+      expect(actor.orgUnitId).toBe(rootId)
+      expect(actor.orgUnitId).not.toBe(tenant.orgUnitId)
+    })
+
+    it('does not inherit another tenant\'s role assignments through a colliding username', async () => {
+      const tenant = await seedTenant(ctx.db, { username: 'jsmith' })
+      await roles.assign({ userId: tenant.userId, roleKey: 'super_admin' })
+      await makeUser('jsmith', rootId)
+
+      const actor = await engine.resolveActor({
+        subject: 'kc-1',
+        username: 'jsmith',
+        email: null,
+      })
+
+      expect(actor.assignments).toEqual([])
+      expect(engine.canAnywhere(actor, 'user:read')).toBe(false)
+    })
+
+    it('denies a principal whose only matching row belongs to another tenant', async () => {
+      // No master-organization user at all. Every token this API accepts is
+      // issued by master's realm (JwtGuard pins `issuer`/`audience`, and
+      // `adoptMasterRealm` refuses to start unless that issuer names
+      // master's realm), so a tenant row is not an identity such a token may
+      // ever become — it must fail closed, not be adopted.
+      await seedTenant(ctx.db, { username: 'jsmith' })
+
+      await expect(
+        engine.resolveActor({ subject: 'kc-1', username: 'jsmith', email: null }),
+      ).rejects.toBeInstanceOf(ForbiddenError)
+    })
   })
 
   it('denies every action to an actor with no roles', async () => {
