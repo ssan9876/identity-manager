@@ -1,3 +1,5 @@
+import { type SQL, sql } from 'drizzle-orm'
+
 /**
  * The closed vocabulary for `attribute_definitions.key`.
  *
@@ -72,4 +74,52 @@ export function validateAttributeKey(key: unknown): string[] {
     )
   }
   return problems
+}
+
+/**
+ * Advisory-lock namespace for "this attribute key", following the convention
+ * `GROUP_GRAPH_LOCK_ID` (0x1d3a_0001), the per-user sync lock (0x1d3a_0002)
+ * and `CONNECTOR_TARGET_LOCK_NAMESPACE` (0x1d3a_0003) already establish. A
+ * distinct namespace means an attribute-key lock can never collide with a
+ * `hashtext(...)` from one of those that happens to hash to the same 32 bits.
+ *
+ * WHY AN ADVISORY LOCK AND NOT `SELECT ... FOR UPDATE`, which is what guards
+ * the rest of this invariant: FOR UPDATE can only lock a row that EXISTS, and
+ * the race this closes is the one where it does not — `publishWithin` checks
+ * that no definition for `attributes.<key>` is self-editable, finds NO ROW at
+ * all, and `AttributeDefinitionsRepository.create` concurrently inserts that
+ * very key with `selfEditable: true`. Neither side can lock the other's
+ * absent row. The same argument `CONNECTOR_TARGET_LOCK_NAMESPACE` spells out
+ * at length for first-writes to `connector_targets`, applied to a name in a
+ * different table.
+ *
+ * Lives HERE, in the module that already owns the attribute key as a shared
+ * name, because both sides of the invariant need the identical expression and
+ * they live in different feature directories. This module imports nothing but
+ * `drizzle-orm`, which is what lets `business-roles/business-roles.repository`
+ * reach it without closing the cycle that importing
+ * `attributes/attribute-definitions.repository` would (that module imports
+ * `business-roles/role-evaluator`).
+ */
+export const ATTRIBUTE_KEY_LOCK_NAMESPACE = 0x1d3a_0004
+
+/**
+ * The statement both sides of the self-editable invariant run to serialise on
+ * one attribute key. `pg_advisory_xact_lock`, not the session variant, so the
+ * lock is released by the surrounding transaction's COMMIT/ROLLBACK and cannot
+ * leak back into the pool.
+ *
+ * That is also its one precondition, and it is the caller's to meet: run this
+ * inside a REAL transaction. On a pooled handle each statement is its own
+ * implicit transaction, so the lock is taken and dropped before the next
+ * statement runs and serialises nothing — the same rule
+ * `ConnectorTargetsRepository.upsert` states when it takes a required `tx`.
+ *
+ * Returned as SQL rather than executed here so this module needs no database
+ * handle type, and so there is exactly ONE spelling of the lock expression for
+ * both callers to share — two hand-written copies could disagree about the
+ * namespace or the hash and would then serialise nothing while looking right.
+ */
+export function attributeKeyLock(key: string): SQL {
+  return sql`SELECT pg_advisory_xact_lock(${ATTRIBUTE_KEY_LOCK_NAMESPACE}, hashtext(${key}::text))`
 }

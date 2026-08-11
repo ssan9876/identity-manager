@@ -7,7 +7,7 @@ import { ConflictError, NotFoundError, ValidationError } from '../common/errors'
 import { attributeDefinitions } from '../db/schema/attribute-definitions'
 import { businessRoleConditions, businessRoles } from '../db/schema/business-roles'
 import * as schema from '../db/schema/index'
-import { validateAttributeKey } from './attribute-key'
+import { attributeKeyLock, validateAttributeKey } from './attribute-key'
 import type { AttributeDataType, AttributeDefinition, ValidationRules } from './attribute-validator'
 
 /** One `attribute_definitions` row, exactly as stored. */
@@ -156,6 +156,19 @@ export class AttributeDefinitionsRepository {
     if (problems.length > 0) throw new ValidationError(problems)
 
     if (input.selfEditable === true) {
+      // Milestone 8, Task 5b. `assertNoFormulaDependsOn` below reads
+      // `business_role_conditions`; `BusinessRolesRepository.publishWithin`
+      // WRITES that table and reads this one. On the update path the two
+      // interlock through this definition's row (that method takes
+      // `FOR UPDATE` on it, publish takes `FOR UPDATE` on the rows its draft
+      // names). On the CREATE path there is no row yet for either side to
+      // lock, so under READ COMMITTED both checks pass on disjoint locks and
+      // the escalation lands — verified against a real Postgres. The advisory
+      // lock is the only thing that covers an absent row; see
+      // `attributeKeyLock`, including its one precondition: `tx` must be a
+      // real transaction, which is what Task 7's controller passes so this
+      // write and its audit row commit together.
+      await tx.execute(attributeKeyLock(input.key))
       await this.assertNoFormulaDependsOn(tx, input.key, input.appliesTo)
     }
 

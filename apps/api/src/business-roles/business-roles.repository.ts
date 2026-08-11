@@ -1,6 +1,7 @@
 import { Inject, Injectable, Optional } from '@nestjs/common'
 import { and, asc, eq, inArray } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import { attributeKeyLock } from '../attributes/attribute-key'
 import { DB_CLIENT } from '../common/db.token'
 import { ConflictError, NotFoundError } from '../common/errors'
 import { attributeDefinitions } from '../db/schema/attribute-definitions'
@@ -267,10 +268,45 @@ export class BusinessRolesRepository {
    * attribute self-editable while nothing published names it, then simulate
    * and publish; or mark it self-editable first and publish a referencing
    * role afterwards. Publication is the moment a condition becomes live, so
-   * refusing HERE closes the invariant from both directions — and, because
-   * the read happens inside the publishing transaction under the role's own
-   * `FOR UPDATE` lock, it also closes the check-then-write window a
-   * controller-level check would leave open.
+   * refusing HERE closes the invariant from both directions.
+   *
+   * CONCURRENCY IS PART OF THE INVARIANT, NOT A REFINEMENT OF IT. Two green
+   * gates on two connections still land the escalation unless the two halves
+   * take overlapping locks, and an earlier version of this method did not:
+   * it read `attribute_definitions` unlocked while `updateSafeFields` locked
+   * the `attribute_definitions` row and read `business_role_conditions`
+   * unlocked. Nothing sets an isolation level, so both run READ COMMITTED,
+   * and the lock sets were disjoint — publish locked `business_roles` (a
+   * table the other writer never touches) and the patch locked a row this
+   * side never locked. Textbook write skew, and reproduced against a real
+   * Postgres: hold this transaction open past the gate, patch
+   * `selfEditable: true` on another connection, commit both, and the role
+   * publishes with a self-editable attribute deciding its membership.
+   *
+   * Two mechanisms close it, and BOTH are needed because they cover
+   * different states of the same key:
+   *
+   * - `FOR UPDATE` on the `attribute_definitions` rows, for keys that
+   *   already have a row. Note the predicate: `self_editable` is filtered in
+   *   MEMORY, deliberately, and moving it back into the WHERE would silently
+   *   re-open the race. The row that has to be locked is the one currently
+   *   `self_editable = false` — the row the concurrent patch is about to
+   *   flip — so a WHERE that keeps only `true` rows locks exactly nothing in
+   *   the case that matters. Verified: `.for('update')` with the predicate
+   *   still in SQL leaves the probe violating.
+   *
+   * - `attributeKeyLock` (advisory, keyed on the attribute key) for keys
+   *   with NO row, where `FOR UPDATE` has nothing to lock and
+   *   `AttributeDefinitionsRepository.create` can insert the key with
+   *   `selfEditable: true` between this read and the commit. Taken over the
+   *   SORTED key set so two concurrent publishes sharing keys acquire them
+   *   in the same order and cannot deadlock.
+   *
+   * The advisory lock only serialises if the OTHER side runs inside a real
+   * transaction — on a pooled handle the lock is dropped at the end of its
+   * own statement. `publishWithin` is always in one; `create` takes a `tx`
+   * parameter that Task 7's controller supplies precisely so its write and
+   * its audit row commit together. See `attributeKeyLock`.
    *
    * Deliberately NOT carried on the `simulated_*` columns the way the SoD
    * count is. That count is pinned to a draft hash because "this publish
@@ -284,17 +320,27 @@ export class BusinessRolesRepository {
    * earlier without strengthening the invariant, and an abandoned draft would
    * then block a legitimate `selfEditable` edit forever.
    *
-   * The scoping matches Task 5's, for its reasons: `applies_to = 'user'` only
-   * (a condition reads `EvaluableUser.attributes`, so a group-scoped
-   * definition is never an input to a formula, and `(key, applies_to)`
-   * uniqueness means the same key legitimately names both rows), and no
-   * organization filter (`attribute_definitions` has no tenant column, so one
-   * global definition feeds every tenant's formulas).
+   * `applies_to = 'user'` only, and no organization filter, both matching
+   * Task 5's scoping for its reasons: a condition reads
+   * `EvaluableUser.attributes`, so a group-scoped definition is never an
+   * input to a formula and `(key, applies_to)` uniqueness means the same key
+   * legitimately names both rows; and `attribute_definitions` has no tenant
+   * column, so one global definition feeds every tenant's formulas.
+   *
+   * `is_active` is NOT filtered, and that is FORCED, not a safe-side
+   * preference. `updateSafeFields` calls `assertNoFormulaDependsOn` only when
+   * `patch.selfEditable === true`, so a patch of `{isActive: true}` alone is
+   * ungated. Skipping inactive definitions here would therefore hand back the
+   * whole escalation with every gate green: create the attribute
+   * `isActive: false, selfEditable: true`, publish a role keyed on it (this
+   * check passes — the definition is inactive), then `PATCH {isActive: true}`
+   * (Task 5's check never runs). An inactive definition blocks publication.
    *
    * `attributeDefinitions` is imported from `db/schema/attribute-definitions`
-   * rather than from `attributes/` on purpose: `AttributeDefinitionsRepository`
-   * imports `role-evaluator` for `ATTRIBUTE_PREFIX`, so reaching the other way
-   * into that module would close a cycle. The schema module is cycle-free.
+   * rather than from `attributes/attribute-definitions.repository`, which
+   * imports `role-evaluator` and would close a cycle. The schema module and
+   * `attributes/attribute-key` (which `attributeKeyLock` comes from) are both
+   * cycle-free.
    *
    * The message names the KEY and the FLAG because of who reads it. The
    * publisher holds `business_role:manage` and is being blocked by state only
@@ -315,32 +361,36 @@ export class BusinessRolesRepository {
           .map((c) => c.field.slice(ATTRIBUTE_PREFIX.length))
           .filter((key) => key.length > 0),
       ),
-    ]
+    ].sort()
     if (keys.length === 0) return
 
-    const rows = await tx
-      .select({ key: attributeDefinitions.key })
-      .from(attributeDefinitions)
-      .where(
-        and(
-          inArray(attributeDefinitions.key, keys),
-          eq(attributeDefinitions.appliesTo, 'user'),
-          eq(attributeDefinitions.selfEditable, true),
-        ),
-      )
-      .orderBy(asc(attributeDefinitions.key))
+    // Sorted above; see this method's doc comment for why the order matters
+    // and why an absent row still needs a lock.
+    for (const key of keys) {
+      await tx.execute(attributeKeyLock(key))
+    }
 
-    if (rows.length === 0) return
+    const rows = await tx
+      .select({ key: attributeDefinitions.key, selfEditable: attributeDefinitions.selfEditable })
+      .from(attributeDefinitions)
+      .where(and(inArray(attributeDefinitions.key, keys), eq(attributeDefinitions.appliesTo, 'user')))
+      .orderBy(asc(attributeDefinitions.key))
+      .for('update')
+
+    // Filtered HERE, not in the WHERE above — the whole point of the lock is
+    // to hold the rows that are currently `false`. See the doc comment.
+    const offenders = rows.filter((row) => row.selfEditable)
+    if (offenders.length === 0) return
 
     // Every offender, not the first: `parseDefinition` caps a draft at 32
     // conditions, so the list is bounded, and each name is a separate thing
     // the publisher has to get cleared.
-    const named = rows.map((row) => `"${row.key}"`).join(', ')
+    const named = offenders.map((row) => `"${row.key}"`).join(', ')
 
     throw new ConflictError(
       'publishing is refused: this draft decides membership from ' +
-        `${rows.map((row) => `${ATTRIBUTE_PREFIX}${row.key}`).join(', ')}, and ` +
-        `${rows.length === 1 ? 'that attribute is' : 'those attributes are'} self-editable — ` +
+        `${offenders.map((row) => `${ATTRIBUTE_PREFIX}${row.key}`).join(', ')}, and ` +
+        `${offenders.length === 1 ? 'that attribute is' : 'those attributes are'} self-editable — ` +
         'a user could grant themselves this role’s entitlements by editing their own profile — ' +
         `clear selfEditable on ${named} (needs attribute:manage), or change the formula`,
     )

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { and, eq, sql } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
+import { AttributeDefinitionsRepository } from '../src/attributes/attribute-definitions.repository'
 import { AuditWriter } from '../src/audit/audit.writer'
 import { BusinessRolesRepository } from '../src/business-roles/business-roles.repository'
 import { hashDefinition, parseDefinition } from '../src/business-roles/draft'
@@ -358,14 +359,22 @@ describe('the publish gate refuses a formula keyed on a self-editable attribute 
     key: string
     selfEditable?: boolean
     appliesTo?: 'user' | 'group'
-  }): Promise<void> {
-    await ctx.db.insert(attributeDefinitions).values({
-      key: over.key,
-      label: 'Seeded for the publish gate',
-      dataType: 'string',
-      appliesTo: over.appliesTo ?? 'user',
-      selfEditable: over.selfEditable ?? false,
-    })
+  }): Promise<{ id: string }> {
+    const [row] = await ctx.db
+      .insert(attributeDefinitions)
+      .values({
+        key: over.key,
+        label: 'Seeded for the publish gate',
+        dataType: 'string',
+        appliesTo: over.appliesTo ?? 'user',
+        selfEditable: over.selfEditable ?? false,
+      })
+      .returning({ id: attributeDefinitions.id })
+    return row
+  }
+
+  function attributeRepo(): AttributeDefinitionsRepository {
+    return new AttributeDefinitionsRepository(ctx.db)
   }
 
   function conditionOn(key: string): { conditions: unknown[]; grants: unknown[] } {
@@ -507,6 +516,155 @@ describe('the publish gate refuses a formula keyed on a self-editable attribute 
 
     await expect(repo().publish(role.id)).rejects.toThrow(new RegExp(first))
     await expect(repo().publish(role.id)).rejects.toThrow(new RegExp(second))
+  })
+
+  it('refuses after the draft-first ordering: condition drafted, THEN the attribute made self-editable', async () => {
+    // THE ordering this task exists for, walked end to end across BOTH
+    // repositories. Task 5's guard reads `business_role_conditions`, so while
+    // the condition is only a draft it sees nothing and correctly permits the
+    // patch; the refusal has to come from the publish side or not at all.
+    // Neither half is exercised by seeding `self_editable = true` up front,
+    // which is why this test drives `AttributeDefinitionsRepository` for real.
+    const key = uniqueKey()
+    const { id: definitionId } = await seedAttribute({ key, selfEditable: false })
+    const role = await drafted('Draft-first ordering', conditionOn(key))
+
+    // Permitted, and that is correct: nothing published names this attribute.
+    const patched = await attributeRepo().updateSafeFields(ctx.db, definitionId, {
+      selfEditable: true,
+    })
+    expect(patched.selfEditable).toBe(true)
+
+    await expect(repo().publish(role.id)).rejects.toThrow(ConflictError)
+    await expect(repo().publish(role.id)).rejects.toThrow(new RegExp(key))
+  })
+
+  it('publishes a condition on a bare `attributes.` with no key after it', async () => {
+    // `field.slice(ATTRIBUTE_PREFIX.length)` yields '' here, which is not an
+    // attribute name — `extractField` (role-evaluator.ts) treats a bare
+    // `attributes.` as an unknown field rather than an attribute named ''.
+    // The gate drops it before it can reach the lock or the `key IN (...)`
+    // predicate. Pins the boundary: no throw, no refusal, publish proceeds.
+    const role = await drafted('Bare attributes prefix', {
+      conditions: [{ field: ATTRIBUTE_PREFIX, operator: 'equals', value: 'yes' }],
+      grants: [],
+    })
+
+    await repo().publish(role.id)
+
+    expect((await repo().findById(role.id))?.draftDefinition).toBeNull()
+  })
+
+  it('refuses a selfEditable patch racing an in-flight publish (write skew, existing row)', async () => {
+    // Both halves of the invariant can pass on their own connection and still
+    // land the escalation: nothing sets an isolation level, so both run READ
+    // COMMITTED, and before Task 5b's fix round the two lock sets were
+    // DISJOINT — publish locked `business_roles` and read
+    // `attribute_definitions` unlocked, while `updateSafeFields` locked the
+    // `attribute_definitions` row and read `business_role_conditions`
+    // unlocked. Neither blocked the other. This test held both transactions
+    // open at once and observed the role published with `self_editable = true`.
+    //
+    // What closes it is publish taking `FOR UPDATE` on the definition rows its
+    // draft names — including the ones currently `false`, which is why
+    // `selfEditable` is filtered in memory rather than in the WHERE.
+    const key = uniqueKey()
+    const { id: definitionId } = await seedAttribute({ key, selfEditable: false })
+    const role = await drafted('Racing patch', conditionOn(key))
+
+    let release!: () => void
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let pastTheGate!: () => void
+    const reachedHold = new Promise<void>((resolve) => {
+      pastTheGate = resolve
+    })
+
+    // `publishWithin` on a transaction this test controls, so the publish can
+    // be parked AFTER its gate and BEFORE its commit — the exact window.
+    const publishing = ctx.db.transaction(async (tx) => {
+      await repo().publishWithin(tx, role.id)
+      pastTheGate()
+      await held
+    })
+    await reachedHold
+
+    const patching = attributeRepo()
+      .updateSafeFields(ctx.db, definitionId, { selfEditable: true })
+      .then(() => 'granted' as const)
+      .catch((error: Error) => error)
+
+    // The lock makes the ordering deterministic on its own; this wait is what
+    // keeps the test NON-VACUOUS. Remove the lock and the patch commits inside
+    // it, which is what the assertions below then catch.
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    release()
+    await publishing
+
+    expect(await patching).toBeInstanceOf(ConflictError)
+
+    const [after] = await ctx.db
+      .select({ selfEditable: attributeDefinitions.selfEditable })
+      .from(attributeDefinitions)
+      .where(eq(attributeDefinitions.id, definitionId))
+    expect(after.selfEditable).toBe(false)
+  })
+
+  it('refuses a create racing an in-flight publish (write skew, absent row)', async () => {
+    // The same race one step earlier, where `FOR UPDATE` cannot help: the
+    // definition does not exist when publish runs its gate, so there is no row
+    // for either side to lock. `attributeKeyLock` (advisory, keyed on the
+    // attribute key) is what covers an absent row.
+    //
+    // `create` runs inside a transaction here because that is the advisory
+    // lock's precondition — on a pooled handle the lock is released at the end
+    // of its own statement and serialises nothing. Task 7's controller passes
+    // a transaction for its own reason (the write and its audit row commit
+    // together), which is what makes this hold in production.
+    const key = uniqueKey()
+    const role = await drafted('Racing create', conditionOn(key))
+
+    let release!: () => void
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let pastTheGate!: () => void
+    const reachedHold = new Promise<void>((resolve) => {
+      pastTheGate = resolve
+    })
+
+    const publishing = ctx.db.transaction(async (tx) => {
+      await repo().publishWithin(tx, role.id)
+      pastTheGate()
+      await held
+    })
+    await reachedHold
+
+    const creating = ctx.db
+      .transaction((tx) =>
+        attributeRepo().create(tx, {
+          key,
+          label: 'Raced into existence',
+          dataType: 'string',
+          appliesTo: 'user',
+          selfEditable: true,
+        }),
+      )
+      .then(() => 'granted' as const)
+      .catch((error: Error) => error)
+
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    release()
+    await publishing
+
+    expect(await creating).toBeInstanceOf(ConflictError)
+
+    const rows = await ctx.db
+      .select({ selfEditable: attributeDefinitions.selfEditable })
+      .from(attributeDefinitions)
+      .where(eq(attributeDefinitions.key, key))
+    expect(rows).toEqual([])
   })
 })
 
