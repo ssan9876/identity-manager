@@ -280,6 +280,33 @@ In `apps/api/src/db/schema/attribute-definitions.ts`, inside the table's second 
 
 Add `check` to the existing `drizzle-orm/pg-core` import if it is not already there.
 
+- [ ] **Step 3a: Handle rows that already violate the rule**
+
+Every row in this table was created by a hand-written `INSERT` with no
+constraint, so a deployed host may hold a key the new `CHECK` rejects — and
+`ALTER TABLE ... ADD CONSTRAINT` then fails with an error that names the
+constraint but **not the offending row**, which is a miserable thing to hit
+mid-upgrade.
+
+Checked on the live host (ct:211) at plan time: 4 definitions, keys
+`mail_admin_role`, `mail_aliases`, `mail_enabled`, `mail_quota_mb` — all valid.
+So this is a hazard for other deployments, not this one.
+
+Put the diagnostic query in `docs/11-operations.md`'s upgrade section so an
+operator can run it *before* upgrading:
+
+```sql
+SELECT id, key FROM attribute_definitions
+WHERE key !~ '^[A-Za-z_][A-Za-z0-9_]*$'
+   OR key IN ('__proto__', 'constructor', 'prototype');
+```
+
+Do **not** make the migration auto-rename or auto-delete a violating row. A key
+is referenced by every `users.attributes` blob that carries it; silently
+renaming one orphans data, and deleting one destroys a definition an admin
+created deliberately. Failing the upgrade with a query the operator can run is
+the correct behaviour — the fix is theirs to choose.
+
 - [ ] **Step 4: Write the migration**
 
 Create `apps/api/src/db/migrations/0043_attribute_key_check.sql`:
