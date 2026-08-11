@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ATTRIBUTE_KEY_SQL_PATTERN, validateAttributeKey } from './attribute-key'
+import { validateAttributeKey } from './attribute-key'
 
 describe('validateAttributeKey', () => {
   it('accepts a plain identifier', () => {
@@ -35,21 +35,6 @@ describe('validateAttributeKey', () => {
     for (const bad of [null, undefined, 42, {}, []]) {
       expect(() => validateAttributeKey(bad)).not.toThrow()
       expect(validateAttributeKey(bad)).not.toEqual([])
-    }
-  })
-
-  // The regex and the SQL fragment are two spellings of one rule, linked
-  // only by a comment — attribute-key.ts also throws at import time if they
-  // diverge (belt), and this test pins the literal string so a change to
-  // either one without the other fails an ordinary assertion here too
-  // (suspenders), rather than relying on someone noticing the comment.
-  it('keeps the SQL CHECK pattern identical to the regex the application enforces', () => {
-    expect(ATTRIBUTE_KEY_SQL_PATTERN).toBe('^[A-Za-z_][A-Za-z0-9_]*$')
-    for (const key of ['costCentre', 'cost_centre', 'a1', '__proto__']) {
-      expect(new RegExp(ATTRIBUTE_KEY_SQL_PATTERN).test(key)).toBe(true)
-    }
-    for (const key of ['has space', 'has.dot', '1st', '']) {
-      expect(new RegExp(ATTRIBUTE_KEY_SQL_PATTERN).test(key)).toBe(false)
     }
   })
 })

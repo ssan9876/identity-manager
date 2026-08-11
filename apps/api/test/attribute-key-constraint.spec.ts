@@ -24,11 +24,46 @@ describe('attribute_definitions_key_format', () => {
     ).rejects.toThrow(/attribute_definitions_key_format/)
   })
 
+  // `__proto__` is the one the module's own doc comments dwell on, but the
+  // reserved LIST has three names — a NOT IN with only the first one wired
+  // up correctly would still pass that single case.
+  it.each(['constructor', 'prototype'])('rejects the reserved key %s too', async (key) => {
+    await expect(
+      ctx.db.execute(sql`
+        INSERT INTO attribute_definitions (key, label, data_type, applies_to)
+        VALUES (${key}, 'Reserved', 'string', 'user')
+      `),
+    ).rejects.toThrow(/attribute_definitions_key_format/)
+  })
+
   it('rejects a key with a space', async () => {
     await expect(
       ctx.db.execute(sql`
         INSERT INTO attribute_definitions (key, label, data_type, applies_to)
         VALUES ('has space', 'Spaced', 'string', 'user')
+      `),
+    ).rejects.toThrow(/attribute_definitions_key_format/)
+  })
+
+  // The exact character that broke three sibling specs' fixtures when this
+  // constraint landed (attribute-definitions.controller.spec.ts,
+  // jml-rule-applier.spec.ts, self-service.spec.ts all used hyphenated test
+  // keys, legal before this task and illegal after) — worth pinning
+  // directly, not just inferring from "has space" rejecting.
+  it('rejects a key with a hyphen', async () => {
+    await expect(
+      ctx.db.execute(sql`
+        INSERT INTO attribute_definitions (key, label, data_type, applies_to)
+        VALUES ('has-hyphen', 'Hyphenated', 'string', 'user')
+      `),
+    ).rejects.toThrow(/attribute_definitions_key_format/)
+  })
+
+  it('rejects a key starting with a digit', async () => {
+    await expect(
+      ctx.db.execute(sql`
+        INSERT INTO attribute_definitions (key, label, data_type, applies_to)
+        VALUES ('1st', 'Leading digit', 'string', 'user')
       `),
     ).rejects.toThrow(/attribute_definitions_key_format/)
   })
@@ -40,5 +75,22 @@ describe('attribute_definitions_key_format', () => {
         VALUES ('cost_centre', 'Cost centre', 'string', 'user')
       `),
     ).resolves.toBeDefined()
+  })
+
+  // A CHECK constrains every write path, not just INSERT — and Task 7's
+  // PATCH endpoint will lean on exactly this for renaming a definition's
+  // key. Proven here against a row this same suite already knows is legal
+  // (the "accepts a plain identifier" row above would work too, but seeding
+  // a fresh row keeps this test independent of suite ordering).
+  it('rejects an UPDATE that renames a key into an illegal shape, not just an INSERT', async () => {
+    await ctx.db.execute(sql`
+      INSERT INTO attribute_definitions (key, label, data_type, applies_to)
+      VALUES ('renameable', 'Renameable', 'string', 'user')
+    `)
+    await expect(
+      ctx.db.execute(sql`
+        UPDATE attribute_definitions SET key = 'has space' WHERE key = 'renameable'
+      `),
+    ).rejects.toThrow(/attribute_definitions_key_format/)
   })
 })

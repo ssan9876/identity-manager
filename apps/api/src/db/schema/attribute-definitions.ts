@@ -11,6 +11,18 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core'
+import { ATTRIBUTE_KEY_RESERVED, ATTRIBUTE_KEY_SQL_PATTERN } from '../../attributes/attribute-key'
+
+/**
+ * A single-quoted SQL string literal for `value`, doubling any embedded `'`.
+ * Only ever called on this module's own compile-time constants below (the
+ * pattern and the reserved-word list from attributes/attribute-key.ts), never
+ * on anything a caller supplies — the escaping is defensive, not a general
+ * sanitizer.
+ */
+function sqlStringLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`
+}
 
 export const attributeDataType = pgEnum('attribute_data_type', [
   'string',
@@ -94,9 +106,18 @@ export const attributeDefinitions = pgTable(
     // created by a hand-written INSERT — that is the problem this feature
     // exists to remove — so a rule enforced only in a controller would be a
     // rule the existing data has never been held to.
+    //
+    // Built from ATTRIBUTE_KEY_SQL_PATTERN / ATTRIBUTE_KEY_RESERVED, not a
+    // second hand-typed copy of either: a fix review on this table's first
+    // version found the pattern and the reserved list duplicated here as
+    // fresh string/array literals, so editing this file alone (the edit that
+    // actually changes what the database enforces) could silently diverge
+    // from the application rule with nothing catching it. Importing the
+    // single source means drizzle-kit renders the constraint FROM that
+    // source — there is no second copy left to diverge.
     keyFormat: check(
       'attribute_definitions_key_format',
-      sql`${table.key} ~ '^[A-Za-z_][A-Za-z0-9_]*$' AND ${table.key} NOT IN ('__proto__', 'constructor', 'prototype')`,
+      sql`${table.key} ~ ${sql.raw(sqlStringLiteral(ATTRIBUTE_KEY_SQL_PATTERN))} AND ${table.key} NOT IN (${sql.raw(ATTRIBUTE_KEY_RESERVED.map(sqlStringLiteral).join(', '))})`,
     ),
   }),
 )

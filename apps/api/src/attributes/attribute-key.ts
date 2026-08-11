@@ -20,16 +20,33 @@
  * though `extractField` parses them unambiguously (it slices after the first
  * `attributes.`), because a dotted key reads as a path and invites a future
  * reader to treat it as one.
+ *
+ * `ATTRIBUTE_KEY_SQL_PATTERN` is the ONE source for this rule — the regex
+ * below is derived from it (`new RegExp(...)`), not a second hand-copied
+ * literal, and `db/schema/attribute-definitions.ts` imports the same string
+ * (plus `ATTRIBUTE_KEY_RESERVED`, below) to build the
+ * `attribute_definitions_key_format` CHECK constraint. A previous version of
+ * this module kept two separately-written literals "in sync" by throwing at
+ * import time if they disagreed — but the throw could only fire from an edit
+ * to a hand-typed duplicate; making the duplicate impossible removes the
+ * failure mode instead of merely detecting it after the fact.
  */
-const KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
+export const ATTRIBUTE_KEY_SQL_PATTERN = '^[A-Za-z_][A-Za-z0-9_]*$'
+const KEY_PATTERN = new RegExp(ATTRIBUTE_KEY_SQL_PATTERN)
 const MAX_LENGTH = 64
 
 /**
  * Names that are legal jsonb keys and legal identifiers but that reach
  * Object.prototype. Compared case-sensitively: these are the exact property
  * names, and a `__PROTO__` key is inert.
+ *
+ * Exported (and typed as a tuple, not a plain `string[]`) so
+ * `db/schema/attribute-definitions.ts` can build the CHECK constraint's
+ * `NOT IN (...)` list from this exact array rather than a second hand-typed
+ * copy — same reasoning as `ATTRIBUTE_KEY_SQL_PATTERN` above.
  */
-const RESERVED = new Set(['__proto__', 'constructor', 'prototype'])
+export const ATTRIBUTE_KEY_RESERVED = ['__proto__', 'constructor', 'prototype'] as const
+const RESERVED = new Set<string>(ATTRIBUTE_KEY_RESERVED)
 
 /** Problems with `key`, empty when acceptable. Never throws — callers aggregate. */
 export function validateAttributeKey(key: unknown): string[] {
@@ -55,24 +72,4 @@ export function validateAttributeKey(key: unknown): string[] {
     )
   }
   return problems
-}
-
-/** The same rule as a SQL fragment, for the CHECK constraint. Kept beside the regex so the two cannot drift. */
-export const ATTRIBUTE_KEY_SQL_PATTERN = '^[A-Za-z_][A-Za-z0-9_]*$'
-
-// Load-bearing, not decorative: being "kept beside" each other only stops
-// drift if someone notices. This throws at import time — in production, in
-// every test run, everywhere this module is loaded — the moment the regex
-// and the SQL fragment stop saying the same thing, which is the only way to
-// make it impossible for the application and the `attribute_definitions_key_format`
-// database CHECK (attribute-definitions.ts) to silently disagree about what
-// a legal key is.
-if (KEY_PATTERN.source !== ATTRIBUTE_KEY_SQL_PATTERN) {
-  throw new Error(
-    'attribute-key.ts: KEY_PATTERN and ATTRIBUTE_KEY_SQL_PATTERN have diverged. ' +
-      `KEY_PATTERN.source is ${JSON.stringify(KEY_PATTERN.source)}, ` +
-      `ATTRIBUTE_KEY_SQL_PATTERN is ${JSON.stringify(ATTRIBUTE_KEY_SQL_PATTERN)}. ` +
-      'These must stay identical or the application and the database CHECK ' +
-      'constraint will accept different sets of keys.',
-  )
 }
