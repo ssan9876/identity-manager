@@ -104,7 +104,16 @@ const CONDITION_FIELD_EXTRACTORS: Record<string, FieldExtractor> = nullPrototype
  */
 export const ATTRIBUTES_FIELD = 'attributes'
 
-const ATTRIBUTE_PREFIX = `${ATTRIBUTES_FIELD}.`
+/**
+ * The literal prefix a custom-attribute condition's `field` carries, e.g.
+ * `attributes.cost_centre`. EXPORTED (Milestone 8, Task 5) so
+ * `AttributeDefinitionsRepository` can ask "does any published formula name
+ * this attribute?" using the exact string `extractField` matches on, rather
+ * than a third hand-typed `'attributes.'` — the same one-constant discipline
+ * `ATTRIBUTES_FIELD` above already exists to enforce between this module and
+ * role-reconciler.ts.
+ */
+export const ATTRIBUTE_PREFIX = `${ATTRIBUTES_FIELD}.`
 
 /**
  * Every scalar field nameable in a role condition, DERIVED from the extractor
