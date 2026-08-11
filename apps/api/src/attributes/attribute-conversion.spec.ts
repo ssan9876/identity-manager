@@ -85,6 +85,46 @@ describe('convertValue', () => {
     expect(convertValue('0.30000000000000004', 'string', 'number')).toEqual({ ok: true, value: 0.30000000000000004 })
   })
 
+  it('refuses text that names digits the double cannot distinguish', () => {
+    // The exact value of the double nearest 0.1 begins 0.10000000000000000555111512312578270211...
+    // This text is *closer* to that double than '0.1' is, yet it must still be refused:
+    // it renders back as '0.1', so 33 written digits are gone. The rule is round-trip
+    // identity — no written digit is lost — not "the double equals the text exactly",
+    // which would have to refuse '0.1' as well, since no double equals one tenth.
+    expect(convertValue('0.1000000000000000055511151231257827', 'string', 'number').ok).toBe(false)
+    expect(convertValue('0.1', 'string', 'number')).toEqual({ ok: true, value: 0.1 })
+    // Half-way cases round to a neighbour, so the text names a value the double is not.
+    expect(convertValue('9007199254740991.5', 'string', 'number').ok, '9007199254740991.5').toBe(false)
+    expect(convertValue('1.0000000000000001', 'string', 'number').ok, '1.0000000000000001').toBe(false)
+  })
+
+  it('accepts small magnitudes, where String(n) switches to exponential notation', () => {
+    // Below 1e-6 JavaScript renders doubles as '1e-7', '1.2e-7', '1e-19'. A precision
+    // check that compares digit positions instead of values invents a cliff here:
+    // '0.000001' accepted, '0.0000001' refused, for no reason to do with precision.
+    // Every one of these is exactly the double it parses to.
+    expect(convertValue('0.000001', 'string', 'number')).toEqual({ ok: true, value: 0.000001 })
+    expect(convertValue('0.0000001', 'string', 'number')).toEqual({ ok: true, value: 1e-7 })
+    expect(convertValue('0.0000005', 'string', 'number')).toEqual({ ok: true, value: 5e-7 })
+    expect(convertValue('0.00000012', 'string', 'number')).toEqual({ ok: true, value: 1.2e-7 })
+    expect(convertValue('-0.0000001', 'string', 'number')).toEqual({ ok: true, value: -1e-7 })
+    expect(convertValue('0.0000000000000000001', 'string', 'number')).toEqual({ ok: true, value: 1e-19 })
+  })
+
+  it('applies one rule to integers and decimals alike', () => {
+    // 9007199254740992 is exactly representable, so it is accepted — and the trailing
+    // '.0' spelling of it must not change the answer. A separate isSafeInteger policy
+    // for the no-dot spelling made these two disagree about one number.
+    expect(convertValue('9007199254740992', 'string', 'number')).toEqual({ ok: true, value: 9007199254740992 })
+    expect(convertValue('9007199254740992.0', 'string', 'number')).toEqual({ ok: true, value: 9007199254740992 })
+    // Formatting-only differences are accepted at every magnitude and sign.
+    for (const [text, value] of [['007.5', 7.5], ['-0.0', -0], ['-100.00', -100], ['42.000', 42], ['1000', 1000]] as const) {
+      expect(convertValue(text, 'string', 'number'), text).toEqual({ ok: true, value })
+    }
+    // Enough digits overflows to Infinity with no 'e' in the text to give it away.
+    expect(convertValue('1'.padEnd(310, '0'), 'string', 'number').ok, 'overflow').toBe(false)
+  })
+
   it('accepts an enum value only when it is in the allowed list', () => {
     expect(convertValue('red', 'string', 'enum', ['red', 'blue'])).toEqual({ ok: true, value: 'red' })
     expect(convertValue('green', 'string', 'enum', ['red', 'blue']).ok).toBe(false)

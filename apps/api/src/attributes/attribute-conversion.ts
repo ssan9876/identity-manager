@@ -51,23 +51,40 @@ export function convertValue(
       }
       const n = Number(text)
       if (!Number.isFinite(n)) {
-        return { ok: false, reason: `"${text}" is not finite` }
+        // Reachable: enough digits overflows to Infinity without any 'e' in the text.
+        return { ok: false, reason: `"${text}" is too large to hold as a number` }
       }
-      // For integers, refuse if outside safe range; for floats, numeric round-trip check.
-      const isInteger = !/\./.test(text)
-      if (isInteger && !Number.isSafeInteger(n)) {
-        return { ok: false, reason: `"${text}" is outside JavaScript's safe integer range` }
-      }
-      if (!isInteger) {
-        // For decimals, compare canonicalized forms of the original text and stringified number.
-        // Canonicalization removes insignificant formatting (trailing zeros, leading zeros)
-        // while preserving all significant digits. If they differ, the original text claimed
-        // precision that JavaScript's double cannot hold.
-        const canonicalText = canonicalizeDecimal(text)
-        const canonicalStringified = canonicalizeDecimal(String(n))
-        if (canonicalText !== canonicalStringified) {
-          return { ok: false, reason: `"${text}" loses precision when converted to a number` }
-        }
+      // THE RULE, stated once, for integers and decimals alike: accept the text only
+      // when it is the double's own decimal identity, ignoring presentational zeros.
+      //
+      //     normalise(text) === normalise(String(n))
+      //
+      // What that means, and why it is not "the double equals the text exactly":
+      // exact equality would refuse '0.1', because no double equals one tenth. The
+      // property actually worth enforcing is that no digit the operator wrote is
+      // lost. ECMA-262 defines Number::toString to emit the SHORTEST decimal that
+      // reparses to that exact double, so String(n) is n's canonical identity. If
+      // the text normalises to that identity, every digit written survives storage
+      // and re-rendering. If it does not, the text either carried digits the double
+      // cannot distinguish ('0.1000000000000000055511151231257827' renders back as
+      // '0.1' — 33 digits gone) or named a different value outright
+      // ('9007199254740993.0' renders back as '9007199254740992').
+      //
+      // Why it holds for EVERY input the regex admits, not just the shapes tested:
+      // normalise() reduces a decimal string to (sign, significand, power of ten)
+      // with no leading or trailing zeros in the significand — the unique normal
+      // form of the exact rational the string denotes. Uniqueness makes the compare
+      // an equality test on values rather than on formatting, so trailing zeros,
+      // leading zeros, -0 and exponential notation all collapse before comparison.
+      // Carrying the exponent as a number is what removes the magnitude cliff that
+      // digit-position juggling kept reintroducing: String(n) switches to
+      // exponential below 1e-6 and at/above 1e21, and normalise() reads both
+      // notations into the same form, so '0.0000001' and its rendering '1e-7'
+      // compare equal.
+      const normalText = normaliseDecimal(text)
+      const normalDouble = normaliseDecimal(String(n))
+      if (normalText === null || normalDouble === null || normalText !== normalDouble) {
+        return { ok: false, reason: `"${text}" is not exactly the number ${String(n)}` }
       }
       return { ok: true, value: n }
     }
@@ -127,42 +144,44 @@ function describe(value: unknown): string {
   return typeof value
 }
 
+const DECIMAL_OR_EXPONENTIAL = /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/
+
 /**
- * Canonicalize a decimal string by removing insignificant formatting:
- * trailing zeros after the decimal point, and leading zeros in the integer part.
- * This allows comparing the original text against `String(Number(text))` to detect
- * precision loss — if they differ after canonicalization, the original text claimed
- * precision the double cannot hold.
+ * Reduce a decimal string to the unique normal form of the exact rational it denotes:
+ * `<sign><significand>e<exponent>`, where the significand has no leading and no trailing
+ * zeros, and the value is `significand × 10^exponent`. Zero normalises to '0' regardless
+ * of sign or spelling. Returns null for anything that is not a decimal numeral.
  *
- * Examples:
- * - '100.00' → '100' (trailing zeros removed, decimal point dropped)
- * - '0.1' → '0.1' (no insignificant digits)
- * - '007.5' → '7.5' (leading zeros removed from integer part)
- * - '-0.0' → '0' (normalized to positive zero)
- * - '1.00000000000000001' → '1.00000000000000001' (no trailing zeros)
+ * Two strings normalise to the same form if and only if they denote the same exact
+ * value, so an equality test on the output is an equality test on values — formatting
+ * (trailing zeros, leading zeros, -0, plain vs exponential notation) is gone by then.
+ *
+ * Accepts both notations deliberately: the caller compares operator-written text, which
+ * is always plain decimal, against `String(n)`, which JavaScript renders exponentially
+ * below 1e-6 and at or above 1e21. Handling the exponent as a NUMBER rather than as a
+ * count of written zeros is what makes this free of magnitude cliffs.
+ *
+ * - '100.00'    → '1e2'      - '0.0000001' → '1e-7'
+ * - '007.5'     → '75e-1'    - '1e-7'      → '1e-7'   (same value, same form)
+ * - '-0.0'      → '0'        - '1e+21'     → '1e21'
  */
-function canonicalizeDecimal(s: string): string {
-  let result = s
+function normaliseDecimal(s: string): string | null {
+  const parts = DECIMAL_OR_EXPONENTIAL.exec(s)
+  if (parts === null) return null
+  const [, sign, intPart = '', fracPart = '', exponentPart] = parts
+  // The regex tolerates a digitless string ('', '.', 'e5'); a numeral needs a digit.
+  if (intPart === '' && fracPart === '') return null
 
-  // Remove trailing zeros after the decimal point
-  if (result.includes('.')) {
-    result = result.replace(/0+$/, '')
-    if (result.endsWith('.')) {
-      result = result.slice(0, -1)
-    }
-  }
+  // Value is (intPart ++ fracPart) × 10^(exponent - fracPart.length): moving the point
+  // right past the fraction digits is a multiplication that the exponent pays back.
+  let digits = intPart + fracPart
+  let exponent = (exponentPart === undefined ? 0 : Number(exponentPart)) - fracPart.length
 
-  // Remove leading zeros from the integer part (keep at least one digit)
-  const negative = result[0] === '-'
-  const unsigned = negative ? result.slice(1) : result
-  const [intPart, ...rest] = unsigned.split('.')
-  const canonInt = intPart.replace(/^0+/, '') || '0'
-  const canonUnsigned = rest.length > 0 ? canonInt + '.' + rest.join('.') : canonInt
+  digits = digits.replace(/^0+/, '')
+  if (digits === '') return '0'
 
-  // Normalize -0 to 0
-  if (canonUnsigned === '0') {
-    return '0'
-  }
+  const withoutTrailingZeros = digits.replace(/0+$/, '')
+  exponent += digits.length - withoutTrailingZeros.length
 
-  return negative ? '-' + canonUnsigned : canonUnsigned
+  return `${sign === '-' ? '-' : ''}${withoutTrailingZeros}e${exponent}`
 }
