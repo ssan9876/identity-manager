@@ -91,16 +91,20 @@ export class AttributeTargetMappingsRepository {
    * Milestone 11, Task 5 — EVERY remote name ever configured for `target`,
    * custom and core alike, regardless of `enabled` (deliberately NOT
    * filtered like `listForTarget` above). Exists for a narrower purpose than
-   * that method: `ActiveDirectoryConnector`'s `DesiredUser.
-   * managedAttributeRemoteNames` needs to know which AD attribute NAMES
-   * this target is configured to manage AT ALL, so a mapping that just
-   * transitioned from enabled to disabled can still be found and its
-   * now-stale value ACTIVELY CLEARED — `listForTarget`'s `WHERE enabled =
-   * true` would exclude exactly the row this needs (the one that WAS
-   * written, and now must be un-written). Only over LDAP does this matter:
-   * Keycloak's whole-object update already self-clears an omitted key (see
-   * `DesiredUser.managedAttributeRemoteNames`'s own doc comment), so no
-   * other target reads this.
+   * that method: `DesiredUser.managedAttributeRemoteNames` needs to know
+   * which remote attribute NAMES this target is configured to manage AT
+   * ALL, so a mapping that just transitioned from enabled to disabled can
+   * still be found and its now-stale value ACTIVELY CLEARED —
+   * `listForTarget`'s `WHERE enabled = true` would exclude exactly the row
+   * this needs (the one that WAS written, and now must be un-written). Read
+   * for every target in `TARGETS_NEEDING_MANAGED_ATTRIBUTE_NAMES`
+   * (outbox/sync.worker.ts) — nine targets: `active_directory`, `entra_id`,
+   * `google_workspace`, and all six `scim_*` slots — because each of those
+   * applies a PARTIAL update (LDAP `modify`, Graph `PATCH`, the Admin SDK's
+   * `update`, RFC 7644 §3.5.2 `PATCH`) that leaves an omitted key untouched
+   * rather than clearing it — unlike Keycloak, whose whole-object update
+   * already self-clears an omitted key (see `DesiredUser.
+   * managedAttributeRemoteNames`'s own doc comment).
    */
   async listAllRemoteNamesForTarget(
     target: ConnectorTarget,
@@ -231,13 +235,19 @@ export class AttributeTargetMappingsRepository {
   }
 
   /**
-   * Deletes the row outright. Behaviourally this is IDENTICAL to disabling
-   * it — every read path (`listForTarget`) already treats "no row" and "row,
-   * enabled = false" the same way — so this exists purely for an admin who
-   * wants the editor to stay tidy rather than accumulate disabled rows
-   * forever; it is never the ONLY way to stop a field propagating (disabling
-   * it is equally effective and reversible with one click, per the
-   * console's own UI).
+   * Deletes the row outright. For `listForTarget`'s sync decision this is
+   * behaviourally IDENTICAL to disabling it — its `WHERE enabled = true`
+   * excludes "no row" and "row, enabled = false" the same way, so either one
+   * stops propagation. It is NOT identical for a target in
+   * `TARGETS_NEEDING_MANAGED_ATTRIBUTE_NAMES` (outbox/sync.worker.ts):
+   * `listAllRemoteNamesForTarget` still returns a disabled row's remote
+   * name, so its now-stale value gets actively cleared in the target;
+   * deleting the row removes it from that list too, so the stale value is
+   * stranded there with nothing left to clear it. Disabling is therefore
+   * the safer default; deleting is for an admin who wants the editor to
+   * stay tidy, not a behaviourally-equivalent alternative to it, and it is
+   * never the ONLY way to stop a field propagating (disabling it is
+   * reversible with one click, per the console's own UI).
    */
   async remove(tx: DbHandle, id: string): Promise<MappingRecord | null> {
     const [row] = await tx.delete(attributeTargetMappings).where(eq(attributeTargetMappings.id, id)).returning()

@@ -120,7 +120,7 @@ function isLintConfigured() {
 }
 
 async function main() {
-  log(`starting (${quick ? 'typecheck + build only, no containers' : 'full gate, including the API suite'}) ...`)
+  log(`starting (${quick ? 'everything except the API suite, no containers' : 'full gate, including the API suite'}) ...`)
 
   stage('typecheck', 'pnpm', ['run', 'typecheck'])
 

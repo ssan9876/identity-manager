@@ -168,19 +168,25 @@ export class UsersRepository {
           primaryEmail: input.primaryEmail,
           // LOW finding (docs/archive/audits/audit-injection.md): unnormalised
           // Unicode input (NFD, RTL overrides, ZWJ, homoglyphs) was stored
-          // verbatim. `users_username_unique` and PermissionEngine.resolveActor
-          // both already agree exactly on `lower(username)` — this is NOT an
-          // ambiguous-principal-resolution bug, Postgres's own `lower()`
-          // folding rejects a same-fold collision with 409 regardless — but
-          // NFC "café" and NFD "café" fold to DIFFERENT byte sequences even
-          // after lower(), so both currently succeed as two visually
-          // IDENTICAL, distinct accounts (a display-layer impersonation risk:
-          // displayName is shown to every user in the directory). This is the
-          // only site that ever sets `username` on a user — see
-          // UsersRepository.update's own doc comment for why PATCH excludes
-          // it — so normalising here, once, on write closes the gap: two
-          // requests differing only in normalisation form now collide on the
-          // SAME stored NFC form and correctly 409 via the unique index.
+          // verbatim. Since migration 0028 (0028_organizations_uniqueness.sql),
+          // `users_username_unique` is `(organization_id, lower(username))` —
+          // scoped per tenant — while `PermissionEngine.resolveActor` still
+          // matches `lower(username)` with no organization filter and takes
+          // the first row via `.limit(1)`. So the two no longer agree: the
+          // SAME username can now exist, uniquely, in two different
+          // organizations, and which one `resolveActor` resolves to is
+          // unscoped and arbitrary — a real ambiguous-principal-resolution
+          // question, not addressed here. What normalising below DOES still
+          // close: NFC "café" and NFD "café" fold to DIFFERENT byte sequences
+          // even after lower(), so both currently succeed as two visually
+          // IDENTICAL, distinct accounts WITHIN one organization (a
+          // display-layer impersonation risk: displayName is shown to every
+          // user in the directory). This is the only site that ever sets
+          // `username` on a user — see UsersRepository.update's own doc
+          // comment for why PATCH excludes it — so normalising here, once,
+          // on write closes that within-organization gap: two requests
+          // differing only in normalisation form now collide on the SAME
+          // stored NFC form and correctly 409 via the unique index.
           username: input.username.normalize('NFC'),
           firstName: input.firstName,
           lastName: input.lastName,

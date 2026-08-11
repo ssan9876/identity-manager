@@ -53,11 +53,16 @@ export const attributeCoreField = pgEnum('attribute_core_field', [
  * propagation is default-deny") and docs/archive/specs/2026-08-06-
  * directory-connectors-design.md's "Attribute propagation, generalised".
  * `enabled = false` on an EXISTING row means exactly the same thing as no
- * row at all — both are excluded identically by every read in
- * `attributes/attribute-target-mappings.repository.ts` — so disabling a
- * mapping (leaving the row for its remote-name/history value) and deleting
- * it are behaviourally indistinguishable to a target, by construction, not
- * by convention.
+ * row at all to `listForTarget` (attributes/attribute-target-mappings.
+ * repository.ts) — its `WHERE ... enabled = true` clause excludes both
+ * identically, so propagation stops either way. Disabling and deleting are
+ * NOT interchangeable, though: `listAllRemoteNamesForTarget` and
+ * `listAllRows`, on that same repository, deliberately do NOT filter on
+ * `enabled`. A disabled row stays visible to `listAllRemoteNamesForTarget`,
+ * which is how a target that needs a de-mapped remote name actively CLEARED
+ * (see `TARGETS_NEEDING_MANAGED_ATTRIBUTE_NAMES`, outbox/sync.worker.ts)
+ * still finds it; a deleted row drops out of that same list, so the stale
+ * value it left behind in the target has nothing left to clear it.
  *
  * Exactly ONE of `attribute_definition_id` (a custom, admin-configured
  * attribute) or `core_field` (a fixed, built-in profile field — given name,

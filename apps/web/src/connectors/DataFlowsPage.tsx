@@ -131,7 +131,7 @@ export default function DataFlowsPage() {
   const [map, setMap] = useState<DataFlowMap | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
-  /** Dormant targets are collapsed by default: on a fresh install eleven of thirteen are unconfigured, and showing them all first would bury the two that matter. */
+  /** Dormant targets are collapsed by default: on a fresh install twelve of thirteen are unconfigured (migration 0011 seeds only the `keycloak` row), and showing them all first would bury the one that matters. */
   const [showDormant, setShowDormant] = useState(false)
 
   useEffect(() => {

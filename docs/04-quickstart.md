@@ -158,8 +158,7 @@ pnpm --filter @idm/web test:e2e    # Playwright end-to-end tests
 | API suite | `pnpm --filter @idm/api test` | **no** |
 
 So `verify:quick` skips **exactly one** stage — the API suite, the only one that needs
-Docker. (`verify.mjs`'s own startup line still calls that "typecheck + build only",
-which predates the web-checks and docs-checks stages.)
+Docker.
 
 The two package `test` scripts are not the same kind of thing. `@idm/api`'s is
 `vitest run`: Postgres-backed, one disposable Testcontainers database per spec file,
