@@ -22,9 +22,20 @@ export function convertValue(
   options?: readonly string[],
 ): ConversionResult {
   if (from === to) {
-    return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
-      ? { ok: true, value }
-      : { ok: false, reason: `value is ${describe(value)}, which is not a storable scalar` }
+    if (typeof value === 'string') {
+      return { ok: true, value }
+    }
+    if (typeof value === 'number') {
+      // Reject NaN and Infinity: they serialize to null in JSON, accepted with no refusal.
+      if (!Number.isFinite(value)) {
+        return { ok: false, reason: `value is ${describe(value)}, which is not finite` }
+      }
+      return { ok: true, value }
+    }
+    if (typeof value === 'boolean') {
+      return { ok: true, value }
+    }
+    return { ok: false, reason: `value is ${describe(value)}, which is not a storable scalar` }
   }
 
   const text = asText(value)
@@ -42,6 +53,15 @@ export function convertValue(
       if (!Number.isFinite(n)) {
         return { ok: false, reason: `"${text}" is not finite` }
       }
+      // For integers, refuse if outside safe range; for floats, round-trip check.
+      const isInteger = !/\./.test(text)
+      if (isInteger && !Number.isSafeInteger(n)) {
+        return { ok: false, reason: `"${text}" is outside JavaScript's safe integer range` }
+      }
+      if (!isInteger && String(n) !== text) {
+        // Decimal lost precision in parsing; e.g. '1.00000000000000001' → '1'.
+        return { ok: false, reason: `"${text}" loses precision when converted to a number` }
+      }
       return { ok: true, value: n }
     }
     case 'boolean': {
@@ -52,6 +72,20 @@ export function convertValue(
     case 'date': {
       if (!ISO_DATE.test(text) || Number.isNaN(Date.parse(text))) {
         return { ok: false, reason: `"${text}" is not an ISO-8601 date` }
+      }
+      // Date.parse does rollover: Feb 30 → Mar 2. Validate the parsed date's
+      // year/month/day against the input to detect rollovers. Only check the
+      // date part (YYYY-MM-DD), not time or timezone.
+      const parsed = new Date(text)
+      const inputMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/)
+      if (inputMatch) {
+        const [, inputYear, inputMonth, inputDay] = inputMatch
+        const parsedYear = String(parsed.getUTCFullYear()).padStart(4, '0')
+        const parsedMonth = String(parsed.getUTCMonth() + 1).padStart(2, '0')
+        const parsedDay = String(parsed.getUTCDate()).padStart(2, '0')
+        if (parsedYear !== inputYear || parsedMonth !== inputMonth || parsedDay !== inputDay) {
+          return { ok: false, reason: `"${text}" is not a valid calendar date (month/day rollover)` }
+        }
       }
       return { ok: true, value: text }
     }
