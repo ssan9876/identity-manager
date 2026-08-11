@@ -530,9 +530,9 @@ describe('the publish gate refuses a formula keyed on a self-editable attribute 
     const role = await drafted('Draft-first ordering', conditionOn(key))
 
     // Permitted, and that is correct: nothing published names this attribute.
-    const patched = await attributeRepo().updateSafeFields(ctx.db, definitionId, {
-      selfEditable: true,
-    })
+    const patched = await ctx.db.transaction((tx) =>
+      attributeRepo().updateSafeFields(tx, definitionId, { selfEditable: true }),
+    )
     expect(patched.selfEditable).toBe(true)
 
     await expect(repo().publish(role.id)).rejects.toThrow(ConflictError)
@@ -590,8 +590,8 @@ describe('the publish gate refuses a formula keyed on a self-editable attribute 
     })
     await reachedHold
 
-    const patching = attributeRepo()
-      .updateSafeFields(ctx.db, definitionId, { selfEditable: true })
+    const patching = ctx.db
+      .transaction((tx) => attributeRepo().updateSafeFields(tx, definitionId, { selfEditable: true }))
       .then(() => 'granted' as const)
       .catch((error: Error) => error)
 
@@ -617,11 +617,11 @@ describe('the publish gate refuses a formula keyed on a self-editable attribute 
     // for either side to lock. `attributeKeyLock` (advisory, keyed on the
     // attribute key) is what covers an absent row.
     //
-    // `create` runs inside a transaction here because that is the advisory
-    // lock's precondition — on a pooled handle the lock is released at the end
-    // of its own statement and serialises nothing. Task 7's controller passes
-    // a transaction for its own reason (the write and its audit row commit
-    // together), which is what makes this hold in production.
+    // `create` runs inside a transaction because that is the advisory lock's
+    // precondition — on a pooled handle the lock is released at the end of its
+    // own statement and serialises nothing. It is no longer possible to get
+    // that wrong: `create` takes `DbHandle`, so the pooled handle is a compile
+    // error rather than a call that quietly protects nothing.
     const key = uniqueKey()
     const role = await drafted('Racing create', conditionOn(key))
 

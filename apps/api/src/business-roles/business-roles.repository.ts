@@ -300,13 +300,31 @@ export class BusinessRolesRepository {
    *   `AttributeDefinitionsRepository.create` can insert the key with
    *   `selfEditable: true` between this read and the commit. Taken over the
    *   SORTED key set so two concurrent publishes sharing keys acquire them
-   *   in the same order and cannot deadlock.
+   *   in the same order.
+   *
+   * THE FULL ACQUISITION ORDER on this side is: the `business_roles` row
+   * (`FOR UPDATE`, at the top of `publishWithin`) → the advisory locks, in
+   * sorted key order → the `attribute_definitions` rows. Sorting alone is not
+   * what makes that deadlock-free, and an earlier version of this comment
+   * stopped there. The load-bearing fact is what the OTHER side does NOT do:
+   * `create` takes one advisory lock and then runs an UNLOCKED join over
+   * `business_role_conditions`/`business_roles`, and `updateSafeFields` takes
+   * a row lock and then the same unlocked join. Neither ever waits on a row
+   * lock this side holds, so there is no pair of waiters facing opposite ways
+   * and a cycle is unreachable rather than merely unlikely.
+   *
+   * (The lock IDENTITY is `hashtext(key)` while the sort is on `key`, so two
+   * keys whose hashes collide could in principle be acquired out of order.
+   * Left undefended: it needs a 32-bit collision between two keys in the same
+   * pair of drafts, and Postgres resolves the result as a `40P01` abort rather
+   * than a hang.)
    *
    * The advisory lock only serialises if the OTHER side runs inside a real
-   * transaction — on a pooled handle the lock is dropped at the end of its
-   * own statement. `publishWithin` is always in one; `create` takes a `tx`
-   * parameter that Task 7's controller supplies precisely so its write and
-   * its audit row commit together. See `attributeKeyLock`.
+   * transaction — on a pooled handle it is dropped at the end of its own
+   * statement. `publishWithin` is always in one, and `create` is now TYPED to
+   * require one (`DbHandle`), because this was a documented convention first
+   * and the convention was already being violated in the test suite. See
+   * `attributeKeyLock` and `AttributeDefinitionsRepository`'s own type comment.
    *
    * Deliberately NOT carried on the `simulated_*` columns the way the SoD
    * count is. That count is pinned to a draft hash because "this publish

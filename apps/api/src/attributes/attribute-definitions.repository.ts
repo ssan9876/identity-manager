@@ -7,6 +7,7 @@ import { ConflictError, NotFoundError, ValidationError } from '../common/errors'
 import { attributeDefinitions } from '../db/schema/attribute-definitions'
 import { businessRoleConditions, businessRoles } from '../db/schema/business-roles'
 import * as schema from '../db/schema/index'
+import type { DbHandle } from '../outbox/outbox.writer'
 import { attributeKeyLock, validateAttributeKey } from './attribute-key'
 import type { AttributeDataType, AttributeDefinition, ValidationRules } from './attribute-validator'
 
@@ -14,15 +15,44 @@ import type { AttributeDataType, AttributeDefinition, ValidationRules } from './
 type AttributeDefinitionRow = typeof attributeDefinitions.$inferSelect
 
 /**
- * Any handle that can run a statement — the pooled client or a transaction
- * the caller already opened. Deliberately NOT `outbox.writer`'s `DbHandle`
- * (transaction-only): nothing here writes an outbox or audit row, so there is
- * no atomicity contract to enforce through the type. Task 7's controller
- * still passes its own `tx` so the change and its audit row commit together,
- * and the refusals below run on whatever handle they are given, inside that
- * same transaction.
+ * The write methods below take `outbox.writer`'s `DbHandle` — a LIVE
+ * TRANSACTION, not "the pooled client or a transaction". An earlier version
+ * of this file aliased `NodePgDatabase` here instead and argued the narrowing
+ * was unnecessary because "nothing here writes an outbox or audit row, so
+ * there is no atomicity contract to enforce through the type". Milestone 8,
+ * Task 5b invalidated that: there is now a contract to enforce, and it is
+ * SERIALISATION rather than atomicity.
+ *
+ * Both refusals in this file span more than one statement, and on the pooled
+ * handle each statement is its own implicit transaction, so both of them come
+ * apart:
+ *
+ * - `create` takes `attributeKeyLock` and then reads
+ *   `business_role_conditions`. `pg_advisory_xact_lock` is released at the end
+ *   of the transaction that took it, so on the pool the lock is gone before
+ *   the read runs and serialises nothing —
+ *   `BusinessRolesRepository.publishWithin` can publish a formula naming this
+ *   key in the gap. Reproduced against a real Postgres, both ways round: the
+ *   pooled handle lands the escalation, the transaction refuses it.
+ *
+ * - `updateSafeFields` takes `SELECT ... FOR UPDATE` on the row and then
+ *   UPDATEs it. On the pool the row lock is released before the UPDATE is
+ *   sent, which makes that method's own doc comment ("taking the row lock
+ *   means two concurrent patches of the same definition serialise rather than
+ *   interleaving") false. That one predates Task 5b.
+ *
+ * A comment cannot hold this — one was already ignored. `DbHandle` resolves to
+ * drizzle's `PgTransaction`, which has members the pooled handle does not
+ * (e.g. `rollback`), so passing the pool is a COMPILE ERROR. On its first
+ * compile the change caught a real miscall in
+ * `test/attribute-definitions.repository.spec.ts`, which had been passing the
+ * pooled handle to `create({selfEditable: true})` — the exact call the lock is
+ * supposed to protect.
+ *
+ * Same narrowing the sibling `attribute-target-mappings.repository.ts` already
+ * applies to its own `create`/`update`, and imported from `outbox.writer`
+ * rather than redeclared, since that module already owns this type.
  */
-type DbLike = NodePgDatabase<typeof schema>
 
 export interface CreateAttributeDefinitionInput {
   key: string
@@ -145,29 +175,39 @@ export class AttributeDefinitionsRepository {
   /**
    * Create one definition.
    *
+   * `tx` MUST BE A LIVE TRANSACTION, and that is a correctness requirement,
+   * not a style preference. When `selfEditable` is true this method takes an
+   * advisory lock and then runs its refusal as a separate statement; the lock
+   * is transaction-scoped, so on a pooled handle it would be released before
+   * the refusal it exists to protect ever ran, and
+   * `BusinessRolesRepository.publishWithin` could publish a formula naming
+   * this key in the gap. The type enforces it (`DbHandle` — see its comment
+   * above); this sentence is here so a caller reading the signature learns why
+   * before the compiler tells them.
+   *
    * The key is validated HERE, in the repository, and not only in Task 7's
    * DTO: `attribute_definitions_key_format` is the database's backstop but
    * it surfaces as a raw 23514 with no usable message, so the caller gets
    * `validateAttributeKey`'s own problems instead. Defence in depth in the
    * literal sense — three layers, none of them the only one.
    */
-  async create(tx: DbLike, input: CreateAttributeDefinitionInput): Promise<AttributeDefinition> {
+  async create(tx: DbHandle, input: CreateAttributeDefinitionInput): Promise<AttributeDefinition> {
     const problems = validateAttributeKey(input.key)
     if (problems.length > 0) throw new ValidationError(problems)
 
     if (input.selfEditable === true) {
       // Milestone 8, Task 5b. `assertNoFormulaDependsOn` below reads
       // `business_role_conditions`; `BusinessRolesRepository.publishWithin`
-      // WRITES that table and reads this one. On the update path the two
-      // interlock through this definition's row (that method takes
+      // WRITES that table and reads this one. On the UPDATE path the two
+      // interlock through this definition's row (`updateSafeFields` takes
       // `FOR UPDATE` on it, publish takes `FOR UPDATE` on the rows its draft
       // names). On the CREATE path there is no row yet for either side to
       // lock, so under READ COMMITTED both checks pass on disjoint locks and
       // the escalation lands — verified against a real Postgres. The advisory
-      // lock is the only thing that covers an absent row; see
-      // `attributeKeyLock`, including its one precondition: `tx` must be a
-      // real transaction, which is what Task 7's controller passes so this
-      // write and its audit row commit together.
+      // lock is the only thing that can cover an absent row.
+      //
+      // Everything after this line and before COMMIT is the critical section,
+      // which is why `tx` is a transaction (see this method's doc comment).
       await tx.execute(attributeKeyLock(input.key))
       await this.assertNoFormulaDependsOn(tx, input.key, input.appliesTo)
     }
@@ -203,7 +243,7 @@ export class AttributeDefinitionsRepository {
    * of the other.
    */
   async updateSafeFields(
-    tx: DbLike,
+    tx: DbHandle,
     id: string,
     patch: SafeFieldPatch,
   ): Promise<AttributeDefinition> {
@@ -284,7 +324,7 @@ export class AttributeDefinitionsRepository {
    * the role that actually escalates.
    */
   private async assertNoFormulaDependsOn(
-    tx: DbLike,
+    tx: DbHandle,
     key: string,
     appliesTo: 'user' | 'group',
   ): Promise<void> {

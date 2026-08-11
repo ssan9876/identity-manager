@@ -109,11 +109,17 @@ export const ATTRIBUTE_KEY_LOCK_NAMESPACE = 0x1d3a_0004
  * lock is released by the surrounding transaction's COMMIT/ROLLBACK and cannot
  * leak back into the pool.
  *
- * That is also its one precondition, and it is the caller's to meet: run this
- * inside a REAL transaction. On a pooled handle each statement is its own
- * implicit transaction, so the lock is taken and dropped before the next
- * statement runs and serialises nothing — the same rule
- * `ConnectorTargetsRepository.upsert` states when it takes a required `tx`.
+ * That is also its one precondition: run this inside a REAL transaction. On a
+ * pooled handle each statement is its own implicit transaction, so the lock is
+ * taken and dropped before the next statement runs and serialises nothing —
+ * the same rule `ConnectorTargetsRepository.upsert` states when it takes a
+ * required `tx`.
+ *
+ * Both callers TYPE that precondition rather than merely documenting it
+ * (`publishWithin` is handed a transaction by definition;
+ * `AttributeDefinitionsRepository.create` takes `outbox.writer`'s `DbHandle`).
+ * A comment was tried first and was already being violated by the test suite,
+ * which is the whole argument for the narrower type.
  *
  * Returned as SQL rather than executed here so this module needs no database
  * handle type, and so there is exactly ONE spelling of the lock expression for

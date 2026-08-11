@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
+import type {
+  CreateAttributeDefinitionInput,
+  SafeFieldPatch,
+} from '../src/attributes/attribute-definitions.repository'
 import { AttributeDefinitionsRepository } from '../src/attributes/attribute-definitions.repository'
 import { ATTRIBUTE_PREFIX } from '../src/business-roles/role-evaluator'
 import { ConflictError, NotFoundError, ValidationError } from '../src/common/errors'
@@ -29,6 +33,28 @@ describe('AttributeDefinitionsRepository', () => {
 
   function repo(): AttributeDefinitionsRepository {
     return new AttributeDefinitionsRepository(ctx.db)
+  }
+
+  /**
+   * The same repository, with each write run inside its OWN transaction.
+   *
+   * `create` and `updateSafeFields` take a LIVE TRANSACTION (`DbHandle`), not
+   * the pooled handle, since Milestone 8 Task 5b — see that type's doc comment
+   * in the repository. Both of their guards span several statements held
+   * together by TRANSACTION-SCOPED locks (`pg_advisory_xact_lock`,
+   * `SELECT ... FOR UPDATE`), and on the pooled handle each statement is its
+   * own implicit transaction, so the lock is released before the statement it
+   * was taken to protect. Passing `ctx.db` is now a compile error rather than
+   * a silently ineffective call — which is how this file's own
+   * `create(ctx.db, { selfEditable: true })` was found.
+   */
+  function txRepo() {
+    return {
+      create: (input: CreateAttributeDefinitionInput) =>
+        ctx.db.transaction((tx) => repo().create(tx, input)),
+      updateSafeFields: (id: string, patch: SafeFieldPatch) =>
+        ctx.db.transaction((tx) => repo().updateSafeFields(tx, id, patch)),
+    }
   }
 
   /** Unique per call, and legal under attributes/attribute-key.ts (letters, digits, underscore). */
@@ -85,11 +111,11 @@ describe('AttributeDefinitionsRepository', () => {
       const roleName = await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${definition.key}`)
 
       await expect(
-        repo().updateSafeFields(ctx.db, definition.id, { selfEditable: true }),
+        txRepo().updateSafeFields(definition.id, { selfEditable: true }),
       ).rejects.toThrow(/business role/i)
 
-      const error = await repo()
-        .updateSafeFields(ctx.db, definition.id, { selfEditable: true })
+      const error = await txRepo()
+        .updateSafeFields(definition.id, { selfEditable: true })
         .catch((e: unknown) => e)
       // The operator must learn WHICH roles, or they cannot act on the refusal.
       expect(String((error as Error).message)).toContain(roleName)
@@ -114,8 +140,8 @@ describe('AttributeDefinitionsRepository', () => {
         enabled: false,
       })
 
-      const error = await repo()
-        .updateSafeFields(ctx.db, definition.id, { selfEditable: true })
+      const error = await txRepo()
+        .updateSafeFields(definition.id, { selfEditable: true })
         .catch((e: unknown) => e)
       expect(String((error as Error).message)).toContain(roleName)
     })
@@ -129,8 +155,8 @@ describe('AttributeDefinitionsRepository', () => {
         name: `Zebra ${randomUUID()}`,
       })
 
-      const error = await repo()
-        .updateSafeFields(ctx.db, definition.id, { selfEditable: true })
+      const error = await txRepo()
+        .updateSafeFields(definition.id, { selfEditable: true })
         .catch((e: unknown) => e)
       expect(String((error as Error).message)).toContain(first)
       expect(String((error as Error).message)).toContain(second)
@@ -145,8 +171,8 @@ describe('AttributeDefinitionsRepository', () => {
       const key = uniqueKey('unborn')
       const roleName = await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${key}`)
 
-      const error = await repo()
-        .create(ctx.db, {
+      const error = await txRepo()
+        .create({
           key,
           label: 'Clearance',
           dataType: 'string',
@@ -175,7 +201,7 @@ describe('AttributeDefinitionsRepository', () => {
       const definition = await seedDefinition()
 
       await expect(
-        repo().updateSafeFields(ctx.db, definition.id, { selfEditable: true }),
+        txRepo().updateSafeFields(definition.id, { selfEditable: true }),
       ).resolves.toMatchObject({ selfEditable: true })
     })
 
@@ -184,7 +210,7 @@ describe('AttributeDefinitionsRepository', () => {
       await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${uniqueKey('other')}`)
 
       await expect(
-        repo().updateSafeFields(ctx.db, definition.id, { selfEditable: true }),
+        txRepo().updateSafeFields(definition.id, { selfEditable: true }),
       ).resolves.toMatchObject({ selfEditable: true })
     })
 
@@ -196,7 +222,7 @@ describe('AttributeDefinitionsRepository', () => {
       await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${definition.key}_band`)
 
       await expect(
-        repo().updateSafeFields(ctx.db, definition.id, { selfEditable: true }),
+        txRepo().updateSafeFields(definition.id, { selfEditable: true }),
       ).resolves.toMatchObject({ selfEditable: true })
     })
 
@@ -211,7 +237,7 @@ describe('AttributeDefinitionsRepository', () => {
       await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${key}`)
 
       await expect(
-        repo().updateSafeFields(ctx.db, groupDefinition.id, { selfEditable: true }),
+        txRepo().updateSafeFields(groupDefinition.id, { selfEditable: true }),
       ).resolves.toMatchObject({ selfEditable: true, appliesTo: 'group' })
     })
 
@@ -220,7 +246,7 @@ describe('AttributeDefinitionsRepository', () => {
       await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${definition.key}`)
 
       await expect(
-        repo().updateSafeFields(ctx.db, definition.id, { selfEditable: false }),
+        txRepo().updateSafeFields(definition.id, { selfEditable: false }),
       ).resolves.toMatchObject({ selfEditable: false })
     })
 
@@ -229,7 +255,7 @@ describe('AttributeDefinitionsRepository', () => {
       await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${definition.key}`)
 
       await expect(
-        repo().updateSafeFields(ctx.db, definition.id, { label: 'Renamed', required: true }),
+        txRepo().updateSafeFields(definition.id, { label: 'Renamed', required: true }),
       ).resolves.toMatchObject({ label: 'Renamed', required: true })
     })
 
@@ -238,7 +264,7 @@ describe('AttributeDefinitionsRepository', () => {
       await seedRoleWithCondition('jobTitle')
 
       await expect(
-        repo().updateSafeFields(ctx.db, definition.id, { selfEditable: true }),
+        txRepo().updateSafeFields(definition.id, { selfEditable: true }),
       ).resolves.toMatchObject({ selfEditable: true })
     })
 
@@ -247,7 +273,7 @@ describe('AttributeDefinitionsRepository', () => {
       await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${key}`)
 
       await expect(
-        repo().create(ctx.db, { key, label: 'Referenced', dataType: 'string', appliesTo: 'user' }),
+        txRepo().create({ key, label: 'Referenced', dataType: 'string', appliesTo: 'user' }),
       ).resolves.toMatchObject({ key, selfEditable: false })
     })
   })
@@ -259,7 +285,7 @@ describe('AttributeDefinitionsRepository', () => {
   describe('create', () => {
     it('refuses a reserved key on create', async () => {
       await expect(
-        repo().create(ctx.db, {
+        txRepo().create({
           key: '__proto__',
           label: 'x',
           dataType: 'string',
@@ -271,8 +297,8 @@ describe('AttributeDefinitionsRepository', () => {
     it.each(['constructor', 'prototype', 'has space', 'has-hyphen', '1st', ''])(
       'refuses the illegal key "%s" as a ValidationError, before touching the database',
       async (key) => {
-        const error = await repo()
-          .create(ctx.db, { key, label: 'x', dataType: 'string', appliesTo: 'user' })
+        const error = await txRepo()
+          .create({ key, label: 'x', dataType: 'string', appliesTo: 'user' })
           .catch((e: unknown) => e)
         expect(error).toBeInstanceOf(ValidationError)
         // Not a raw Postgres CHECK violation surfacing as a 500 — the
@@ -284,7 +310,7 @@ describe('AttributeDefinitionsRepository', () => {
     it('creates a definition with every field it was given', async () => {
       const key = uniqueKey('full')
       await expect(
-        repo().create(ctx.db, {
+        txRepo().create({
           key,
           label: 'Cost centre',
           dataType: 'string',
@@ -307,19 +333,19 @@ describe('AttributeDefinitionsRepository', () => {
 
     it('reports a duplicate key for the same scope as a conflict, not a raw driver error', async () => {
       const key = uniqueKey('dup')
-      await repo().create(ctx.db, { key, label: 'First', dataType: 'string', appliesTo: 'user' })
+      await txRepo().create({ key, label: 'First', dataType: 'string', appliesTo: 'user' })
 
       await expect(
-        repo().create(ctx.db, { key, label: 'Second', dataType: 'string', appliesTo: 'user' }),
+        txRepo().create({ key, label: 'Second', dataType: 'string', appliesTo: 'user' }),
       ).rejects.toBeInstanceOf(ConflictError)
     })
 
     it('allows the same key for the other entity type', async () => {
       const key = uniqueKey('scoped')
-      await repo().create(ctx.db, { key, label: 'User side', dataType: 'string', appliesTo: 'user' })
+      await txRepo().create({ key, label: 'User side', dataType: 'string', appliesTo: 'user' })
 
       await expect(
-        repo().create(ctx.db, { key, label: 'Group side', dataType: 'string', appliesTo: 'group' }),
+        txRepo().create({ key, label: 'Group side', dataType: 'string', appliesTo: 'group' }),
       ).resolves.toMatchObject({ key, appliesTo: 'group' })
     })
   })
@@ -327,14 +353,14 @@ describe('AttributeDefinitionsRepository', () => {
   describe('updateSafeFields', () => {
     it('reports an unknown id as not found', async () => {
       await expect(
-        repo().updateSafeFields(ctx.db, randomUUID(), { label: 'x' }),
+        txRepo().updateSafeFields(randomUUID(), { label: 'x' }),
       ).rejects.toBeInstanceOf(NotFoundError)
     })
 
     it('returns the definition unchanged for an empty patch', async () => {
       const definition = await seedDefinition({ label: 'Untouched' })
 
-      await expect(repo().updateSafeFields(ctx.db, definition.id, {})).resolves.toMatchObject({
+      await expect(txRepo().updateSafeFields(definition.id, {})).resolves.toMatchObject({
         id: definition.id,
         label: 'Untouched',
       })
