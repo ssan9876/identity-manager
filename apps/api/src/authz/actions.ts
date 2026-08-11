@@ -30,6 +30,8 @@ export type Action =
   | 'organization:read'
   | 'organization:create'
   | 'organization:update'
+  | 'attribute:read'
+  | 'attribute:manage'
 
 export const ALL_ROLE_KEYS: readonly RoleKey[] = [
   'super_admin',
@@ -96,6 +98,27 @@ export const ALL_ACTIONS: readonly Action[] = [
   'organization:read',
   'organization:create',
   'organization:update',
+  // Attribute definitions write path (2026-08-10 SDD), Task 3. GET
+  // /attribute-definitions moves onto `attribute:read` here; Task 7 is what
+  // actually flips the route's `@RequirePermission`, so as of THIS task the
+  // controller still checks `user:read`. Recorded now because moving the
+  // action off `user:read` is a deliberate NARROWING: help_desk holds
+  // `user:read` and can therefore list definitions today, and will not once
+  // Task 7 lands, because help_desk reads people, not schema. A permission
+  // that quietly stops working is worse than one that visibly never did.
+  //
+  // `attribute:manage` is `super_admin`-only (reachable only through
+  // ALL_ACTIONS below) because a definition is schema, not data, and two of
+  // its fields carry privilege beyond an ordinary write: `sensitive` governs
+  // audit-log redaction, so turning it on REDUCES what the audit log can
+  // see; `selfEditable` lets an end user edit their own value for that
+  // attribute, and role-evaluator.ts supports an open-ended
+  // `attributes.<key>` condition, so a custom attribute can decide business-
+  // role membership and therefore entitlements. `attribute:read` is ordinary
+  // directory work, on the same terms as `business_role:read`/`recert:read`:
+  // granted to `super_admin`, `user_admin`, `auditor` and `read_only`.
+  'attribute:read',
+  'attribute:manage',
 ]
 
 const READ_ONLY_ACTIONS: readonly Action[] = ['user:read', 'group:read', 'org_unit:read']
@@ -173,6 +196,13 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly Action[]> = Object.assig
       // this" investigation surface — while opening or closing a campaign
       // (`recert:manage`) stays super_admin's alone.
       'recert:read',
+      // Attribute definitions write path, Task 3 — READ only, mirroring
+      // business_role:read/recert:read exactly: a user_admin creating or
+      // editing a user needs to know what attributes exist and how they
+      // render. `attribute:manage` stays super_admin's alone (reachable only
+      // through ALL_ACTIONS above) — see that catalog's own doc comment for
+      // why (`sensitive` and `selfEditable` both carry privilege).
+      'attribute:read',
     ],
     help_desk: ['user:read', 'user:update', 'group:read', 'org_unit:read'],
     // Milestone 14, Task 9 — connector admin console. `connector:read` joins
@@ -203,8 +233,19 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly Action[]> = Object.assig
     // campaign items describe decisions, they neither confer access nor
     // decide anything. `recert:manage` is super_admin's alone (reachable
     // only through ALL_ACTIONS above).
-    auditor: [...READ_ONLY_ACTIONS, 'audit:read', 'connector:read', 'business_role:read', 'recert:read'],
-    read_only: [...READ_ONLY_ACTIONS, 'business_role:read', 'recert:read'],
+    // `attribute:read` joins both read sets on business_role:read's exact
+    // terms: a definition describes the shape of directory data, and reading
+    // it is a pure read with no privilege of its own — the privilege lives
+    // in `attribute:manage`, held by super_admin alone.
+    auditor: [
+      ...READ_ONLY_ACTIONS,
+      'audit:read',
+      'connector:read',
+      'business_role:read',
+      'recert:read',
+      'attribute:read',
+    ],
+    read_only: [...READ_ONLY_ACTIONS, 'business_role:read', 'recert:read', 'attribute:read'],
   } satisfies Record<RoleKey, readonly Action[]>,
 )
 

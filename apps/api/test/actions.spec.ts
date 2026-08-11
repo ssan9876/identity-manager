@@ -27,6 +27,23 @@ describe('sso_app actions', () => {
   })
 })
 
+describe('attribute actions', () => {
+  it('carries the attribute actions, and super_admin alone may manage', () => {
+    expect(ALL_ACTIONS).toContain('attribute:read')
+    expect(ALL_ACTIONS).toContain('attribute:manage')
+
+    // Reading a definition is ordinary directory work.
+    for (const role of ['super_admin', 'user_admin', 'auditor', 'read_only'] as const) {
+      expect(ROLE_PERMISSIONS[role]).toContain('attribute:read')
+    }
+    // Managing one is schema work, and carries `sensitive` and `selfEditable`.
+    expect(ROLE_PERMISSIONS.super_admin).toContain('attribute:manage')
+    for (const role of ['user_admin', 'help_desk', 'auditor', 'read_only'] as const) {
+      expect(ROLE_PERMISSIONS[role]).not.toContain('attribute:manage')
+    }
+  })
+})
+
 describe('role catalog', () => {
   it('defines permissions for every role', () => {
     for (const role of ALL_ROLE_KEYS) {

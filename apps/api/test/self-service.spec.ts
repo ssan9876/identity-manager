@@ -755,8 +755,19 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       // everyone who can already see the memberships it explains. It also
       // holds recert:read on the same terms — an attestation record is a pure
       // read describing a decision, not conferring or deciding anything.
+      // Attribute definitions write path, Task 3: read_only also holds
+      // attribute:read — a definition describes the shape of directory data,
+      // and reading it is a pure read on the same terms as business_role:read
+      // and recert:read above (authz/actions.ts's own doc comment).
       expect([...res.body.actions].sort()).toEqual(
-        ['user:read', 'group:read', 'org_unit:read', 'business_role:read', 'recert:read'].sort(),
+        [
+          'user:read',
+          'group:read',
+          'org_unit:read',
+          'business_role:read',
+          'recert:read',
+          'attribute:read',
+        ].sort(),
       )
     })
 
@@ -787,6 +798,9 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       // reason it is on read_only: seeing WHY someone holds a membership is
       // part of reviewing that they should. recert:read joins on the same
       // terms: an attestation record is a pure read describing a decision.
+      // Attribute definitions write path, Task 3 adds attribute:read to
+      // auditor on the identical terms: a definition is a pure read that
+      // describes the shape of directory data, not a privilege of its own.
       expect([...actions].sort()).toEqual(
         [
           'user:read',
@@ -797,6 +811,7 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
           'connector:read',
           'business_role:read',
           'recert:read',
+          'attribute:read',
         ].sort(),
       )
     })
