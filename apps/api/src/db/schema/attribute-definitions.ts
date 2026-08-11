@@ -1,5 +1,7 @@
+import { sql } from 'drizzle-orm'
 import {
   boolean,
+  check,
   integer,
   jsonb,
   pgEnum,
@@ -85,6 +87,16 @@ export const attributeDefinitions = pgTable(
     keyScopeUnique: uniqueIndex('attribute_definitions_key_scope_unique').on(
       table.key,
       table.appliesTo,
+    ),
+
+    // Behind the application rule in attributes/attribute-key.ts, not instead
+    // of it. Every attribute_definitions row on a deployed host today was
+    // created by a hand-written INSERT — that is the problem this feature
+    // exists to remove — so a rule enforced only in a controller would be a
+    // rule the existing data has never been held to.
+    keyFormat: check(
+      'attribute_definitions_key_format',
+      sql`${table.key} ~ '^[A-Za-z_][A-Za-z0-9_]*$' AND ${table.key} NOT IN ('__proto__', 'constructor', 'prototype')`,
     ),
   }),
 )

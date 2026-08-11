@@ -151,7 +151,7 @@ describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
     const tag = nextTag()
     await ctx.db.insert(attributeDefinitions).values([
       {
-        key: `zLast-${tag}`,
+        key: `zLast_${tag}`,
         label: 'Z Last',
         dataType: 'string',
         appliesTo: 'user',
@@ -159,7 +159,7 @@ describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
         sortOrder: 5,
       },
       {
-        key: `aFirst-${tag}`,
+        key: `aFirst_${tag}`,
         label: 'A First',
         dataType: 'string',
         appliesTo: 'user',
@@ -167,7 +167,7 @@ describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
         sortOrder: 1,
       },
       {
-        key: `inactive-${tag}`,
+        key: `inactive_${tag}`,
         label: 'Inactive',
         dataType: 'string',
         appliesTo: 'user',
@@ -175,7 +175,7 @@ describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
         sortOrder: 0,
       },
       {
-        key: `groupScoped-${tag}`,
+        key: `groupScoped_${tag}`,
         label: 'Group Scoped',
         dataType: 'string',
         appliesTo: 'group',
@@ -191,7 +191,7 @@ describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
     const keys = (res.body as { key: string }[])
       .map((d) => d.key)
       .filter((k) => k.endsWith(tag))
-    expect(keys).toEqual([`aFirst-${tag}`, `zLast-${tag}`])
+    expect(keys).toEqual([`aFirst_${tag}`, `zLast_${tag}`])
   })
 
   it('returns active, group-scoped definitions for a caller holding group:read (appliesTo=group), never a user-scoped sibling', async () => {
@@ -202,8 +202,8 @@ describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
 
     const tag = nextTag()
     await ctx.db.insert(attributeDefinitions).values([
-      { key: `groupOnly-${tag}`, label: 'Group Only', dataType: 'string', appliesTo: 'group', isActive: true },
-      { key: `userSibling-${tag}`, label: 'User Sibling', dataType: 'string', appliesTo: 'user', isActive: true },
+      { key: `groupOnly_${tag}`, label: 'Group Only', dataType: 'string', appliesTo: 'group', isActive: true },
+      { key: `userSibling_${tag}`, label: 'User Sibling', dataType: 'string', appliesTo: 'user', isActive: true },
     ])
 
     const res = await request(app.getHttpServer())
@@ -211,8 +211,8 @@ describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
       .expect(200)
 
     const keys = (res.body as { key: string }[]).map((d) => d.key)
-    expect(keys).toContain(`groupOnly-${tag}`)
-    expect(keys).not.toContain(`userSibling-${tag}`)
+    expect(keys).toContain(`groupOnly_${tag}`)
+    expect(keys).not.toContain(`userSibling_${tag}`)
   })
 
   it('returns the full definition shape a client needs to render a field', async () => {
@@ -223,7 +223,7 @@ describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
 
     const tag = nextTag()
     await ctx.db.insert(attributeDefinitions).values({
-      key: `shaped-${tag}`,
+      key: `shaped_${tag}`,
       label: 'Shaped Field',
       dataType: 'enum',
       required: true,
@@ -237,9 +237,9 @@ describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
       .get('/attribute-definitions?appliesTo=user')
       .expect(200)
 
-    const shaped = (res.body as Record<string, unknown>[]).find((d) => d.key === `shaped-${tag}`)
+    const shaped = (res.body as Record<string, unknown>[]).find((d) => d.key === `shaped_${tag}`)
     expect(shaped).toMatchObject({
-      key: `shaped-${tag}`,
+      key: `shaped_${tag}`,
       label: 'Shaped Field',
       dataType: 'enum',
       required: true,

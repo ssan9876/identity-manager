@@ -59,3 +59,20 @@ export function validateAttributeKey(key: unknown): string[] {
 
 /** The same rule as a SQL fragment, for the CHECK constraint. Kept beside the regex so the two cannot drift. */
 export const ATTRIBUTE_KEY_SQL_PATTERN = '^[A-Za-z_][A-Za-z0-9_]*$'
+
+// Load-bearing, not decorative: being "kept beside" each other only stops
+// drift if someone notices. This throws at import time — in production, in
+// every test run, everywhere this module is loaded — the moment the regex
+// and the SQL fragment stop saying the same thing, which is the only way to
+// make it impossible for the application and the `attribute_definitions_key_format`
+// database CHECK (attribute-definitions.ts) to silently disagree about what
+// a legal key is.
+if (KEY_PATTERN.source !== ATTRIBUTE_KEY_SQL_PATTERN) {
+  throw new Error(
+    'attribute-key.ts: KEY_PATTERN and ATTRIBUTE_KEY_SQL_PATTERN have diverged. ' +
+      `KEY_PATTERN.source is ${JSON.stringify(KEY_PATTERN.source)}, ` +
+      `ATTRIBUTE_KEY_SQL_PATTERN is ${JSON.stringify(ATTRIBUTE_KEY_SQL_PATTERN)}. ` +
+      'These must stay identical or the application and the database CHECK ' +
+      'constraint will accept different sets of keys.',
+  )
+}
