@@ -42,6 +42,25 @@ describe('attribute actions', () => {
       expect(ROLE_PERMISSIONS[role]).not.toContain('attribute:manage')
     }
   })
+
+  // The test above checks help_desk lacks `attribute:manage` but never
+  // pins that it lacks `attribute:read` -- the entire narrowing this task
+  // exists to record (see actions.ts's own comment on the ALL_ACTIONS
+  // entry) is that help_desk loses `GET /attribute-definitions` once Task 7
+  // re-gates the route. An inclusion-only check can't catch a LATER task
+  // quietly granting attribute:read back to help_desk; only pinning the
+  // exact holder set can. Same shape as `recert:read`'s exact holder-set
+  // assertion in recertification.spec.ts and `user:activate`'s explicit
+  // exclusion list above.
+  it('reaches exactly super_admin, user_admin, auditor and read_only for attribute:read, and super_admin alone for attribute:manage', () => {
+    expect(
+      ALL_ROLE_KEYS.filter((role) => ROLE_PERMISSIONS[role].includes('attribute:read')).sort(),
+    ).toEqual(['auditor', 'read_only', 'super_admin', 'user_admin'])
+
+    expect(
+      ALL_ROLE_KEYS.filter((role) => ROLE_PERMISSIONS[role].includes('attribute:manage')).sort(),
+    ).toEqual(['super_admin'])
+  })
 })
 
 describe('role catalog', () => {

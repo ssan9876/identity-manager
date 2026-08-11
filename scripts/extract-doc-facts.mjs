@@ -113,13 +113,21 @@ export function extractActionsAndRoles(repoRoot) {
   // `export const ALL_ACTIONS: readonly Action[] = [...]` and the `Action[]`
   // type annotation has its own bracket pair BEFORE the real array literal.
   // `indexOf('[', start)` finds that empty `[]` first and silently yields
-  // zero actions instead of the real 24 -- exactly the "loose anchor
+  // zero actions instead of the real 26 -- exactly the "loose anchor
   // silently proves nothing" failure mode this script exists to avoid.
   const eq = src.indexOf('=', start)
   const open = src.indexOf('[', eq)
-  const close = src.indexOf(']', open)
+  // Strip `//` comments BEFORE hunting for the closing `]`, not after: this
+  // array carries prose-heavy comments (see the attribute:read/attribute:
+  // manage entry added 2026-08-10), and a `]` written inside one of those
+  // comments -- describing a scope, a bracket in an example, anything --
+  // would terminate the scan early and silently truncate the real action
+  // list. Comment-strip the WHOLE remainder from `open` onward first, so the
+  // only `]` left standing is the array literal's own.
+  const stripped = src.slice(open).replace(/\/\/[^\n]*/g, '')
+  const close = stripped.indexOf(']')
   const actions = uniqSorted(
-    [...src.slice(open + 1, close).replace(/\/\/[^\n]*/g, '').matchAll(/'([a-z_]+:[a-z_]+)'/g)].map((m) => m[1]),
+    [...stripped.slice(1, close).matchAll(/'([a-z_]+:[a-z_]+)'/g)].map((m) => m[1]),
   )
   // Back up to the start of the `super_admin:` line, not the match itself:
   // slicing at the match loses that line's own leading 4-space indent, so
