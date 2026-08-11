@@ -1030,8 +1030,7 @@ An outbound edge reads **Not configured**, **Disabled**, **Enabled, never synced
 people*. Targets that are unconfigured or off are collapsed behind a *"show N targets not
 currently receiving data"* toggle — on a fresh install, **twelve of thirteen**, because
 migration `0011` seeds exactly one `connector_targets` row (`keycloak`) and no migration
-seeds another. The console's own comment in `DataFlowsPage.tsx` still says eleven; that
-comment is stale.
+seeds another.
 
 **It is deliberately not a health dashboard.** No live reachability check runs here, and a
 dormant edge and a broken one look the same on purpose: *"is it working right now"* is the

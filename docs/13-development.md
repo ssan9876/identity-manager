@@ -43,11 +43,6 @@ pnpm verify:quick   # everything except the API suite — no containers. Run bef
 pnpm verify         # the whole gate. Run before anything that matters more.
 ```
 
-> **`verify:quick` is not "typecheck + build only".** Its own startup line still says
-> that (`verify.mjs`'s `log()` call in `main()`), and the string is stale: `--quick`
-> guards exactly one `if`, around the API suite. Typecheck, build, web checks and docs
-> checks all run under `--quick`. Read the call sites, not the banner.
-
 `.github/workflows/ci.yml` runs `pnpm verify` — the identical gate — on every push and
 pull request, plus the Playwright E2E suite against the Compose stack. GitHub-hosted
 runners provide Docker out of the box, so both Testcontainers and `docker compose` work

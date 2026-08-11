@@ -169,30 +169,31 @@ export class UsersRepository {
           primaryEmail: input.primaryEmail,
           // LOW finding (docs/archive/audits/audit-injection.md): unnormalised
           // Unicode input (NFD, RTL overrides, ZWJ, homoglyphs) was stored
-          // verbatim. This is a DISPLAY-layer impersonation issue, distinct
-          // from the cross-tenant resolution one: within a single
-          // organization `users_username_unique` and
-          // PermissionEngine.resolveActor agree exactly on `lower(username)`,
-          // and Postgres's own `lower()` folding rejects a same-fold
-          // collision with 409 regardless. (An earlier version of this
-          // comment went on to claim there was therefore "NOT an
-          // ambiguous-principal-resolution bug" anywhere here. That was true
-          // when the index was global; migration 0028 made it
-          // `(organization_id, lower(username))`, at which point matching on
-          // `lower(username)` ALONE genuinely did become ambiguous across
-          // tenants — see resolveActor's doc comment for what that cost and
-          // how it is scoped now. The normalisation below was never the fix
-          // for it, and never claimed to be.) The separate, still-live
-          // problem it does fix: NFC "café" and NFD "café" fold to DIFFERENT
-          // byte sequences even after lower(), so both currently succeed as
-          // two visually
-          // IDENTICAL, distinct accounts (a display-layer impersonation risk:
-          // displayName is shown to every user in the directory). This is the
-          // only site that ever sets `username` on a user — see
-          // UsersRepository.update's own doc comment for why PATCH excludes
-          // it — so normalising here, once, on write closes the gap: two
-          // requests differing only in normalisation form now collide on the
-          // SAME stored NFC form and correctly 409 via the unique index.
+          // verbatim. Two DIFFERENT problems have lived in this comment, and
+          // conflating them is what made an earlier version of it wrong.
+          //
+          // 1. CROSS-TENANT resolution. Migration 0028 made
+          //    `users_username_unique` `(organization_id, lower(username))`,
+          //    so one username can exist, uniquely, in two organizations. An
+          //    earlier comment here asserted that `resolveActor` and this
+          //    index "agree exactly on lower(username)" and that there was
+          //    therefore no ambiguous-principal-resolution bug. That was true
+          //    while the index was global and false from 0028 onward.
+          //    `PermissionEngine.resolveActor` now scopes to the master
+          //    organization — see its doc comment. The normalisation below was
+          //    never the fix for that and never claimed to be.
+          //
+          // 2. WITHIN-ORGANIZATION normalisation, which is what the code below
+          //    actually addresses and which is still live. NFC "café" and NFD
+          //    "café" fold to DIFFERENT byte sequences even after lower(),
+          //    so both currently succeed as two visually IDENTICAL, distinct
+          //    accounts — a display-layer impersonation risk, since displayName
+          //    is shown to every user in the directory. This is the only site
+          //    that ever sets `username` on a user (see UsersRepository.update's
+          //    own doc comment for why PATCH excludes it), so normalising here,
+          //    once, on write closes it: two requests differing only in
+          //    normalisation form collide on the SAME stored NFC form and
+          //    correctly 409 via the unique index.
           username: input.username.normalize('NFC'),
           firstName: input.firstName,
           lastName: input.lastName,

@@ -531,11 +531,11 @@ do not filter on `enabled`:
 - `listAllRows`, the console editor's read, returns disabled rows too, carrying `enabled`
   — the editor must show a disabled mapping *distinctly from no mapping at all*.
 
-Two code comments claim otherwise and should not be trusted here: the schema's
-(`db/schema/attribute-target-mappings.ts:55-60`) says disabling and deleting are
-"behaviourally indistinguishable … by construction", and
-`AttributeTargetMappingsRepository.remove`'s repeats it while citing only `listForTarget`.
-Both predate the clearing mechanism.
+The schema's own doc comment (`db/schema/attribute-target-mappings.ts:55-65`) and
+`AttributeTargetMappingsRepository.remove`'s doc comment now describe this same
+distinction accurately — a disabled row is still visible to
+`listAllRemoteNamesForTarget` so its stale value gets cleared, a deleted row is not
+and strands it — so both may be trusted here.
 
 Read that scope precisely. What this table governs is `DesiredUser.attributes`, the
 per-target bag. It does **not** govern the core identity fields every connector receives
