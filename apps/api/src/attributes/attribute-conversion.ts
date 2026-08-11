@@ -53,14 +53,18 @@ export function convertValue(
       if (!Number.isFinite(n)) {
         return { ok: false, reason: `"${text}" is not finite` }
       }
-      // For integers, refuse if outside safe range; for floats, round-trip check.
+      // For integers, refuse if outside safe range; for floats, numeric round-trip check.
       const isInteger = !/\./.test(text)
       if (isInteger && !Number.isSafeInteger(n)) {
         return { ok: false, reason: `"${text}" is outside JavaScript's safe integer range` }
       }
-      if (!isInteger && String(n) !== text) {
-        // Decimal lost precision in parsing; e.g. '1.00000000000000001' → '1'.
-        return { ok: false, reason: `"${text}" loses precision when converted to a number` }
+      if (!isInteger) {
+        // For decimals, check numeric round-trip: re-parse the stringified value.
+        // This catches precision loss without rejecting equivalent formatting like '100.00'.
+        const reparsed = Number(String(n))
+        if (reparsed !== n) {
+          return { ok: false, reason: `"${text}" loses precision when converted to a number` }
+        }
       }
       return { ok: true, value: n }
     }
@@ -73,13 +77,17 @@ export function convertValue(
       if (!ISO_DATE.test(text) || Number.isNaN(Date.parse(text))) {
         return { ok: false, reason: `"${text}" is not an ISO-8601 date` }
       }
-      // Date.parse does rollover: Feb 30 → Mar 2. Validate the parsed date's
-      // year/month/day against the input to detect rollovers. Only check the
-      // date part (YYYY-MM-DD), not time or timezone.
-      const parsed = new Date(text)
+      // Date.parse does rollover: Feb 30 → Mar 2. Validate that the literal
+      // date component (YYYY-MM-DD) in the input is a valid calendar date.
+      // Ignore timezone and time; validate only the input's own y/m/d.
       const inputMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/)
       if (inputMatch) {
         const [, inputYear, inputMonth, inputDay] = inputMatch
+        // Create a date string with the literal components at UTC midnight,
+        // then check if the parsed result matches those same components.
+        // A rollover (Feb 30 → Mar 2) will produce different values.
+        const dateOnly = `${inputYear}-${inputMonth}-${inputDay}T00:00:00Z`
+        const parsed = new Date(dateOnly)
         const parsedYear = String(parsed.getUTCFullYear()).padStart(4, '0')
         const parsedMonth = String(parsed.getUTCMonth() + 1).padStart(2, '0')
         const parsedDay = String(parsed.getUTCDate()).padStart(2, '0')

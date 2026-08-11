@@ -45,6 +45,33 @@ describe('convertValue', () => {
     expect(convertValue('2026-02-29', 'string', 'date').ok, '2026-02-29').toBe(false)
     // 2024 IS a leap year, so Feb 29 must be accepted.
     expect(convertValue('2024-02-29', 'string', 'date').ok).toBe(true)
+    // Century leap-year edges: 2000 is a leap year, 1900 is not.
+    expect(convertValue('2000-02-29', 'string', 'date').ok).toBe(true)
+    expect(convertValue('1900-02-29', 'string', 'date').ok).toBe(false)
+  })
+
+  it('accepts ISO-8601 datetimes with timezone offsets', () => {
+    // Date-only: no offset, should accept.
+    expect(convertValue('2026-08-10', 'string', 'date').ok).toBe(true)
+    // Full datetime with Z (UTC): should accept.
+    expect(convertValue('2026-08-10T12:00:00Z', 'string', 'date').ok).toBe(true)
+    // Positive offset: 2026-08-10 local in +05:30 zone is 2026-08-09 UTC.
+    // The literal input date is 2026-08-10, which is what we validate.
+    expect(convertValue('2026-08-10T01:00:00+05:30', 'string', 'date').ok).toBe(true)
+    // Negative offset: 2026-08-10 local in -05:30 zone is 2026-08-10 UTC (mostly).
+    expect(convertValue('2026-08-10T23:00:00-05:30', 'string', 'date').ok).toBe(true)
+    // Fractional seconds: valid ISO-8601.
+    expect(convertValue('2026-08-10T12:34:56.789Z', 'string', 'date').ok).toBe(true)
+  })
+
+  it('accepts decimal numbers with trailing zeros and leading zeros', () => {
+    // Trailing zeros: 100.00 parses to 100 exactly, not a precision loss.
+    expect(convertValue('100.00', 'string', 'number')).toEqual({ ok: true, value: 100 })
+    // Leading zeros: 0.1 is just 0.1, valid.
+    expect(convertValue('0.1', 'string', 'number')).toEqual({ ok: true, value: 0.1 })
+    // More trailing zeros: 0.0 parses to 0 exactly.
+    expect(convertValue('0.0', 'string', 'number')).toEqual({ ok: true, value: 0 })
+    expect(convertValue('3.14', 'string', 'number')).toEqual({ ok: true, value: 3.14 })
   })
 
   it('accepts an enum value only when it is in the allowed list', () => {
