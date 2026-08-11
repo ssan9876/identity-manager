@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useAuth } from 'react-oidc-context'
+import { Link } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { BRAND } from '../brand'
 import { Field, fieldDescribedBy } from '../forms/Field'
@@ -41,19 +42,25 @@ function SyncBadge({ organization }: { organization: Organization }) {
  * The organizations console — the tenant roster, a create form, and a
  * suspend/reactivate control per row. Organizations milestone, Task 15.
  *
- * WHY EVERY NON-MASTER ROW SAYS "KEYCLOAK ONLY". `connector_targets` is
- * keyed by target alone, so the one Active Directory / Entra / Google / mail
- * configuration in the system belongs to the platform, and a tenant's people
- * are deliberately never fanned out to it (design decision 5; enforced in
- * `OutboxWriter.record`). That restriction has to be VISIBLE: an admin who
- * has configured Active Directory and then creates a tenant would otherwise
- * reasonably assume its people land there too, and discover otherwise only
- * by noticing accounts that never appeared.
+ * THE TARGETS COLUMN LINKS OUT RATHER THAN GUESSING. `connector_targets` has
+ * been keyed `(organization_id, target)` since migration 0033, and
+ * `OutboxWriter.record` fans each organization out to whichever targets
+ * ITS OWN catalogue enables (that method's own doc comment — this REPLACES
+ * the former hard-coded "a tenant reaches Keycloak and nothing else" rule).
+ * A tenant can therefore hold any combination of enabled targets, not just
+ * Keycloak, and this page has no per-organization target data to summarise
+ * even if it wanted to guess at one — `GET /organizations` returns the
+ * `organizations` row alone. Rather than duplicate the connector-targets
+ * read here (and drift again the moment a tenant's catalogue changes), the
+ * column links straight through to `/connectors`, already scoped to that
+ * organization via `?organizationId=`, which IS the live source of truth
+ * for what is actually enabled.
  *
  * There is no per-organization detail page and no delete. A tenant has
  * exactly four facts (name, slug/realm, status, whether its realm exists),
- * all four fit in the row, and the only action is the status toggle — a
- * detail page would be a click that shows nothing new.
+ * all four fit in the row, and the only actions beyond the status toggle are
+ * that link out to connector configuration — a bespoke organization detail
+ * page would duplicate a screen that already exists.
  */
 export default function OrganizationsPage() {
   const auth = useAuth()
@@ -309,9 +316,15 @@ export default function OrganizationsPage() {
                     <SyncBadge organization={org} />
                   </td>
                   <td>
-                    {/* Design decision 5, made visible — see this
-                        component's own doc comment. */}
-                    {org.isMaster ? 'All enabled targets' : 'Keycloak only'}
+                    {/* Links out rather than guessing — see this
+                        component's own doc comment for why. */}
+                    <Link
+                      to={`/connectors${org.isMaster ? '' : `?organizationId=${org.id}`}`}
+                      className="row-link"
+                      data-testid={`org-targets-link-${org.id}`}
+                    >
+                      View targets
+                    </Link>
                   </td>
                   <td>
                     {canUpdate && !org.isMaster && (

@@ -125,7 +125,7 @@ test('creates an organization and shows it provisioning', async ({ page }) => {
   await expect(row).toContainText(/Provisioning|Active/)
 })
 
-test('shows a tenant organization as Keycloak-only, and master as all targets', async ({ page }) => {
+test('the Targets column links to that tenant\'s own connector scope, not a guessed label', async ({ page }) => {
   await signInAsAdmin(page)
   const slug = uniqueSlug('e2e-globex')
 
@@ -135,10 +135,19 @@ test('shows a tenant organization as Keycloak-only, and master as all targets', 
   await page.getByLabel('Slug').fill(slug)
   await page.getByRole('button', { name: 'Create' }).click()
 
-  // Design decision 5, made visible: a tenant's people never reach the
-  // platform's Active Directory / Entra / Google / mail configuration.
-  await expect(page.getByRole('row', { name: new RegExp(slug) })).toContainText('Keycloak only')
-  await expect(page.getByRole('row', { name: /master/ })).toContainText('All enabled targets')
+  // `connector_targets` is keyed `(organization_id, target)` and a tenant
+  // fans out to whichever of ITS OWN rows are enabled (OutboxWriter.record) —
+  // this page has no per-tenant target data to summarise, so it links out to
+  // the Connectors page, scoped to that organization, instead of guessing.
+  const tenantRow = page.getByRole('row', { name: new RegExp(slug) })
+  await expect(tenantRow.getByRole('link', { name: 'View targets' })).toBeVisible()
+
+  const masterRow = page.getByRole('row', { name: /master/ })
+  await expect(masterRow.getByRole('link', { name: 'View targets' })).toBeVisible()
+
+  await tenantRow.getByRole('link', { name: 'View targets' }).click()
+  await expect(page).toHaveURL(/\/connectors\?organizationId=/)
+  await expect(page.getByTestId('connector-org-scope-select')).toBeVisible()
 })
 
 test('suspends and reactivates a tenant, and never offers to delete one', async ({ page }) => {

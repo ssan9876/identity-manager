@@ -616,7 +616,7 @@ the badge becomes **Active** — the page re-checks on its own a few seconds lat
 
 The table is Name · Slug · Realm · State · Targets, with one action. Master is labelled
 `· platform`. There is no per-organization detail page: a tenant has four facts and they
-all fit in the row.
+all fit in the row, plus a **View targets** link (below) in place of a fifth.
 
 ### What happens, in order
 
@@ -644,11 +644,13 @@ A freshly provisioned tenant therefore starts at **Keycloak only**, because
 select the tenant in the Connectors page's **Organization** selector and configure any
 other target for it.
 
-> **The Organizations table's `Targets` column has not caught up.** It renders a fixed
-> string — *All enabled targets* for master, *Keycloak only* for every tenant — derived
-> from `isMaster` alone rather than from that tenant's actual catalogue. It was accurate
-> when the rule was hard-coded and is now stale for any tenant that has been given a
-> second target. Read the Connectors page, scoped to the tenant, for the truth.
+The Organizations table's `Targets` column does not try to summarise that catalogue
+itself — `GET /organizations` returns only the `organizations` row, with no
+per-tenant target data attached, and restating the fan-out rule in one fixed word per
+row is exactly what went stale the first time a tenant was given a second target. The
+column is instead a **View targets** link to the Connectors page, already scoped to
+that organization (`/connectors?organizationId=<id>`), which reads the live
+`connector_targets` catalogue and can never drift from it the way a cached label can.
 
 ### Suspend
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useAuth } from 'react-oidc-context'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { formatDateTime } from '../format'
 import { useSelfPermissions } from '../shell/permissions'
@@ -165,9 +165,25 @@ export default function ConnectorsListPage() {
   const permissions = useSelfPermissions()
   const [activeTab, setActiveTab] = useState<TabKey>('targets')
   const tabRefs = useRef<Record<TabKey, HTMLButtonElement | null>>({ targets: null, mappings: null })
-  // Per-organization connector targets: `undefined` means MASTER, the same
-  // "omitted means master" contract every connector-targets API call uses.
-  const [organizationId, setOrganizationId] = useState<string | undefined>(undefined)
+  // Per-organization connector targets: carried in the URL (`?organizationId=`),
+  // the same contract TargetDetailPage.tsx uses, so a link INTO this page
+  // (OrganizationsPage's Targets column, in particular) lands already scoped
+  // to the right tenant instead of silently falling back to master.
+  // `undefined`/absent means master, the same contract every
+  // connector-targets API call uses.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const rawOrganizationId = searchParams.get('organizationId')
+  const organizationId = rawOrganizationId === null ? undefined : rawOrganizationId
+
+  function setOrganizationId(next: string | undefined): void {
+    const params = new URLSearchParams(searchParams)
+    if (next === undefined) {
+      params.delete('organizationId')
+    } else {
+      params.set('organizationId', next)
+    }
+    setSearchParams(params, { replace: true })
+  }
 
   const canRead = permissions.status === 'ready' && permissions.actions.has('connector:read')
   const canManage = permissions.status === 'ready' && permissions.actions.has('connector:manage')
