@@ -152,7 +152,25 @@ export class ImportLookups {
     return this.usersByEmailLower.get(email.toLowerCase()) ?? null
   }
 
-  /** Replaces `UsersRepository.findByUsername` — case-insensitive, same as that method. */
+  /**
+   * Replaces `UsersRepository.findByUsername`'s CASE-FOLDING (insensitive,
+   * same as that method) but NOT its organization scope: this map is built
+   * from `listByUsernames`, which is global, whereas `findByUsername` is
+   * scoped to the master organization because its contract is "the user
+   * `resolveActor` would resolve" (see its doc comment).
+   *
+   * The divergence is deliberate and pre-existing, and the caller depends on
+   * it: `resolveRow` uses this only to reject a row whose username is
+   * already taken, and the reasoning behind that check's "not available"
+   * wording (imports.controller.ts, the fix-wave-C oracle note) is written
+   * against a GLOBAL lookup. Since `users_username_unique` became
+   * per-tenant in 0028 this over-rejects — a username free in master but
+   * taken in some tenant is reported unavailable — which fails CLOSED
+   * (a creatable row is refused, never a foreign row silently updated) and
+   * so is left alone here rather than changed as a side effect of the
+   * authorization-path fix. Narrowing it is an import-scope decision of its
+   * own.
+   */
   findByUsername(username: string): User | null {
     return this.usersByUsernameLower.get(username.toLowerCase()) ?? null
   }

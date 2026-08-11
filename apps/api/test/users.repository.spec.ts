@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { UsersRepository } from '../src/users/users.repository'
 import { withTestDatabase } from './support/pg'
+import { seedTenant } from './support/tenant'
 
 describe('UsersRepository', () => {
   const ctx = withTestDatabase()
@@ -98,6 +99,32 @@ describe('UsersRepository', () => {
     // resolveActor would resolve for this principal" must get null here,
     // not a false-positive match on the email column.
     expect(await users.findByUsername('ada@example.com')).toBeNull()
+  })
+
+  /**
+   * `findByUsername`'s contract is "the user `PermissionEngine.resolveActor`
+   * would resolve for this principal" (see its doc comment), so it has to
+   * answer the SAME organization question `resolveActor` does — master only.
+   * Before this was scoped, a tenant row with the same username was an
+   * equally valid answer, and `bootstrap-admin` (its only production caller)
+   * would then adopt, activate and grant global `super_admin` to whichever
+   * row the planner happened to return.
+   *
+   * The tenant row is seeded FIRST on purpose: a sequential scan walks it
+   * before the master row, so an unscoped query cannot pass by luck.
+   */
+  it('findByUsername ignores an identically-named user in another organization', async () => {
+    const tenant = await seedTenant(ctx.db, { username: 'ada' })
+    const master = await users.create(input())
+
+    expect(tenant.userId).not.toBe(master.id)
+    expect((await users.findByUsername('ada'))?.id).toBe(master.id)
+  })
+
+  it('findByUsername returns null when the only match is in another organization', async () => {
+    await seedTenant(ctx.db, { username: 'ada' })
+
+    expect(await users.findByUsername('ada')).toBeNull()
   })
 
   it('allows pending to active to suspended to deactivated', async () => {

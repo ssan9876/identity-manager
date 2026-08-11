@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common'
-import { and, asc, eq, inArray, isNotNull, lte, ne, sql } from 'drizzle-orm'
+import { and, asc, eq, getTableColumns, inArray, isNotNull, lte, ne, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type { AttributeDefinition, ValidationRules } from '../attributes/attribute-validator'
 import { crossTenantConflict } from '../common/cross-tenant'
@@ -8,6 +8,7 @@ import { ConflictError, InvalidTransitionError, NotFoundError } from '../common/
 import { attributeDefinitions } from '../db/schema/attribute-definitions'
 import * as schema from '../db/schema/index'
 import { orgUnits } from '../db/schema/org-units'
+import { organizations } from '../db/schema/organizations'
 import { users } from '../db/schema/users'
 
 export type UserStatus = 'pending' | 'active' | 'suspended' | 'deactivated'
@@ -168,12 +169,23 @@ export class UsersRepository {
           primaryEmail: input.primaryEmail,
           // LOW finding (docs/archive/audits/audit-injection.md): unnormalised
           // Unicode input (NFD, RTL overrides, ZWJ, homoglyphs) was stored
-          // verbatim. `users_username_unique` and PermissionEngine.resolveActor
-          // both already agree exactly on `lower(username)` — this is NOT an
-          // ambiguous-principal-resolution bug, Postgres's own `lower()`
-          // folding rejects a same-fold collision with 409 regardless — but
-          // NFC "café" and NFD "café" fold to DIFFERENT byte sequences even
-          // after lower(), so both currently succeed as two visually
+          // verbatim. This is a DISPLAY-layer impersonation issue, distinct
+          // from the cross-tenant resolution one: within a single
+          // organization `users_username_unique` and
+          // PermissionEngine.resolveActor agree exactly on `lower(username)`,
+          // and Postgres's own `lower()` folding rejects a same-fold
+          // collision with 409 regardless. (An earlier version of this
+          // comment went on to claim there was therefore "NOT an
+          // ambiguous-principal-resolution bug" anywhere here. That was true
+          // when the index was global; migration 0028 made it
+          // `(organization_id, lower(username))`, at which point matching on
+          // `lower(username)` ALONE genuinely did become ambiguous across
+          // tenants — see resolveActor's doc comment for what that cost and
+          // how it is scoped now. The normalisation below was never the fix
+          // for it, and never claimed to be.) The separate, still-live
+          // problem it does fix: NFC "café" and NFD "café" fold to DIFFERENT
+          // byte sequences even after lower(), so both currently succeed as
+          // two visually
           // IDENTICAL, distinct accounts (a display-layer impersonation risk:
           // displayName is shown to every user in the directory). This is the
           // only site that ever sets `username` on a user — see
@@ -261,20 +273,42 @@ export class UsersRepository {
   }
 
   /**
-   * Case-insensitive match on `username` — the same field and comparison
+   * Case-insensitive match on `username` WITHIN THE MASTER ORGANIZATION —
+   * the same field, the same comparison AND the same organization
    * `PermissionEngine.resolveActor` uses to map an authenticated principal
-   * onto a local user (`lower(username) = lower(principal.username)`; see
-   * permission.engine.ts). Callers that need "the user the guard would
-   * resolve for this principal" must use this, not `findByEmail`: email and
-   * username are independent, both-unique columns, so a row can match one
-   * without matching the other, and matching on the wrong one finds (and
-   * risks acting on) an unrelated user.
+   * onto a local user (see permission.engine.ts for why master is the only
+   * organization a token this API accepts can name). Callers that need "the
+   * user the guard would resolve for this principal" must use this, not
+   * `findByEmail`: email and username are independent, both-unique columns,
+   * so a row can match one without matching the other, and matching on the
+   * wrong one finds (and risks acting on) an unrelated user.
+   *
+   * The master predicate is what keeps that contract TRUE rather than merely
+   * stated. `users_username_unique` is per-tenant since migration 0028, so
+   * an unqualified `lower(username)` match has one candidate row per
+   * organization and no stated preference between them — this method would
+   * then answer "the user the guard would resolve" with a row the guard can
+   * never resolve. Its one production caller is `bootstrap-admin`, which
+   * ACTIVATES and grants global `super_admin` to whatever this returns; an
+   * unscoped answer there would hand a tenant's row the most privileged
+   * account in the system while leaving the operator still locked out.
+   *
+   * Callers that want "any user anywhere with this username" (import
+   * de-duplication, for instance) genuinely want a different question and
+   * must not reach for this one — see `ImportLookups.findByUsername`, which
+   * is deliberately global and says so.
    */
   async findByUsername(username: string): Promise<User | null> {
     const [row] = await this.db
-      .select()
+      .select(getTableColumns(users))
       .from(users)
-      .where(sql`lower(${users.username}) = lower(${username})`)
+      .innerJoin(organizations, eq(users.organizationId, organizations.id))
+      .where(
+        and(
+          eq(organizations.isMaster, true),
+          sql`lower(${users.username}) = lower(${username})`,
+        ),
+      )
       .limit(1)
 
     return (row as User | undefined) ?? null

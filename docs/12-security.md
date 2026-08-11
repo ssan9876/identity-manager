@@ -312,19 +312,31 @@ confirm it is still open.
   `external_identities`. A username change is an identity change. Still true:
   `JwtGuard` hands `preferred_username` downstream (`auth/jwt.guard.ts`, lines 78-116)
   and `PermissionEngine.resolveActor` resolves it with
-  `lower(users.username) = lower($1)` (`authz/permission.engine.ts:66`), failing closed
-  on `status <> 'active'` (line 73).
+  `lower(users.username) = lower($1)` (`authz/permission.engine.ts:119`), failing closed
+  on `status <> 'active'` (line 128).
+  That match is **scoped to the master organization** (`organizations.is_master`,
+  `permission.engine.ts:118`). It has to be: `users_username_unique` became
+  `(organization_id, lower(username))` in migration 0028, so the same username may exist
+  once per tenant, and an unscoped `LIMIT 1` with no `ORDER BY` resolved a principal to
+  whichever candidate row the planner emitted first — taking that row's `orgUnitId` and
+  role assignments with it. Master is the only organization it can be: `JwtGuard` pins
+  `issuer`/`audience` to `KEYCLOAK_ISSUER`, and `adoptMasterRealm` binds master to that
+  same realm before `app.listen` and refuses to start if the two disagree. Tenant realms
+  do not authenticate against this API today; when they do, this predicate becomes a
+  lookup of the organization whose realm issued the token. `UsersRepository.findByUsername`
+  carries the identical predicate, because its contract is "the user the guard would
+  resolve" and `bootstrap-admin` activates and globally privileges whatever it returns.
 - **Nothing in the application ever sets `suspended` on a *user*.** (Organizations are
   different: they have a real suspend endpoint — `PATCH /organizations/:id` accepts
   `{"status": "suspended"}`.) There is no user suspend route, and
   `PATCH /users/:id` does not accept `status` at all — its `.strict()` body schema has no
   such key (`users/users.controller.ts`, `updateUserBodySchema`). Nor does any background
-  path reach it: `UsersRepository.changeStatus` (`users/users.repository.ts:464`) is the
+  path reach it: `UsersRepository.changeStatus` (`users/users.repository.ts:498`) is the
   only writer of `users.status`, and every one of its seven callers passes `active` or
   `deactivated` — `lifecycle.job.ts:154`/`:223`, `rule-applier.ts:226`,
   `bulk-activate.job.ts:122`, `users.controller.ts:973`/`:1046`,
-  `bootstrap-admin.ts:156`. There is no JML `suspend` action. `active → suspended` is a
-  legal edge in `ALLOWED_TRANSITIONS` (`users/users.repository.ts:97`) with **no code
+  `bootstrap-admin.ts:165`. There is no JML `suspend` action. `active → suspended` is a
+  legal edge in `ALLOWED_TRANSITIONS` (`users/users.repository.ts:98`) with **no code
   path that reaches it**, so today `suspended` is attainable only by direct SQL. Do not
   plan compromised-account response around it: `deactivate` is the only mechanism the
   application actually offers, and it is terminal. (`activate` and `deactivate` *do*

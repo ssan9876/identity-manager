@@ -275,12 +275,13 @@ export class OrgUnitsRepository {
   }
 
   /**
-   * The first org unit in the system by `path` ordering (matching `list`'s
-   * own ordering, so this is "whatever `list` would show first"), or `null`
-   * if none exists yet. Deliberately not restricted to roots
-   * (`parentId === null`) — any existing org unit is a perfectly good home
-   * for a newly-created user, and this repository has no cheaper way to ask
-   * "is the org_units table empty" than a `LIMIT 1` select.
+   * The first MASTER-ORGANIZATION org unit by `path` ordering (matching
+   * `list`'s own ordering, so this is "whatever `list` would show first"
+   * within master), or `null` if master has none yet. Deliberately not
+   * restricted to roots (`parentId === null`) — any existing org unit is a
+   * perfectly good home for a newly-created user, and this repository has no
+   * cheaper way to ask "is master's slice of org_units empty" than a
+   * `LIMIT 1` select.
    *
    * Exists for `bootstrap-admin` (apps/api/src/admin/bootstrap-admin.ts):
    * the anti-lockout script only needs SOME org unit to satisfy `users`'
@@ -288,9 +289,29 @@ export class OrgUnitsRepository {
    * than minting a fresh root unconditionally — is what makes a second run
    * against a database that already has one idempotent instead of
    * accumulating an extra root org unit on every run.
+   *
+   * The master filter matters because that is the ONLY caller and because
+   * `UsersRepository.create` DERIVES `organization_id` from the org unit it
+   * is given. Unfiltered, this ordered-by-path lookup would happily return a
+   * tenant's org unit (a tenant whose path simply sorts first, or any tenant
+   * at all on an install where master has no org unit yet), and the recovery
+   * admin would be created inside that tenant — where
+   * `PermissionEngine.resolveActor`, which resolves principals in master
+   * only, can never find them. The script would report success and the
+   * operator would stay locked out, which is precisely the failure
+   * bootstrap-admin exists to prevent. It also matches `createRoot`'s
+   * unqualified behaviour immediately below/above, which already means
+   * "master" — the two halves of bootstrap's find-or-create had drifted
+   * apart on exactly this point.
    */
   async findFirst(db: NodePgDatabase<typeof schema> = this.db): Promise<OrgUnit | null> {
-    const [row] = await db.select().from(orgUnits).orderBy(asc(orgUnits.path)).limit(1)
+    const master = await this.organizations.findMaster(db)
+    const [row] = await db
+      .select()
+      .from(orgUnits)
+      .where(eq(orgUnits.organizationId, master.id))
+      .orderBy(asc(orgUnits.path))
+      .limit(1)
 
     return (row as OrgUnit | undefined) ?? null
   }
