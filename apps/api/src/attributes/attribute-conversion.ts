@@ -59,10 +59,13 @@ export function convertValue(
         return { ok: false, reason: `"${text}" is outside JavaScript's safe integer range` }
       }
       if (!isInteger) {
-        // For decimals, check numeric round-trip: re-parse the stringified value.
-        // This catches precision loss without rejecting equivalent formatting like '100.00'.
-        const reparsed = Number(String(n))
-        if (reparsed !== n) {
+        // For decimals, compare canonicalized forms of the original text and stringified number.
+        // Canonicalization removes insignificant formatting (trailing zeros, leading zeros)
+        // while preserving all significant digits. If they differ, the original text claimed
+        // precision that JavaScript's double cannot hold.
+        const canonicalText = canonicalizeDecimal(text)
+        const canonicalStringified = canonicalizeDecimal(String(n))
+        if (canonicalText !== canonicalStringified) {
           return { ok: false, reason: `"${text}" loses precision when converted to a number` }
         }
       }
@@ -122,4 +125,44 @@ function describe(value: unknown): string {
   if (value === null) return 'null'
   if (Array.isArray(value)) return 'an array'
   return typeof value
+}
+
+/**
+ * Canonicalize a decimal string by removing insignificant formatting:
+ * trailing zeros after the decimal point, and leading zeros in the integer part.
+ * This allows comparing the original text against `String(Number(text))` to detect
+ * precision loss — if they differ after canonicalization, the original text claimed
+ * precision the double cannot hold.
+ *
+ * Examples:
+ * - '100.00' → '100' (trailing zeros removed, decimal point dropped)
+ * - '0.1' → '0.1' (no insignificant digits)
+ * - '007.5' → '7.5' (leading zeros removed from integer part)
+ * - '-0.0' → '0' (normalized to positive zero)
+ * - '1.00000000000000001' → '1.00000000000000001' (no trailing zeros)
+ */
+function canonicalizeDecimal(s: string): string {
+  let result = s
+
+  // Remove trailing zeros after the decimal point
+  if (result.includes('.')) {
+    result = result.replace(/0+$/, '')
+    if (result.endsWith('.')) {
+      result = result.slice(0, -1)
+    }
+  }
+
+  // Remove leading zeros from the integer part (keep at least one digit)
+  const negative = result[0] === '-'
+  const unsigned = negative ? result.slice(1) : result
+  const [intPart, ...rest] = unsigned.split('.')
+  const canonInt = intPart.replace(/^0+/, '') || '0'
+  const canonUnsigned = rest.length > 0 ? canonInt + '.' + rest.join('.') : canonInt
+
+  // Normalize -0 to 0
+  if (canonUnsigned === '0') {
+    return '0'
+  }
+
+  return negative ? '-' + canonUnsigned : canonUnsigned
 }

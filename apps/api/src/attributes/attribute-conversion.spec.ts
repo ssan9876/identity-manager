@@ -74,6 +74,17 @@ describe('convertValue', () => {
     expect(convertValue('3.14', 'string', 'number')).toEqual({ ok: true, value: 3.14 })
   })
 
+  it('refuses decimal strings where precision is lost during parsing', () => {
+    // The original text claims precision the double cannot hold; the parsed value is different.
+    // These were silently accepted before because the check was a tautology.
+    expect(convertValue('1.00000000000000001', 'string', 'number').ok, '1.00000000000000001').toBe(false)
+    expect(convertValue('9007199254740993.0', 'string', 'number').ok, '9007199254740993.0').toBe(false)
+    expect(convertValue('9007199254740993.5', 'string', 'number').ok, '9007199254740993.5').toBe(false)
+    expect(convertValue('123456789012345678.9', 'string', 'number').ok, '123456789012345678.9').toBe(false)
+    // But trailing-zero decimals still accept (formatting, not precision).
+    expect(convertValue('0.30000000000000004', 'string', 'number')).toEqual({ ok: true, value: 0.30000000000000004 })
+  })
+
   it('accepts an enum value only when it is in the allowed list', () => {
     expect(convertValue('red', 'string', 'enum', ['red', 'blue'])).toEqual({ ok: true, value: 'red' })
     expect(convertValue('green', 'string', 'enum', ['red', 'blue']).ok).toBe(false)
