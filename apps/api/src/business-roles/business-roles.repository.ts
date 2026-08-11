@@ -1,8 +1,9 @@
 import { Inject, Injectable, Optional } from '@nestjs/common'
-import { and, asc, eq } from 'drizzle-orm'
+import { and, asc, eq, inArray } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { DB_CLIENT } from '../common/db.token'
 import { ConflictError, NotFoundError } from '../common/errors'
+import { attributeDefinitions } from '../db/schema/attribute-definitions'
 import {
   businessRoleConditions,
   businessRoleExceptions,
@@ -15,8 +16,8 @@ import * as schema from '../db/schema/index'
 import { orgUnits } from '../db/schema/org-units'
 import { users } from '../db/schema/users'
 import { OrganizationsRepository } from '../organizations/organizations.repository'
-import { hashDefinition, parseDefinition } from './draft'
-import type { EvaluableRole, EvaluableUser } from './role-evaluator'
+import { type RoleDefinition, hashDefinition, parseDefinition } from './draft'
+import { ATTRIBUTE_PREFIX, type EvaluableRole, type EvaluableUser } from './role-evaluator'
 
 /** One `business_roles` row, exactly as stored. */
 export type BusinessRoleRow = typeof businessRoles.$inferSelect
@@ -226,6 +227,12 @@ export class BusinessRolesRepository {
       )
     }
 
+    // The SELF-EDITABLE-ATTRIBUTE half of the gate (Milestone 8, Task 5b),
+    // placed here for the same reason the SoD refusal immediately above is:
+    // before any child row is written, so a refusal leaves the live formula
+    // exactly as it was.
+    await this.assertNoSelfEditableAttribute(tx, definition)
+
     await tx.delete(businessRoleConditions).where(eq(businessRoleConditions.businessRoleId, id))
     await tx.delete(businessRoleGrants).where(eq(businessRoleGrants.businessRoleId, id))
 
@@ -244,6 +251,99 @@ export class BusinessRolesRepository {
       .update(businessRoles)
       .set({ draftDefinition: null, simulatedDraftHash: null, simulatedSodViolations: null, updatedAt: new Date() })
       .where(eq(businessRoles.id, id))
+  }
+
+  /**
+   * REFUSED, not warned: a formula about to go live must not decide
+   * membership from an attribute its own subjects can edit.
+   *
+   * THE MIRROR of `AttributeDefinitionsRepository.assertNoFormulaDependsOn`
+   * (Milestone 8, Task 5), and neither half is sufficient alone. That guard
+   * reads `business_role_conditions`, which holds PUBLISHED rows only, so it
+   * enforces "you cannot make a currently-referenced attribute
+   * self-editable" — while the invariant the feature actually needs is "a
+   * self-editable attribute cannot decide role membership". Two orderings
+   * walk past a published-rows-only check: draft the condition, mark the
+   * attribute self-editable while nothing published names it, then simulate
+   * and publish; or mark it self-editable first and publish a referencing
+   * role afterwards. Publication is the moment a condition becomes live, so
+   * refusing HERE closes the invariant from both directions — and, because
+   * the read happens inside the publishing transaction under the role's own
+   * `FOR UPDATE` lock, it also closes the check-then-write window a
+   * controller-level check would leave open.
+   *
+   * Deliberately NOT carried on the `simulated_*` columns the way the SoD
+   * count is. That count is pinned to a draft hash because "this publish
+   * creates no violations" is a property of the draft. Self-editability is
+   * not: the same unchanged draft is publishable or refused depending on a
+   * flag someone else owns, so this must re-read live state at publish time.
+   * Task 5b's tests turn a refusal into a success by clearing the flag alone,
+   * touching neither the draft nor its simulation.
+   *
+   * No draft-side scan pairs with this. Scanning drafts would move the error
+   * earlier without strengthening the invariant, and an abandoned draft would
+   * then block a legitimate `selfEditable` edit forever.
+   *
+   * The scoping matches Task 5's, for its reasons: `applies_to = 'user'` only
+   * (a condition reads `EvaluableUser.attributes`, so a group-scoped
+   * definition is never an input to a formula, and `(key, applies_to)`
+   * uniqueness means the same key legitimately names both rows), and no
+   * organization filter (`attribute_definitions` has no tenant column, so one
+   * global definition feeds every tenant's formulas).
+   *
+   * `attributeDefinitions` is imported from `db/schema/attribute-definitions`
+   * rather than from `attributes/` on purpose: `AttributeDefinitionsRepository`
+   * imports `role-evaluator` for `ATTRIBUTE_PREFIX`, so reaching the other way
+   * into that module would close a cycle. The schema module is cycle-free.
+   *
+   * The message names the KEY and the FLAG because of who reads it. The
+   * publisher holds `business_role:manage` and is being blocked by state only
+   * an `attribute:manage` holder can change; without the key and the flag they
+   * cannot act on the refusal or even tell whom to ask.
+   */
+  private async assertNoSelfEditableAttribute(
+    tx: NodePgDatabase<typeof schema>,
+    definition: RoleDefinition,
+  ): Promise<void> {
+    // Pure in-memory work on a definition already parsed above. The empty-key
+    // filter mirrors `extractField`, which treats a bare `attributes.` as an
+    // unknown field rather than an attribute named ''.
+    const keys = [
+      ...new Set(
+        definition.conditions
+          .filter((c) => c.field.startsWith(ATTRIBUTE_PREFIX))
+          .map((c) => c.field.slice(ATTRIBUTE_PREFIX.length))
+          .filter((key) => key.length > 0),
+      ),
+    ]
+    if (keys.length === 0) return
+
+    const rows = await tx
+      .select({ key: attributeDefinitions.key })
+      .from(attributeDefinitions)
+      .where(
+        and(
+          inArray(attributeDefinitions.key, keys),
+          eq(attributeDefinitions.appliesTo, 'user'),
+          eq(attributeDefinitions.selfEditable, true),
+        ),
+      )
+      .orderBy(asc(attributeDefinitions.key))
+
+    if (rows.length === 0) return
+
+    // Every offender, not the first: `parseDefinition` caps a draft at 32
+    // conditions, so the list is bounded, and each name is a separate thing
+    // the publisher has to get cleared.
+    const named = rows.map((row) => `"${row.key}"`).join(', ')
+
+    throw new ConflictError(
+      'publishing is refused: this draft decides membership from ' +
+        `${rows.map((row) => `${ATTRIBUTE_PREFIX}${row.key}`).join(', ')}, and ` +
+        `${rows.length === 1 ? 'that attribute is' : 'those attributes are'} self-editable — ` +
+        'a user could grant themselves this role’s entitlements by editing their own profile — ' +
+        `clear selfEditable on ${named} (needs attribute:manage), or change the formula`,
+    )
   }
 
   async setEnabled(

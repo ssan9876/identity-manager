@@ -1,10 +1,14 @@
+import { randomUUID } from 'node:crypto'
 import { and, eq, sql } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import { AuditWriter } from '../src/audit/audit.writer'
 import { BusinessRolesRepository } from '../src/business-roles/business-roles.repository'
 import { hashDefinition, parseDefinition } from '../src/business-roles/draft'
+import { ATTRIBUTE_PREFIX } from '../src/business-roles/role-evaluator'
 import { RoleReconciliationJob } from '../src/business-roles/role-reconciliation.job'
 import { RoleReconciler } from '../src/business-roles/role-reconciler'
+import { ConflictError } from '../src/common/errors'
+import { attributeDefinitions } from '../src/db/schema/attribute-definitions'
 import { auditLog } from '../src/db/schema/audit-log'
 import { businessRoleConditions } from '../src/db/schema/business-roles'
 import { groupUserMembers } from '../src/db/schema/group-members'
@@ -320,6 +324,189 @@ describe('the publish gate (Milestone 17, Task 7)', () => {
 
     expect(roles.map((r) => r.id)).toEqual([on.id])
     expect(roles[0].grants).toEqual([expect.objectContaining({ target: 'keycloak' })])
+  })
+})
+
+/**
+ * Milestone 8 (attribute-definitions write path), Task 5b — the publish-side
+ * half of the `selfEditable` invariant.
+ *
+ * Task 5 refuses `selfEditable` on an attribute a PUBLISHED formula already
+ * names (`AttributeDefinitionsRepository.assertNoFormulaDependsOn`). That
+ * guard reads `business_role_conditions`, which holds published rows only, so
+ * two orderings walk straight past it: draft the condition first and mark the
+ * attribute self-editable while nothing published names it, or mark it
+ * self-editable first and publish a referencing role afterwards. Either way
+ * the system ends up with a self-editable attribute deciding role membership
+ * — the exact escalation route Task 5 exists to remove.
+ *
+ * Publication is the moment a condition becomes live, so the mirror check
+ * belongs in `publishWithin`. Together the two refusals close the invariant
+ * from both directions.
+ *
+ * Per-call unique attribute keys and role names for the reason the fixtures
+ * above already give: `withTestDatabase()` starts ONE container per FILE with
+ * no truncation between `it` blocks, so a shared literal would let one test's
+ * role name another test's attribute.
+ */
+describe('the publish gate refuses a formula keyed on a self-editable attribute (Milestone 8, Task 5b)', () => {
+  function uniqueKey(): string {
+    return `attr_${randomUUID().replace(/-/g, '_')}`.slice(0, 40)
+  }
+
+  async function seedAttribute(over: {
+    key: string
+    selfEditable?: boolean
+    appliesTo?: 'user' | 'group'
+  }): Promise<void> {
+    await ctx.db.insert(attributeDefinitions).values({
+      key: over.key,
+      label: 'Seeded for the publish gate',
+      dataType: 'string',
+      appliesTo: over.appliesTo ?? 'user',
+      selfEditable: over.selfEditable ?? false,
+    })
+  }
+
+  function conditionOn(key: string): { conditions: unknown[]; grants: unknown[] } {
+    return {
+      conditions: [{ field: `${ATTRIBUTE_PREFIX}${key}`, operator: 'equals', value: 'yes' }],
+      grants: [{ kind: 'target_account', groupId: null, target: 'keycloak' }],
+    }
+  }
+
+  /** A role with `definition` drafted and simulated clean — one step short of publish. */
+  async function drafted(name: string, definition: { conditions: unknown[]; grants: unknown[] }) {
+    const role = await repo().create({ name: `${name} ${randomUUID()}`, description: null })
+    await repo().saveDraft(role.id, definition)
+    await repo().recordSimulation(role.id, hashDefinition(parseDefinition(definition)), 0)
+    return role
+  }
+
+  it('refuses, naming the attribute key and the flag to clear', async () => {
+    // Ordering 2 from the gap: the attribute is marked self-editable FIRST, so
+    // Task 5's guard had nothing published to refuse on.
+    const key = uniqueKey()
+    await seedAttribute({ key, selfEditable: true })
+    const role = await drafted('Keyed on self-editable', conditionOn(key))
+
+    await expect(repo().publish(role.id)).rejects.toThrow(ConflictError)
+    // The publisher holds business_role:manage but is blocked by state only an
+    // attribute:manage holder can change, so the message has to name the key
+    // AND the flag — otherwise they cannot act on it or even tell who to ask.
+    await expect(repo().publish(role.id)).rejects.toThrow(new RegExp(key))
+    await expect(repo().publish(role.id)).rejects.toThrow(/selfEditable/)
+  })
+
+  it('leaves the published definition untouched when it refuses', async () => {
+    // The check sits BEFORE the child-row deletes, the posture the SoD refusal
+    // a few lines above already argues for: a refused publish must not have
+    // half-replaced the live formula.
+    const key = uniqueKey()
+    await seedAttribute({ key, selfEditable: true })
+    const role = await repo().create({ name: `Refused mid-publish ${randomUUID()}`, description: null })
+    await repo().saveDraft(role.id, DEFINITION)
+    await repo().recordSimulation(role.id, hashDefinition(parseDefinition(DEFINITION)), 0)
+    await repo().publish(role.id)
+
+    const escalating = conditionOn(key)
+    await repo().saveDraft(role.id, escalating)
+    await repo().recordSimulation(role.id, hashDefinition(parseDefinition(escalating)), 0)
+    await expect(repo().publish(role.id)).rejects.toThrow(ConflictError)
+
+    const after = await repo().findById(role.id)
+    expect(after?.conditions).toEqual([
+      expect.objectContaining({ field: 'jobTitle', operator: 'equals', value: 'Account Executive' }),
+    ])
+    expect(after?.draftDefinition).not.toBeNull()
+  })
+
+  it('publishes a formula keyed on an admin-only attribute', async () => {
+    const key = uniqueKey()
+    await seedAttribute({ key, selfEditable: false })
+    const role = await drafted('Keyed on admin-only', conditionOn(key))
+
+    await repo().publish(role.id)
+
+    const published = await repo().findById(role.id)
+    expect(published?.conditions).toEqual([
+      expect.objectContaining({ field: `${ATTRIBUTE_PREFIX}${key}`, operator: 'equals', value: 'yes' }),
+    ])
+  })
+
+  it('publishes a formula that names no attribute at all', async () => {
+    const role = await drafted('Names no attribute', DEFINITION)
+
+    await repo().publish(role.id)
+
+    expect((await repo().findById(role.id))?.draftDefinition).toBeNull()
+  })
+
+  it('publishes once the attribute has been made admin-only again, because the check reads live state', async () => {
+    // Self-editability is not a property of the draft, so this cannot ride the
+    // `simulated_*` columns: the same unchanged, already-simulated draft has to
+    // go from refused to publishable on a change made outside it.
+    const key = uniqueKey()
+    await seedAttribute({ key, selfEditable: true })
+    const role = await drafted('Self-editable then revoked', conditionOn(key))
+
+    await expect(repo().publish(role.id)).rejects.toThrow(ConflictError)
+
+    await ctx.db
+      .update(attributeDefinitions)
+      .set({ selfEditable: false })
+      .where(eq(attributeDefinitions.key, key))
+
+    await repo().publish(role.id)
+
+    expect((await repo().findById(role.id))?.draftDefinition).toBeNull()
+  })
+
+  it('ignores a self-editable GROUP-scoped definition sharing the key', async () => {
+    // A condition reads `EvaluableUser.attributes`, so a group-scoped
+    // definition is never an input to any formula. `(key, applies_to)`
+    // uniqueness means the same key legitimately names both rows, and refusing
+    // on the group one would be pure over-refusal.
+    const key = uniqueKey()
+    await seedAttribute({ key, selfEditable: false, appliesTo: 'user' })
+    await seedAttribute({ key, selfEditable: true, appliesTo: 'group' })
+    const role = await drafted('Group-scoped namesake', conditionOn(key))
+
+    await repo().publish(role.id)
+
+    expect((await repo().findById(role.id))?.draftDefinition).toBeNull()
+  })
+
+  it('does not refuse on a longer key that merely starts with a self-editable one', async () => {
+    // `attributes.cost_centre_band` is a different attribute from
+    // `cost_centre` — the same prefix-versus-label trap Task 5's exact match
+    // avoids, restated here because this side SLICES the prefix off rather
+    // than concatenating it on.
+    const base = uniqueKey()
+    await seedAttribute({ key: base, selfEditable: true })
+    await seedAttribute({ key: `${base}_band`, selfEditable: false })
+    const role = await drafted('Longer namesake', conditionOn(`${base}_band`))
+
+    await repo().publish(role.id)
+
+    expect((await repo().findById(role.id))?.draftDefinition).toBeNull()
+  })
+
+  it('names every self-editable attribute the draft depends on, not just the first', async () => {
+    const first = uniqueKey()
+    const second = uniqueKey()
+    await seedAttribute({ key: first, selfEditable: true })
+    await seedAttribute({ key: second, selfEditable: true })
+    const role = await drafted('Two self-editable keys', {
+      conditions: [
+        { field: `${ATTRIBUTE_PREFIX}${first}`, operator: 'equals', value: 'yes' },
+        { field: `${ATTRIBUTE_PREFIX}${second}`, operator: 'equals', value: 'yes' },
+      ],
+      grants: [],
+    })
+
+    await expect(repo().publish(role.id)).rejects.toThrow(new RegExp(first))
+    await expect(repo().publish(role.id)).rejects.toThrow(new RegExp(second))
   })
 })
 
