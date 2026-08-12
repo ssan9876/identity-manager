@@ -170,8 +170,8 @@ describe('RuleApplier (Milestone 7, Task 6)', () => {
 
   describe('set_attribute', () => {
     it('merges the attribute onto the user, leaving other existing attributes untouched', async () => {
-      const key = `costCenter-${nextTag()}`
-      const otherKey = `nickname-${nextTag()}`
+      const key = `costCenter_${nextTag()}`
+      const otherKey = `nickname_${nextTag()}`
       await ctx.db.insert(attributeDefinitions).values([
         { key, label: 'Cost Center', dataType: 'string', required: false, appliesTo: 'user', isActive: true },
         { key: otherKey, label: 'Nickname', dataType: 'string', required: false, appliesTo: 'user', isActive: true },
@@ -224,7 +224,7 @@ describe('RuleApplier (Milestone 7, Task 6)', () => {
       async () => {
         const user = await makeActiveUser()
         const N = 20
-        const keys = Array.from({ length: N }, () => `h4jml-${nextTag()}`)
+        const keys = Array.from({ length: N }, () => `h4jml_${nextTag()}`)
         await ctx.db.insert(
           attributeDefinitions,
         ).values(

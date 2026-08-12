@@ -1,0 +1,962 @@
+import { randomUUID } from 'node:crypto'
+import { eq } from 'drizzle-orm'
+import { describe, expect, it } from 'vitest'
+import type {
+  CreateAttributeDefinitionInput,
+  SafeFieldPatch,
+} from '../src/attributes/attribute-definitions.repository'
+import { AttributeDefinitionsRepository } from '../src/attributes/attribute-definitions.repository'
+import { ATTRIBUTE_PREFIX } from '../src/business-roles/role-evaluator'
+import { ConflictError, NotFoundError, ValidationError } from '../src/common/errors'
+import { attributeDefinitions } from '../src/db/schema/attribute-definitions'
+import { businessRoleConditions, businessRoles } from '../src/db/schema/business-roles'
+import { OrganizationsRepository } from '../src/organizations/organizations.repository'
+import { withTestDatabase } from './support/pg'
+
+/**
+ * Milestone 8 (attribute-definitions write path), Task 5 — the two refusals.
+ *
+ * The `selfEditable` one is why this feature needs a repository gate at all
+ * rather than a controller check: role-evaluator.ts supports an open-ended
+ * `attributes.<key>` condition, so a custom attribute can decide business
+ * role membership and therefore entitlements. Marking such an attribute
+ * self-editable would let a user grant themselves access by editing their
+ * own profile.
+ *
+ * `withTestDatabase()` starts ONE container per FILE with no truncation
+ * between `it` blocks, so every fixture below takes a per-call unique key
+ * and role name — a shared literal would let one test's role reference
+ * another test's attribute and turn a refusal into an accident.
+ */
+describe('AttributeDefinitionsRepository', () => {
+  const ctx = withTestDatabase()
+
+  function repo(): AttributeDefinitionsRepository {
+    return new AttributeDefinitionsRepository(ctx.db)
+  }
+
+  /**
+   * The same repository, with each write run inside its OWN transaction.
+   *
+   * `create` and `updateSafeFields` take a LIVE TRANSACTION (`DbHandle`), not
+   * the pooled handle, since Milestone 8 Task 5b — see that type's doc comment
+   * in the repository. Both of their guards span several statements held
+   * together by TRANSACTION-SCOPED locks (`pg_advisory_xact_lock`,
+   * `SELECT ... FOR UPDATE`), and on the pooled handle each statement is its
+   * own implicit transaction, so the lock is released before the statement it
+   * was taken to protect. Passing `ctx.db` is now a compile error rather than
+   * a silently ineffective call — which is how this file's own
+   * `create(ctx.db, { selfEditable: true })` was found.
+   */
+  function txRepo() {
+    return {
+      create: (input: CreateAttributeDefinitionInput) =>
+        ctx.db.transaction((tx) => repo().create(tx, input)),
+      updateSafeFields: (id: string, patch: SafeFieldPatch) =>
+        ctx.db.transaction((tx) => repo().updateSafeFields(tx, id, patch)),
+    }
+  }
+
+  /** Unique per call, and legal under attributes/attribute-key.ts (letters, digits, underscore). */
+  function uniqueKey(prefix: string): string {
+    return `${prefix}_${randomUUID().replace(/-/g, '_')}`.slice(0, 64)
+  }
+
+  async function masterOrgId(): Promise<string> {
+    const master = await new OrganizationsRepository(ctx.db).findMaster()
+    return master.id
+  }
+
+  async function seedDefinition(
+    over: Partial<typeof attributeDefinitions.$inferInsert> = {},
+  ): Promise<{ id: string; key: string }> {
+    const key = typeof over.key === 'string' ? over.key : uniqueKey('attr')
+    const [row] = await ctx.db
+      .insert(attributeDefinitions)
+      .values({ key, label: 'Seeded', dataType: 'string', appliesTo: 'user', ...over })
+      .returning()
+    return { id: row.id, key: row.key }
+  }
+
+  /**
+   * A business role whose PUBLISHED formula names `field`. Published rows —
+   * `business_role_conditions` — are what role-evaluator.ts actually reads.
+   */
+  async function seedRoleWithCondition(
+    field: string,
+    options: { enabled?: boolean; name?: string } = {},
+  ): Promise<string> {
+    const name = options.name ?? `Role ${randomUUID()}`
+    const [role] = await ctx.db
+      .insert(businessRoles)
+      .values({
+        name,
+        organizationId: await masterOrgId(),
+        enabled: options.enabled ?? true,
+      })
+      .returning()
+    await ctx.db
+      .insert(businessRoleConditions)
+      .values({ businessRoleId: role.id, field, operator: 'equals', value: 'yes' })
+    return name
+  }
+
+  // -------------------------------------------------------------------------
+  // The refusal that matters most
+  // -------------------------------------------------------------------------
+
+  describe('the selfEditable escalation refusal', () => {
+    it('refuses selfEditable on an attribute a business-role formula references, naming the roles', async () => {
+      const definition = await seedDefinition()
+      const roleName = await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${definition.key}`)
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { selfEditable: true }),
+      ).rejects.toThrow(/business role/i)
+
+      const error = await txRepo()
+        .updateSafeFields(definition.id, { selfEditable: true })
+        .catch((e: unknown) => e)
+      // The operator must learn WHICH roles, or they cannot act on the refusal.
+      expect(String((error as Error).message)).toContain(roleName)
+      expect(error).toBeInstanceOf(ConflictError)
+
+      // And a refusal is a refusal: nothing was written.
+      const [after] = await ctx.db
+        .select()
+        .from(attributeDefinitions)
+        .where(eq(attributeDefinitions.id, definition.id))
+      expect(after.selfEditable).toBe(false)
+    })
+
+    it('refuses even when the referencing role is DISABLED', async () => {
+      // `enabled` is the kill switch on what a role GRANTS, not on what its
+      // formula MEANS, and re-enabling is one un-gated click away. Same
+      // posture db/schema/business-roles.ts already states for the SoD
+      // checks: "a pair of conflicting formulas is a policy violation even
+      // while one side's grants are switched off".
+      const definition = await seedDefinition()
+      const roleName = await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${definition.key}`, {
+        enabled: false,
+      })
+
+      const error = await txRepo()
+        .updateSafeFields(definition.id, { selfEditable: true })
+        .catch((e: unknown) => e)
+      expect(String((error as Error).message)).toContain(roleName)
+    })
+
+    it('names EVERY referencing role, not just the first', async () => {
+      const definition = await seedDefinition()
+      const first = await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${definition.key}`, {
+        name: `Aardvark ${randomUUID()}`,
+      })
+      const second = await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${definition.key}`, {
+        name: `Zebra ${randomUUID()}`,
+      })
+
+      const error = await txRepo()
+        .updateSafeFields(definition.id, { selfEditable: true })
+        .catch((e: unknown) => e)
+      expect(String((error as Error).message)).toContain(first)
+      expect(String((error as Error).message)).toContain(second)
+    })
+
+    it('refuses at CREATE too, for a key a formula already references', async () => {
+      // A formula may name a key no definition exists for yet —
+      // `extractField` simply reads `null`. Creating that definition
+      // self-editable afterwards opens exactly the same escalation route as
+      // flipping the flag on an existing one, so the gate has to stand on
+      // both methods or the update-side gate is trivially walked around.
+      const key = uniqueKey('unborn')
+      const roleName = await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${key}`)
+
+      const error = await txRepo()
+        .create({
+          key,
+          label: 'Clearance',
+          dataType: 'string',
+          appliesTo: 'user',
+          selfEditable: true,
+        })
+        .catch((e: unknown) => e)
+      expect(error).toBeInstanceOf(ConflictError)
+      expect(String((error as Error).message)).toContain(roleName)
+
+      const rows = await ctx.db
+        .select()
+        .from(attributeDefinitions)
+        .where(eq(attributeDefinitions.key, key))
+      expect(rows).toHaveLength(0)
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // What the refusal must NOT also refuse. Over-refusal makes a legitimate
+  // operation impossible; it is not a lesser failure than under-refusal.
+  // -------------------------------------------------------------------------
+
+  describe('what the selfEditable refusal must still allow', () => {
+    it('allows selfEditable when no formula references the attribute', async () => {
+      const definition = await seedDefinition()
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { selfEditable: true }),
+      ).resolves.toMatchObject({ selfEditable: true })
+    })
+
+    it('allows selfEditable when formulas reference a DIFFERENT attribute', async () => {
+      const definition = await seedDefinition()
+      await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${uniqueKey('other')}`)
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { selfEditable: true }),
+      ).resolves.toMatchObject({ selfEditable: true })
+    })
+
+    it('allows selfEditable when a formula names a LONGER key sharing this key as a prefix', async () => {
+      // `attributes.cost_centre_band` is a different attribute from
+      // `cost_centre`. A `LIKE 'attributes.cost_centre%'` match would refuse
+      // this — the same prefix-versus-label bug `isAtOrBelow` exists to avoid.
+      const definition = await seedDefinition({ key: uniqueKey('cost_centre') })
+      await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${definition.key}_band`)
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { selfEditable: true }),
+      ).resolves.toMatchObject({ selfEditable: true })
+    })
+
+    it('allows selfEditable on a GROUP attribute even when a user formula names the same key', async () => {
+      // Conditions evaluate against an `EvaluableUser`, and `attributes.<key>`
+      // reads `user.attributes` — a group-scoped definition is never an input
+      // to any formula. `attribute_definitions_key_scope_unique` is
+      // (key, applies_to), so the same key legitimately exists for both.
+      const key = uniqueKey('shared')
+      await seedDefinition({ key, appliesTo: 'user' })
+      const groupDefinition = await seedDefinition({ key, appliesTo: 'group' })
+      await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${key}`)
+
+      await expect(
+        txRepo().updateSafeFields(groupDefinition.id, { selfEditable: true }),
+      ).resolves.toMatchObject({ selfEditable: true, appliesTo: 'group' })
+    })
+
+    it('allows turning selfEditable OFF on a referenced attribute', async () => {
+      const definition = await seedDefinition({ selfEditable: true })
+      await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${definition.key}`)
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { selfEditable: false }),
+      ).resolves.toMatchObject({ selfEditable: false })
+    })
+
+    it('allows editing other fields on a referenced attribute', async () => {
+      const definition = await seedDefinition()
+      await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${definition.key}`)
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { label: 'Renamed', required: true }),
+      ).resolves.toMatchObject({ label: 'Renamed', required: true })
+    })
+
+    it('ignores conditions on core fields entirely', async () => {
+      const definition = await seedDefinition()
+      await seedRoleWithCondition('jobTitle')
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { selfEditable: true }),
+      ).resolves.toMatchObject({ selfEditable: true })
+    })
+
+    it('allows creating a referenced attribute that is NOT self-editable', async () => {
+      const key = uniqueKey('referenced')
+      await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${key}`)
+
+      await expect(
+        txRepo().create({ key, label: 'Referenced', dataType: 'string', appliesTo: 'user' }),
+      ).resolves.toMatchObject({ key, selfEditable: false })
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // The key refusal
+  // -------------------------------------------------------------------------
+
+  describe('create', () => {
+    it('refuses a reserved key on create', async () => {
+      await expect(
+        txRepo().create({
+          key: '__proto__',
+          label: 'x',
+          dataType: 'string',
+          appliesTo: 'user',
+        }),
+      ).rejects.toThrow(/reserved/)
+    })
+
+    it.each(['constructor', 'prototype', 'has space', 'has-hyphen', '1st', ''])(
+      'refuses the illegal key "%s" as a ValidationError, before touching the database',
+      async (key) => {
+        const error = await txRepo()
+          .create({ key, label: 'x', dataType: 'string', appliesTo: 'user' })
+          .catch((e: unknown) => e)
+        expect(error).toBeInstanceOf(ValidationError)
+        // Not a raw Postgres CHECK violation surfacing as a 500 — the
+        // constraint is the backstop, not the message the caller reads.
+        expect(String((error as Error).message)).not.toContain('attribute_definitions_key_format')
+      },
+    )
+
+    it('creates a definition with every field it was given', async () => {
+      const key = uniqueKey('full')
+      await expect(
+        txRepo().create({
+          key,
+          label: 'Cost centre',
+          dataType: 'string',
+          appliesTo: 'user',
+          required: true,
+          sensitive: true,
+          sortOrder: 7,
+        }),
+      ).resolves.toMatchObject({
+        key,
+        label: 'Cost centre',
+        dataType: 'string',
+        appliesTo: 'user',
+        required: true,
+        sensitive: true,
+        isActive: true,
+        selfEditable: false,
+      })
+    })
+
+    it('reports a duplicate key for the same scope as a conflict, not a raw driver error', async () => {
+      const key = uniqueKey('dup')
+      await txRepo().create({ key, label: 'First', dataType: 'string', appliesTo: 'user' })
+
+      await expect(
+        txRepo().create({ key, label: 'Second', dataType: 'string', appliesTo: 'user' }),
+      ).rejects.toBeInstanceOf(ConflictError)
+    })
+
+    it('allows the same key for the other entity type', async () => {
+      const key = uniqueKey('scoped')
+      await txRepo().create({ key, label: 'User side', dataType: 'string', appliesTo: 'user' })
+
+      await expect(
+        txRepo().create({ key, label: 'Group side', dataType: 'string', appliesTo: 'group' }),
+      ).resolves.toMatchObject({ key, appliesTo: 'group' })
+    })
+  })
+
+  describe('updateSafeFields', () => {
+    it('reports an unknown id as not found', async () => {
+      await expect(
+        txRepo().updateSafeFields(randomUUID(), { label: 'x' }),
+      ).rejects.toBeInstanceOf(NotFoundError)
+    })
+
+    it('returns the definition unchanged for an empty patch', async () => {
+      const definition = await seedDefinition({ label: 'Untouched' })
+
+      await expect(txRepo().updateSafeFields(definition.id, {})).resolves.toMatchObject({
+        id: definition.id,
+        label: 'Untouched',
+      })
+    })
+
+    it('runs inside a caller-supplied transaction', async () => {
+      // Task 7 writes the audit row in the SAME transaction as the change.
+      const definition = await seedDefinition()
+      await expect(
+        ctx.db.transaction(async (tx) =>
+          repo().updateSafeFields(tx, definition.id, { label: 'In a transaction' }),
+        ),
+      ).resolves.toMatchObject({ label: 'In a transaction' })
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // Task 6 — validationRules as a closed schema.
+  //
+  // `validationRules` is jsonb — an open blob — and that is exactly where
+  // this project's ReDoS lived: `pattern` was a caller-supplied regular
+  // expression compiled with `new RegExp` and run against user input
+  // (attribute-formats.ts's file doc comment has the 96.7-second
+  // measurement). There was no write path before Task 5, so nothing has ever
+  // validated what goes into that column. These tests are what stop the next
+  // hand-written value from reintroducing it.
+  // -------------------------------------------------------------------------
+
+  describe('validationRules', () => {
+    it('rejects a pattern key by name, pointing at the format vocabulary that replaced it', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('pattern'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { pattern: '(a+)+$' } as never,
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/pattern/)
+      // Not lumped in with generic unknown-key rejection — the message must
+      // name the replacement vocabulary, not just say "unrecognized".
+      expect(String((error as Error).message)).toMatch(/format/)
+    })
+
+    it('rejects a key outside the closed vocabulary as unrecognized', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('unknown'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { unknownKey: 1 } as never,
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/unknownKey|unrecognized/i)
+    })
+
+    it('bounds enum options to at most 200 entries', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('toomanyopts'),
+          label: 'l',
+          dataType: 'enum',
+          appliesTo: 'user',
+          validationRules: { options: Array.from({ length: 201 }, (_, i) => String(i)) },
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/options/)
+    })
+
+    it('bounds each option to at most 200 characters', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('longopt'),
+          label: 'l',
+          dataType: 'enum',
+          appliesTo: 'user',
+          validationRules: { options: ['x'.repeat(201)] },
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/options/)
+    })
+
+    it('accepts a format from the closed vocabulary', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('fmt'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { format: 'email' },
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('rejects a format not in the closed vocabulary', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('badfmt'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { format: 'ssn' } as never,
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+    })
+
+    // ---------------------------------------------------------------------
+    // Fix round 1: minLength/maxLength were missing from the closed schema
+    // entirely — attribute-validator.ts's buildFieldSchema has always read
+    // them for dataType: 'string' (test/attribute-validator.spec.ts pins
+    // this), so their absence here would have made a string length
+    // constraint unwritable through the only supported path.
+    // ---------------------------------------------------------------------
+
+    it('accepts minLength/maxLength on a string attribute', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('lenok'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { minLength: 4, maxLength: 7 },
+        }),
+      ).resolves.toMatchObject({ validationRules: { minLength: 4, maxLength: 7 } })
+    })
+
+    it('rejects min greater than max', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('invmm'),
+          label: 'l',
+          dataType: 'number',
+          appliesTo: 'user',
+          validationRules: { min: 10, max: 5 },
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/max/)
+    })
+
+    it('rejects minLength greater than maxLength', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('invlen'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { minLength: 10, maxLength: 5 },
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/maxLength/)
+    })
+
+    it('rejects minLength/maxLength on a non-string attribute', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('lenwrongtype'),
+          label: 'l',
+          dataType: 'number',
+          appliesTo: 'user',
+          validationRules: { minLength: 3 },
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/minLength/)
+      expect(String((error as Error).message)).toMatch(/number/)
+    })
+
+    it('rejects min/max on a non-number attribute', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('minmaxwrongtype'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { min: 3 },
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/min/)
+      expect(String((error as Error).message)).toMatch(/string/)
+    })
+
+    it('rejects a dataType mismatch through updateSafeFields too, using the EXISTING row dataType', async () => {
+      // SafeFieldPatch has no dataType field — the check has to read the
+      // stored dataType, not one supplied by the caller.
+      const definition = await seedDefinition({ dataType: 'number' })
+
+      const error = await txRepo()
+        .updateSafeFields(definition.id, { validationRules: { minLength: 2 } })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/minLength/)
+
+      const [after] = await ctx.db
+        .select()
+        .from(attributeDefinitions)
+        .where(eq(attributeDefinitions.id, definition.id))
+      expect(after.validationRules).toEqual({})
+    })
+
+    // ---------------------------------------------------------------------
+    // What the closed schema must still allow. Over-refusal is not a lesser
+    // failure than under-refusal — a definition with no validationRules at
+    // all, an empty object, a legal format, and min without max must all
+    // keep working.
+    // ---------------------------------------------------------------------
+
+    it('allows max without min', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('maxonly'),
+          label: 'l',
+          dataType: 'number',
+          appliesTo: 'user',
+          validationRules: { max: 10 },
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows minLength without maxLength', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('minlenonly'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { minLength: 2 },
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows min equal to max (pins the field to exactly one value)', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('eqmm'),
+          label: 'l',
+          dataType: 'number',
+          appliesTo: 'user',
+          validationRules: { min: 5, max: 5 },
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows minLength equal to maxLength (a fixed-length string)', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('eqlen'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { minLength: 5, maxLength: 5 },
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows a zero minLength', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('zerolen'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { minLength: 0, maxLength: 100 },
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows a large-but-sane maxLength', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('biglen'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { maxLength: 10_000 },
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows format alongside minLength/maxLength on a string attribute', async () => {
+      // Mirrors test/attribute-validator.spec.ts's read-side coverage of
+      // this exact combination — the two are meant to agree.
+      await expect(
+        txRepo().create({
+          key: uniqueKey('fmtlen'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { format: 'slug', maxLength: 20 },
+        }),
+      ).resolves.toMatchObject({ validationRules: { format: 'slug', maxLength: 20 } })
+    })
+
+    it('allows creating a definition with no validationRules at all', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('novr'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows an empty validationRules object', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('emptyvr'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: {},
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows min without max', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('minonly'),
+          label: 'l',
+          dataType: 'number',
+          appliesTo: 'user',
+          validationRules: { min: 3 },
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows options within bounds', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('okopts'),
+          label: 'l',
+          dataType: 'enum',
+          appliesTo: 'user',
+          validationRules: { options: ['a', 'b', 'c'] },
+        }),
+      ).resolves.toMatchObject({ validationRules: { options: ['a', 'b', 'c'] } })
+    })
+
+    it('also gates updateSafeFields, not only create', async () => {
+      const definition = await seedDefinition()
+
+      const error = await txRepo()
+        .updateSafeFields(definition.id, { validationRules: { pattern: '.*' } as never })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/pattern/)
+
+      // A refusal is a refusal: nothing was written.
+      const [after] = await ctx.db
+        .select()
+        .from(attributeDefinitions)
+        .where(eq(attributeDefinitions.id, definition.id))
+      expect(after.validationRules).toEqual({})
+    })
+
+    it('allows updateSafeFields to set a legal validationRules value', async () => {
+      const definition = await seedDefinition()
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { validationRules: { format: 'uuid' } }),
+      ).resolves.toMatchObject({ validationRules: { format: 'uuid' } })
+    })
+  })
+
+  // ==========================================================================
+  // A default has to be a value its own definition would accept
+  // ==========================================================================
+
+  /**
+   * The controller spec covers the shapes an admin can send in one request.
+   * These are the ones only the repository can see, because they turn on the
+   * relationship between what a PATCH carries and what the ROW already holds
+   * — and `updateSafeFields` is where both halves are known at once.
+   */
+  describe('defaultValue against its own definition', () => {
+    /**
+     * Read from the ROW, not from what the write returned: `defaultValue` is
+     * deliberately absent from the `AttributeDefinition` shape these methods
+     * return (see that interface — a default is a VALUE, and Task 7 keeps
+     * values out of the projections that feed audit snapshots). The column is
+     * the only place to see what was actually written.
+     */
+    async function storedDefaultOf(id: string): Promise<unknown> {
+      const [row] = await ctx.db
+        .select()
+        .from(attributeDefinitions)
+        .where(eq(attributeDefinitions.id, id))
+      return row.defaultValue
+    }
+
+    it('refuses a default the stored rules already exclude, when only the default is patched', async () => {
+      const definition = await seedDefinition({
+        dataType: 'number',
+        validationRules: { min: 10, max: 20 },
+      })
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { defaultValue: 5 }),
+      ).rejects.toThrow(ValidationError)
+    })
+
+    /**
+     * THE ASYMMETRIC HALF, and the reason this check keys on the patch's
+     * EFFECTIVE result rather than on the field it mentions. Nothing about
+     * this request names `defaultValue` at all — the stored `5` was legal
+     * when it was written and is being invalidated from the other side.
+     * Checking only the mentioned field would let this through and leave a
+     * definition whose own default fails it.
+     */
+    it('refuses rules that would invalidate the stored default, when only the rules are patched', async () => {
+      const definition = await seedDefinition({ dataType: 'number', defaultValue: 5 })
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { validationRules: { min: 10 } }),
+      ).rejects.toThrow(ValidationError)
+    })
+
+    it('accepts rules that widen far enough to admit the stored default', async () => {
+      const definition = await seedDefinition({
+        dataType: 'number',
+        defaultValue: 5,
+        validationRules: { min: 1 },
+      })
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { validationRules: { min: 0, max: 100 } }),
+      ).resolves.toMatchObject({ validationRules: { min: 0, max: 100 } })
+    })
+
+    /**
+     * Both halves moving at once, in the one direction that is legal only
+     * because they move TOGETHER: `50` fails the stored rules and `min: 40`
+     * fails the stored default, so a check that paired either new value with
+     * the old other one would refuse this. It is a perfectly coherent edit.
+     */
+    it('accepts a default and rules that are only valid as a pair', async () => {
+      const definition = await seedDefinition({
+        dataType: 'number',
+        defaultValue: 5,
+        validationRules: { min: 1, max: 10 },
+      })
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, {
+          defaultValue: 50,
+          validationRules: { min: 40, max: 60 },
+        }),
+      ).resolves.toMatchObject({ validationRules: { min: 40, max: 60 } })
+      await expect(storedDefaultOf(definition.id)).resolves.toBe(50)
+    })
+
+    /**
+     * A patch that mentions neither field is NOT re-checked, by design — see
+     * the comment at the check itself. A definition made inconsistent by some
+     * earlier write (a migration, hand-written SQL, or this gate's own
+     * absence before Task 7) must stay editable, or the admin cannot reach
+     * the field they need to fix it.
+     */
+    it('still allows an unrelated edit on a definition whose stored default is already invalid', async () => {
+      const definition = await seedDefinition({
+        dataType: 'number',
+        defaultValue: 5,
+        validationRules: { min: 10 },
+      })
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { label: 'Renamed' }),
+      ).resolves.toMatchObject({ label: 'Renamed' })
+    })
+
+    it('accepts null as a way out, clearing a default the rules no longer admit', async () => {
+      const definition = await seedDefinition({
+        dataType: 'number',
+        defaultValue: 5,
+        validationRules: { min: 10 },
+      })
+
+      await expect(txRepo().updateSafeFields(definition.id, { defaultValue: null })).resolves.toBeDefined()
+      await expect(storedDefaultOf(definition.id)).resolves.toBeNull()
+    })
+  })
+
+  // ==========================================================================
+  // findByIdForUpdate — the lock that keeps an audit chain contiguous
+  // ==========================================================================
+
+  /**
+   * Milestone 8, Task 7. `AttributeDefinitionsController.update` records the
+   * audit `before` from `findByIdForUpdate` and the `after` from
+   * `updateSafeFields`. Both reads are `FOR UPDATE`, and the FIRST one is the
+   * one under test here: it is what makes two concurrent patches produce a
+   * CONTIGUOUS chain (C0->C1 then C1->C2) rather than two rows that both
+   * claim to start from C0 and between them erase the fact that C1 ever
+   * existed. `audit_log` is append-only at the database level, so a
+   * fabricated chain cannot be corrected afterwards.
+   *
+   * *** THE TRAP, WRITTEN DOWN SO NOBODY REDISCOVERS IT THE EXPENSIVE WAY ***
+   *
+   * The obvious version of this test — two concurrent `PATCH` requests over
+   * HTTP through `Promise.all`, the shape self-service.spec.ts and
+   * jml-rule-applier.spec.ts use for their own lost-update proofs — PASSES
+   * EVEN WITH `.for('update')` REMOVED. Those specs get away with it because
+   * they assert on the FINAL MERGED STATE of a jsonb bag, which a stale read
+   * genuinely corrupts. This property is different: it is about the
+   * relationship between two audit rows, and with the lock gone the second
+   * request still blocks inside `updateSafeFields`' own `FOR UPDATE` and
+   * still ends up writing a plausible-looking pair. Node's event loop
+   * serialises the two handlers far enough that the divergence never
+   * materialises.
+   *
+   * The interleave therefore has to be explicit and at the REPOSITORY level:
+   * T1 takes the locked read and HOLDS its transaction open while T2 starts,
+   * so T2's own locked read is forced to contend for the row rather than
+   * merely being scheduled after T1. Anyone rewriting this as the HTTP
+   * version will get a green test that proves nothing.
+   */
+  describe('findByIdForUpdate under concurrency', () => {
+    /** Long enough for the other transaction to reach its locked read and block on it. */
+    const HANDOFF_MS = 300
+
+    function sleep(ms: number): Promise<void> {
+      return new Promise((resolve) => setTimeout(resolve, ms))
+    }
+
+    /** One transaction doing exactly what the controller's PATCH does: locked read, patch, report both sides. */
+    function patchRecordingBothSides(
+      id: string,
+      label: string,
+      holdUntil?: Promise<void>,
+    ): Promise<{ before: string | undefined; after: string }> {
+      return ctx.db.transaction(async (tx) => {
+        const before = await repo().findByIdForUpdate(tx, id)
+        if (holdUntil !== undefined) await holdUntil
+        const after = await repo().updateSafeFields(tx, id, { label })
+        return { before: before?.label, after: after.label }
+      })
+    }
+
+    it(
+      'forces a concurrent patch to record the state the first one committed, not the one it started from',
+      async () => {
+        const definition = await seedDefinition({ label: 'C0' })
+
+        let releaseFirst: () => void = () => {}
+        const firstHeld = new Promise<void>((resolve) => {
+          releaseFirst = resolve
+        })
+
+        // T1: locked read of C0, then HOLD the transaction open.
+        const first = patchRecordingBothSides(definition.id, 'C1', firstHeld)
+        await sleep(HANDOFF_MS)
+
+        // T2 starts while T1 still holds the row. Its own locked read must
+        // BLOCK here — that is the whole property. Without the lock it would
+        // read C0 straight through and go on to record C0 -> C2.
+        const second = patchRecordingBothSides(definition.id, 'C2')
+        await sleep(HANDOFF_MS)
+
+        releaseFirst()
+        const [t1, t2] = await Promise.all([first, second])
+
+        expect(t1).toEqual({ before: 'C0', after: 'C1' })
+        // THE ASSERTION THAT DISCRIMINATES: `before: 'C1'`, never 'C0'.
+        // A chain of C0->C1 and C0->C2 is two rows that cannot both be true
+        // and that together lose C1 entirely.
+        expect(t2).toEqual({ before: 'C1', after: 'C2' })
+
+        const [stored] = await ctx.db
+          .select()
+          .from(attributeDefinitions)
+          .where(eq(attributeDefinitions.id, definition.id))
+        expect(stored.label).toBe('C2')
+      },
+      30_000,
+    )
+  })
+})

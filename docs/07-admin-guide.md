@@ -35,6 +35,7 @@ cannot follow.
 | Directory | People | `user:read` |
 | Directory | Groups | `group:read` |
 | Directory | Org units | `org_unit:read` |
+| Directory | Attributes | `attribute:read` |
 | Access | Admin roles | `role:assign` |
 | Access | Business roles | `business_role:read` |
 | Access | Recertification | *nothing — visible to every authenticated user* |
@@ -59,8 +60,9 @@ rather than a bare 403 or a silent empty screen.
 
 > **A visible control is not a promise the write will succeed.** `GET /self/permissions`
 > reports the *action*, not its scope. Several areas — business roles, SSO applications,
-> HR sources, dead letters, the audit log — additionally require the grant to be
-> **global**, and the API refuses a scoped holder with a message that says exactly that.
+> HR sources, dead letters, the audit log, attribute definitions — additionally require
+> the grant to be **global**, and the API refuses a scoped holder with a message that says
+> exactly that.
 
 **Light theme is the default.** An explicit toggle in the top bar overrides
 `prefers-color-scheme` and persists in `localStorage`, resolving before first paint.
@@ -1068,12 +1070,109 @@ gate as a hand-typed formula.
 
 ---
 
+## Walkthrough 22 — Define an attribute, and change its type
+
+**Needs:** `attribute:read` to see the catalogue; `attribute:manage`, held **globally**,
+to change anything. An attribute definition belongs to no org unit and feeds every
+tenant's users *and* their business-role formulas, so a `super_admin` scoped to one
+subtree gets a 403 here — see [Authorization](08-authorization.md).
+
+**Attributes** in the left nav, under Directory. Two tabs, **Person attributes** and
+**Group attributes**, because a definition applies to one or the other and the API has no
+"both" to ask for.
+
+### Create one
+
+1. **New attribute.**
+2. **Key** — letters, digits and underscores, never leading with a digit. This is what
+   stored values are filed under, and it is **permanent**: there is no rename, because
+   every value already recorded under it is keyed by that string.
+3. **Label** — what people see beside the field. This one you can change freely.
+4. **Type** — text, number, yes/no, date, or choice. Also effectively permanent; see
+   below for the one route that changes it.
+5. **Rules**, which vary by type: length and a named **format** for text (email, UUID,
+   E.164 phone and so on — a closed list the API owns), minimum and maximum for a number,
+   the list of **choices** for a choice attribute.
+6. **Default value** — inherited by everyone who never sets this attribute, so it has to
+   be a value this definition would itself accept. A default of `"n/a"` on a number
+   attribute is refused at creation rather than discovered later, on some unrelated edit
+   to an innocent person's profile.
+7. **Behaviour** — three switches, two of which carry real consequence:
+   - **Required** — a value must be supplied.
+   - **Self-editable** — people may change their own value in `/self`. **Refused while
+     any published business-role formula reads this attribute**, because a person who can
+     edit an attribute that decides a role can grant themselves access.
+   - **Sensitive** — keeps this attribute's values out of audit-log snapshots. Turning it
+     on *reduces* what the audit log can see, which is why the change gets its own audit
+     action rather than folding into a generic update.
+
+### Deactivate, and undo it
+
+**Deactivate** removes the attribute from every form and every validation schema in the
+deployment. It does **not** touch the values already stored under it, and the row stays
+in this list, marked **Inactive**, with a **Reactivate** button beside it. The catalogue
+lists inactive definitions on purpose: a switch you cannot see is a switch you cannot flip
+back.
+
+### Change the type — preview, then commit
+
+Changing `dataType` is the one edit that **rewrites every value already stored** under
+the attribute, so it is not on the edit form. `PATCH` refuses it outright, with a message
+naming the two routes that do it.
+
+1. **Change type** on the row, then pick the new type and **Preview**. Nothing is
+   written. You get:
+   - **Holders** — how many people hold this attribute at all. This is the denominator:
+     a migration touching all twelve holders of a rare attribute is total *for that
+     attribute*, and reads as 100%, not as a rounding error against the whole directory.
+   - **Values rewritten** — how many stored values actually change.
+   - **Blast radius** — whether the change exceeds the guard (20% of holders, floor 5).
+   - **Values that cannot be converted** — a bounded sample, with the reason for each.
+2. **Read it.** The preview is the safety rail.
+3. **Commit** — a separate, deliberate click, carrying the preview's hash.
+
+Three refusals, and only one of them can be overridden:
+
+- **Any unconvertible value** refuses the whole migration. Not partially applied, and
+  **`force` cannot answer it** — fix or clear those values on the people holding them and
+  preview again. The Commit button stays disabled while the list is non-empty.
+- **Blast radius exceeded** refuses too, and this is the one `force` overrides — a
+  deliberate tick that says the number is expected. It is recorded in the audit row.
+- **A stale preview** is a **409**. The plan is re-derived inside the writing transaction
+  and compared against the hash you presented; if anyone edited a holder's value in the
+  meantime, the preview you read is no longer the migration you would be committing.
+
+A **sensitive** attribute cannot be migrated at all. Reversing a migration needs the
+previous values in the audit row, and writing them there is precisely what `sensitive`
+exists to prevent — in an append-only table, where it could not be undone. Turn
+`sensitive` off (itself audited), migrate, turn it back on; during that window the values
+land in ordinary user audit rows, which is the cost of the round trip and the reason it
+is not done for you.
+
+### The same thing from the CLI
+
+Two invocations, never one — the CLI will not mint its own preview and commit it, because
+that would route around the exact guard the console cannot skip:
+
+```bash
+# 1. Preview. Writes nothing; prints the report and a preview hash.
+pnpm --filter @idm/api run attribute-migrate -- <definition-id> --actor=<username> --data-type=number
+
+# 2. Commit the migration you just read, presenting its hash.
+pnpm --filter @idm/api run attribute-migrate -- <definition-id> --actor=<username> --data-type=number   --commit --preview-hash=<hash from step 1> [--force]
+```
+
+`--actor=` is required and is the username the audit row is attributed to. The CLI checks
+that actor holds a global `attribute:manage` grant itself: there is no `PermissionGuard`
+on this path, so without that check `--actor=<anyone>` would run a directory-wide rewrite
+in the name of someone with no authority to order it.
+
+---
+
 ## What the console cannot do yet
 
 These exist in the data model or the API but have no console surface:
 
-- **Create or edit attribute definitions** — `GET /attribute-definitions` is the only
-  route; there is no write endpoint at all. Database only.
 - **Create or edit JML rules** — database rows plus the `jml:lifecycle` CLI. There is no
   controller.
 - **Mark a business role requestable** — `PUT /business-roles/:id/requestable` exists and

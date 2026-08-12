@@ -27,6 +27,42 @@ describe('sso_app actions', () => {
   })
 })
 
+describe('attribute actions', () => {
+  it('carries the attribute actions, and super_admin alone may manage', () => {
+    expect(ALL_ACTIONS).toContain('attribute:read')
+    expect(ALL_ACTIONS).toContain('attribute:manage')
+
+    // Reading a definition is ordinary directory work.
+    for (const role of ['super_admin', 'user_admin', 'auditor', 'read_only'] as const) {
+      expect(ROLE_PERMISSIONS[role]).toContain('attribute:read')
+    }
+    // Managing one is schema work, and carries `sensitive` and `selfEditable`.
+    expect(ROLE_PERMISSIONS.super_admin).toContain('attribute:manage')
+    for (const role of ['user_admin', 'help_desk', 'auditor', 'read_only'] as const) {
+      expect(ROLE_PERMISSIONS[role]).not.toContain('attribute:manage')
+    }
+  })
+
+  // The test above checks help_desk lacks `attribute:manage` but never
+  // pins that it lacks `attribute:read` -- the entire narrowing this task
+  // exists to record (see actions.ts's own comment on the ALL_ACTIONS
+  // entry) is that help_desk loses `GET /attribute-definitions` once Task 7
+  // re-gates the route. An inclusion-only check can't catch a LATER task
+  // quietly granting attribute:read back to help_desk; only pinning the
+  // exact holder set can. Same shape as `recert:read`'s exact holder-set
+  // assertion in recertification.spec.ts and `user:activate`'s explicit
+  // exclusion list above.
+  it('reaches exactly super_admin, user_admin, auditor and read_only for attribute:read, and super_admin alone for attribute:manage', () => {
+    expect(
+      ALL_ROLE_KEYS.filter((role) => ROLE_PERMISSIONS[role].includes('attribute:read')).sort(),
+    ).toEqual(['auditor', 'read_only', 'super_admin', 'user_admin'])
+
+    expect(
+      ALL_ROLE_KEYS.filter((role) => ROLE_PERMISSIONS[role].includes('attribute:manage')).sort(),
+    ).toEqual(['super_admin'])
+  })
+})
+
 describe('role catalog', () => {
   it('defines permissions for every role', () => {
     for (const role of ALL_ROLE_KEYS) {

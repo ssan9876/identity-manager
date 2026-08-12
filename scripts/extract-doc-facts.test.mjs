@@ -36,8 +36,13 @@ check('migrations counted', () => {
   assert.ok(f.migrations.count >= 43, `only ${f.migrations.count}`)
   assert.match(f.migrations.latest, /^\d{4}_.*\.sql$/)
 })
-check('24 actions and 5 roles', () => {
-  assert.equal(f.actions.length, 24)
+check('26 actions and 5 roles', () => {
+  // Attribute definitions write path (2026-08-10 SDD), Task 3: ALL_ACTIONS
+  // gains `attribute:read` and `attribute:manage`, 24 -> 26. Update this
+  // count in the same change that adds/removes an action -- do not let it
+  // drift, see docs/archive/plans/2026-08-10-docs-accuracy.md for what
+  // happens when it does.
+  assert.equal(f.actions.length, 26)
   assert.equal(f.roles.length, 5)
   assert.ok(f.actions.includes('user:read'))
 })

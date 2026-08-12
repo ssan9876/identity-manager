@@ -42,12 +42,21 @@ export interface AttributeDefinition {
    * mapping editor (attribute-target-mappings.controller.ts) can reference a
    * CUSTOM attribute by its stable id, the same identifier
    * `attribute_target_mappings.attribute_definition_id` actually stores
-   * (never the mutable `key`, and never a display `label`). Every existing
+   * (never the `key`, and never a display `label`). Every existing
    * consumer of this shape already reads this row from `attribute_definitions`
    * (a real Postgres primary key on every row), so this is a pure read-only
    * addition — no new write path, and specifically none anywhere near
    * `validation_rules` (the ReDoS-relevant column this project's own
    * carried-forward gate keeps write-free).
+   *
+   * This comment used to justify the choice by calling `key` MUTABLE. That is
+   * no longer true — Milestone 8, Task 7's `PATCH` refuses `key` outright,
+   * because renaming one orphans every `users.attributes` value filed under
+   * it — but the choice is unchanged, and was never really about mutability:
+   * `attribute_target_mappings.attribute_definition_id` is a foreign key, and
+   * a foreign key references a primary key. Only hand-written SQL and
+   * migrations can still move a `key`, which is precisely what the
+   * `attribute_definitions_key_format` CHECK's UPDATE arm is there for.
    */
   id: string
   key: string
@@ -105,7 +114,17 @@ function isIsoCalendarDate(value: string): boolean {
  * to drift from this one, and the whole point of the impact check is that it
  * tells the truth about what a definition edit would invalidate.
  */
-export function buildFieldSchema(definition: AttributeDefinition): z.ZodTypeAny {
+/**
+ * The three fields `buildFieldSchema` actually reads. Declared as a `Pick`
+ * rather than the whole `AttributeDefinition` so a caller that has a
+ * PROPOSED definition — one that is not a row yet, and so has no `id`,
+ * `isActive` or `sensitive` to offer — can ask what it would accept without
+ * synthesising fake values for the fields this function never looks at.
+ * Every existing caller passes a full definition and is unaffected.
+ */
+export type FieldSchemaSource = Pick<AttributeDefinition, 'key' | 'dataType' | 'validationRules'>
+
+export function buildFieldSchema(definition: FieldSchemaSource): z.ZodTypeAny {
   const rules = definition.validationRules
 
   switch (definition.dataType) {

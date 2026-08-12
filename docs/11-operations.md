@@ -308,6 +308,32 @@ not an installed host and is sent to `install.sh`; a checkout with local
 modifications is reported and left alone; a diverged branch is a situation for
 a human, not for a merge resolver.
 
+### Before upgrading past migration 0043: check for keys the new CHECK would reject
+
+Migration `0043_sleepy_lord_tyger.sql` adds a database `CHECK` constraint,
+`attribute_definitions_key_format`, requiring every `attribute_definitions.key`
+to match `^[A-Za-z_][A-Za-z0-9_]*$` and not be `__proto__`, `constructor` or
+`prototype`. Every row in this table predates that constraint — every one was
+created by a hand-written `INSERT` with no validation at all — so a host that
+has been running long enough may hold a key the migration rejects, and
+`ALTER TABLE ... ADD CONSTRAINT` fails with an error that names the
+constraint but not the offending row.
+
+Run this **before** upgrading, against the live database:
+
+```sql
+SELECT id, key FROM attribute_definitions
+WHERE key !~ '^[A-Za-z_][A-Za-z0-9_]*$'
+   OR key IN ('__proto__', 'constructor', 'prototype');
+```
+
+If it returns any rows, the migration will fail on purpose rather than
+silently rename or delete them: a key is referenced by every `users.attributes`
+blob that carries it, so renaming one orphans data and deleting one destroys a
+definition an admin created deliberately. Decide the fix yourself — rename the
+definition (and re-key every `users.attributes` blob that references it) or
+retire it — before running the upgrade again.
+
 ### Why this script exists rather than a documented `git pull`
 
 The obvious upgrade is incomplete in a way that fails **silently**:

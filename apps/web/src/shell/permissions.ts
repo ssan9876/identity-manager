@@ -51,6 +51,21 @@ export type Action =
   | 'organization:read'
   | 'organization:create'
   | 'organization:update'
+  // Attribute definitions write path (2026-08-10 SDD), Tasks 3 and 7.
+  // `attribute:read` is ordinary directory work on the same terms as
+  // `business_role:read`/`recert:read` — super_admin, user_admin, auditor and
+  // read_only — and Task 7 moved `GET /attribute-definitions` onto it, a
+  // deliberate NARROWING that removed help_desk (which reads people, not
+  // schema). `attribute:manage` is super_admin's ALONE, and the API further
+  // requires that grant to be GLOBAL (`requireGlobalManageGrant` — an
+  // attribute definition belongs to no org unit and feeds every
+  // organization's users AND their business-role formulas). As everywhere
+  // else here, `GET /self/permissions` reports the ACTION and not its scope,
+  // so holding `attribute:manage` in this set is not a promise that a write
+  // will succeed — an org-unit-scoped super_admin holds the action and still
+  // gets a 403. The API decides; the console renders the refusal.
+  | 'attribute:read'
+  | 'attribute:manage'
 
 /** Mirrors SelfPermissionsResponse from apps/api/src/self-service/self-service.controller.ts. */
 export interface SelfPermissionsResponse {

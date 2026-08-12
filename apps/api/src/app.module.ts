@@ -5,6 +5,7 @@ import { JWT_GUARD_OPTIONS, JwtGuard, type JwtGuardOptions } from './auth/jwt.gu
 import { MeController } from './auth/me.controller'
 import { AttributeDefinitionsController } from './attributes/attribute-definitions.controller'
 import { AttributeDefinitionsRepository } from './attributes/attribute-definitions.repository'
+import { AttributeMigrationJob } from './attributes/attribute-migration.job'
 import { AttributeTargetMappingsController } from './attributes/attribute-target-mappings.controller'
 import { AttributeTargetMappingsRepository } from './attributes/attribute-target-mappings.repository'
 import { AuditController } from './audit/audit.controller'
@@ -202,6 +203,16 @@ import { UsersRepository } from './users/users.repository'
     JwtGuard,
     UsersRepository,
     AttributeDefinitionsRepository,
+    // Milestone 8, Task 10. Task 9 deliberately left this unregistered —
+    // nothing in the HTTP app could reach the job until a route existed, and
+    // a provider with no consumer is a claim that something uses it. The
+    // preview/commit routes on `AttributeDefinitionsController` are that
+    // consumer, and the job's own dependencies (DB_CLIENT, AuditWriter) are
+    // both already here, so plain constructor DI is all it needs. The CLI
+    // (`attribute-migrate`) does NOT come through here: like every other CLI
+    // in this codebase it wires the job by hand rather than booting the HTTP
+    // app to run one pass.
+    AttributeMigrationJob,
     // Milestone 10, Task 3: read-only mapping lookups `SyncWorker` (and,
     // when raw-constructed outside DI, `ReconciliationJob`) resolve
     // `attribute_target_mappings` rows through — see that repository's own

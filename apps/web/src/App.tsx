@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useAuth } from 'react-oidc-context'
 import { Route, Routes } from 'react-router-dom'
+import AttributeDefinitionsPage from './attributes/AttributeDefinitionsPage'
 import AuditPage from './audit/AuditPage'
 import BusinessRoleDetailPage from './business-roles/BusinessRoleDetailPage'
 import BusinessRolesPage from './business-roles/BusinessRolesPage'
@@ -219,6 +220,7 @@ export default function App() {
           <Route path="/business-roles/:id" element={<BusinessRoleDetailPage />} />
           <Route path="/recertification" element={<RecertificationPage />} />
           <Route path="/recertification/:id" element={<RecertCampaignDetailPage />} />
+          <Route path="/attributes" element={<AttributeDefinitionsPage />} />
           <Route path="/import" element={<ImportPage />} />
           <Route path="/audit" element={<AuditPage />} />
           <Route path="/applications" element={<SsoAppsListPage />} />

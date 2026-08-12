@@ -1,10 +1,15 @@
+import { randomUUID } from 'node:crypto'
 import { and, eq, sql } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
+import { AttributeDefinitionsRepository } from '../src/attributes/attribute-definitions.repository'
 import { AuditWriter } from '../src/audit/audit.writer'
 import { BusinessRolesRepository } from '../src/business-roles/business-roles.repository'
 import { hashDefinition, parseDefinition } from '../src/business-roles/draft'
+import { ATTRIBUTE_PREFIX } from '../src/business-roles/role-evaluator'
 import { RoleReconciliationJob } from '../src/business-roles/role-reconciliation.job'
 import { RoleReconciler } from '../src/business-roles/role-reconciler'
+import { ConflictError } from '../src/common/errors'
+import { attributeDefinitions } from '../src/db/schema/attribute-definitions'
 import { auditLog } from '../src/db/schema/audit-log'
 import { businessRoleConditions } from '../src/db/schema/business-roles'
 import { groupUserMembers } from '../src/db/schema/group-members'
@@ -320,6 +325,346 @@ describe('the publish gate (Milestone 17, Task 7)', () => {
 
     expect(roles.map((r) => r.id)).toEqual([on.id])
     expect(roles[0].grants).toEqual([expect.objectContaining({ target: 'keycloak' })])
+  })
+})
+
+/**
+ * Milestone 8 (attribute-definitions write path), Task 5b — the publish-side
+ * half of the `selfEditable` invariant.
+ *
+ * Task 5 refuses `selfEditable` on an attribute a PUBLISHED formula already
+ * names (`AttributeDefinitionsRepository.assertNoFormulaDependsOn`). That
+ * guard reads `business_role_conditions`, which holds published rows only, so
+ * two orderings walk straight past it: draft the condition first and mark the
+ * attribute self-editable while nothing published names it, or mark it
+ * self-editable first and publish a referencing role afterwards. Either way
+ * the system ends up with a self-editable attribute deciding role membership
+ * — the exact escalation route Task 5 exists to remove.
+ *
+ * Publication is the moment a condition becomes live, so the mirror check
+ * belongs in `publishWithin`. Together the two refusals close the invariant
+ * from both directions.
+ *
+ * Per-call unique attribute keys and role names for the reason the fixtures
+ * above already give: `withTestDatabase()` starts ONE container per FILE with
+ * no truncation between `it` blocks, so a shared literal would let one test's
+ * role name another test's attribute.
+ */
+describe('the publish gate refuses a formula keyed on a self-editable attribute (Milestone 8, Task 5b)', () => {
+  function uniqueKey(): string {
+    return `attr_${randomUUID().replace(/-/g, '_')}`.slice(0, 40)
+  }
+
+  async function seedAttribute(over: {
+    key: string
+    selfEditable?: boolean
+    appliesTo?: 'user' | 'group'
+  }): Promise<{ id: string }> {
+    const [row] = await ctx.db
+      .insert(attributeDefinitions)
+      .values({
+        key: over.key,
+        label: 'Seeded for the publish gate',
+        dataType: 'string',
+        appliesTo: over.appliesTo ?? 'user',
+        selfEditable: over.selfEditable ?? false,
+      })
+      .returning({ id: attributeDefinitions.id })
+    return row
+  }
+
+  function attributeRepo(): AttributeDefinitionsRepository {
+    return new AttributeDefinitionsRepository(ctx.db)
+  }
+
+  function conditionOn(key: string): { conditions: unknown[]; grants: unknown[] } {
+    return {
+      conditions: [{ field: `${ATTRIBUTE_PREFIX}${key}`, operator: 'equals', value: 'yes' }],
+      grants: [{ kind: 'target_account', groupId: null, target: 'keycloak' }],
+    }
+  }
+
+  /** A role with `definition` drafted and simulated clean — one step short of publish. */
+  async function drafted(name: string, definition: { conditions: unknown[]; grants: unknown[] }) {
+    const role = await repo().create({ name: `${name} ${randomUUID()}`, description: null })
+    await repo().saveDraft(role.id, definition)
+    await repo().recordSimulation(role.id, hashDefinition(parseDefinition(definition)), 0)
+    return role
+  }
+
+  it('refuses, naming the attribute key and the flag to clear', async () => {
+    // Ordering 2 from the gap: the attribute is marked self-editable FIRST, so
+    // Task 5's guard had nothing published to refuse on.
+    const key = uniqueKey()
+    await seedAttribute({ key, selfEditable: true })
+    const role = await drafted('Keyed on self-editable', conditionOn(key))
+
+    await expect(repo().publish(role.id)).rejects.toThrow(ConflictError)
+    // The publisher holds business_role:manage but is blocked by state only an
+    // attribute:manage holder can change, so the message has to name the key
+    // AND the flag — otherwise they cannot act on it or even tell who to ask.
+    await expect(repo().publish(role.id)).rejects.toThrow(new RegExp(key))
+    await expect(repo().publish(role.id)).rejects.toThrow(/selfEditable/)
+  })
+
+  it('leaves the published definition untouched when it refuses', async () => {
+    // The check sits BEFORE the child-row deletes, the posture the SoD refusal
+    // a few lines above already argues for: a refused publish must not have
+    // half-replaced the live formula.
+    const key = uniqueKey()
+    await seedAttribute({ key, selfEditable: true })
+    const role = await repo().create({ name: `Refused mid-publish ${randomUUID()}`, description: null })
+    await repo().saveDraft(role.id, DEFINITION)
+    await repo().recordSimulation(role.id, hashDefinition(parseDefinition(DEFINITION)), 0)
+    await repo().publish(role.id)
+
+    const escalating = conditionOn(key)
+    await repo().saveDraft(role.id, escalating)
+    await repo().recordSimulation(role.id, hashDefinition(parseDefinition(escalating)), 0)
+    await expect(repo().publish(role.id)).rejects.toThrow(ConflictError)
+
+    const after = await repo().findById(role.id)
+    expect(after?.conditions).toEqual([
+      expect.objectContaining({ field: 'jobTitle', operator: 'equals', value: 'Account Executive' }),
+    ])
+    expect(after?.draftDefinition).not.toBeNull()
+  })
+
+  it('publishes a formula keyed on an admin-only attribute', async () => {
+    const key = uniqueKey()
+    await seedAttribute({ key, selfEditable: false })
+    const role = await drafted('Keyed on admin-only', conditionOn(key))
+
+    await repo().publish(role.id)
+
+    const published = await repo().findById(role.id)
+    expect(published?.conditions).toEqual([
+      expect.objectContaining({ field: `${ATTRIBUTE_PREFIX}${key}`, operator: 'equals', value: 'yes' }),
+    ])
+  })
+
+  it('publishes a formula that names no attribute at all', async () => {
+    const role = await drafted('Names no attribute', DEFINITION)
+
+    await repo().publish(role.id)
+
+    expect((await repo().findById(role.id))?.draftDefinition).toBeNull()
+  })
+
+  it('publishes once the attribute has been made admin-only again, because the check reads live state', async () => {
+    // Self-editability is not a property of the draft, so this cannot ride the
+    // `simulated_*` columns: the same unchanged, already-simulated draft has to
+    // go from refused to publishable on a change made outside it.
+    const key = uniqueKey()
+    await seedAttribute({ key, selfEditable: true })
+    const role = await drafted('Self-editable then revoked', conditionOn(key))
+
+    await expect(repo().publish(role.id)).rejects.toThrow(ConflictError)
+
+    await ctx.db
+      .update(attributeDefinitions)
+      .set({ selfEditable: false })
+      .where(eq(attributeDefinitions.key, key))
+
+    await repo().publish(role.id)
+
+    expect((await repo().findById(role.id))?.draftDefinition).toBeNull()
+  })
+
+  it('ignores a self-editable GROUP-scoped definition sharing the key', async () => {
+    // A condition reads `EvaluableUser.attributes`, so a group-scoped
+    // definition is never an input to any formula. `(key, applies_to)`
+    // uniqueness means the same key legitimately names both rows, and refusing
+    // on the group one would be pure over-refusal.
+    const key = uniqueKey()
+    await seedAttribute({ key, selfEditable: false, appliesTo: 'user' })
+    await seedAttribute({ key, selfEditable: true, appliesTo: 'group' })
+    const role = await drafted('Group-scoped namesake', conditionOn(key))
+
+    await repo().publish(role.id)
+
+    expect((await repo().findById(role.id))?.draftDefinition).toBeNull()
+  })
+
+  it('does not refuse on a longer key that merely starts with a self-editable one', async () => {
+    // `attributes.cost_centre_band` is a different attribute from
+    // `cost_centre` — the same prefix-versus-label trap Task 5's exact match
+    // avoids, restated here because this side SLICES the prefix off rather
+    // than concatenating it on.
+    const base = uniqueKey()
+    await seedAttribute({ key: base, selfEditable: true })
+    await seedAttribute({ key: `${base}_band`, selfEditable: false })
+    const role = await drafted('Longer namesake', conditionOn(`${base}_band`))
+
+    await repo().publish(role.id)
+
+    expect((await repo().findById(role.id))?.draftDefinition).toBeNull()
+  })
+
+  it('names every self-editable attribute the draft depends on, not just the first', async () => {
+    const first = uniqueKey()
+    const second = uniqueKey()
+    await seedAttribute({ key: first, selfEditable: true })
+    await seedAttribute({ key: second, selfEditable: true })
+    const role = await drafted('Two self-editable keys', {
+      conditions: [
+        { field: `${ATTRIBUTE_PREFIX}${first}`, operator: 'equals', value: 'yes' },
+        { field: `${ATTRIBUTE_PREFIX}${second}`, operator: 'equals', value: 'yes' },
+      ],
+      grants: [],
+    })
+
+    await expect(repo().publish(role.id)).rejects.toThrow(new RegExp(first))
+    await expect(repo().publish(role.id)).rejects.toThrow(new RegExp(second))
+  })
+
+  it('refuses after the draft-first ordering: condition drafted, THEN the attribute made self-editable', async () => {
+    // THE ordering this task exists for, walked end to end across BOTH
+    // repositories. Task 5's guard reads `business_role_conditions`, so while
+    // the condition is only a draft it sees nothing and correctly permits the
+    // patch; the refusal has to come from the publish side or not at all.
+    // Neither half is exercised by seeding `self_editable = true` up front,
+    // which is why this test drives `AttributeDefinitionsRepository` for real.
+    const key = uniqueKey()
+    const { id: definitionId } = await seedAttribute({ key, selfEditable: false })
+    const role = await drafted('Draft-first ordering', conditionOn(key))
+
+    // Permitted, and that is correct: nothing published names this attribute.
+    const patched = await ctx.db.transaction((tx) =>
+      attributeRepo().updateSafeFields(tx, definitionId, { selfEditable: true }),
+    )
+    expect(patched.selfEditable).toBe(true)
+
+    await expect(repo().publish(role.id)).rejects.toThrow(ConflictError)
+    await expect(repo().publish(role.id)).rejects.toThrow(new RegExp(key))
+  })
+
+  it('publishes a condition on a bare `attributes.` with no key after it', async () => {
+    // `field.slice(ATTRIBUTE_PREFIX.length)` yields '' here, which is not an
+    // attribute name — `extractField` (role-evaluator.ts) treats a bare
+    // `attributes.` as an unknown field rather than an attribute named ''.
+    // The gate drops it before it can reach the lock or the `key IN (...)`
+    // predicate. Pins the boundary: no throw, no refusal, publish proceeds.
+    const role = await drafted('Bare attributes prefix', {
+      conditions: [{ field: ATTRIBUTE_PREFIX, operator: 'equals', value: 'yes' }],
+      grants: [],
+    })
+
+    await repo().publish(role.id)
+
+    expect((await repo().findById(role.id))?.draftDefinition).toBeNull()
+  })
+
+  it('refuses a selfEditable patch racing an in-flight publish (write skew, existing row)', async () => {
+    // Both halves of the invariant can pass on their own connection and still
+    // land the escalation: nothing sets an isolation level, so both run READ
+    // COMMITTED, and before Task 5b's fix round the two lock sets were
+    // DISJOINT — publish locked `business_roles` and read
+    // `attribute_definitions` unlocked, while `updateSafeFields` locked the
+    // `attribute_definitions` row and read `business_role_conditions`
+    // unlocked. Neither blocked the other. This test held both transactions
+    // open at once and observed the role published with `self_editable = true`.
+    //
+    // What closes it is publish taking `FOR UPDATE` on the definition rows its
+    // draft names — including the ones currently `false`, which is why
+    // `selfEditable` is filtered in memory rather than in the WHERE.
+    const key = uniqueKey()
+    const { id: definitionId } = await seedAttribute({ key, selfEditable: false })
+    const role = await drafted('Racing patch', conditionOn(key))
+
+    let release!: () => void
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let pastTheGate!: () => void
+    const reachedHold = new Promise<void>((resolve) => {
+      pastTheGate = resolve
+    })
+
+    // `publishWithin` on a transaction this test controls, so the publish can
+    // be parked AFTER its gate and BEFORE its commit — the exact window.
+    const publishing = ctx.db.transaction(async (tx) => {
+      await repo().publishWithin(tx, role.id)
+      pastTheGate()
+      await held
+    })
+    await reachedHold
+
+    const patching = ctx.db
+      .transaction((tx) => attributeRepo().updateSafeFields(tx, definitionId, { selfEditable: true }))
+      .then(() => 'granted' as const)
+      .catch((error: Error) => error)
+
+    // The lock makes the ordering deterministic on its own; this wait is what
+    // keeps the test NON-VACUOUS. Remove the lock and the patch commits inside
+    // it, which is what the assertions below then catch.
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    release()
+    await publishing
+
+    expect(await patching).toBeInstanceOf(ConflictError)
+
+    const [after] = await ctx.db
+      .select({ selfEditable: attributeDefinitions.selfEditable })
+      .from(attributeDefinitions)
+      .where(eq(attributeDefinitions.id, definitionId))
+    expect(after.selfEditable).toBe(false)
+  })
+
+  it('refuses a create racing an in-flight publish (write skew, absent row)', async () => {
+    // The same race one step earlier, where `FOR UPDATE` cannot help: the
+    // definition does not exist when publish runs its gate, so there is no row
+    // for either side to lock. `attributeKeyLock` (advisory, keyed on the
+    // attribute key) is what covers an absent row.
+    //
+    // `create` runs inside a transaction because that is the advisory lock's
+    // precondition — on a pooled handle the lock is released at the end of its
+    // own statement and serialises nothing. It is no longer possible to get
+    // that wrong: `create` takes `DbHandle`, so the pooled handle is a compile
+    // error rather than a call that quietly protects nothing.
+    const key = uniqueKey()
+    const role = await drafted('Racing create', conditionOn(key))
+
+    let release!: () => void
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let pastTheGate!: () => void
+    const reachedHold = new Promise<void>((resolve) => {
+      pastTheGate = resolve
+    })
+
+    const publishing = ctx.db.transaction(async (tx) => {
+      await repo().publishWithin(tx, role.id)
+      pastTheGate()
+      await held
+    })
+    await reachedHold
+
+    const creating = ctx.db
+      .transaction((tx) =>
+        attributeRepo().create(tx, {
+          key,
+          label: 'Raced into existence',
+          dataType: 'string',
+          appliesTo: 'user',
+          selfEditable: true,
+        }),
+      )
+      .then(() => 'granted' as const)
+      .catch((error: Error) => error)
+
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    release()
+    await publishing
+
+    expect(await creating).toBeInstanceOf(ConflictError)
+
+    const rows = await ctx.db
+      .select({ selfEditable: attributeDefinitions.selfEditable })
+      .from(attributeDefinitions)
+      .where(eq(attributeDefinitions.key, key))
+    expect(rows).toEqual([])
   })
 })
 

@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "preview": "vite preview",
-    "test": "node scripts/check-css-tokens.mjs && node scripts/check-connector-targets.mjs && node scripts/check-csp.mjs",
+    "test": "node scripts/check-css-tokens.mjs && node scripts/check-connector-targets.mjs && node scripts/check-attribute-formats.mjs && node scripts/check-csp.mjs",
     "test:e2e": "playwright test"
   },
   "dependencies": {

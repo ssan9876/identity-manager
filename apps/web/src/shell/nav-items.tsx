@@ -81,6 +81,15 @@ function GroupsIcon({ className }: { className?: string }) {
   )
 }
 
+function AttributesIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)}>
+      <path d="M3.5 5.5h13M3.5 10h13M3.5 14.5h8" />
+      <circle cx="14.5" cy="14.5" r="2" />
+    </svg>
+  )
+}
+
 function OrgUnitsIcon({ className }: { className?: string }) {
   return (
     <svg {...iconProps(className)}>
@@ -209,6 +218,26 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'people', label: 'People', path: '/people', group: 'directory', action: 'user:read', icon: PeopleIcon },
   { key: 'groups', label: 'Groups', path: '/groups', group: 'directory', action: 'group:read', icon: GroupsIcon },
   { key: 'org-units', label: 'Org units', path: '/org-units', group: 'directory', action: 'org_unit:read', icon: OrgUnitsIcon },
+  // Milestone 8, Task 11 — the attribute catalogue. In `directory` rather
+  // than `operations` because an attribute definition is part of WHO EXISTS:
+  // it decides what this directory records about a person or a group, and it
+  // is the People and Groups forms it shapes. Contrast Organizations, which
+  // sits in `operations` precisely because a tenant is not something you look
+  // people up in.
+  //
+  // Gated on `attribute:read`, which super_admin, user_admin, auditor and
+  // read_only all hold — a user_admin filling in someone's profile needs to
+  // know what attributes exist. Every mutating control inside is gated
+  // separately on `attribute:manage`, which is super_admin's ALONE and which
+  // the API additionally requires to be GLOBAL.
+  {
+    key: 'attributes',
+    label: 'Attributes',
+    path: '/attributes',
+    group: 'directory',
+    action: 'attribute:read',
+    icon: AttributesIcon,
+  },
   // Relabelled from "Roles" (Milestone 17, Task 17). Label ONLY — the
   // path, route and component are untouched. Two entries both reading
   // "Roles" would be genuinely ambiguous, and the business-roles entry

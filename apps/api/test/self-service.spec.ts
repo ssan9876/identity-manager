@@ -228,7 +228,7 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
 
       await ctx.db.insert(attributeDefinitions).values([
         {
-          key: `editableActive-${nextTag()}`,
+          key: `editableActive_${nextTag()}`,
           label: 'Editable Active',
           dataType: 'string',
           required: false,
@@ -237,7 +237,7 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
           selfEditable: true,
         },
         {
-          key: `lockedActive-${nextTag()}`,
+          key: `lockedActive_${nextTag()}`,
           label: 'Locked Active',
           dataType: 'string',
           required: false,
@@ -246,7 +246,7 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
           selfEditable: false,
         },
         {
-          key: `editableInactive-${nextTag()}`,
+          key: `editableInactive_${nextTag()}`,
           label: 'Editable Inactive',
           dataType: 'string',
           required: false,
@@ -258,7 +258,7 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
 
       const res = await request(app.getHttpServer()).get('/self').expect(200)
       const keys: string[] = res.body.editable.attributes.map((d: { key: string }) => d.key)
-      expect(keys).toEqual(keys.filter((k) => k.startsWith('editableActive-')))
+      expect(keys).toEqual(keys.filter((k) => k.startsWith('editableActive_')))
       expect(keys).toHaveLength(1)
     })
 
@@ -503,7 +503,7 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       const org = await makeOrgUnit('Non Editable Attr Root')
       const actor = await makeActiveUser('actor', org.id)
       currentUsername = actor.username
-      const key = `costCenter-${nextTag()}`
+      const key = `costCenter_${nextTag()}`
 
       await ctx.db.insert(attributeDefinitions).values({
         key,
@@ -536,8 +536,8 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       const org = await makeOrgUnit('Merge Attr Root')
       const actor = await makeActiveUser('actor', org.id)
       currentUsername = actor.username
-      const lockedKey = `costCenter-${nextTag()}`
-      const editableKey = `nickname-${nextTag()}`
+      const lockedKey = `costCenter_${nextTag()}`
+      const editableKey = `nickname_${nextTag()}`
 
       await ctx.db.insert(attributeDefinitions).values([
         {
@@ -598,7 +598,7 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
         currentUsername = actor.username
 
         const N = 30
-        const keys = Array.from({ length: N }, () => `h4self-${nextTag()}`)
+        const keys = Array.from({ length: N }, () => `h4self_${nextTag()}`)
         await ctx.db.insert(attributeDefinitions).values(
           keys.map((key) => ({
             key,
@@ -755,8 +755,19 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       // everyone who can already see the memberships it explains. It also
       // holds recert:read on the same terms — an attestation record is a pure
       // read describing a decision, not conferring or deciding anything.
+      // Attribute definitions write path, Task 3: read_only also holds
+      // attribute:read — a definition describes the shape of directory data,
+      // and reading it is a pure read on the same terms as business_role:read
+      // and recert:read above (authz/actions.ts's own doc comment).
       expect([...res.body.actions].sort()).toEqual(
-        ['user:read', 'group:read', 'org_unit:read', 'business_role:read', 'recert:read'].sort(),
+        [
+          'user:read',
+          'group:read',
+          'org_unit:read',
+          'business_role:read',
+          'recert:read',
+          'attribute:read',
+        ].sort(),
       )
     })
 
@@ -787,6 +798,9 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       // reason it is on read_only: seeing WHY someone holds a membership is
       // part of reviewing that they should. recert:read joins on the same
       // terms: an attestation record is a pure read describing a decision.
+      // Attribute definitions write path, Task 3 adds attribute:read to
+      // auditor on the identical terms: a definition is a pure read that
+      // describes the shape of directory data, not a privilege of its own.
       expect([...actions].sort()).toEqual(
         [
           'user:read',
@@ -797,6 +811,7 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
           'connector:read',
           'business_role:read',
           'recert:read',
+          'attribute:read',
         ].sort(),
       )
     })
@@ -1105,8 +1120,8 @@ describe('PATCH /self racing PATCH /users/:id (finding H4, docs/archive/audits/a
 
       for (let i = 0; i < N; i++) {
         const tag = nextTag()
-        const adminKey = `h4sa-admin-${tag}`
-        const selfKeys = Array.from({ length: SELF_WRITERS }, (_, j) => `h4sa-self-${tag}-${j}`)
+        const adminKey = `h4sa_admin_${tag}`
+        const selfKeys = Array.from({ length: SELF_WRITERS }, (_, j) => `h4sa_self_${tag}_${j}`)
 
         await ctx.db.insert(attributeDefinitions).values([
           {
