@@ -472,15 +472,42 @@ export class AttributeDefinitionsController {
     }
   }
 
+  /**
+   * `includeInactive` is opt-in, and REFUSED rather than coerced when it is
+   * not a boolean.
+   *
+   * Absent means active-only, which is what every form-building and
+   * validation caller wants and what the existing tests pin. The admin
+   * console asks for the whole catalogue because `isActive` is a field its
+   * own PATCH may flip: without this, deactivating a definition removed it
+   * from the one screen that could ever turn it back on.
+   *
+   * `includeInactive=yes` is a 400 and not a silent "active only", for the
+   * same reason `appliesTo` refuses a value outside its enum. A caller who
+   * asked for the full catalogue and quietly received the filtered one would
+   * believe a deactivated definition does not exist — which is precisely the
+   * confusion this parameter was added to remove.
+   */
   @Get()
   @RequirePermission('attribute:read')
-  async list(@Query('appliesTo') rawAppliesTo: unknown): Promise<AttributeDefinition[]> {
+  async list(
+    @Query('appliesTo') rawAppliesTo: unknown,
+    @Query('includeInactive') rawIncludeInactive: unknown,
+  ): Promise<AttributeDefinition[]> {
     const parsed = appliesToSchema.safeParse(rawAppliesTo)
     if (!parsed.success) {
       throw new ValidationError(["appliesTo: must be 'user' or 'group'"])
     }
 
-    return this.definitions.listActive(parsed.data)
+    // A query string carries text, never a JSON boolean, so the two literals
+    // are spelled out here rather than leaning on any truthiness rule.
+    if (rawIncludeInactive !== undefined && rawIncludeInactive !== 'true' && rawIncludeInactive !== 'false') {
+      throw new ValidationError(["includeInactive: must be 'true' or 'false'"])
+    }
+
+    return this.definitions.list(parsed.data, {
+      includeInactive: rawIncludeInactive === 'true',
+    })
   }
 
   /**

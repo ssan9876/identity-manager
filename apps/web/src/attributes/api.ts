@@ -15,10 +15,69 @@ export type AttributeDataType = 'string' | 'number' | 'boolean' | 'date' | 'enum
  * nothing should start: authorization and validation are enforced in the
  * API, never the UI.
  */
+/**
+ * `validationRules.format` — the closed vocabulary of named validators the
+ * API owns, mirrored here so the attribute console can offer a dropdown
+ * rather than a free-text box an admin has to guess at.
+ *
+ * A MIRROR OF A CLOSED SERVER VOCABULARY IS A LIABILITY, and this one is only
+ * acceptable because it is guarded: apps/web/scripts/check-attribute-formats.mjs
+ * fails the build if this union, this array or the label record below stops
+ * matching `ALL_ATTRIBUTE_FORMATS` in
+ * apps/api/src/attributes/attribute-formats.ts. TypeScript cannot catch that
+ * drift on its own — a narrower literal list is perfectly assignable to a
+ * wider union — which is precisely how a hand-copied connector-target list
+ * once left a live integration the console could not disable
+ * (docs/12-security.md, "catalog drift"). All three move together or the
+ * guard stops the build.
+ *
+ * The array's ORDER is the dropdown's order and is a product decision, not a
+ * mirror: the guard compares membership as a set. The label TEXT is likewise
+ * ours — the API's own `description` for each format is the source these are
+ * written from, but a dropdown wants a name, not a sentence.
+ */
+export type AttributeFormat =
+  | 'email'
+  | 'url'
+  | 'uuid'
+  | 'alphanumeric'
+  | 'numeric'
+  | 'slug'
+  | 'identifier'
+  | 'phone_e164'
+  | 'iso_country_code'
+  | 'no_whitespace'
+
+export const ALL_ATTRIBUTE_FORMATS: readonly AttributeFormat[] = [
+  'email',
+  'url',
+  'uuid',
+  'phone_e164',
+  'iso_country_code',
+  'identifier',
+  'slug',
+  'alphanumeric',
+  'numeric',
+  'no_whitespace',
+]
+
+export const ATTRIBUTE_FORMAT_LABEL: Record<AttributeFormat, string> = {
+  email: 'Email address',
+  url: 'Absolute URL',
+  uuid: 'UUID',
+  phone_e164: 'Phone number (E.164, +442071234567)',
+  iso_country_code: 'ISO country code (GB)',
+  identifier: 'Identifier (letter or underscore first)',
+  slug: 'Slug (cost-center-emea)',
+  alphanumeric: 'Letters and digits only',
+  numeric: 'Digits only',
+  no_whitespace: 'No whitespace',
+}
+
 export interface AttributeValidationRules {
   minLength?: number
   maxLength?: number
-  format?: string
+  format?: AttributeFormat
   min?: number
   max?: number
   options?: string[]
@@ -69,9 +128,18 @@ export interface AttributeDefinition {
 export function fetchAttributeDefinitions(
   accessToken: string,
   appliesTo: 'user' | 'group',
+  options: { includeInactive?: boolean } = {},
 ): Promise<AttributeDefinition[]> {
   return authorizedRequest<AttributeDefinition[]>(
-    `/attribute-definitions${buildQuery({ appliesTo })}`,
+    `/attribute-definitions${buildQuery({
+      appliesTo,
+      // Sent only when asked for. `buildQuery` drops undefined, so every
+      // existing caller — the user and group forms, self-service — keeps
+      // sending exactly the request it sent before and keeps getting the
+      // active set. See the API route's own comment on why the default is
+      // the load-bearing half of this option.
+      includeInactive: options.includeInactive === true ? 'true' : undefined,
+    })}`,
     accessToken,
   )
 }
@@ -124,6 +192,18 @@ export interface AttributeDefinitionPatch {
   validationRules?: AttributeValidationRules
   selfEditable?: boolean
   sensitive?: boolean
+  /**
+   * Deactivation, which the API records under its OWN audit action rather
+   * than folding into a generic update: it removes the attribute from
+   * every form and every validation schema in the deployment, while
+   * leaving every value already stored under it exactly where it is.
+   *
+   * Reachable from the console only because `GET /attribute-definitions`
+   * takes `includeInactive` — a definition switched off still appears in
+   * the catalogue, so the control that switches it back on has somewhere
+   * to live. Without that parameter this field would be a one-way door.
+   */
+  isActive?: boolean
 }
 
 /** Mirrors `AttributeMigrationChange`. `appliesTo` is previewable but REFUSED at commit — see `AttributeMigrationPanel`. */

@@ -279,6 +279,90 @@ describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
     expect(keys).toEqual([`aFirst_${tag}`, `zLast_${tag}`])
   })
 
+  // =========================================================================
+  // includeInactive — so a deactivated definition is not unreachable
+  // =========================================================================
+
+  /**
+   * `isActive` is an ordinary safe field a PATCH may flip, but until this
+   * parameter existed the ONLY list this route could serve was the active
+   * one — so deactivating a definition removed it from the only screen that
+   * could ever bring it back. The admin console's attribute page is the
+   * caller that needs this; every OTHER consumer of a definition list (the
+   * user and group forms, the import validator, the JML rule applier) wants
+   * exactly the active set and gets it by saying nothing, which is why the
+   * default is unchanged and pinned by the test above.
+   */
+  it('includes inactive definitions when asked, and still excludes the other scope', async () => {
+    await actAs('read_only')
+
+    const tag = nextTag()
+    await ctx.db.insert(attributeDefinitions).values([
+      { key: `live_${tag}`, label: 'Live', dataType: 'string', appliesTo: 'user', isActive: true, sortOrder: 1 },
+      { key: `retired_${tag}`, label: 'Retired', dataType: 'string', appliesTo: 'user', isActive: false, sortOrder: 2 },
+      { key: `otherScope_${tag}`, label: 'Other Scope', dataType: 'string', appliesTo: 'group', isActive: false },
+    ])
+
+    const res = await request(app.getHttpServer())
+      .get('/attribute-definitions?appliesTo=user&includeInactive=true')
+      .expect(200)
+
+    const keys = (res.body as { key: string }[]).map((d) => d.key).filter((k) => k.endsWith(tag))
+    expect(keys).toEqual([`live_${tag}`, `retired_${tag}`])
+  })
+
+  it('reports isActive honestly, so a caller can tell the two apart', async () => {
+    await actAs('read_only')
+
+    const tag = nextTag()
+    await ctx.db.insert(attributeDefinitions).values([
+      { key: `on_${tag}`, label: 'On', dataType: 'string', appliesTo: 'user', isActive: true },
+      { key: `off_${tag}`, label: 'Off', dataType: 'string', appliesTo: 'user', isActive: false },
+    ])
+
+    const res = await request(app.getHttpServer())
+      .get('/attribute-definitions?appliesTo=user&includeInactive=true')
+      .expect(200)
+
+    const byKey = new Map(
+      (res.body as { key: string; isActive: boolean }[]).map((d) => [d.key, d.isActive]),
+    )
+    expect(byKey.get(`on_${tag}`)).toBe(true)
+    expect(byKey.get(`off_${tag}`)).toBe(false)
+  })
+
+  it('keeps the active-only default when includeInactive is explicitly false', async () => {
+    await actAs('read_only')
+
+    const tag = nextTag()
+    await ctx.db.insert(attributeDefinitions).values([
+      { key: `visible_${tag}`, label: 'Visible', dataType: 'string', appliesTo: 'user', isActive: true },
+      { key: `hidden_${tag}`, label: 'Hidden', dataType: 'string', appliesTo: 'user', isActive: false },
+    ])
+
+    const res = await request(app.getHttpServer())
+      .get('/attribute-definitions?appliesTo=user&includeInactive=false')
+      .expect(200)
+
+    const keys = (res.body as { key: string }[]).map((d) => d.key).filter((k) => k.endsWith(tag))
+    expect(keys).toEqual([`visible_${tag}`])
+  })
+
+  /**
+   * Refused rather than coerced. `includeInactive=yes` silently meaning
+   * "active only" is how a caller ends up believing they are looking at the
+   * whole catalogue while a deactivated definition stays invisible — the
+   * exact failure this parameter exists to remove.
+   */
+  it('rejects an includeInactive value that is not a boolean with 400 VALIDATION_FAILED', async () => {
+    await actAs('read_only')
+
+    const res = await request(app.getHttpServer())
+      .get('/attribute-definitions?appliesTo=user&includeInactive=yes')
+      .expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+  })
+
   it('returns active, group-scoped definitions (appliesTo=group), never a user-scoped sibling', async () => {
     await actAs('read_only')
 

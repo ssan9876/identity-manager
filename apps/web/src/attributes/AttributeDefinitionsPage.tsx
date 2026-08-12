@@ -4,11 +4,14 @@ import { ApiError } from '../api/client'
 import { useSelfPermissions } from '../shell/permissions'
 import { useToast } from '../shell/ToastProvider'
 import {
+  ALL_ATTRIBUTE_FORMATS,
+  ATTRIBUTE_FORMAT_LABEL,
   createAttributeDefinition,
   fetchAttributeDefinitions,
   updateAttributeDefinition,
   type AttributeDataType,
   type AttributeDefinition,
+  type AttributeFormat,
   type AttributeValidationRules,
 } from './api'
 import { AttributeMigrationPanel } from './AttributeMigrationPanel'
@@ -68,6 +71,9 @@ function SkeletonRows() {
           <td>
             <span className="skeleton" style={{ width: '7rem', height: '1.3rem' }} />
           </td>
+          <td>
+            <span className="skeleton" style={{ width: '4.5rem', height: '1.3rem' }} />
+          </td>
         </tr>
       ))}
     </>
@@ -108,6 +114,28 @@ function DefinitionFlags({ definition }: { definition: AttributeDefinition }) {
   )
 }
 
+/**
+ * Active or not — the same treatment BusinessRoleStatusBadge gives the same
+ * shape of fact, because consistency screen-to-screen is worth more here than
+ * a bespoke vocabulary. `Active` is the norm and takes no colour at all
+ * (docs/design-system.md), and `Inactive` earns --danger rather than --warn
+ * because deactivating is not a pause: the attribute leaves every form and
+ * every validation schema in the deployment the moment it is switched off,
+ * which is why the API gives that transition its own audit action. The stored
+ * values survive, and the row stays here to be switched back on.
+ */
+function StatusBadge({ isActive }: { isActive: boolean }) {
+  return (
+    <span
+      className={`badge badge--${isActive ? 'neutral' : 'danger'}`}
+      data-attribute-active={String(isActive)}
+    >
+      {!isActive && <span className="badge__dot" aria-hidden="true" />}
+      {isActive ? 'Active' : 'Inactive'}
+    </span>
+  )
+}
+
 /** Renders `validationRules` as the short human sentence the table column has room for. */
 function describeRules(rules: AttributeValidationRules): string {
   const parts: string[] = []
@@ -139,7 +167,7 @@ interface FormState {
   clearDefault: boolean
   minLength: string
   maxLength: string
-  format: string
+  format: AttributeFormat | ''
   min: string
   max: string
   options: string
@@ -213,7 +241,7 @@ function buildRules(form: FormState): AttributeValidationRules {
   if (form.dataType === 'string') {
     if (form.minLength.trim() !== '') rules.minLength = Number(form.minLength)
     if (form.maxLength.trim() !== '') rules.maxLength = Number(form.maxLength)
-    if (form.format.trim() !== '') rules.format = form.format.trim()
+    if (form.format !== '') rules.format = form.format
   }
   if (form.dataType === 'number') {
     if (form.min.trim() !== '') rules.min = Number(form.min)
@@ -268,24 +296,24 @@ function buildDefault(form: FormState): string | number | boolean | null | undef
  * /attribute-definitions` REQUIRES `appliesTo`, so "all attributes" is not a
  * request this API can serve. The tabs are the query parameter, made visible.
  *
- * WHAT THIS PAGE DELIBERATELY DOES NOT OFFER, AND WHY:
+ * DEACTIVATION IS REVERSIBLE FROM HERE, and that is why it is offered at
+ * all. This list asks for `includeInactive`, so a definition switched off
+ * still appears — greyed by its status badge, with the button that turns it
+ * back on. The first version of this page had no deactivate button precisely
+ * because the API could only list ACTIVE definitions, which would have made
+ * the control a one-way door: press it and the row vanishes from the only
+ * screen that could undo it. The route grew the parameter; the button
+ * followed it, in that order.
  *
- *   * DEACTIVATION. `isActive` is a perfectly ordinary patch field, but the
- *     only list endpoint this console has is `listActive` — a definition
- *     deactivated here would vanish from the one screen that could bring it
- *     back, with no path to it short of the CLI or direct SQL. A one-way
- *     door in a UI is worse than an absent button, so the button is absent
- *     until the API can list inactive definitions too.
- *
- *   * A `format` DROPDOWN. `validationRules.format` is a CLOSED vocabulary
- *     of ten names owned by apps/api/src/attributes/attribute-formats.ts.
- *     Hand-copying it here is precisely the "catalog drift" defect class
- *     that shipped a live connector target the console could not disable
- *     (docs/12-security.md, and apps/web/scripts/check-connector-targets.mjs
- *     which exists to stop it recurring). Mirroring it safely means another
- *     drift guard; until that exists, this is a text field, and a wrong
- *     value earns a 400 that NAMES every valid format — which is the same
- *     answer the CLI gets.
+ * `format` IS A DROPDOWN, AND IT IS GUARDED. `validationRules.format` is a
+ * closed vocabulary of ten names owned by
+ * apps/api/src/attributes/attribute-formats.ts, and a hand-copied closed
+ * vocabulary in apps/web is the "catalog drift" defect class that once left
+ * a live connector target this console could not disable
+ * (docs/12-security.md). The mirror lives in ./api.ts and
+ * apps/web/scripts/check-attribute-formats.mjs fails the build the moment it
+ * stops matching — the same answer, and the same shape of answer, as
+ * check-connector-targets.mjs.
  */
 export default function AttributeDefinitionsPage() {
   const auth = useAuth()
@@ -308,6 +336,7 @@ export default function AttributeDefinitionsPage() {
   const [form, setForm] = useState<FormState>(emptyForm())
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
+  const [togglingId, setTogglingId] = useState<string | null>(null)
 
   const scopeRefs = useRef<Record<Scope, HTMLButtonElement | null>>({ user: null, group: null })
   const firstFieldRef = useRef<HTMLInputElement>(null)
@@ -323,7 +352,7 @@ export default function AttributeDefinitionsPage() {
     setLoading(true)
     setLoadError(null)
 
-    void fetchAttributeDefinitions(accessToken, scope)
+    void fetchAttributeDefinitions(accessToken, scope, { includeInactive: true })
       .then((list) => {
         if (!cancelled) setDefinitions(list)
       })
@@ -449,6 +478,43 @@ export default function AttributeDefinitionsPage() {
           : 'Could not save the attribute. Check your connection and try again.',
       )
       setSubmitting(false)
+    }
+  }
+
+  /**
+   * Deactivate or reactivate, as an ordinary PATCH of `isActive`.
+   *
+   * No confirmation dialog, deliberately: this is reversible from this very
+   * table — the list asks for inactive definitions too — and
+   * docs/design-system.md bans "modal as first thought". What the action is
+   * NOT is harmless, so the toast says what actually happened rather than
+   * "Saved": deactivating removes the field from every form and every
+   * validation schema in the deployment, while the values already stored
+   * under it stay exactly where they are.
+   */
+  async function handleToggleActive(definition: AttributeDefinition) {
+    if (accessToken === undefined) return
+    setTogglingId(definition.id)
+    try {
+      await updateAttributeDefinition(accessToken, definition.id, {
+        isActive: !definition.isActive,
+      })
+      showToast(
+        definition.isActive
+          ? `Deactivated ${definition.key} — it is off every form now. Stored values are untouched, and it can be switched back on here.`
+          : `Reactivated ${definition.key} — it is back on every relevant form.`,
+        definition.isActive ? 'warn' : 'neutral',
+      )
+      setRetryToken((token) => token + 1)
+    } catch (cause) {
+      showToast(
+        cause instanceof ApiError
+          ? cause.message
+          : `Could not change ${definition.key}. Check your connection and try again.`,
+        'danger',
+      )
+    } finally {
+      setTogglingId(null)
     }
   }
 
@@ -651,18 +717,27 @@ export default function AttributeDefinitionsPage() {
                     <label className="field__label" htmlFor="attribute-format">
                       Format <span className="attributes-page__optional">optional</span>
                     </label>
-                    <input
+                    <select
                       id="attribute-format"
-                      className="input mono"
+                      className="select"
                       value={form.format}
                       disabled={submitting}
-                      onChange={(e) => setForm({ ...form, format: e.target.value })}
+                      onChange={(e) =>
+                        setForm({ ...form, format: e.target.value as AttributeFormat | '' })
+                      }
                       data-testid="attribute-format"
-                    />
+                    >
+                      <option value="">No format constraint</option>
+                      {ALL_ATTRIBUTE_FORMATS.map((format) => (
+                        <option key={format} value={format}>
+                          {ATTRIBUTE_FORMAT_LABEL[format]}
+                        </option>
+                      ))}
+                    </select>
                     <p className="field__hint">
-                      A named validator such as <span className="mono">email</span> or{' '}
-                      <span className="mono">uuid</span>. The API owns this vocabulary and lists
-                      every valid name if this one isn&rsquo;t recognised.
+                      A named validator the API owns and applies on every write. Replaced the
+                      admin-supplied regular expressions this column used to hold, which were
+                      executable content run against user input.
                     </p>
                   </div>
                 </>
@@ -910,6 +985,7 @@ export default function AttributeDefinitionsPage() {
                   <th scope="col">Type</th>
                   <th scope="col">Rules</th>
                   <th scope="col">Behaviour</th>
+                  <th scope="col">Status</th>
                   {canManage && (
                     <th scope="col">
                       <span className="attributes-page__sr-only">Actions</span>
@@ -930,6 +1006,9 @@ export default function AttributeDefinitionsPage() {
                       <td>
                         <DefinitionFlags definition={definition} />
                       </td>
+                      <td>
+                        <StatusBadge isActive={definition.isActive} />
+                      </td>
                       {canManage && (
                         <td className="attributes-page__row-actions">
                           <button
@@ -948,6 +1027,19 @@ export default function AttributeDefinitionsPage() {
                           >
                             Change type
                           </button>
+                          <button
+                            type="button"
+                            className="btn btn--secondary btn--sm"
+                            disabled={togglingId === definition.id}
+                            data-loading={togglingId === definition.id ? 'true' : undefined}
+                            onClick={() => void handleToggleActive(definition)}
+                            data-testid="attribute-toggle-active"
+                          >
+                            <span className="btn__label">
+                              {definition.isActive ? 'Deactivate' : 'Reactivate'}
+                            </span>
+                            <span className="btn__spinner" aria-hidden="true" />
+                          </button>
                         </td>
                       )}
                     </tr>
@@ -958,14 +1050,12 @@ export default function AttributeDefinitionsPage() {
           )}
         </div>
 
-        {/* The list is `listActive` — see this component's own doc comment on
-            why deactivation is not offered here. Said out loud rather than
-            left for an admin to deduce from an attribute they remember
-            creating and cannot find. */}
+        {/* Said out loud, because "where did my attribute go" is the question
+            an active-only list would have produced and this one answers. */}
         {!loading && definitions !== null && definitions.length > 0 && (
           <p className="attributes-page__footnote">
-            Active definitions only. A deactivated attribute keeps its stored values but is not
-            listed here.
+            Inactive definitions are listed too. Deactivating removes an attribute from every form
+            and validation schema without touching the values already stored under it.
           </p>
         )}
       </div>

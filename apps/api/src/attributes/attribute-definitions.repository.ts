@@ -164,13 +164,36 @@ export class AttributeDefinitionsRepository {
    * POST/PATCH /users' own validation) but is not a new concept either, just
    * the same filter generalised to the `appliesTo` this table already
    * models for both entity types.
+   *
+   * `includeInactive` DEFAULTS TO FALSE, and the default is the load-bearing
+   * half. Every caller that builds a form or a validation schema wants the
+   * active set and gets it by saying nothing — a deactivated definition
+   * reappearing in the user create form, or in the import validator, would
+   * be a regression in each of them. The one caller that needs the whole
+   * catalogue is the admin console's attribute page, and it needs it for a
+   * specific reason: `isActive` is a field a PATCH may flip, so without this
+   * option deactivating a definition removed it from the only screen that
+   * could ever turn it back on. A one-way door is not a filter.
+   *
+   * Ordering is unchanged in both modes. An inactive definition sorts among
+   * the active ones rather than being banished to the end, because
+   * `sortOrder` is where this attribute belongs in the form and that does
+   * not stop being true while it is switched off — the `isActive` flag on
+   * each row is what distinguishes them, and it is returned.
    */
-  async listActive(appliesTo: 'user' | 'group'): Promise<AttributeDefinition[]> {
+  async list(
+    appliesTo: 'user' | 'group',
+    options: { includeInactive?: boolean } = {},
+  ): Promise<AttributeDefinition[]> {
+    const scope = eq(attributeDefinitions.appliesTo, appliesTo)
+
     const rows = await this.db
       .select()
       .from(attributeDefinitions)
       .where(
-        and(eq(attributeDefinitions.isActive, true), eq(attributeDefinitions.appliesTo, appliesTo)),
+        options.includeInactive === true
+          ? scope
+          : and(eq(attributeDefinitions.isActive, true), scope),
       )
       .orderBy(asc(attributeDefinitions.sortOrder), asc(attributeDefinitions.key))
 
