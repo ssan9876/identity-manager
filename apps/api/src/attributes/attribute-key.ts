@@ -23,18 +23,32 @@ import { type SQL, sql } from 'drizzle-orm'
  * `attributes.`), because a dotted key reads as a path and invites a future
  * reader to treat it as one.
  *
- * `ATTRIBUTE_KEY_SQL_PATTERN` is the ONE source for this rule — the regex
- * below is derived from it (`new RegExp(...)`), not a second hand-copied
- * literal, and `db/schema/attribute-definitions.ts` imports the same string
- * (plus `ATTRIBUTE_KEY_RESERVED`, below) to build the
+ * `KEY_PATTERN` is the ONE source for this rule — `ATTRIBUTE_KEY_SQL_PATTERN`
+ * below is derived FROM the regex literal (`.source`), not the other way
+ * round, and `db/schema/attribute-definitions.ts` imports that derived
+ * string (plus `ATTRIBUTE_KEY_RESERVED`, below) to build the
  * `attribute_definitions_key_format` CHECK constraint. A previous version of
  * this module kept two separately-written literals "in sync" by throwing at
  * import time if they disagreed — but the throw could only fire from an edit
  * to a hand-typed duplicate; making the duplicate impossible removes the
  * failure mode instead of merely detecting it after the fact.
+ *
+ * Deriving the STRING from the REGEX, rather than the regex from the string
+ * via `new RegExp(...)`, is the direction that keeps
+ * `test/attribute-validator.spec.ts`'s source scan meaningful:
+ * `new RegExp` constructs a pattern from a RUNTIME VALUE, which is
+ * precisely the shape that turned `validationRules.pattern` into a
+ * caller-controlled ReDoS (see attribute-formats.ts's file doc comment).
+ * `KEY_PATTERN` here was never that — `ATTRIBUTE_KEY_SQL_PATTERN` is a
+ * module-level constant nothing external can reach — but the scan cannot
+ * (and should not be taught to) distinguish "constant" from "runtime value"
+ * without reintroducing the exact hole it exists to close. `RegExp.source`
+ * carries no such ambiguity: it is a *literal* regex reflecting its own
+ * text back out, so the single source of truth is now the regex literal
+ * itself, and the SQL string is what's derived, not the reverse.
  */
-export const ATTRIBUTE_KEY_SQL_PATTERN = '^[A-Za-z_][A-Za-z0-9_]*$'
-const KEY_PATTERN = new RegExp(ATTRIBUTE_KEY_SQL_PATTERN)
+const KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
+export const ATTRIBUTE_KEY_SQL_PATTERN = KEY_PATTERN.source
 const MAX_LENGTH = 64
 
 /**
