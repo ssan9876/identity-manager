@@ -636,9 +636,22 @@ to Keycloak's Account Console.
 
 | Query | Notes |
 |---|---|
-| `appliesTo` | `user` or `group` |
+| `appliesTo` | `user` or `group` — **required** |
+| `includeInactive` | `true` or `false` (default `false`). Any other value is a **400** |
 
-Active definitions only.
+Active definitions only unless `includeInactive=true`, ordered by `sortOrder` then `key`.
+
+The default is what every form-building and validation caller wants, and it is the one
+they get by saying nothing. `includeInactive=true` exists for the admin console's
+attribute page: `isActive` is a field its own `PATCH` may flip, so without it,
+deactivating a definition would remove it from the only screen that could ever turn it
+back on. A malformed value is refused rather than treated as `false` — a caller who
+asked for the full catalogue and quietly received the filtered one would conclude a
+deactivated definition does not exist.
+
+`defaultValue` is **not** in the response, and its absence is deliberate: it is an
+attribute *value*, and this projection is the one that feeds audit snapshots (finding
+SEC-M1).
 
 ### `POST /attribute-definitions` — `attribute:manage` **(global)**
 

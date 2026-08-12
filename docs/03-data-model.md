@@ -477,7 +477,7 @@ method. Disabling sets `enabled = false` here and on the Keycloak client.
 
 | Column | Notes |
 |---|---|
-| `key` | varchar(64) — unique per `applies_to` (`attribute_definitions_key_scope_unique`, the table's only unique index) |
+| `key` | varchar(64) — unique per `applies_to` (`attribute_definitions_key_scope_unique`, the table's only unique index), and **immutable**: constrained by the `attribute_definitions_key_format` CHECK (migration 0043) to `^[A-Za-z_][A-Za-z0-9_]*$`, excluding `__proto__`, `constructor` and `prototype` |
 | `label` | varchar(255) — display name |
 | `data_type` | `string` · `number` · `boolean` · `date` · `enum` |
 | `required`, `default_value`, `validation_rules` | validation inputs. `required` defaults false; `default_value` is nullable jsonb; `validation_rules` is `NOT NULL DEFAULT '{}'` |
@@ -486,8 +486,24 @@ method. Disabling sets `enabled = false` here and on the Keycloak client.
 | `self_editable` | **default false** — whether `PATCH /self` may touch it |
 | `sensitive` | **default false** (migration 0026) — withhold this attribute's *value* from `audit_log` snapshots. Governs the audit log only; outbox payloads still carry real values |
 
-There is **no write endpoint** for this table. Definitions are seeded or managed
-directly in the database today; `GET /attribute-definitions` is read-only.
+**`key` is immutable, and the CHECK is the third layer, not the only one.** The
+application validates the key, the database constrains it, and both exist because the
+column is the join between a definition and every value filed under it: renaming a key
+orphans every `users.attributes` entry that carries it. `PATCH /attribute-definitions/:id`
+therefore refuses `key` outright — the CHECK's `UPDATE` arm guards hand-written SQL and
+migrations, which is the path that could still do it.
+
+The reserved names are excluded because this key is used as a **JavaScript object key**
+when building validation schemas; `__proto__` in that position is prototype pollution,
+not a field name.
+
+**Before upgrading past 0043**, check for pre-existing keys the new constraint would
+reject — every row in this table predates it. The query is in
+[Operations](11-operations.md#before-upgrading-past-migration-0043-check-for-keys-the-new-check-would-reject).
+
+`data_type` is likewise not editable in place: changing it rewrites every stored value
+under the key, so it goes through the two-phase preview/commit migration route rather
+than a `PATCH`. See [Walkthrough 22](07-admin-guide.md#walkthrough-22--define-an-attribute-and-change-its-type).
 
 ### `attribute_target_mappings`
 

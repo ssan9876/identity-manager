@@ -95,7 +95,7 @@ export interface AttributeValidationRules {
  * declaring a second, divergent copy.
  */
 export interface AttributeDefinition {
-  /** Milestone 14, Task 9 — the stable id the connector console's attribute mapping editor references (attribute_target_mappings.attribute_definition_id), never the mutable `key`. */
+  /** Milestone 14, Task 9 — the stable id the connector console's attribute mapping editor references (attribute_target_mappings.attribute_definition_id), never the `key` and never a display `label`. */
   id: string
   key: string
   label: string
