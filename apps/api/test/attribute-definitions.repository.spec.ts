@@ -376,4 +376,187 @@ describe('AttributeDefinitionsRepository', () => {
       ).resolves.toMatchObject({ label: 'In a transaction' })
     })
   })
+
+  // -------------------------------------------------------------------------
+  // Task 6 — validationRules as a closed schema.
+  //
+  // `validationRules` is jsonb — an open blob — and that is exactly where
+  // this project's ReDoS lived: `pattern` was a caller-supplied regular
+  // expression compiled with `new RegExp` and run against user input
+  // (attribute-formats.ts's file doc comment has the 96.7-second
+  // measurement). There was no write path before Task 5, so nothing has ever
+  // validated what goes into that column. These tests are what stop the next
+  // hand-written value from reintroducing it.
+  // -------------------------------------------------------------------------
+
+  describe('validationRules', () => {
+    it('rejects a pattern key by name, pointing at the format vocabulary that replaced it', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('pattern'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { pattern: '(a+)+$' } as never,
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/pattern/)
+      // Not lumped in with generic unknown-key rejection — the message must
+      // name the replacement vocabulary, not just say "unrecognized".
+      expect(String((error as Error).message)).toMatch(/format/)
+    })
+
+    it('rejects a key outside the closed vocabulary as unrecognized', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('unknown'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { unknownKey: 1 } as never,
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/unknownKey|unrecognized/i)
+    })
+
+    it('bounds enum options to at most 200 entries', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('toomanyopts'),
+          label: 'l',
+          dataType: 'enum',
+          appliesTo: 'user',
+          validationRules: { options: Array.from({ length: 201 }, (_, i) => String(i)) },
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/options/)
+    })
+
+    it('bounds each option to at most 200 characters', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('longopt'),
+          label: 'l',
+          dataType: 'enum',
+          appliesTo: 'user',
+          validationRules: { options: ['x'.repeat(201)] },
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/options/)
+    })
+
+    it('accepts a format from the closed vocabulary', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('fmt'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { format: 'email' },
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('rejects a format not in the closed vocabulary', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('badfmt'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { format: 'ssn' } as never,
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+    })
+
+    // ---------------------------------------------------------------------
+    // What the closed schema must still allow. Over-refusal is not a lesser
+    // failure than under-refusal — a definition with no validationRules at
+    // all, an empty object, a legal format, and min without max must all
+    // keep working.
+    // ---------------------------------------------------------------------
+
+    it('allows creating a definition with no validationRules at all', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('novr'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows an empty validationRules object', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('emptyvr'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: {},
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows min without max', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('minonly'),
+          label: 'l',
+          dataType: 'number',
+          appliesTo: 'user',
+          validationRules: { min: 3 },
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows options within bounds', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('okopts'),
+          label: 'l',
+          dataType: 'enum',
+          appliesTo: 'user',
+          validationRules: { options: ['a', 'b', 'c'] },
+        }),
+      ).resolves.toMatchObject({ validationRules: { options: ['a', 'b', 'c'] } })
+    })
+
+    it('also gates updateSafeFields, not only create', async () => {
+      const definition = await seedDefinition()
+
+      const error = await txRepo()
+        .updateSafeFields(definition.id, { validationRules: { pattern: '.*' } as never })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/pattern/)
+
+      // A refusal is a refusal: nothing was written.
+      const [after] = await ctx.db
+        .select()
+        .from(attributeDefinitions)
+        .where(eq(attributeDefinitions.id, definition.id))
+      expect(after.validationRules).toEqual({})
+    })
+
+    it('allows updateSafeFields to set a legal validationRules value', async () => {
+      const definition = await seedDefinition()
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { validationRules: { format: 'uuid' } }),
+      ).resolves.toMatchObject({ validationRules: { format: 'uuid' } })
+    })
+  })
 })

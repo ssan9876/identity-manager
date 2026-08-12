@@ -9,6 +9,7 @@ import { businessRoleConditions, businessRoles } from '../db/schema/business-rol
 import * as schema from '../db/schema/index'
 import type { DbHandle } from '../outbox/outbox.writer'
 import { attributeKeyLock, validateAttributeKey } from './attribute-key'
+import { parseValidationRules } from './attribute-validation-rules'
 import type { AttributeDataType, AttributeDefinition, ValidationRules } from './attribute-validator'
 
 /** One `attribute_definitions` row, exactly as stored. */
@@ -195,6 +196,11 @@ export class AttributeDefinitionsRepository {
     const problems = validateAttributeKey(input.key)
     if (problems.length > 0) throw new ValidationError(problems)
 
+    // Closed schema, checked before any database work — see
+    // attribute-validation-rules.ts for why: validationRules is jsonb, and
+    // `pattern` is where the ReDoS lived.
+    const validationRules = parseValidationRules(input.validationRules)
+
     if (input.selfEditable === true) {
       // Milestone 8, Task 5b. `assertNoFormulaDependsOn` below reads
       // `business_role_conditions`; `BusinessRolesRepository.publishWithin`
@@ -221,7 +227,7 @@ export class AttributeDefinitionsRepository {
         appliesTo: input.appliesTo,
         required: input.required,
         defaultValue: input.defaultValue,
-        validationRules: input.validationRules as Record<string, unknown> | undefined,
+        validationRules: validationRules as Record<string, unknown> | undefined,
         sortOrder: input.sortOrder,
         isActive: input.isActive,
         selfEditable: input.selfEditable,
@@ -247,6 +253,11 @@ export class AttributeDefinitionsRepository {
     id: string,
     patch: SafeFieldPatch,
   ): Promise<AttributeDefinition> {
+    // Closed schema, checked before any database work — same gate `create`
+    // applies, so a caller cannot bypass Task 6 by going through PATCH
+    // instead of POST. See attribute-validation-rules.ts.
+    const validationRules = parseValidationRules(patch.validationRules)
+
     const [existing] = await tx
       .select()
       .from(attributeDefinitions)
@@ -268,7 +279,7 @@ export class AttributeDefinitionsRepository {
     if (patch.required !== undefined) changes.required = patch.required
     if (patch.defaultValue !== undefined) changes.defaultValue = patch.defaultValue
     if (patch.validationRules !== undefined) {
-      changes.validationRules = patch.validationRules as Record<string, unknown>
+      changes.validationRules = validationRules as Record<string, unknown>
     }
     if (patch.sortOrder !== undefined) changes.sortOrder = patch.sortOrder
     if (patch.isActive !== undefined) changes.isActive = patch.isActive
