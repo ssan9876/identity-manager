@@ -1,0 +1,230 @@
+/* The header shape comes from `.page-header`, the table from `.table` and
+   the tabs from `.tabs` (styles/components.css). Only what is specific to
+   this screen lives here. */
+
+.attributes-page__header-actions {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.attributes-page__flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Two small buttons per row, and the column must not stretch to fill the
+   table — `width: 1%` plus `white-space: nowrap` is the standard trick for
+   a shrink-to-fit cell without a hard pixel width that a longer label
+   would break. */
+.attributes-page__row-actions {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.attributes-page__row-actions .btn + .btn {
+  margin-left: var(--space-2);
+}
+
+.attributes-page__footnote {
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+
+/* Visually hidden, still announced. The actions column has no visible
+   heading — the buttons name themselves — but a `<th>` with no accessible
+   name leaves a screen reader counting an unlabelled column. */
+.attributes-page__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The create/edit form is a raised surface above the table, the same
+   relationship BusinessRolesPage's create form has with its own list: it
+   reads as something acting ON the list below rather than a second,
+   unrelated block. Not a modal — docs/design-system.md bans "modal as first
+   thought". */
+.attributes-page__form,
+.attr-migration {
+  margin-bottom: var(--space-5);
+  padding: var(--space-5);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.attributes-page__form-heading,
+.attr-migration__heading {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* 2D — a genuine two-column grid that collapses to one, not a flex row
+   pretending. `auto-fit` rather than a breakpoint: the form is inside a
+   tabpanel whose width varies with the nav state, not just the viewport. */
+.attributes-page__form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.attributes-page__form-wide {
+  grid-column: 1 / -1;
+}
+
+.attributes-page__form-grid .input,
+.attributes-page__form-grid .select {
+  width: 100%;
+}
+
+.attributes-page__textarea {
+  resize: vertical;
+  min-height: 5rem;
+  font-family: var(--font-mono);
+}
+
+.attributes-page__optional {
+  font-weight: 400;
+  color: var(--ink-subtle);
+}
+
+/* The three behaviour switches carry real consequence, so they get room to
+   explain themselves rather than a bare label each. A fieldset, because
+   they are one group with one legend. */
+.attributes-page__switches {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+}
+
+.attributes-page__check,
+.attr-migration__check {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  max-width: 72ch;
+  font-size: var(--text-base);
+  color: var(--ink);
+  line-height: var(--line-height-normal);
+  text-wrap: pretty;
+}
+
+.attributes-page__check input,
+.attr-migration__check input {
+  margin-top: 0.2rem;
+  flex: none;
+}
+
+.attributes-page__form-actions,
+.attr-migration__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.attr-migration__intro {
+  margin-top: var(--space-1);
+  max-width: 72ch;
+  font-size: var(--text-base);
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+.attr-migration__controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  align-items: flex-end;
+  margin-top: var(--space-4);
+}
+
+.attr-migration__target {
+  flex: 1 1 20rem;
+  min-width: 14rem;
+}
+
+.attr-migration__target .select {
+  width: 100%;
+}
+
+.attr-migration__report {
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+
+/* The same "nothing has happened yet" note ImportPage puts above its diff,
+   and for the same reason: the preview being harmless is the whole safety
+   property, so it is stated rather than implied. --warn-bg, because this is
+   in-flight and not yet acted on. A full border, never a side stripe. */
+.attr-migration__safety {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-md);
+  background: var(--warn-bg);
+  color: var(--ink);
+  font-size: var(--text-base);
+  max-width: 72ch;
+  text-wrap: pretty;
+}
+
+.attr-migration__report .detail-grid {
+  margin-top: var(--space-4);
+}
+
+.attr-migration__group {
+  margin-top: var(--space-5);
+}
+
+.attr-migration__group-heading {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.attr-migration__blocked-note {
+  margin-top: var(--space-1);
+  margin-bottom: var(--space-3);
+  max-width: 72ch;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+.attr-migration__force {
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-md);
+  background: var(--warn-bg);
+}
+
+.attr-migration__done {
+  margin-top: var(--space-4);
+  max-width: 72ch;
+  font-size: var(--text-base);
+  color: var(--ink);
+  text-wrap: pretty;
+}
+
+.attr-migration__done .btn {
+  margin-top: var(--space-4);
+}
