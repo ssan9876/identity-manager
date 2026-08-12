@@ -9,7 +9,7 @@ import { businessRoleConditions, businessRoles } from '../db/schema/business-rol
 import * as schema from '../db/schema/index'
 import type { DbHandle } from '../outbox/outbox.writer'
 import { attributeKeyLock, validateAttributeKey } from './attribute-key'
-import { parseValidationRules } from './attribute-validation-rules'
+import { assertValidationRulesMatchDataType, parseValidationRules } from './attribute-validation-rules'
 import type { AttributeDataType, AttributeDefinition, ValidationRules } from './attribute-validator'
 
 /** One `attribute_definitions` row, exactly as stored. */
@@ -198,8 +198,11 @@ export class AttributeDefinitionsRepository {
 
     // Closed schema, checked before any database work — see
     // attribute-validation-rules.ts for why: validationRules is jsonb, and
-    // `pattern` is where the ReDoS lived.
+    // `pattern` is where the ReDoS lived. `dataType` is already known here
+    // (this method's own parameter, not read back from a row), so the
+    // cross-field dataType check runs in the same fail-fast spot.
     const validationRules = parseValidationRules(input.validationRules)
+    assertValidationRulesMatchDataType(validationRules, input.dataType)
 
     if (input.selfEditable === true) {
       // Milestone 8, Task 5b. `assertNoFormulaDependsOn` below reads
@@ -255,7 +258,12 @@ export class AttributeDefinitionsRepository {
   ): Promise<AttributeDefinition> {
     // Closed schema, checked before any database work — same gate `create`
     // applies, so a caller cannot bypass Task 6 by going through PATCH
-    // instead of POST. See attribute-validation-rules.ts.
+    // instead of POST. See attribute-validation-rules.ts. Only the
+    // STRUCTURAL half runs here (shape, bounds, min/max ordering):
+    // `SafeFieldPatch` excludes `dataType` by construction, so the
+    // cross-field "does this rule apply to this attribute's dataType" check
+    // cannot run until `existing.dataType` is read below — still before the
+    // UPDATE statement, so a refusal still leaves nothing written.
     const validationRules = parseValidationRules(patch.validationRules)
 
     const [existing] = await tx
@@ -264,6 +272,8 @@ export class AttributeDefinitionsRepository {
       .where(eq(attributeDefinitions.id, id))
       .for('update')
     if (!existing) throw new NotFoundError('attribute definition', id)
+
+    assertValidationRulesMatchDataType(validationRules, existing.dataType)
 
     if (patch.selfEditable === true) {
       await this.assertNoFormulaDependsOn(tx, existing.key, existing.appliesTo)

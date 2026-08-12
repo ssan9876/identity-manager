@@ -480,11 +480,198 @@ describe('AttributeDefinitionsRepository', () => {
     })
 
     // ---------------------------------------------------------------------
+    // Fix round 1: minLength/maxLength were missing from the closed schema
+    // entirely — attribute-validator.ts's buildFieldSchema has always read
+    // them for dataType: 'string' (test/attribute-validator.spec.ts pins
+    // this), so their absence here would have made a string length
+    // constraint unwritable through the only supported path.
+    // ---------------------------------------------------------------------
+
+    it('accepts minLength/maxLength on a string attribute', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('lenok'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { minLength: 4, maxLength: 7 },
+        }),
+      ).resolves.toMatchObject({ validationRules: { minLength: 4, maxLength: 7 } })
+    })
+
+    it('rejects min greater than max', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('invmm'),
+          label: 'l',
+          dataType: 'number',
+          appliesTo: 'user',
+          validationRules: { min: 10, max: 5 },
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/max/)
+    })
+
+    it('rejects minLength greater than maxLength', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('invlen'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { minLength: 10, maxLength: 5 },
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/maxLength/)
+    })
+
+    it('rejects minLength/maxLength on a non-string attribute', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('lenwrongtype'),
+          label: 'l',
+          dataType: 'number',
+          appliesTo: 'user',
+          validationRules: { minLength: 3 },
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/minLength/)
+      expect(String((error as Error).message)).toMatch(/number/)
+    })
+
+    it('rejects min/max on a non-number attribute', async () => {
+      const error = await txRepo()
+        .create({
+          key: uniqueKey('minmaxwrongtype'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { min: 3 },
+        })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/min/)
+      expect(String((error as Error).message)).toMatch(/string/)
+    })
+
+    it('rejects a dataType mismatch through updateSafeFields too, using the EXISTING row dataType', async () => {
+      // SafeFieldPatch has no dataType field — the check has to read the
+      // stored dataType, not one supplied by the caller.
+      const definition = await seedDefinition({ dataType: 'number' })
+
+      const error = await txRepo()
+        .updateSafeFields(definition.id, { validationRules: { minLength: 2 } })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(ValidationError)
+      expect(String((error as Error).message)).toMatch(/minLength/)
+
+      const [after] = await ctx.db
+        .select()
+        .from(attributeDefinitions)
+        .where(eq(attributeDefinitions.id, definition.id))
+      expect(after.validationRules).toEqual({})
+    })
+
+    // ---------------------------------------------------------------------
     // What the closed schema must still allow. Over-refusal is not a lesser
     // failure than under-refusal — a definition with no validationRules at
     // all, an empty object, a legal format, and min without max must all
     // keep working.
     // ---------------------------------------------------------------------
+
+    it('allows max without min', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('maxonly'),
+          label: 'l',
+          dataType: 'number',
+          appliesTo: 'user',
+          validationRules: { max: 10 },
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows minLength without maxLength', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('minlenonly'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { minLength: 2 },
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows min equal to max (pins the field to exactly one value)', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('eqmm'),
+          label: 'l',
+          dataType: 'number',
+          appliesTo: 'user',
+          validationRules: { min: 5, max: 5 },
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows minLength equal to maxLength (a fixed-length string)', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('eqlen'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { minLength: 5, maxLength: 5 },
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows a zero minLength', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('zerolen'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { minLength: 0, maxLength: 100 },
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows a large-but-sane maxLength', async () => {
+      await expect(
+        txRepo().create({
+          key: uniqueKey('biglen'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { maxLength: 10_000 },
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('allows format alongside minLength/maxLength on a string attribute', async () => {
+      // Mirrors test/attribute-validator.spec.ts's read-side coverage of
+      // this exact combination — the two are meant to agree.
+      await expect(
+        txRepo().create({
+          key: uniqueKey('fmtlen'),
+          label: 'l',
+          dataType: 'string',
+          appliesTo: 'user',
+          validationRules: { format: 'slug', maxLength: 20 },
+        }),
+      ).resolves.toMatchObject({ validationRules: { format: 'slug', maxLength: 20 } })
+    })
 
     it('allows creating a definition with no validationRules at all', async () => {
       await expect(
