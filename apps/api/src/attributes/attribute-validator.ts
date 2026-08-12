@@ -105,7 +105,17 @@ function isIsoCalendarDate(value: string): boolean {
  * to drift from this one, and the whole point of the impact check is that it
  * tells the truth about what a definition edit would invalidate.
  */
-export function buildFieldSchema(definition: AttributeDefinition): z.ZodTypeAny {
+/**
+ * The three fields `buildFieldSchema` actually reads. Declared as a `Pick`
+ * rather than the whole `AttributeDefinition` so a caller that has a
+ * PROPOSED definition — one that is not a row yet, and so has no `id`,
+ * `isActive` or `sensitive` to offer — can ask what it would accept without
+ * synthesising fake values for the fields this function never looks at.
+ * Every existing caller passes a full definition and is unaffected.
+ */
+export type FieldSchemaSource = Pick<AttributeDefinition, 'key' | 'dataType' | 'validationRules'>
+
+export function buildFieldSchema(definition: FieldSchemaSource): z.ZodTypeAny {
   const rules = definition.validationRules
 
   switch (definition.dataType) {

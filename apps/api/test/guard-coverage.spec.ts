@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { Controller, Module, forwardRef } from '@nestjs/common'
 import { describe, expect, it } from 'vitest'
 import { AppModule } from '../src/app.module'
+import { IMMUTABLE_THROUGH_PATCH } from '../src/attributes/attribute-definitions.controller'
 import { JwtGuard } from '../src/auth/jwt.guard'
 import { PermissionGuard } from '../src/authz/permission.guard'
 import { REQUIRED_PERMISSION } from '../src/authz/require-permission.decorator'
@@ -220,6 +221,77 @@ describe('guard coverage', () => {
     }
 
     expect(missing).toEqual([])
+  })
+})
+
+/**
+ * Milestone 8, Task 7 owes Milestone 8, Task 10 a message update, and this is
+ * what makes that debt FAIL rather than rot.
+ *
+ * `PATCH /attribute-definitions/:id` refuses `dataType`/`appliesTo` with a
+ * message pointing at the preview/commit migration route. That message
+ * deliberately names no URL, because when it was written Tasks 8-10 had not
+ * chosen one and a stale URL inside a 400 is worse than none — but it also
+ * says "Until that lands, create a new definition with the type you want",
+ * which becomes ACTIVELY FALSE the moment the route exists and would send an
+ * admin off to create a duplicate attribute.
+ *
+ * The controller spec only asserts the message matches /preview/i and
+ * /commit/i, which the current text already satisfies, so nothing there
+ * would notice. This does: the instant a route whose path contains `preview`
+ * or `commit` is registered under `attribute-definitions`, the refusal
+ * message must name that path. Until then it passes trivially, asserting
+ * over an empty set — which is the point. A TODO comment cannot fail.
+ *
+ * Scoped to the `attribute-definitions` base path ON PURPOSE:
+ * `ImportsController` (`POST /imports/preview`, `POST /imports/commit`) and
+ * `HrSourcesController` (`POST /hr-sources/:id/preview`) already register
+ * routes with both words and have nothing to do with this message.
+ */
+describe('the attribute migration route obligation (Milestone 8, Task 10)', () => {
+  const MIGRATION_WORDS = ['preview', 'commit']
+
+  /** Every route path registered under the `attribute-definitions` base path, controller prefix included. */
+  function attributeDefinitionRoutePaths(): string[] {
+    const paths: string[] = []
+
+    for (const controller of collectControllers(AppModule)) {
+      const base = String(Reflect.getMetadata('path', controller) ?? '')
+      if (!base.startsWith('attribute-definitions')) continue
+
+      const proto = controller.prototype as Record<string, unknown>
+      for (const key of Object.getOwnPropertyNames(proto)) {
+        if (key === 'constructor') continue
+        const handler = proto[key]
+        if (typeof handler !== 'function') continue
+        if (!Reflect.hasMetadata('path', handler)) continue
+
+        const own = String(Reflect.getMetadata('path', handler) ?? '')
+        paths.push(`${base}/${own}`.replace(/\/+/g, '/').replace(/\/$/, ''))
+      }
+    }
+
+    return paths
+  }
+
+  it('names the real preview/commit path in the dataType refusal once that route exists', () => {
+    const migrationRoutes = attributeDefinitionRoutePaths().filter((path) =>
+      MIGRATION_WORDS.some((word) => path.includes(word)),
+    )
+
+    const unnamed = migrationRoutes.filter(
+      (path) => !IMMUTABLE_THROUGH_PATCH.dataType.includes(path),
+    )
+
+    expect(unnamed).toEqual([])
+  })
+
+  // Guards the guard: if the message ever loses the words the controller spec
+  // matches on, this file's premise (that the message is where the pointer
+  // lives) has quietly stopped being true.
+  it('still points at a preview-then-commit flow at all', () => {
+    expect(IMMUTABLE_THROUGH_PATCH.dataType).toMatch(/preview/i)
+    expect(IMMUTABLE_THROUGH_PATCH.dataType).toMatch(/commit/i)
   })
 })
 

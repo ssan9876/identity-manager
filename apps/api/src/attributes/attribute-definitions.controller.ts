@@ -111,7 +111,7 @@ const patchBodySchema = z
  * All three are absent from `SafeFieldPatch` BY CONSTRUCTION (Task 5), not by
  * this check — this is the message, not the enforcement.
  */
-const IMMUTABLE_THROUGH_PATCH: Readonly<Record<string, string>> = {
+export const IMMUTABLE_THROUGH_PATCH: Readonly<Record<string, string>> = {
   dataType:
     'dataType: cannot be changed through PATCH. Changing an attribute’s data type rewrites ' +
     'every value already stored under it in users.attributes, so it goes through the attribute ' +
@@ -177,9 +177,13 @@ type AuditAction =
  *
  * `sortOrder` is out for a duller reason: it is not part of the repository's
  * public shape, and a purely cosmetic ordering field is not worth a second
- * snapshot projection. A patch that changes only `sortOrder` still produces
- * an `attribute_definition:update` row recording that someone changed the
- * definition; the delta simply is not in it.
+ * snapshot projection.
+ *
+ * Both omissions mean neither field can ever make `genericChanged` true, so
+ * `auditActionsFor` takes a separate `touchedUnsnapshotted` flag to keep them
+ * WITNESSED — see its own doc comment, and the bundled-patch bug that flag
+ * exists to close. The delta for such a change is not in the log; the fact
+ * that it happened is.
  */
 function snapshotDefinition(definition: AttributeDefinition): Record<string, unknown> {
   return {
@@ -231,12 +235,38 @@ const GENERIC_FIELDS = ['label', 'required', 'selfEditable'] as const
  * the rows that follow under the new regime.
  *
  * The fallback matters: a patch that changed nothing this snapshot can see
- * (an empty body, or a `sortOrder`-only edit) still produces one
- * `attribute_definition:update` row. Somebody with `attribute:manage`
- * addressed this definition, and that is worth recording even when the delta
- * is empty.
+ * (an empty body) still produces one `attribute_definition:update` row.
+ * Somebody with `attribute:manage` addressed this definition, and that is
+ * worth recording even when the delta is empty.
+ *
+ * `touchedUnsnapshotted` — FIX ROUND 1, IMPORTANT 1, AND THE ONE SUBTLE
+ * PARAMETER HERE. `sortOrder` and `defaultValue` are safe fields absent from
+ * `snapshotDefinition` (see its doc comment for why `defaultValue` must stay
+ * absent), so they can never set `genericChanged`. The first version of this
+ * function therefore let them rely on the `actions.length === 0` fallback —
+ * which A SPECIALISED ACTION SUPPRESSES. Reproduced: `PATCH {sensitive:
+ * true, sortOrder: 42}` returned 200, wrote 42, and logged only
+ * `sensitive_changed`; `42` appeared nowhere in the audit log. A single
+ * request could change an inherited default while the log showed a
+ * visibility toggle. Alone such a change was at least witnessed; BUNDLED it
+ * was erased, which is strictly worse and is why only the bundled test
+ * catches it.
+ *
+ * That flag keys on the field being MENTIONED, not on it having changed,
+ * which is deliberately the OPPOSITE rule from the two specialised actions
+ * above — and the asymmetry is the point, because the two failure modes are
+ * opposite. Over-recording a specialised action fills the log with
+ * transitions that never happened and makes the real one unfindable.
+ * Under-recording the generic row destroys evidence that a change occurred
+ * at all, permanently, in an append-only table. Where the snapshot cannot
+ * tell us whether the value actually moved, erring toward recording is the
+ * only safe direction.
  */
-function auditActionsFor(before: AttributeDefinition, after: AttributeDefinition): AuditAction[] {
+function auditActionsFor(
+  before: AttributeDefinition,
+  after: AttributeDefinition,
+  touchedUnsnapshotted: boolean,
+): AuditAction[] {
   const actions: AuditAction[] = []
 
   if (before.sensitive !== after.sensitive) actions.push('attribute_definition:sensitive_changed')
@@ -247,7 +277,9 @@ function auditActionsFor(before: AttributeDefinition, after: AttributeDefinition
     (!before.isActive && after.isActive) ||
     JSON.stringify(before.validationRules) !== JSON.stringify(after.validationRules)
 
-  if (genericChanged || actions.length === 0) actions.push('attribute_definition:update')
+  if (genericChanged || touchedUnsnapshotted || actions.length === 0) {
+    actions.push('attribute_definition:update')
+  }
 
   return actions
 }
@@ -450,7 +482,12 @@ export class AttributeDefinitionsController {
         sensitive: parsed.sensitive,
       })
 
-      for (const action of auditActionsFor(before, after)) {
+      // Mentioned, not changed — `before`/`after` cannot report either field,
+      // so this is the only signal there is. See `auditActionsFor`.
+      const touchedUnsnapshotted =
+        parsed.sortOrder !== undefined || parsed.defaultValue !== undefined
+
+      for (const action of auditActionsFor(before, after, touchedUnsnapshotted)) {
         await this.auditWriter.record(tx, {
           actorUserId: request.actor.userId,
           action,

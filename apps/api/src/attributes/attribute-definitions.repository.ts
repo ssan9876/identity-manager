@@ -9,7 +9,11 @@ import { businessRoleConditions, businessRoles } from '../db/schema/business-rol
 import * as schema from '../db/schema/index'
 import type { DbHandle } from '../outbox/outbox.writer'
 import { attributeKeyLock, validateAttributeKey } from './attribute-key'
-import { assertValidationRulesMatchDataType, parseValidationRules } from './attribute-validation-rules'
+import {
+  assertDefaultValueMatchesDefinition,
+  assertValidationRulesMatchDataType,
+  parseValidationRules,
+} from './attribute-validation-rules'
 import type { AttributeDataType, AttributeDefinition, ValidationRules } from './attribute-validator'
 
 /** One `attribute_definitions` row, exactly as stored. */
@@ -235,6 +239,14 @@ export class AttributeDefinitionsRepository {
     const validationRules = parseValidationRules(input.validationRules)
     assertValidationRulesMatchDataType(validationRules, input.dataType)
 
+    // Both halves of the pair are right here in the input, so CREATE has no
+    // "effective value" problem to solve — unlike the patch path below.
+    assertDefaultValueMatchesDefinition(input.defaultValue, {
+      key: input.key,
+      dataType: input.dataType,
+      validationRules: validationRules ?? {},
+    })
+
     if (input.selfEditable === true) {
       // Milestone 8, Task 5b. `assertNoFormulaDependsOn` below reads
       // `business_role_conditions`; `BusinessRolesRepository.publishWithin`
@@ -305,6 +317,30 @@ export class AttributeDefinitionsRepository {
     if (!existing) throw new NotFoundError('attribute definition', id)
 
     assertValidationRulesMatchDataType(validationRules, existing.dataType)
+
+    // Checked against the pair this patch LEAVES BEHIND, not against the half
+    // it happens to mention. Either field alone can break the invariant while
+    // looking innocent on its own: a new default against the stored rules, or
+    // tightened rules against the stored default. `dataType` is the third
+    // input and cannot move — `SafeFieldPatch` excludes it by construction —
+    // so a patch that mentions NEITHER field cannot invalidate anything, and
+    // is not re-checked. That last part matters: re-validating every patch
+    // would make an unrelated `label` edit fail on a definition some earlier
+    // write left inconsistent, blocking the one field the admin can still
+    // fix.
+    if (patch.defaultValue !== undefined || patch.validationRules !== undefined) {
+      assertDefaultValueMatchesDefinition(
+        patch.defaultValue !== undefined ? patch.defaultValue : existing.defaultValue,
+        {
+          key: existing.key,
+          dataType: existing.dataType,
+          validationRules:
+            patch.validationRules !== undefined
+              ? (validationRules ?? {})
+              : ((existing.validationRules ?? {}) as ValidationRules),
+        },
+      )
+    }
 
     if (patch.selfEditable === true) {
       await this.assertNoFormulaDependsOn(tx, existing.key, existing.appliesTo)

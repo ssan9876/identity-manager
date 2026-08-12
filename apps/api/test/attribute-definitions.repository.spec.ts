@@ -746,4 +746,217 @@ describe('AttributeDefinitionsRepository', () => {
       ).resolves.toMatchObject({ validationRules: { format: 'uuid' } })
     })
   })
+
+  // ==========================================================================
+  // A default has to be a value its own definition would accept
+  // ==========================================================================
+
+  /**
+   * The controller spec covers the shapes an admin can send in one request.
+   * These are the ones only the repository can see, because they turn on the
+   * relationship between what a PATCH carries and what the ROW already holds
+   * — and `updateSafeFields` is where both halves are known at once.
+   */
+  describe('defaultValue against its own definition', () => {
+    /**
+     * Read from the ROW, not from what the write returned: `defaultValue` is
+     * deliberately absent from the `AttributeDefinition` shape these methods
+     * return (see that interface — a default is a VALUE, and Task 7 keeps
+     * values out of the projections that feed audit snapshots). The column is
+     * the only place to see what was actually written.
+     */
+    async function storedDefaultOf(id: string): Promise<unknown> {
+      const [row] = await ctx.db
+        .select()
+        .from(attributeDefinitions)
+        .where(eq(attributeDefinitions.id, id))
+      return row.defaultValue
+    }
+
+    it('refuses a default the stored rules already exclude, when only the default is patched', async () => {
+      const definition = await seedDefinition({
+        dataType: 'number',
+        validationRules: { min: 10, max: 20 },
+      })
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { defaultValue: 5 }),
+      ).rejects.toThrow(ValidationError)
+    })
+
+    /**
+     * THE ASYMMETRIC HALF, and the reason this check keys on the patch's
+     * EFFECTIVE result rather than on the field it mentions. Nothing about
+     * this request names `defaultValue` at all — the stored `5` was legal
+     * when it was written and is being invalidated from the other side.
+     * Checking only the mentioned field would let this through and leave a
+     * definition whose own default fails it.
+     */
+    it('refuses rules that would invalidate the stored default, when only the rules are patched', async () => {
+      const definition = await seedDefinition({ dataType: 'number', defaultValue: 5 })
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { validationRules: { min: 10 } }),
+      ).rejects.toThrow(ValidationError)
+    })
+
+    it('accepts rules that widen far enough to admit the stored default', async () => {
+      const definition = await seedDefinition({
+        dataType: 'number',
+        defaultValue: 5,
+        validationRules: { min: 1 },
+      })
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { validationRules: { min: 0, max: 100 } }),
+      ).resolves.toMatchObject({ validationRules: { min: 0, max: 100 } })
+    })
+
+    /**
+     * Both halves moving at once, in the one direction that is legal only
+     * because they move TOGETHER: `50` fails the stored rules and `min: 40`
+     * fails the stored default, so a check that paired either new value with
+     * the old other one would refuse this. It is a perfectly coherent edit.
+     */
+    it('accepts a default and rules that are only valid as a pair', async () => {
+      const definition = await seedDefinition({
+        dataType: 'number',
+        defaultValue: 5,
+        validationRules: { min: 1, max: 10 },
+      })
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, {
+          defaultValue: 50,
+          validationRules: { min: 40, max: 60 },
+        }),
+      ).resolves.toMatchObject({ validationRules: { min: 40, max: 60 } })
+      await expect(storedDefaultOf(definition.id)).resolves.toBe(50)
+    })
+
+    /**
+     * A patch that mentions neither field is NOT re-checked, by design — see
+     * the comment at the check itself. A definition made inconsistent by some
+     * earlier write (a migration, hand-written SQL, or this gate's own
+     * absence before Task 7) must stay editable, or the admin cannot reach
+     * the field they need to fix it.
+     */
+    it('still allows an unrelated edit on a definition whose stored default is already invalid', async () => {
+      const definition = await seedDefinition({
+        dataType: 'number',
+        defaultValue: 5,
+        validationRules: { min: 10 },
+      })
+
+      await expect(
+        txRepo().updateSafeFields(definition.id, { label: 'Renamed' }),
+      ).resolves.toMatchObject({ label: 'Renamed' })
+    })
+
+    it('accepts null as a way out, clearing a default the rules no longer admit', async () => {
+      const definition = await seedDefinition({
+        dataType: 'number',
+        defaultValue: 5,
+        validationRules: { min: 10 },
+      })
+
+      await expect(txRepo().updateSafeFields(definition.id, { defaultValue: null })).resolves.toBeDefined()
+      await expect(storedDefaultOf(definition.id)).resolves.toBeNull()
+    })
+  })
+
+  // ==========================================================================
+  // findByIdForUpdate — the lock that keeps an audit chain contiguous
+  // ==========================================================================
+
+  /**
+   * Milestone 8, Task 7. `AttributeDefinitionsController.update` records the
+   * audit `before` from `findByIdForUpdate` and the `after` from
+   * `updateSafeFields`. Both reads are `FOR UPDATE`, and the FIRST one is the
+   * one under test here: it is what makes two concurrent patches produce a
+   * CONTIGUOUS chain (C0->C1 then C1->C2) rather than two rows that both
+   * claim to start from C0 and between them erase the fact that C1 ever
+   * existed. `audit_log` is append-only at the database level, so a
+   * fabricated chain cannot be corrected afterwards.
+   *
+   * *** THE TRAP, WRITTEN DOWN SO NOBODY REDISCOVERS IT THE EXPENSIVE WAY ***
+   *
+   * The obvious version of this test — two concurrent `PATCH` requests over
+   * HTTP through `Promise.all`, the shape self-service.spec.ts and
+   * jml-rule-applier.spec.ts use for their own lost-update proofs — PASSES
+   * EVEN WITH `.for('update')` REMOVED. Those specs get away with it because
+   * they assert on the FINAL MERGED STATE of a jsonb bag, which a stale read
+   * genuinely corrupts. This property is different: it is about the
+   * relationship between two audit rows, and with the lock gone the second
+   * request still blocks inside `updateSafeFields`' own `FOR UPDATE` and
+   * still ends up writing a plausible-looking pair. Node's event loop
+   * serialises the two handlers far enough that the divergence never
+   * materialises.
+   *
+   * The interleave therefore has to be explicit and at the REPOSITORY level:
+   * T1 takes the locked read and HOLDS its transaction open while T2 starts,
+   * so T2's own locked read is forced to contend for the row rather than
+   * merely being scheduled after T1. Anyone rewriting this as the HTTP
+   * version will get a green test that proves nothing.
+   */
+  describe('findByIdForUpdate under concurrency', () => {
+    /** Long enough for the other transaction to reach its locked read and block on it. */
+    const HANDOFF_MS = 300
+
+    function sleep(ms: number): Promise<void> {
+      return new Promise((resolve) => setTimeout(resolve, ms))
+    }
+
+    /** One transaction doing exactly what the controller's PATCH does: locked read, patch, report both sides. */
+    function patchRecordingBothSides(
+      id: string,
+      label: string,
+      holdUntil?: Promise<void>,
+    ): Promise<{ before: string | undefined; after: string }> {
+      return ctx.db.transaction(async (tx) => {
+        const before = await repo().findByIdForUpdate(tx, id)
+        if (holdUntil !== undefined) await holdUntil
+        const after = await repo().updateSafeFields(tx, id, { label })
+        return { before: before?.label, after: after.label }
+      })
+    }
+
+    it(
+      'forces a concurrent patch to record the state the first one committed, not the one it started from',
+      async () => {
+        const definition = await seedDefinition({ label: 'C0' })
+
+        let releaseFirst: () => void = () => {}
+        const firstHeld = new Promise<void>((resolve) => {
+          releaseFirst = resolve
+        })
+
+        // T1: locked read of C0, then HOLD the transaction open.
+        const first = patchRecordingBothSides(definition.id, 'C1', firstHeld)
+        await sleep(HANDOFF_MS)
+
+        // T2 starts while T1 still holds the row. Its own locked read must
+        // BLOCK here — that is the whole property. Without the lock it would
+        // read C0 straight through and go on to record C0 -> C2.
+        const second = patchRecordingBothSides(definition.id, 'C2')
+        await sleep(HANDOFF_MS)
+
+        releaseFirst()
+        const [t1, t2] = await Promise.all([first, second])
+
+        expect(t1).toEqual({ before: 'C0', after: 'C1' })
+        // THE ASSERTION THAT DISCRIMINATES: `before: 'C1'`, never 'C0'.
+        // A chain of C0->C1 and C0->C2 is two rows that cannot both be true
+        // and that together lose C1 entirely.
+        expect(t2).toEqual({ before: 'C1', after: 'C2' })
+
+        const [stored] = await ctx.db
+          .select()
+          .from(attributeDefinitions)
+          .where(eq(attributeDefinitions.id, definition.id))
+        expect(stored.label).toBe('C2')
+      },
+      30_000,
+    )
+  })
 })

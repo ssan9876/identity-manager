@@ -499,6 +499,60 @@ describe('POST /attribute-definitions (Milestone 8, Task 7)', () => {
       .where(eq(attributeDefinitions.key, key))
     expect(rows).toHaveLength(0)
   })
+
+  // =========================================================================
+  // A default has to be a value its own definition would accept
+  // =========================================================================
+
+  it('rejects a defaultValue that its own dataType could never accept', async () => {
+    await actAs('super_admin')
+
+    const res = await post(validBody({ dataType: 'number', defaultValue: 'not-a-number' })).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+    expect(JSON.stringify(res.body.issues)).toMatch(/defaultValue/)
+  })
+
+  it('accepts a defaultValue that its own dataType does accept', async () => {
+    await actAs('super_admin')
+
+    await post(validBody({ dataType: 'number', defaultValue: 42 })).expect(201)
+  })
+
+  it('rejects a date defaultValue that is not a real calendar date', async () => {
+    await actAs('super_admin')
+
+    await post(validBody({ dataType: 'date', defaultValue: '2026-02-30' })).expect(400)
+  })
+
+  it('rejects an enum defaultValue outside the definition own options', async () => {
+    await actAs('super_admin')
+
+    await post(
+      validBody({ dataType: 'enum', validationRules: { options: ['a', 'b'] }, defaultValue: 'c' }),
+    ).expect(400)
+  })
+
+  it('accepts an enum defaultValue that is one of the definition own options', async () => {
+    await actAs('super_admin')
+
+    await post(
+      validBody({ dataType: 'enum', validationRules: { options: ['a', 'b'] }, defaultValue: 'b' }),
+    ).expect(201)
+  })
+
+  it('rejects a defaultValue that violates the definition validationRules, not just its dataType', async () => {
+    await actAs('super_admin')
+
+    await post(
+      validBody({ dataType: 'number', validationRules: { min: 10, max: 20 }, defaultValue: 5 }),
+    ).expect(400)
+  })
+
+  it('accepts a definition with no defaultValue at all', async () => {
+    await actAs('super_admin')
+
+    await post(validBody({ dataType: 'number' })).expect(201)
+  })
 })
 
 describe('PATCH /attribute-definitions/:id (Milestone 8, Task 7)', () => {
@@ -741,5 +795,99 @@ describe('PATCH /attribute-definitions/:id (Milestone 8, Task 7)', () => {
 
     const rows = await auditRowsFor(definition.id)
     expect(rows.map((r) => r.action)).toEqual(['attribute_definition:update'])
+  })
+
+  // =========================================================================
+  // A bundled patch must not erase its own evidence (fix round 1, Important 1)
+  // =========================================================================
+
+  /**
+   * `sortOrder` and `defaultValue` are safe fields that are NOT in
+   * `snapshotDefinition` — deliberately for `defaultValue` (it is a VALUE of
+   * the attribute, and SEC-M1 is exactly that values must not land in an
+   * append-only audit table). They therefore cannot make `genericChanged`
+   * true, and in the first version of this controller they relied entirely on
+   * the "no other action fired" fallback — WHICH A SPECIALISED ACTION
+   * SUPPRESSES.
+   *
+   * Reproduced by the reviewer: `PATCH {sensitive: true, sortOrder: 42}`
+   * returned 200, wrote 42 to the database, and logged only
+   * `sensitive_changed`. `42` appeared nowhere in the audit log. One request
+   * changing an inherited default while the log shows only a visibility
+   * toggle is the exact failure this task exists to prevent.
+   *
+   * The single-field cases above all passed throughout and would never have
+   * caught it — only the BUNDLED shape does.
+   */
+  it('still records a generic update row when a bundled patch also changes sortOrder, which the snapshot cannot see', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ sensitive: false, sortOrder: 1 })
+
+    await patch(definition.id, { sensitive: true, sortOrder: 42 }).expect(200)
+
+    const [stored] = await ctx.db
+      .select()
+      .from(attributeDefinitions)
+      .where(eq(attributeDefinitions.id, definition.id))
+    expect(stored.sortOrder).toBe(42)
+
+    const rows = await auditRowsFor(definition.id)
+    expect(rows.map((r) => r.action)).toEqual([
+      'attribute_definition:sensitive_changed',
+      'attribute_definition:update',
+    ])
+  })
+
+  it('still records a generic update row when a bundled patch also sets defaultValue', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ sensitive: false })
+
+    await patch(definition.id, { sensitive: true, defaultValue: 'bundled' }).expect(200)
+
+    const [stored] = await ctx.db
+      .select()
+      .from(attributeDefinitions)
+      .where(eq(attributeDefinitions.id, definition.id))
+    expect(stored.defaultValue).toBe('bundled')
+
+    const rows = await auditRowsFor(definition.id)
+    expect(rows.map((r) => r.action)).toEqual([
+      'attribute_definition:sensitive_changed',
+      'attribute_definition:update',
+    ])
+  })
+
+  it('still records a generic update row when a bundled patch deactivates AND changes sortOrder', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ isActive: true, sortOrder: 1 })
+
+    await patch(definition.id, { isActive: false, sortOrder: 7 }).expect(200)
+
+    const rows = await auditRowsFor(definition.id)
+    expect(rows.map((r) => r.action)).toEqual([
+      'attribute_definition:deactivate',
+      'attribute_definition:update',
+    ])
+  })
+
+  it('rejects a defaultValue the stored dataType could never accept, on the PATCH path too', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'number' })
+
+    const res = await patch(definition.id, { defaultValue: 'not-a-number' }).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+  })
+
+  it('accepts null to clear a default, which is not a value to type-check', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'number', defaultValue: 5 })
+
+    await patch(definition.id, { defaultValue: null }).expect(200)
+
+    const [stored] = await ctx.db
+      .select()
+      .from(attributeDefinitions)
+      .where(eq(attributeDefinitions.id, definition.id))
+    expect(stored.defaultValue).toBeNull()
   })
 })

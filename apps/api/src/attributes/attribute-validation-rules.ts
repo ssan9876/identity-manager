@@ -1,6 +1,11 @@
 import { z } from 'zod'
 import { ValidationError } from '../common/errors'
-import type { AttributeDataType, ValidationRules } from './attribute-validator'
+import {
+  type AttributeDataType,
+  type FieldSchemaSource,
+  type ValidationRules,
+  buildFieldSchema,
+} from './attribute-validator'
 import { ALL_ATTRIBUTE_FORMATS, describeAttributeFormats } from './attribute-formats'
 
 /**
@@ -189,4 +194,56 @@ export function assertValidationRulesMatchDataType(
         'where a numeric range rule has no effect',
     ])
   }
+}
+
+/**
+ * A default has to be a value its own definition would accept.
+ *
+ * Nothing checked this before: `defaultValue` is `jsonb`, and Task 7's DTO
+ * only constrains its SHAPE (a scalar, length-bounded, NUL-free — see that
+ * schema's own comment). Shape is not type. `{dataType: "number",
+ * defaultValue: "not-a-number"}` cleared every gate on the way in and stored
+ * happily, because the two fields were only ever validated apart.
+ *
+ * What that costs shows up later and somewhere else. A default is inherited
+ * by users who never set the attribute, so an impossible one produces a
+ * directory full of values that fail their own definition — surfacing as a
+ * 400 on the first unrelated PATCH of an innocent user's profile, naming an
+ * attribute that user never touched. The write that caused it succeeded,
+ * with a 201, days earlier. Refusing it at the definition write is the only
+ * place the error can still name the thing that is actually wrong.
+ *
+ * `buildFieldSchema` is REUSED rather than re-derived, for the reason its
+ * own doc comment gives about `assessImpact`: a second "would this value be
+ * valid" implementation is free to drift from the one that actually guards
+ * user writes, and a default that passes a laxer check than the values
+ * inheriting it is precisely the bug this function exists to prevent.
+ *
+ * `null` and `undefined` return early and mean different things, neither of
+ * them a value to type-check: `undefined` is "no default", and `null` on the
+ * PATCH path is "clear the default that was there" (see `SafeFieldPatch`).
+ *
+ * Note `buildFieldSchema` may THROW rather than return a schema — an `enum`
+ * with no `options`, a surviving `pattern` — for a definition that is itself
+ * misconfigured. That escapes this function deliberately: it is an
+ * `AttributeValidationError`, which extends `ValidationError`, so it still
+ * lands as a 400 naming the real problem instead of being flattened into a
+ * complaint about the default.
+ */
+export function assertDefaultValueMatchesDefinition(
+  defaultValue: unknown,
+  definition: FieldSchemaSource,
+): void {
+  if (defaultValue === undefined || defaultValue === null) return
+
+  const result = buildFieldSchema(definition).safeParse(defaultValue)
+  if (result.success) return
+
+  // Prefixed, because these issues come from a schema built for the
+  // attribute's own VALUES: unprefixed they read as complaints about a user's
+  // input ("Expected number, received string") with nothing saying the
+  // offending value is the default in the request body.
+  throw new ValidationError(
+    result.error.issues.map((issue) => `defaultValue: ${issue.message}`),
+  )
 }
