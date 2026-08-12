@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto'
 import { Inject, Injectable } from '@nestjs/common'
 import { and, asc, eq, gt, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import { AuditWriter, type DbHandle } from '../audit/audit.writer'
 import { DB_CLIENT } from '../common/db.token'
-import { NotFoundError, ValidationError } from '../common/errors'
+import { ConflictError, NotFoundError, ValidationError } from '../common/errors'
 import { attributeDefinitions } from '../db/schema/attribute-definitions'
 import * as schema from '../db/schema/index'
 import { users } from '../db/schema/users'
@@ -12,6 +13,17 @@ import {
   evaluateBlastRadius,
 } from '../outbox/target-reconciliation.job'
 import { type AttributeDataType, convertValue } from './attribute-conversion'
+// TYPE-ONLY, and it has to stay that way. The catalogue of this resource's
+// audit actions lives beside the other writers of it
+// (attribute-definitions.controller.ts) so there is one list to read, but
+// Task 10 wires that controller to THIS job as a value import — a value
+// import in this direction would close the cycle. `import type` is erased
+// entirely, so it cannot.
+import type { AuditAction } from './attribute-definitions.controller'
+import {
+  assertValidationRulesMatchDataType,
+  parseValidationRules,
+} from './attribute-validation-rules'
 
 /**
  * WHERE THE BLAST-RADIUS NUMBERS COME FROM — a decision Task 8 owed an
@@ -64,6 +76,18 @@ export const MAX_UNCONVERTIBLE_SAMPLE = 50
 
 /** Internal page size for the population walk — not a client-facing limit; nothing a caller passes can change it. */
 const PAGE_SIZE = 200
+
+/**
+ * The same `audit_log.resource_type` the controller's own writes use — a
+ * migration is one more thing that happened to this definition, and an
+ * auditor asking "what has been done to salary_band?" must get all of it from
+ * one `WHERE resource_type = 'attribute_definition' AND resource_id = $1`.
+ *
+ * A literal rather than an import of the controller's `RESOURCE_TYPE`, for
+ * the reason the `AuditAction` import above gives: only the TYPE can cross
+ * that edge without closing a runtime cycle once Task 10 lands.
+ */
+const RESOURCE_TYPE = 'attribute_definition'
 
 /**
  * The change being previewed. Both fields are optional and at least one must
@@ -156,9 +180,27 @@ export interface PlannedAttributeChange {
   after: string | number | boolean
 }
 
+/**
+ * What `commit` is asked to do, over and above naming the change.
+ *
+ * `force` OVERRIDES THE BLAST-RADIUS REFUSAL AND NOTHING ELSE. "This many
+ * rows is more than I expected" is a judgement an operator can legitimately
+ * overrule — they may know the migration is meant to be total. "This value
+ * cannot survive the conversion" is not a judgement at all, and overruling it
+ * would mean deciding to destroy the value; the same goes for the refusals
+ * that exist to keep values out of the audit log or out of an orphaned scope.
+ * Every one of those is checked WITHOUT consulting `force`.
+ */
+export interface AttributeMigrationCommitOptions {
+  force?: boolean
+  actorUserId: string
+}
+
 interface AttributeMigrationPlan {
   report: AttributeMigrationReport
   changes: PlannedAttributeChange[]
+  /** The resolved destination — what `change` means once merged with the definition it applies to. Internal, so that `commit` does not re-derive (and so cannot disagree with) what the walk actually planned against. */
+  target: { dataType: AttributeDataType; appliesTo: 'user' | 'group'; options: string[] | undefined }
 }
 
 /**
@@ -203,7 +245,10 @@ type ReadHandle = Pick<NodePgDatabase<typeof schema>, 'select'>
  */
 @Injectable()
 export class AttributeMigrationJob {
-  constructor(@Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>) {}
+  constructor(
+    @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
+    @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
+  ) {}
 
   async preview(
     definitionId: string,
@@ -211,6 +256,207 @@ export class AttributeMigrationJob {
   ): Promise<AttributeMigrationReport> {
     const { report } = await this.plan(this.db, definitionId, change)
     return report
+  }
+
+  /**
+   * Milestone 8, Task 9 — APPLY the change `preview` reported, in one
+   * transaction, or apply none of it.
+   *
+   * THE PREVIEW HASH IS THE AUTHORISATION, and the check is not a formality:
+   * the plan is RE-DERIVED here, inside the writing transaction, and the hash
+   * compared against that re-derivation rather than against anything the
+   * caller carried in. A hash that no longer matches means the definition,
+   * the change, or one of the values this migration is about to overwrite has
+   * moved since a human read the report — so the report they approved is not
+   * the migration they would get, and the only safe answer is to make them
+   * look again.
+   *
+   * THE ORDER OF THE REFUSALS is deliberate. First the two that no
+   * authorisation can cure (a sensitive definition, a scope move), because
+   * neither depends on the population and both should refuse before this job
+   * pulls values it must not hold; then the hash, because everything after it
+   * is a statement about a plan the caller has to be authorised for at all;
+   * then the data refusals; then the blast radius, which is last because it
+   * is the only one `force` may answer.
+   *
+   * WHAT `force` MAY AND MAY NOT DO — see `AttributeMigrationCommitOptions`.
+   * Note that `force` is checked in exactly ONE place in this method. It is
+   * not passed down, not consulted by a helper, and cannot widen anything
+   * else by accident.
+   *
+   * THE ROW LOCK is taken on the definition before anything is read, for the
+   * reason `AttributeDefinitionsRepository.findByIdForUpdate` gives about its
+   * own PATCH path: a concurrent `PATCH` of this definition's enum options or
+   * default is a legal safe-field edit that changes what this migration
+   * MEANS, and under READ COMMITTED it could otherwise commit between the
+   * re-derivation and the write.
+   */
+  async commit(
+    definitionId: string,
+    change: AttributeMigrationChange,
+    previewHash: string,
+    opts: AttributeMigrationCommitOptions,
+  ): Promise<AttributeMigrationReport> {
+    return this.db.transaction(async (tx) => {
+      const [definition] = await tx
+        .select()
+        .from(attributeDefinitions)
+        .where(eq(attributeDefinitions.id, definitionId))
+        .for('update')
+        .limit(1)
+      if (definition === undefined) throw new NotFoundError('attribute definition', definitionId)
+
+      assertNotSensitive(definition)
+      assertScopeStays(definition, change)
+
+      const { report, changes, target } = await this.plan(tx, definitionId, change)
+
+      if (report.previewHash !== previewHash) {
+        throw new ConflictError(
+          'the preview hash does not authorise this migration: the definition, the change, or a ' +
+            'value this migration would overwrite has moved since that preview was taken. Take a ' +
+            'fresh preview, read it, and commit that one — the hash is what keeps the report an ' +
+            'operator approved and the migration that actually runs the same event.',
+        )
+      }
+
+      if (report.unconvertible.length > 0) {
+        throw new ValidationError([
+          `${report.unconvertible.length} of ${report.populationSize} stored values cannot be ` +
+            'converted, so this migration would destroy them. Fix or clear them first; force ' +
+            'does not override this, because refusing is the only thing standing between an ' +
+            'unreadable value and no value at all:',
+          ...report.unconvertible.map((entry) => `user ${entry.userId}: ${entry.reason}`),
+        ])
+      }
+
+      const defaultValue = convertDefaultValue(definition, target)
+      assertRulesSurviveDataType(definition, target)
+
+      if (report.blastRadius.tripped && opts.force !== true) {
+        throw new ValidationError([
+          `this migration would rewrite ${report.blastRadius.changedCount} of ` +
+            `${report.blastRadius.populationSize} stored values, past both the ` +
+            `${report.blastRadius.thresholdPercent}% threshold and the floor of ` +
+            `${report.blastRadius.floor}. Re-issue it with force to override — the override is ` +
+            'recorded in the audit row.',
+        ])
+      }
+
+      for (const planned of changes) {
+        await this.applyOne(tx, definition.key, planned)
+      }
+
+      await tx
+        .update(attributeDefinitions)
+        .set({
+          dataType: target.dataType,
+          appliesTo: target.appliesTo,
+          defaultValue,
+          updatedAt: new Date(),
+        })
+        .where(eq(attributeDefinitions.id, definitionId))
+
+      // THE ROW THAT MAKES THIS REVERSIBLE. A dataType migration overwrites
+      // values IN PLACE and leaves no copy anywhere else in this system, so
+      // `before.values` is the ONLY record of what every affected user held —
+      // paired with `after.values`, it is a replayable undo. It carries the
+      // holders this migration actually CHANGED, which is exactly the set an
+      // undo has to touch.
+      //
+      // Values in `audit_log` is precisely what finding SEC-M1 is about,
+      // which is why `assertNotSensitive` runs first and why it is not
+      // forceable: this row is written only for a definition whose values the
+      // audit log is already allowed to see (it sees them on every ordinary
+      // user create/update), never for one whose values it has been told to
+      // withhold.
+      await this.auditWriter.record(tx, {
+        actorUserId: opts.actorUserId,
+        action: 'attribute_definition:migrate' satisfies AuditAction,
+        resourceType: RESOURCE_TYPE,
+        resourceId: definitionId,
+        before: {
+          definition: {
+            id: definition.id,
+            key: definition.key,
+            dataType: definition.dataType,
+            appliesTo: definition.appliesTo,
+            defaultValue: definition.defaultValue,
+          },
+          values: changes.map((planned) => ({ userId: planned.userId, value: planned.before })),
+        },
+        after: {
+          definition: {
+            id: definition.id,
+            key: definition.key,
+            dataType: target.dataType,
+            appliesTo: target.appliesTo,
+            defaultValue,
+          },
+          values: changes.map((planned) => ({ userId: planned.userId, value: planned.after })),
+          populationSize: report.populationSize,
+          changedCount: report.changedCount,
+          // An overridden migration and an ordinary one are not the same
+          // event. Task 8 declined to add a tunable threshold column partly
+          // because this — an override that names itself in the log — already
+          // exists; that argument is only true if it is actually recorded.
+          forced: opts.force === true && report.blastRadius.tripped,
+          previewHash,
+        },
+      })
+
+      return report
+    })
+  }
+
+  /**
+   * One holder's value, rewritten in place — and REFUSED if the value moved
+   * out from under the plan.
+   *
+   * The `WHERE` carries the before-value, so this UPDATE only lands on a row
+   * that still holds exactly what the walk planned against. The walk is a
+   * plain `SELECT` (it is shared with `preview`, which must not lock the
+   * directory), so under READ COMMITTED a concurrent self-service edit can
+   * commit between the walk and this statement — and without the guard the
+   * migration would convert, and destroy, the value it never saw. No match
+   * means no update, which aborts the whole transaction rather than skipping
+   * a row: a partially applied migration whose audit row claims otherwise is
+   * worse than a refusal.
+   *
+   * `jsonb_set` rather than writing the whole bag back: every OTHER key in
+   * that user's attributes belongs to a definition this migration has nothing
+   * to do with, and rewriting the bag wholesale would silently revert a
+   * concurrent edit to any of them.
+   */
+  private async applyOne(
+    tx: DbHandle,
+    key: string,
+    planned: PlannedAttributeChange,
+  ): Promise<void> {
+    const before = JSON.stringify(planned.before) ?? 'null'
+    const after = JSON.stringify(planned.after)
+
+    const updated = await tx
+      .update(users)
+      .set({
+        attributes: sql`jsonb_set(${users.attributes}, ARRAY[${key}::text], ${after}::jsonb, false)`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(users.id, planned.userId),
+          sql`${users.attributes} -> ${key}::text IS NOT DISTINCT FROM ${before}::jsonb`,
+        ),
+      )
+      .returning({ id: users.id })
+
+    if (updated.length === 0) {
+      throw new ConflictError(
+        `user ${planned.userId} no longer holds the value this migration planned to convert for ` +
+          `"${key}" — it changed while the migration was running. Nothing has been applied; take ` +
+          'a fresh preview.',
+      )
+    }
   }
 
   /**
@@ -333,6 +579,7 @@ export class AttributeMigrationJob {
         previewHash: hash.digest('hex'),
       },
       changes,
+      target: { dataType: toDataType, appliesTo: toAppliesTo, options },
     }
   }
 
@@ -395,6 +642,165 @@ export class AttributeMigrationJob {
  * `convertValue` refuse every value with a reason an operator can act on
  * instead of silently accepting whatever survived a cast.
  */
+/** The definition row as `commit` reads it back — narrowed to the fields the refusals below need, so they cannot quietly start depending on more. */
+type CommittableDefinition = Pick<
+  typeof attributeDefinitions.$inferSelect,
+  'key' | 'dataType' | 'appliesTo' | 'sensitive' | 'defaultValue' | 'validationRules'
+>
+
+/**
+ * A `sensitive` definition is NOT migrated. The tension this task had to
+ * settle, settled in favour of destroying nothing.
+ *
+ * Task 9 requires the affected users' prior values in the audit row, because
+ * a `dataType` migration overwrites them in place and that row is the only
+ * thing that makes it reversible. `sensitive` is the flag that says this
+ * attribute's values must never be copied into `audit_log` — finding SEC-M1,
+ * whose whole point is that the table's UPDATE/DELETE/TRUNCATE are blocked by
+ * both privilege and trigger, so a value written there is written forever.
+ * The two requirements are in direct conflict, and there were three ways out:
+ *
+ *  1. write the values anyway — reintroduces SEC-M1 permanently, through the
+ *     one door `sensitive` exists to close, for the attributes most likely to
+ *     matter;
+ *  2. migrate but redact the row — the migration still overwrites every
+ *     value, and the record that could have undone it says `[redacted]`. That
+ *     makes the MOST sensitive data in the directory the ONLY data with an
+ *     irreversible migration path;
+ *  3. refuse.
+ *
+ * Refusing is the only one of the three that destroys nothing, and the
+ * capability is not actually lost: `sensitive` is a safe field, so an admin
+ * who wants this migration turns it off with a `PATCH` — which is itself
+ * recorded, under its own action `attribute_definition:sensitive_changed`,
+ * exactly so that "why did salary_band go dark on the 4th?" is answerable —
+ * migrates, and turns it back on. THE COST is real and worth stating: during
+ * that window the attribute's values land in ordinary user audit rows as
+ * well as this migration's, so the operator has traded a permanent leak for a
+ * bounded one they had to ask for twice, in the open.
+ *
+ * Not forceable. `force` is the blast-radius override; see
+ * `AttributeMigrationCommitOptions`.
+ */
+function assertNotSensitive(definition: CommittableDefinition): void {
+  if (!definition.sensitive) return
+
+  throw new ValidationError([
+    `attribute definition "${definition.key}" is marked sensitive, and a migration is only ` +
+      'reversible because its audit row carries every affected user’s prior value — which is ' +
+      'exactly what this flag forbids writing to audit_log (finding SEC-M1), a table whose rows ' +
+      'can never be edited or removed. Recording a redacted row instead would overwrite those ' +
+      'values with no way back at all. To migrate this attribute, turn sensitive off first ' +
+      '(PATCH, itself recorded as attribute_definition:sensitive_changed), migrate, then turn it ' +
+      'back on. force does not override this — it overrides the blast-radius refusal alone.',
+  ])
+}
+
+/**
+ * A migration may change `dataType`. It may NOT move the definition between
+ * user and group scope.
+ *
+ * `appliesTo` decides which table's attribute bag a definition's values live
+ * in. This job converts values in `users.attributes`, so a commit that also
+ * moved the definition to group scope would leave every value it had just
+ * rewritten sitting where the definition no longer reads — converted,
+ * overwritten, and orphaned in one statement. That is the same asymmetry
+ * `plan` refuses from the other side (a group-scoped definition has no
+ * population here at all); this is the door on the other end of the same
+ * corridor.
+ *
+ * `preview` still reports a scope change, and deliberately so: the report is
+ * how an operator finds out how many values such a change would strand.
+ * Nothing is lost by refusing it only at the point where it would be written.
+ */
+function assertScopeStays(
+  definition: CommittableDefinition,
+  change: AttributeMigrationChange,
+): void {
+  const toAppliesTo = change.appliesTo ?? definition.appliesTo
+  if (toAppliesTo === definition.appliesTo) return
+
+  throw new ValidationError([
+    `migrating "${definition.key}" from ${definition.appliesTo} to ${toAppliesTo} scope is not ` +
+      'supported: appliesTo decides which table holds this definition’s values, so every value ' +
+      'this migration converted in users.attributes would be orphaned where nothing reads it. ' +
+      'Create a definition in the scope you want and migrate onto it instead.',
+  ])
+}
+
+/**
+ * The definition's OWN stored default, carried across by the same rule as
+ * every user's value.
+ *
+ * A default is a value of its own attribute — every user who never sets one
+ * inherits it — so leaving it behind as a `string` under `dataType: number`
+ * produces a directory of inherited values that fail their own definition,
+ * surfacing later as a 400 on an innocent PATCH of a user who never touched
+ * the attribute (the failure mode
+ * `assertDefaultValueMatchesDefinition` was written to prevent). It goes
+ * through `convertValue`, not a second rule, and an unconvertible default
+ * refuses the migration exactly as an unconvertible user value does.
+ */
+function convertDefaultValue(
+  definition: CommittableDefinition,
+  target: { dataType: AttributeDataType; options: string[] | undefined },
+): unknown {
+  if (definition.defaultValue === null || definition.defaultValue === undefined) {
+    return definition.defaultValue ?? null
+  }
+
+  const converted = convertValue(
+    definition.defaultValue,
+    definition.dataType,
+    target.dataType,
+    target.options,
+  )
+  if (converted.ok) return converted.value
+
+  throw new ValidationError([
+    `defaultValue: this definition's own default cannot be carried across — ${converted.reason}. ` +
+      'A default is a value of its own attribute, inherited by every user who never sets one, so ' +
+      'it has to survive the conversion too. Clear or correct it (PATCH), then re-preview.',
+  ])
+}
+
+/**
+ * The definition's stored `validationRules` must mean something under the new
+ * `dataType`.
+ *
+ * `assertValidationRulesMatchDataType`'s own doc comment names this job as
+ * the one place `dataType` moves and says it "will need its own handling of
+ * `validationRules` when it lands, not a carve-out here". This is that
+ * handling, and it reuses that function rather than restating the pairing: a
+ * `minLength` on an attribute that is about to become a number is a rule that
+ * can never fire again, and leaving it behind means the next admin who edits
+ * that definition is refused by a rule this migration wrote.
+ *
+ * REFUSED rather than silently dropped. Dropping a validation rule is
+ * removing a constraint on user input, which is not a decision a data
+ * migration gets to make on an admin's behalf; both fields it complains about
+ * are safe fields, so the remedy is one `PATCH` away.
+ */
+function assertRulesSurviveDataType(
+  definition: CommittableDefinition,
+  target: { dataType: AttributeDataType },
+): void {
+  try {
+    assertValidationRulesMatchDataType(
+      parseValidationRules(definition.validationRules ?? undefined),
+      target.dataType,
+    )
+  } catch (error) {
+    if (!(error instanceof ValidationError)) throw error
+    throw new ValidationError([
+      ...error.issues,
+      `validationRules: PATCH "${definition.key}" to remove the rules that do not apply to ` +
+        `dataType "${target.dataType}", then re-preview. A migration does not drop a validation ` +
+        'rule on an admin’s behalf.',
+    ])
+  }
+}
+
 function readEnumOptions(validationRules: Record<string, unknown> | null): string[] | undefined {
   const raw = validationRules === null ? undefined : validationRules.options
   if (!Array.isArray(raw)) return undefined

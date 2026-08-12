@@ -151,11 +151,30 @@ function assertNoImmutableField(body: unknown): void {
 
 const RESOURCE_TYPE = 'attribute_definition'
 
-type AuditAction =
+/**
+ * Every audit action written against an `attribute_definition`, in ONE list.
+ *
+ * Exported because Milestone 8 Task 9's migration job writes one of them
+ * (`:migrate`) from outside this file, and a second, private list over there
+ * would be a catalogue free to drift from this one — an auditor reading
+ * `action LIKE 'attribute_definition:%'` has to be able to learn the whole
+ * vocabulary from a single place. The job imports it with `import type`
+ * specifically, so that Task 10 wiring this controller TO that job does not
+ * close a runtime import cycle; see that import's own comment.
+ *
+ * `:migrate` is the one action here that does not describe an edit to the
+ * definition ROW alone — it also rewrites values in `users.attributes`, and
+ * its `before` carries those values so the rewrite can be undone. That is
+ * also why it is refused outright for a `sensitive` definition rather than
+ * written redacted; the reasoning lives with the refusal, in
+ * `assertNotSensitive`.
+ */
+export type AuditAction =
   | 'attribute_definition:create'
   | 'attribute_definition:update'
   | 'attribute_definition:sensitive_changed'
   | 'attribute_definition:deactivate'
+  | 'attribute_definition:migrate'
 
 /**
  * What goes into `audit_log.before`/`after` for a definition.
