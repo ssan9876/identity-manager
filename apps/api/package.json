@@ -16,6 +16,7 @@
     "reconcile": "tsx --env-file-if-exists=../../.env src/outbox/reconcile-cli.ts",
     "target-reconcile": "tsx --env-file-if-exists=../../.env src/outbox/target-reconcile-cli.ts",
     "role-reconcile": "tsx --env-file-if-exists=../../.env src/business-roles/role-reconcile-cli.ts",
+    "attribute-migrate": "tsx --env-file-if-exists=../../.env src/attributes/attribute-migrate-cli.ts",
     "jml:lifecycle": "tsx --env-file-if-exists=../../.env src/jml/lifecycle-cli.ts",
     "hr:sync": "tsx --env-file-if-exists=../../.env src/hr/hr-sync-cli.ts",
     "activate": "tsx --env-file-if-exists=../../.env src/users/bulk-activate-cli.ts",

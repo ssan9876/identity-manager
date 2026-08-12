@@ -1,4 +1,17 @@
-import { Body, Controller, Get, Inject, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Inject,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
 import { AuditWriter } from '../audit/audit.writer'
@@ -13,6 +26,14 @@ import { parseId } from '../common/http/parse-id'
 import { noNulChar } from '../common/http/safe-string'
 import * as schema from '../db/schema/index'
 import { AttributeDefinitionsRepository } from './attribute-definitions.repository'
+// A VALUE import, and the one direction this edge may run in: the job imports
+// this file's `AuditAction` with `import type` precisely so that wiring the
+// controller to the job here cannot close a runtime cycle. See that import's
+// own comment before turning it into a value import.
+import {
+  AttributeMigrationJob,
+  type AttributeMigrationReport,
+} from './attribute-migration.job'
 import { parseValidationRules } from './attribute-validation-rules'
 import type { AttributeDefinition } from './attribute-validator'
 
@@ -99,6 +120,50 @@ const patchBodySchema = z
   .strict()
 
 /**
+ * The change a migration names — the SAME two fields `SafeFieldPatch`
+ * excludes by construction and `IMMUTABLE_THROUGH_PATCH` refuses by name,
+ * arriving here instead. Both optional; the job refuses a change that names
+ * neither, and that refusal stays THERE rather than being restated as a
+ * `.refine()` here, so the CLI and the console cannot be told a different
+ * story from the route.
+ */
+const migrationChangeSchema = z.object({
+  dataType: dataTypeSchema.optional(),
+  appliesTo: appliesToSchema.optional(),
+})
+
+const previewBodySchema = migrationChangeSchema.strict()
+
+/**
+ * A commit is a preview plus its authorisation.
+ *
+ * `previewHash` IS REQUIRED, and that is the whole two-phase design in one
+ * line of schema: a commit carrying no hash is a migration nobody previewed,
+ * and making the field optional would hand every caller a way to rewrite
+ * `users.attributes` directory-wide without a human ever reading the report.
+ * Refused here, in the DTO, before the job is reached and before a single
+ * user row is read.
+ *
+ * Bounded but NOT format-checked. The digest's shape belongs to the job that
+ * mints it; a second regex here would be a second place that knows how the
+ * hash is built, free to drift. A well-formed-but-stale hash and a garbage
+ * one both reach `commit`, which answers with the one explanation that says
+ * what to do next (`ConflictError` → 409). `.max` only keeps an unbounded
+ * string out of the SHA comparison.
+ *
+ * `force` overrides the blast-radius refusal AND NOTHING ELSE — see
+ * `AttributeMigrationCommitOptions`. It is passed straight through; this
+ * controller does not interpret it.
+ */
+const MAX_PREVIEW_HASH_LENGTH = 256
+const commitBodySchema = migrationChangeSchema
+  .extend({
+    previewHash: z.string().min(1).max(MAX_PREVIEW_HASH_LENGTH),
+    force: z.boolean().optional(),
+  })
+  .strict()
+
+/**
  * The three fields a PATCH may never carry, and what to do instead.
  *
  * `.strict()` above already rejects all three — they are simply not declared
@@ -110,18 +175,39 @@ const patchBodySchema = z
  *
  * All three are absent from `SafeFieldPatch` BY CONSTRUCTION (Task 5), not by
  * this check — this is the message, not the enforcement.
+ *
+ * THE TWO MIGRATION MESSAGES NAME THE REAL PATHS, as of Milestone 8 Task 10.
+ * Task 7 wrote them deliberately URL-free, because Tasks 8-10 had not chosen
+ * a path yet and a stale URL inside a 400 is worse than none — and paid for
+ * that by planting an obligation in `test/guard-coverage.spec.ts` ("names the
+ * real preview/commit path in the dataType refusal once that route exists")
+ * that fails the moment a route containing `preview` or `commit` is
+ * registered under this controller's base path and this text does not name
+ * it. If a path here is ever renamed, that test is what says so; do not
+ * satisfy it by weakening the assertion.
+ *
+ * The old text also closed with "Until that lands, create a new definition
+ * with the type you want", which the migration route makes ACTIVELY FALSE —
+ * it would send an admin off to create a duplicate attribute and strand every
+ * value already stored under the original key. The replacement says the
+ * opposite, and why.
  */
 export const IMMUTABLE_THROUGH_PATCH: Readonly<Record<string, string>> = {
   dataType:
     'dataType: cannot be changed through PATCH. Changing an attribute’s data type rewrites ' +
-    'every value already stored under it in users.attributes, so it goes through the attribute ' +
-    'migration route instead: preview the conversion (which reports every value that would not ' +
-    'survive it) and then commit it. Until that lands, create a new definition with the type you ' +
-    'want.',
+    'every value already stored under it in users.attributes, so it goes through the two-phase ' +
+    'migration route instead: POST /attribute-definitions/:id/preview reports every value that ' +
+    'would not survive the conversion, together with the blast radius and a preview hash, and ' +
+    'POST /attribute-definitions/:id/commit applies exactly that previewed migration when handed ' +
+    'that hash. Do not create a second definition with the type you want: the migration carries ' +
+    'the stored values across and records the prior ones, so it is reversible, while a duplicate ' +
+    'definition strands every existing value under the old key.',
   appliesTo:
     'appliesTo: cannot be changed through PATCH. A definition’s entity type decides which table’s ' +
-    'attribute bag its values live in, so moving it rewrites stored values exactly as a dataType ' +
-    'change does — same preview-then-commit migration route, never an ordinary edit.',
+    'attribute bag its values live in, so moving it strands every value already written, exactly ' +
+    'as a dataType change rewrites them. POST /attribute-definitions/:id/preview will report how ' +
+    'many values a scope move would strand, but the commit half refuses to apply one — create a ' +
+    'definition in the scope you want and migrate onto that instead.',
   key:
     'key: an attribute definition’s key is immutable. Every value already written lives in ' +
     'users.attributes under this exact key, so renaming the definition orphans all of them, and ' +
@@ -355,6 +441,7 @@ export class AttributeDefinitionsController {
     @Inject(PermissionEngine) private readonly engine: PermissionEngine,
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
+    @Inject(AttributeMigrationJob) private readonly migrations: AttributeMigrationJob,
   ) {}
 
   /**
@@ -519,5 +606,97 @@ export class AttributeDefinitionsController {
 
       return after
     })
+  }
+
+  /**
+   * Milestone 8, Task 10 — the READ half of the migration route.
+   * `AttributeMigrationJob.preview` walks every holder of this definition's
+   * key and reports what a `dataType`/`appliesTo` change would do to their
+   * stored values, WITHOUT writing anything.
+   *
+   * POST, not GET, for two reasons that both matter here. The change being
+   * previewed is a structured body, not a query string — and more
+   * importantly, a GET is the shape of a thing that is cached, logged with
+   * its full URL, prefetched by a browser and retried by a proxy, none of
+   * which should happen to a directory-wide walk over stored attribute
+   * values. `@HttpCode(OK)` because 201 would claim something was created;
+   * same pair, and the same reasoning, as `ImportsController.preview`.
+   *
+   * `attribute:manage`, NOT `attribute:read`, and that is deliberate. This
+   * route returns a sample of real values out of `users.attributes` — it is
+   * a read of PEOPLE'S DATA reached through a schema route, and it is the
+   * first half of a write, so it is gated as the write it belongs to. Gating
+   * it on `attribute:read` would hand `auditor` and `read_only` a
+   * directory-wide attribute-value dump they hold no other route to.
+   *
+   * A GLOBAL grant, via `requireGlobalManageGrant`, for the reason that
+   * method spells out — and the exposure is starker here than on
+   * POST/PATCH: the walk crosses every org unit in the deployment, so an
+   * org-unit-scoped `super_admin` would read values out of subtrees they get
+   * a 403 merely listing.
+   *
+   * What this route may say about a `sensitive` definition is the job's
+   * decision, not this controller's — see `REDACTED_SENSITIVE_VALUE`. The
+   * redaction lives there so the CLI and the console cannot get a laxer
+   * answer than this route does.
+   */
+  @Post(':id/preview')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('attribute:manage')
+  async previewMigration(
+    @Param('id') rawId: string,
+    @Body() body: unknown,
+    @Req() request: AuthorizedRequest,
+  ): Promise<AttributeMigrationReport> {
+    await this.requireGlobalManageGrant(request)
+    const id = parseId(rawId)
+    const parsed = parseBody(previewBodySchema, body)
+
+    return this.migrations.preview(id, {
+      dataType: parsed.dataType,
+      appliesTo: parsed.appliesTo,
+    })
+  }
+
+  /**
+   * Milestone 8, Task 10 — the WRITE half. Applies exactly the migration a
+   * preview reported, or none of it.
+   *
+   * NO TRANSACTION HERE, and no audit write here either, unlike `create` and
+   * `update` above: `AttributeMigrationJob.commit` opens its own
+   * transaction, takes the definition's row lock, RE-DERIVES the plan inside
+   * it, and writes its own audit row from that same read. Wrapping it in a
+   * second transaction from this controller would not add a guarantee — it
+   * would move the lock acquisition away from the re-derivation it exists to
+   * protect. This method's whole job is authorisation, validation and
+   * attribution.
+   *
+   * `previewHash` comes off the DTO, which requires it — a commit with no
+   * hash is refused as a 400 before this method's body runs. Everything
+   * after that is the job's: a hash that no longer matches the re-derived
+   * plan is a `ConflictError` (409), each data refusal is a
+   * `ValidationError` (400), and all of them reach the client through
+   * `DomainExceptionFilter` unmodified. This controller re-implements none
+   * of them, and must not: a refusal restated here is a refusal free to
+   * disagree with the one the CLI gets.
+   */
+  @Post(':id/commit')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('attribute:manage')
+  async commitMigration(
+    @Param('id') rawId: string,
+    @Body() body: unknown,
+    @Req() request: AuthorizedRequest,
+  ): Promise<AttributeMigrationReport> {
+    await this.requireGlobalManageGrant(request)
+    const id = parseId(rawId)
+    const parsed = parseBody(commitBodySchema, body)
+
+    return this.migrations.commit(
+      id,
+      { dataType: parsed.dataType, appliesTo: parsed.appliesTo },
+      parsed.previewHash,
+      { force: parsed.force, actorUserId: request.actor.userId },
+    )
   }
 }

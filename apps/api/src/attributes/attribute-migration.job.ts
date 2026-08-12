@@ -74,6 +74,63 @@ export const ATTRIBUTE_MIGRATION_FLOOR = 5
  */
 export const MAX_UNCONVERTIBLE_SAMPLE = 50
 
+/**
+ * WHAT A PREVIEW OF A `sensitive` DEFINITION MAY SAY OUT LOUD — Milestone 8,
+ * Task 10's own decision, left to it by Task 9.
+ *
+ * `report.unconvertible` carries values read straight out of
+ * `users.attributes`. For a `sensitive: true` definition those are exactly
+ * the values finding SEC-M1 is about: `sensitive` exists to keep them out of
+ * `audit_log`, and `commit` refuses such a definition outright for that
+ * reason. A preview that hands the same values back over HTTP — into a
+ * browser, and into whatever reverse proxy or console log sits in front of it
+ * — walks them out through a different door, so `preview` withholds them.
+ *
+ * BOTH FIELDS GO, and that is the non-obvious half. Redacting `value` alone
+ * would be a fig leaf: `convertValue`'s reasons QUOTE the value they refused
+ * (`"92000 GBP" is not a plain decimal number`), so `reason` is a second,
+ * verbatim copy of the same string. `userId` stays — a user id is not the
+ * attribute's value, and without it the report names nothing an operator can
+ * go and fix.
+ *
+ * NOT A REFUSAL. The preview itself stays available for a sensitive
+ * definition, deliberately: it is how an operator learns HOW MANY values
+ * would not survive, before starting the turn-sensitive-off / migrate /
+ * turn-it-back-on procedure `assertNotSensitive` describes. The counts, the
+ * blast radius and the hash are all value-free and all survive intact.
+ *
+ * Applied in `preview` rather than in the HTTP layer so that EVERY caller
+ * gets it — the route, the CLI, and Task 11's console. Whether a value may be
+ * handed out is a property of the DEFINITION, not of which door the request
+ * came through, and a per-caller redaction is the one the next caller
+ * forgets.
+ */
+export const REDACTED_SENSITIVE_VALUE = '[redacted: sensitive attribute]'
+export const REDACTED_SENSITIVE_REASON =
+  'redacted: this definition is marked sensitive, and the conversion failure reason quotes the ' +
+  'value it could not convert. The population and change counts are exact, and the user ids name ' +
+  'every holder to inspect — read the value itself through the ordinary, scoped and audited user ' +
+  'read path.'
+
+/**
+ * Strips every stored value out of a report's unconvertible sample, keeping
+ * the holder ids and every count. Total by construction: there is no branch
+ * in which a value survives, and the sample is bounded by
+ * `MAX_UNCONVERTIBLE_SAMPLE` so the rebuild is cheap.
+ */
+function redactUnconvertibleSample(report: AttributeMigrationReport): AttributeMigrationReport {
+  if (report.unconvertible.length === 0) return report
+
+  return {
+    ...report,
+    unconvertible: report.unconvertible.map((entry) => ({
+      userId: entry.userId,
+      value: REDACTED_SENSITIVE_VALUE,
+      reason: REDACTED_SENSITIVE_REASON,
+    })),
+  }
+}
+
 /** Internal page size for the population walk — not a client-facing limit; nothing a caller passes can change it. */
 const PAGE_SIZE = 200
 
@@ -199,6 +256,8 @@ export interface AttributeMigrationCommitOptions {
 interface AttributeMigrationPlan {
   report: AttributeMigrationReport
   changes: PlannedAttributeChange[]
+  /** The definition's `sensitive` flag, carried out of the one read `plan` already does — so `preview` can decide what the report may say without a second query. `commit` ignores it; it has already refused on it. */
+  sensitive: boolean
   /** The resolved destination — what `change` means once merged with the definition it applies to. Internal, so that `commit` does not re-derive (and so cannot disagree with) what the walk actually planned against. */
   target: { dataType: AttributeDataType; appliesTo: 'user' | 'group'; options: string[] | undefined }
 }
@@ -250,12 +309,23 @@ export class AttributeMigrationJob {
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
   ) {}
 
+  /**
+   * The report, with a `sensitive` definition's stored values withheld from
+   * the unconvertible sample — see `REDACTED_SENSITIVE_VALUE` for why that
+   * happens HERE rather than at each caller, and why the reason string is
+   * redacted alongside the value.
+   *
+   * `commit` deliberately does NOT go through this method: it consumes
+   * `plan` directly, and it refuses a sensitive definition outright
+   * (`assertNotSensitive`) before the population is walked at all, so its
+   * own refusal messages and audit row are unaffected by this redaction.
+   */
   async preview(
     definitionId: string,
     change: AttributeMigrationChange,
   ): Promise<AttributeMigrationReport> {
-    const { report } = await this.plan(this.db, definitionId, change)
-    return report
+    const { report, sensitive } = await this.plan(this.db, definitionId, change)
+    return sensitive ? redactUnconvertibleSample(report) : report
   }
 
   /**
@@ -579,6 +649,7 @@ export class AttributeMigrationJob {
         previewHash: hash.digest('hex'),
       },
       changes,
+      sensitive: definition.sensitive,
       target: { dataType: toDataType, appliesTo: toAppliesTo, options },
     }
   }

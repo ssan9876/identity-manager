@@ -1,12 +1,13 @@
 import { type CanActivate, type ExecutionContext, type INestApplication } from '@nestjs/common'
 import { Reflector } from '@nestjs/core'
 import { Test } from '@nestjs/testing'
-import { and, asc, eq } from 'drizzle-orm'
+import { and, asc, eq, inArray } from 'drizzle-orm'
 import request from 'supertest'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { AttributeDefinitionsController } from '../src/attributes/attribute-definitions.controller'
 import { AttributeDefinitionsRepository } from '../src/attributes/attribute-definitions.repository'
+import { AttributeMigrationJob } from '../src/attributes/attribute-migration.job'
 import { ATTRIBUTE_PREFIX } from '../src/business-roles/role-evaluator'
 import { AuditWriter } from '../src/audit/audit.writer'
 import { JwtGuard } from '../src/auth/jwt.guard'
@@ -19,6 +20,7 @@ import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { attributeDefinitions } from '../src/db/schema/attribute-definitions'
 import { auditLog } from '../src/db/schema/audit-log'
 import { businessRoleConditions, businessRoles } from '../src/db/schema/business-roles'
+import { users } from '../src/db/schema/users'
 import { OrganizationsRepository } from '../src/organizations/organizations.repository'
 import { OrgUnitsRepository, type OrgUnit } from '../src/org-units/org-units.repository'
 import { UsersRepository } from '../src/users/users.repository'
@@ -54,6 +56,7 @@ beforeAll(async () => {
     providers: [
       { provide: DB_CLIENT, useFactory: () => ctx.db },
       AttributeDefinitionsRepository,
+      AttributeMigrationJob,
       AuditWriter,
       PermissionEngine,
       PermissionGuard,
@@ -889,5 +892,372 @@ describe('PATCH /attribute-definitions/:id (Milestone 8, Task 7)', () => {
       .from(attributeDefinitions)
       .where(eq(attributeDefinitions.id, definition.id))
     expect(stored.defaultValue).toBeNull()
+  })
+})
+
+/**
+ * MILESTONE 8, TASK 10 — the migration over HTTP.
+ *
+ * Tasks 8 and 9 built and proved the job itself (attribute-migration.spec.ts
+ * owns its refusals, its hash and its reversibility). Nothing here re-tests
+ * those. What is new, and only testable here, is the SURFACE: who may reach
+ * the two halves at all, that the preview hash is required rather than
+ * optional, that each refusal arrives as the right status, and — the one
+ * decision this task had to make itself — what a preview is allowed to say
+ * out loud about a `sensitive` definition's values.
+ */
+
+/**
+ * One active user per entry in `values`, each carrying that value under
+ * `key`, all in one fresh org unit.
+ *
+ * The population walk selects HOLDERS of a key across the whole `users`
+ * table (`attribute_definitions` has no tenant column), so every fixture
+ * below takes a per-call unique key — otherwise one test's holders would
+ * land in another test's population.
+ */
+async function seedHolders(key: string, values: readonly unknown[]): Promise<string[]> {
+  const org = await makeOrgUnit('Holders')
+  const ids: string[] = []
+  for (const value of values) {
+    const holder = await makeActiveUser('holder', org.id)
+    await ctx.db
+      .update(users)
+      .set({ attributes: { [key]: value } })
+      .where(eq(users.id, holder.id))
+    ids.push(holder.id)
+  }
+  return ids
+}
+
+describe('POST /attribute-definitions/:id/preview (Milestone 8, Task 10)', () => {
+  const preview = (id: string, body: object) =>
+    request(app.getHttpServer()).post(`/attribute-definitions/${id}/preview`).send(body)
+
+  it('rejects a caller holding attribute:read but not attribute:manage with 403', async () => {
+    await actAs('user_admin')
+    const definition = await seedDefinition()
+
+    const res = await preview(definition.id, { dataType: 'number' }).expect(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  /**
+   * Same finding as POST/PATCH above, and it bites HARDER here: a preview
+   * walks every holder of the attribute in the whole deployment and hands
+   * back a sample of their stored values, so an org-unit-scoped super_admin
+   * would read values out of org units they are 403 on.
+   */
+  it('rejects an org-unit-scoped super_admin with 403, because a definition is directory-wide', async () => {
+    const scope = await makeOrgUnit('Scoped Previewer')
+    await actAs('super_admin', scope.id)
+    const definition = await seedDefinition()
+
+    const res = await preview(definition.id, { dataType: 'number' }).expect(403)
+    expect(res.body.message).toMatch(/global/i)
+  })
+
+  it('rejects a non-UUID id with 400', async () => {
+    await actAs('super_admin')
+
+    const res = await preview('not-a-uuid', { dataType: 'number' }).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+  })
+
+  it('returns 404 for an id that does not exist', async () => {
+    await actAs('super_admin')
+
+    const res = await preview(randomUUID(), { dataType: 'number' }).expect(404)
+    expect(res.body.code).toBe('NOT_FOUND')
+  })
+
+  it('rejects a change naming neither dataType nor appliesTo with 400', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition()
+
+    const res = await preview(definition.id, {}).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+    expect(JSON.stringify(res.body.issues)).toMatch(/dataType/)
+  })
+
+  it('rejects an unknown body field with 400 rather than silently ignoring it', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition()
+
+    // `force` is a COMMIT option. Accepted here it would read as "preview
+    // with the guard off", which is not a thing a preview can be.
+    const res = await preview(definition.id, { dataType: 'number', force: true }).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+  })
+
+  it('reports the population, the change count, the blast radius and a preview hash', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'string' })
+    await seedHolders(definition.key, ['1', '2', '3'])
+
+    const res = await preview(definition.id, { dataType: 'number' }).expect(200)
+    expect(res.body).toMatchObject({ populationSize: 3, changedCount: 3, unconvertible: [] })
+    expect(res.body.blastRadius).toMatchObject({
+      tripped: false,
+      populationSize: 3,
+      changedCount: 3,
+    })
+    expect(res.body.previewHash).toEqual(expect.any(String))
+    expect(res.body.previewHash.length).toBeGreaterThan(0)
+  })
+
+  it('names every value the change would not survive, with its reason', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'string' })
+    const [, broken] = await seedHolders(definition.key, ['7', 'not a number'])
+
+    const res = await preview(definition.id, { dataType: 'number' }).expect(200)
+    expect(res.body.unconvertible).toHaveLength(1)
+    expect(res.body.unconvertible[0]).toMatchObject({ userId: broken, value: 'not a number' })
+    expect(res.body.unconvertible[0].reason).toMatch(/decimal number/)
+  })
+
+  /** PREVIEW WRITES NOTHING — asserted through the route, not only in the job's own spec. */
+  it('writes nothing: no audit row, no converted value, no changed definition', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'string' })
+    const [holder] = await seedHolders(definition.key, ['12'])
+
+    await preview(definition.id, { dataType: 'number' }).expect(200)
+
+    expect(await auditRowsFor(definition.id)).toEqual([])
+    const [user] = await ctx.db.select().from(users).where(eq(users.id, holder))
+    expect(user.attributes).toEqual({ [definition.key]: '12' })
+    const [stored] = await ctx.db
+      .select()
+      .from(attributeDefinitions)
+      .where(eq(attributeDefinitions.id, definition.id))
+    expect(stored.dataType).toBe('string')
+  })
+
+  /**
+   * THE DECISION TASK 9 LEFT TO TASK 10, and the reason it is not a
+   * one-field redaction.
+   *
+   * `report.unconvertible` carries RAW stored values, which for a
+   * `sensitive: true` definition are exactly the values finding SEC-M1 says
+   * must not be handed around casually — `sensitive` exists to keep them out
+   * of `audit_log`, and a report that prints them into a console (and into
+   * whatever proxy log sits in front of it) walks them out through a
+   * different door.
+   *
+   * Redacting `value` ALONE would be a fig leaf: `convertValue`'s reasons
+   * QUOTE the value they refused (`"92000 GBP" is not a plain decimal
+   * number`), so the reason string is a second copy of it. Both fields go.
+   * `userId` stays — it is not the attribute's value, and it is the only
+   * thing that makes the report actionable.
+   */
+  it('redacts BOTH the value and the reason in a sensitive definition preview sample', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'string', sensitive: true })
+    const [holder] = await seedHolders(definition.key, ['92000 GBP'])
+
+    const res = await preview(definition.id, { dataType: 'number' }).expect(200)
+
+    expect(res.body.populationSize).toBe(1)
+    expect(res.body.unconvertible).toHaveLength(1)
+    expect(res.body.unconvertible[0].userId).toBe(holder)
+    expect(res.body.unconvertible[0].value).toMatch(/redacted/i)
+    expect(res.body.unconvertible[0].reason).toMatch(/redacted/i)
+    expect(res.body.unconvertible[0].reason).toMatch(/sensitive/i)
+    // The WHOLE payload, not just those two fields — a third copy anywhere
+    // in the report would defeat the point.
+    expect(JSON.stringify(res.body)).not.toContain('92000 GBP')
+  })
+
+  it('leaves the sample verbatim for a definition that is not sensitive', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'string', sensitive: false })
+    await seedHolders(definition.key, ['92000 GBP'])
+
+    const res = await preview(definition.id, { dataType: 'number' }).expect(200)
+    expect(res.body.unconvertible[0].value).toBe('92000 GBP')
+  })
+
+  it('still reports the counts for a sensitive definition — the redaction is of values, not of the report', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'string', sensitive: true })
+    await seedHolders(definition.key, ['1', '2', 'nope'])
+
+    const res = await preview(definition.id, { dataType: 'number' }).expect(200)
+    expect(res.body).toMatchObject({ populationSize: 3, changedCount: 2 })
+    expect(res.body.unconvertible).toHaveLength(1)
+  })
+})
+
+describe('POST /attribute-definitions/:id/commit (Milestone 8, Task 10)', () => {
+  const commit = (id: string, body: object) =>
+    request(app.getHttpServer()).post(`/attribute-definitions/${id}/commit`).send(body)
+
+  /** Takes a real preview through the route and returns the hash it minted — the only thing that authorises a commit. */
+  async function previewHashFor(id: string, change: object): Promise<string> {
+    const res = await request(app.getHttpServer())
+      .post(`/attribute-definitions/${id}/preview`)
+      .send(change)
+      .expect(200)
+    return res.body.previewHash as string
+  }
+
+  it('rejects a caller holding attribute:read but not attribute:manage with 403', async () => {
+    await actAs('user_admin')
+    const definition = await seedDefinition()
+
+    const res = await commit(definition.id, { dataType: 'number', previewHash: 'x' }).expect(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  it('rejects an org-unit-scoped super_admin with 403', async () => {
+    const scope = await makeOrgUnit('Scoped Committer')
+    await actAs('super_admin', scope.id)
+    const definition = await seedDefinition()
+
+    const res = await commit(definition.id, { dataType: 'number', previewHash: 'x' }).expect(403)
+    expect(res.body.message).toMatch(/global/i)
+  })
+
+  /**
+   * THE HEADLINE REQUIREMENT of this task. A commit with no hash is a commit
+   * nobody previewed, and the whole two-phase design collapses if the field
+   * is optional — so it is refused by the DTO, before the job is reached and
+   * before a single user row is read.
+   */
+  it('refuses a commit carrying no preview hash with 400', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'string' })
+    const [holder] = await seedHolders(definition.key, ['5'])
+
+    const res = await commit(definition.id, { dataType: 'number' }).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+    expect(JSON.stringify(res.body.issues)).toMatch(/previewHash/)
+
+    // And nothing moved on the way to that refusal.
+    const [user] = await ctx.db.select().from(users).where(eq(users.id, holder))
+    expect(user.attributes).toEqual({ [definition.key]: '5' })
+  })
+
+  it('refuses an empty preview hash with 400 rather than treating it as absent', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'string' })
+
+    const res = await commit(definition.id, { dataType: 'number', previewHash: '' }).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+  })
+
+  it('rejects a non-UUID id with 400', async () => {
+    await actAs('super_admin')
+
+    const res = await commit('not-a-uuid', { dataType: 'number', previewHash: 'x' }).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+  })
+
+  it('returns 404 for an id that does not exist', async () => {
+    await actAs('super_admin')
+
+    const res = await commit(randomUUID(), { dataType: 'number', previewHash: 'x' }).expect(404)
+    expect(res.body.code).toBe('NOT_FOUND')
+  })
+
+  it('surfaces a preview hash that no longer authorises the migration as 409', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'string' })
+    const [holder] = await seedHolders(definition.key, ['5'])
+    const hash = await previewHashFor(definition.id, { dataType: 'number' })
+
+    // Somebody edits a holder's value between the preview and the commit —
+    // the id set is identical, the value this migration would overwrite is
+    // not.
+    await ctx.db
+      .update(users)
+      .set({ attributes: { [definition.key]: '6' } })
+      .where(eq(users.id, holder))
+
+    const res = await commit(definition.id, { dataType: 'number', previewHash: hash }).expect(409)
+    expect(res.body.code).toBe('CONFLICT')
+    expect(res.body.message).toMatch(/preview/i)
+  })
+
+  it('applies the migration and records it against the HTTP caller', async () => {
+    const actorId = await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'string' })
+    const [holder] = await seedHolders(definition.key, ['42'])
+    const hash = await previewHashFor(definition.id, { dataType: 'number' })
+
+    const res = await commit(definition.id, { dataType: 'number', previewHash: hash }).expect(200)
+    expect(res.body).toMatchObject({ populationSize: 1, changedCount: 1, unconvertible: [] })
+
+    const [user] = await ctx.db.select().from(users).where(eq(users.id, holder))
+    expect(user.attributes).toEqual({ [definition.key]: 42 })
+
+    const [stored] = await ctx.db
+      .select()
+      .from(attributeDefinitions)
+      .where(eq(attributeDefinitions.id, definition.id))
+    expect(stored.dataType).toBe('number')
+
+    const rows = await auditRowsFor(definition.id, 'attribute_definition:migrate')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].actorUserId).toBe(actorId)
+  })
+
+  it('surfaces the sensitive refusal as 400, naming the flag', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'string', sensitive: true })
+    await seedHolders(definition.key, ['1'])
+    const hash = await previewHashFor(definition.id, { dataType: 'number' })
+
+    const res = await commit(definition.id, { dataType: 'number', previewHash: hash }).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+    expect(JSON.stringify(res.body.issues)).toMatch(/sensitive/i)
+  })
+
+  it('surfaces the unconvertible refusal as 400, which force cannot answer', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'string' })
+    await seedHolders(definition.key, ['1', 'not a number'])
+    const hash = await previewHashFor(definition.id, { dataType: 'number' })
+
+    const res = await commit(definition.id, {
+      dataType: 'number',
+      previewHash: hash,
+      force: true,
+    }).expect(400)
+    expect(JSON.stringify(res.body.issues)).toMatch(/cannot be converted/i)
+  })
+
+  /**
+   * The one refusal `force` MAY answer, driven end to end through the route
+   * so the flag is proved to reach the job rather than being parsed and
+   * dropped.
+   */
+  it('refuses a migration past the blast radius with 400, and applies the same one with force', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'string' })
+    const holders = await seedHolders(definition.key, ['1', '2', '3', '4', '5', '6'])
+    const hash = await previewHashFor(definition.id, { dataType: 'number' })
+
+    const refused = await commit(definition.id, {
+      dataType: 'number',
+      previewHash: hash,
+    }).expect(400)
+    expect(JSON.stringify(refused.body.issues)).toMatch(/force/i)
+
+    // Nothing was applied, so the same hash still authorises the retry.
+    await commit(definition.id, { dataType: 'number', previewHash: hash, force: true }).expect(200)
+
+    const rows = await ctx.db.select().from(users).where(inArray(users.id, holders))
+    const migrated = rows.map((row) => (row.attributes ?? {})[definition.key])
+    expect(migrated.sort()).toEqual([1, 2, 3, 4, 5, 6])
+  })
+
+  it('rejects an unknown body field with 400', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition()
+
+    await commit(definition.id, { dataType: 'number', previewHash: 'x', bogus: 1 }).expect(400)
   })
 })

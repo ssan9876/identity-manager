@@ -632,14 +632,65 @@ to Keycloak's Account Console.
 
 ## Attributes
 
-### `GET /attribute-definitions` — `user:read`
+### `GET /attribute-definitions` — `attribute:read`
 
 | Query | Notes |
 |---|---|
 | `appliesTo` | `user` or `group` |
 
-Active definitions only. **There is no write endpoint** — definitions are managed
-directly in the database.
+Active definitions only.
+
+### `POST /attribute-definitions` — `attribute:manage` **(global)**
+
+```json
+{
+  "key": "costCentre",
+  "label": "Cost centre",
+  "dataType": "string",
+  "appliesTo": "user",
+  "required": false,
+  "defaultValue": null,
+  "validationRules": {},
+  "sortOrder": 0,
+  "isActive": true,
+  "selfEditable": false,
+  "sensitive": false
+}
+```
+
+`key` is drawn from a closed vocabulary (letters, digits and `_`, never leading with a
+digit, never a reserved name). `validationRules` is a closed schema — an unknown rule is
+rejected, and `pattern` is refused by name. → **201**
+
+### `PATCH /attribute-definitions/:id` — `attribute:manage` **(global)**
+
+Safe fields only: `label`, `required`, `defaultValue`, `validationRules`, `sortOrder`,
+`isActive`, `selfEditable`, `sensitive`. `key` is immutable; `dataType` and `appliesTo`
+are refused here and go through the two routes below.
+
+### `POST /attribute-definitions/:id/preview` — `attribute:manage` **(global)**
+
+```json
+{ "dataType": "number" }
+```
+
+At least one of `dataType`, `appliesTo`. Writes nothing. Reports the holder population, how
+many stored values the change would rewrite, the blast radius, a bounded sample of values
+that could not be converted, and a `previewHash`. For a `sensitive` definition the sample's
+values *and* their reasons are redacted; the counts are not.
+
+### `POST /attribute-definitions/:id/commit` — `attribute:manage` **(global)**
+
+```json
+{ "dataType": "number", "previewHash": "…", "force": false }
+```
+
+`previewHash` is **required** — a commit with no hash is a **400**. The plan is re-derived
+inside the writing transaction and the hash compared against it; a mismatch is a **409**.
+Unconvertible values, a `sensitive` definition and a scope move each refuse with a **400**
+that `force` cannot answer; `force` overrides the blast-radius refusal alone, and is
+recorded in the audit row. The same migration is available as
+`pnpm --filter @idm/api run attribute-migrate`.
 
 ### `GET /attribute-target-mappings` — `connector:read`
 
@@ -889,7 +940,6 @@ Worth stating explicitly, because their absence is a design decision:
 | `DELETE /groups/:id` | Not built |
 | `DELETE /business-roles/:id` | Retire via `POST .../disable` instead — a role's history (conflicts, exceptions, past simulations) survives |
 | Any `PATCH /users/:id` change to `orgUnitId`, `username`, `primaryEmail`, `status` | Out of the PATCH surface by design |
-| Any write to `attribute-definitions` | Database-managed today |
 | Any JML rule API | Database rows plus the `jml:lifecycle` CLI |
 | Dead-letter retry | Use reconciliation |
 | `DELETE /organizations/:id` | Deleting a realm destroys every user, session, client and credential inside it. A retired tenant is `suspended` |
