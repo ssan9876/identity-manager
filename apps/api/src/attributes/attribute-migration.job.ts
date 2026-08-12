@@ -299,7 +299,7 @@ export class AttributeMigrationJob {
       // Streamed into the hash IN ID ORDER as the walk goes, rather than
       // collected and hashed at the end: the population is directory-sized
       // in the worst case and nothing else here needs it in memory.
-      hash.update(`${holder.userId} ${JSON.stringify(holder.value) ?? 'undefined'}\n`)
+      hash.update(`${holder.userId}\u0000${JSON.stringify(holder.value) ?? 'undefined'}\n`)
 
       const conversion = convertValue(holder.value, fromDataType, toDataType, options)
       if (!conversion.ok) {
