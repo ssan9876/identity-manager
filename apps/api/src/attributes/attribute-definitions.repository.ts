@@ -174,6 +174,37 @@ export class AttributeDefinitionsRepository {
   }
 
   /**
+   * The definition as it stands right now, LOCKED — for a caller that is
+   * about to change it and has to record what it looked like first
+   * (Milestone 8, Task 7's `PATCH`, which owes the audit log a `before`).
+   *
+   * `DbHandle`, and `FOR UPDATE`, for the same reason `updateSafeFields`
+   * takes both. The audit row for a PATCH must carry the state the UPDATE
+   * was actually applied to. An UNLOCKED read here would be a second,
+   * independent snapshot: under READ COMMITTED a concurrent patch of the
+   * same definition can commit between this read and the `FOR UPDATE` read
+   * inside `updateSafeFields`, and the audit row would then describe a
+   * `before` that was never the immediate predecessor of its own `after` —
+   * in an append-only table, permanently. Taking the lock HERE means the
+   * concurrent patch blocks instead, and `updateSafeFields`' own re-read
+   * (same transaction, lock already held) cannot see anything different.
+   *
+   * `listActive` is deliberately NOT narrowed the same way: it is a
+   * single-statement read with no invariant spanning statements, so the
+   * pooled handle is correct there. The narrowing is per-METHOD, not
+   * per-class.
+   */
+  async findByIdForUpdate(tx: DbHandle, id: string): Promise<AttributeDefinition | null> {
+    const [row] = await tx
+      .select()
+      .from(attributeDefinitions)
+      .where(eq(attributeDefinitions.id, id))
+      .for('update')
+
+    return row === undefined ? null : toDefinition(row)
+  }
+
+  /**
    * Create one definition.
    *
    * `tx` MUST BE A LIVE TRANSACTION, and that is a correctness requirement,

@@ -77,11 +77,24 @@ describe('attribute_definitions_key_format', () => {
     ).resolves.toBeDefined()
   })
 
-  // A CHECK constrains every write path, not just INSERT — and Task 7's
-  // PATCH endpoint will lean on exactly this for renaming a definition's
-  // key. Proven here against a row this same suite already knows is legal
-  // (the "accepts a plain identifier" row above would work too, but seeding
-  // a fresh row keeps this test independent of suite ordering).
+  // A CHECK constrains every write path, not just INSERT.
+  //
+  // This comment previously said "Task 7's PATCH endpoint will lean on
+  // exactly this for renaming a definition's key". That turned out to be
+  // FALSE, and is corrected here rather than left to mislead: Task 5
+  // excluded `key` from `SafeFieldPatch` BY CONSTRUCTION, so a key is
+  // immutable through the supported write path and Task 7's PATCH refuses
+  // `key` by name (see attribute-definitions.controller.ts's
+  // IMMUTABLE_THROUGH_PATCH — every value already written lives in
+  // users.attributes under the old key, so a rename orphans all of them).
+  // There is therefore no application UPDATE of this column at all, which is
+  // precisely why the UPDATE arm of the constraint still needs its own test:
+  // it now guards ONLY hand-written SQL and any future migration, the paths
+  // no application-level check covers.
+  //
+  // Proven against a row this same suite already knows is legal (the
+  // "accepts a plain identifier" row above would work too, but seeding a
+  // fresh row keeps this test independent of suite ordering).
   it('rejects an UPDATE that renames a key into an illegal shape, not just an INSERT', async () => {
     await ctx.db.execute(sql`
       INSERT INTO attribute_definitions (key, label, data_type, applies_to)

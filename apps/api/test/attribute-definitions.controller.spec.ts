@@ -1,10 +1,14 @@
 import { type CanActivate, type ExecutionContext, type INestApplication } from '@nestjs/common'
 import { Reflector } from '@nestjs/core'
 import { Test } from '@nestjs/testing'
+import { and, asc, eq } from 'drizzle-orm'
 import request from 'supertest'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { AttributeDefinitionsController } from '../src/attributes/attribute-definitions.controller'
 import { AttributeDefinitionsRepository } from '../src/attributes/attribute-definitions.repository'
+import { ATTRIBUTE_PREFIX } from '../src/business-roles/role-evaluator'
+import { AuditWriter } from '../src/audit/audit.writer'
 import { JwtGuard } from '../src/auth/jwt.guard'
 import type { RoleKey } from '../src/authz/actions'
 import { PermissionEngine } from '../src/authz/permission.engine'
@@ -13,6 +17,9 @@ import { RoleAssignmentsRepository } from '../src/authz/role-assignments.reposit
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { attributeDefinitions } from '../src/db/schema/attribute-definitions'
+import { auditLog } from '../src/db/schema/audit-log'
+import { businessRoleConditions, businessRoles } from '../src/db/schema/business-roles'
+import { OrganizationsRepository } from '../src/organizations/organizations.repository'
 import { OrgUnitsRepository, type OrgUnit } from '../src/org-units/org-units.repository'
 import { UsersRepository } from '../src/users/users.repository'
 import { withTestDatabase } from './support/pg'
@@ -32,85 +39,139 @@ function stubJwtGuard(getUsername: () => string): CanActivate {
 }
 
 /**
+ * ONE container for the whole file (`withTestDatabase` registers file-scope
+ * beforeAll/afterAll hooks and starts a Postgres per call), shared by the
+ * read describe below and Milestone 8, Task 7's write describes.
+ */
+const ctx = withTestDatabase()
+
+let app: INestApplication
+let currentUsername = ''
+
+beforeAll(async () => {
+  const moduleRef = await Test.createTestingModule({
+    controllers: [AttributeDefinitionsController],
+    providers: [
+      { provide: DB_CLIENT, useFactory: () => ctx.db },
+      AttributeDefinitionsRepository,
+      AuditWriter,
+      PermissionEngine,
+      PermissionGuard,
+      Reflector,
+    ],
+  })
+    .overrideGuard(JwtGuard)
+    .useValue(stubJwtGuard(() => currentUsername))
+    .compile()
+
+  app = moduleRef.createNestApplication()
+  app.useGlobalFilters(new DomainExceptionFilter())
+  await app.init()
+})
+
+afterAll(async () => {
+  await app?.close()
+})
+
+let fixtureSeq = 0
+function nextTag(): string {
+  fixtureSeq += 1
+  return `attrdef${fixtureSeq}`
+}
+
+/** Unique per call and legal under attributes/attribute-key.ts. */
+function uniqueKey(prefix: string): string {
+  return `${prefix}_${randomUUID().replace(/-/g, '_')}`.slice(0, 64)
+}
+
+const orgUnitsRepo = () => new OrgUnitsRepository(ctx.db)
+const usersRepo = () => new UsersRepository(ctx.db)
+const rolesRepo = () => new RoleAssignmentsRepository(ctx.db)
+
+async function makeOrgUnit(label: string): Promise<OrgUnit> {
+  return orgUnitsRepo().createRoot(`${label} ${nextTag()}`)
+}
+
+async function makeActiveUser(role: string, orgUnitId: string) {
+  const tag = nextTag()
+  const created = await usersRepo().create({
+    primaryEmail: `${role}-${tag}@example.com`,
+    username: `${role}-${tag}`,
+    firstName: 'Test',
+    lastName: 'User',
+    orgUnitId,
+  })
+  return usersRepo().changeStatus(created.id, 'active')
+}
+
+async function grant(userId: string, roleKey: RoleKey, scopeOrgUnitId?: string | null) {
+  return rolesRepo().assign({ userId, roleKey, scopeOrgUnitId })
+}
+
+/**
+ * Signs the given role in as the current principal. `scopeOrgUnitId`
+ * defaults to `null` — a GLOBAL grant — because that is what every
+ * mutating route on this controller requires.
+ */
+async function actAs(roleKey: RoleKey, scopeOrgUnitId: string | null = null): Promise<string> {
+  const org = await makeOrgUnit('Actor Home')
+  const actor = await makeActiveUser(roleKey, org.id)
+  await grant(actor.id, roleKey, scopeOrgUnitId === undefined ? null : scopeOrgUnitId)
+  currentUsername = actor.username
+  return actor.id
+}
+
+/** Every audit row for one definition, oldest first (`audit_log.id` is a bigserial, so insertion order IS this order). */
+async function auditRowsFor(resourceId: string, action?: string) {
+  const where =
+    action === undefined
+      ? eq(auditLog.resourceId, resourceId)
+      : and(eq(auditLog.resourceId, resourceId), eq(auditLog.action, action))
+
+  return ctx.db.select().from(auditLog).where(where).orderBy(asc(auditLog.id))
+}
+
+async function seedDefinition(
+  over: Partial<typeof attributeDefinitions.$inferInsert> = {},
+): Promise<{ id: string; key: string }> {
+  const key = typeof over.key === 'string' ? over.key : uniqueKey('attr')
+  const [row] = await ctx.db
+    .insert(attributeDefinitions)
+    .values({ key, label: 'Seeded', dataType: 'string', appliesTo: 'user', ...over })
+    .returning()
+  return { id: row.id, key: row.key }
+}
+
+/** A business role whose PUBLISHED formula names `field` — what role-evaluator.ts actually reads. */
+async function seedRoleWithCondition(field: string): Promise<string> {
+  const name = `Role ${randomUUID()}`
+  const master = await new OrganizationsRepository(ctx.db).findMaster()
+  const [role] = await ctx.db
+    .insert(businessRoles)
+    .values({ name, organizationId: master.id, enabled: true })
+    .returning()
+  await ctx.db
+    .insert(businessRoleConditions)
+    .values({ businessRoleId: role.id, field, operator: 'equals', value: 'yes' })
+  return name
+}
+
+/**
  * MILESTONE 8, TASK 3 — `GET /attribute-definitions`. Only JwtGuard is
  * stubbed; PermissionGuard/PermissionEngine run for real (same pattern as
  * org-units.write.spec.ts) so the permission gate itself is genuinely
  * exercised, not assumed.
  */
 describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
-  const ctx = withTestDatabase()
-  let app: INestApplication
-  let currentUsername = ''
-
-  beforeAll(async () => {
-    const moduleRef = await Test.createTestingModule({
-      controllers: [AttributeDefinitionsController],
-      providers: [
-        { provide: DB_CLIENT, useFactory: () => ctx.db },
-        AttributeDefinitionsRepository,
-        PermissionEngine,
-        PermissionGuard,
-        Reflector,
-      ],
-    })
-      .overrideGuard(JwtGuard)
-      .useValue(stubJwtGuard(() => currentUsername))
-      .compile()
-
-    app = moduleRef.createNestApplication()
-    app.useGlobalFilters(new DomainExceptionFilter())
-    await app.init()
-  })
-
-  afterAll(async () => {
-    await app?.close()
-  })
-
-  let fixtureSeq = 0
-  function nextTag(): string {
-    fixtureSeq += 1
-    return `attrdef${fixtureSeq}`
-  }
-
-  const orgUnitsRepo = () => new OrgUnitsRepository(ctx.db)
-  const usersRepo = () => new UsersRepository(ctx.db)
-  const rolesRepo = () => new RoleAssignmentsRepository(ctx.db)
-
-  async function makeOrgUnit(label: string): Promise<OrgUnit> {
-    return orgUnitsRepo().createRoot(`${label} ${nextTag()}`)
-  }
-
-  async function makeActiveUser(role: string, orgUnitId: string) {
-    const tag = nextTag()
-    const created = await usersRepo().create({
-      primaryEmail: `${role}-${tag}@example.com`,
-      username: `${role}-${tag}`,
-      firstName: 'Test',
-      lastName: 'User',
-      orgUnitId,
-    })
-    return usersRepo().changeStatus(created.id, 'active')
-  }
-
-  async function grant(userId: string, roleKey: RoleKey, scopeOrgUnitId?: string | null) {
-    return rolesRepo().assign({ userId, roleKey, scopeOrgUnitId })
-  }
-
   it('rejects a request with no appliesTo query param with 400 VALIDATION_FAILED', async () => {
-    const org = await makeOrgUnit('No AppliesTo')
-    const actor = await makeActiveUser('reader', org.id)
-    await grant(actor.id, 'read_only', null)
-    currentUsername = actor.username
+    await actAs('read_only')
 
     const res = await request(app.getHttpServer()).get('/attribute-definitions').expect(400)
     expect(res.body.code).toBe('VALIDATION_FAILED')
   })
 
   it('rejects an appliesTo value outside the user/group enum with 400 VALIDATION_FAILED', async () => {
-    const org = await makeOrgUnit('Bad AppliesTo')
-    const actor = await makeActiveUser('reader', org.id)
-    await grant(actor.id, 'read_only', null)
-    currentUsername = actor.username
+    await actAs('read_only')
 
     const res = await request(app.getHttpServer())
       .get('/attribute-definitions?appliesTo=bogus')
@@ -142,11 +203,32 @@ describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
     expect(res.body.code).toBe('FORBIDDEN')
   })
 
-  it('returns only active, user-scoped definitions, ordered by sortOrder then key, for a caller holding user:read', async () => {
-    const org = await makeOrgUnit('User Defs')
-    const actor = await makeActiveUser('reader', org.id)
-    await grant(actor.id, 'read_only', null)
-    currentUsername = actor.username
+  /**
+   * MILESTONE 8, TASK 7 — the deliberate narrowing. `help_desk` holds
+   * `user:read` and could list definitions while this route was gated on
+   * that action; it does NOT hold `attribute:read` (pinned by
+   * actions.spec.ts's exact holder set), and help desk reads people, not
+   * schema. If someone re-gates this route back onto `user:read` — or
+   * grants `attribute:read` to help_desk to make a failure "go away" — this
+   * test is what says so.
+   */
+  it('refuses a help_desk caller now that the route requires attribute:read, not user:read', async () => {
+    await actAs('help_desk')
+
+    const res = await request(app.getHttpServer())
+      .get('/attribute-definitions?appliesTo=user')
+      .expect(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  it('allows an auditor, who holds attribute:read', async () => {
+    await actAs('auditor')
+
+    await request(app.getHttpServer()).get('/attribute-definitions?appliesTo=user').expect(200)
+  })
+
+  it('returns only active, user-scoped definitions, ordered by sortOrder then key, for a caller holding attribute:read', async () => {
+    await actAs('read_only')
 
     const tag = nextTag()
     await ctx.db.insert(attributeDefinitions).values([
@@ -194,11 +276,8 @@ describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
     expect(keys).toEqual([`aFirst_${tag}`, `zLast_${tag}`])
   })
 
-  it('returns active, group-scoped definitions for a caller holding group:read (appliesTo=group), never a user-scoped sibling', async () => {
-    const org = await makeOrgUnit('Group Defs')
-    const actor = await makeActiveUser('reader', org.id)
-    await grant(actor.id, 'read_only', null)
-    currentUsername = actor.username
+  it('returns active, group-scoped definitions (appliesTo=group), never a user-scoped sibling', async () => {
+    await actAs('read_only')
 
     const tag = nextTag()
     await ctx.db.insert(attributeDefinitions).values([
@@ -216,10 +295,7 @@ describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
   })
 
   it('returns the full definition shape a client needs to render a field', async () => {
-    const org = await makeOrgUnit('Shape')
-    const actor = await makeActiveUser('reader', org.id)
-    await grant(actor.id, 'read_only', null)
-    currentUsername = actor.username
+    await actAs('read_only')
 
     const tag = nextTag()
     await ctx.db.insert(attributeDefinitions).values({
@@ -252,5 +328,418 @@ describe('GET /attribute-definitions (Milestone 8, Task 3)', () => {
     // attribute_definitions entirely — propagation is no longer part of
     // this shape at all, not merely defaulted false.
     expect(shaped).not.toHaveProperty('syncToKeycloak')
+  })
+})
+
+/**
+ * MILESTONE 8, TASK 7 — the write path over HTTP. This is where every
+ * refusal Tasks 1-6 built first becomes reachable by a request, so these
+ * tests assert the refusals SURFACE (as the right status, with the right
+ * message), not that they exist — the repository's own spec already pins
+ * the behaviour.
+ */
+describe('POST /attribute-definitions (Milestone 8, Task 7)', () => {
+  const post = (body: object) => request(app.getHttpServer()).post('/attribute-definitions').send(body)
+
+  function validBody(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return { key: uniqueKey('created'), label: 'Created', dataType: 'string', appliesTo: 'user', ...over }
+  }
+
+  it('rejects a caller holding attribute:read but not attribute:manage with 403', async () => {
+    await actAs('user_admin')
+
+    const res = await post(validBody()).expect(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  /**
+   * `attribute_definitions` has no tenant or org-unit column at all — one
+   * definition feeds every organization's users AND every organization's
+   * business-role formulas (the repository's own `assertNoFormulaDependsOn`
+   * says exactly this). `PermissionGuard` satisfies `@RequirePermission`
+   * with `assertCanAnywhere`, so a super_admin scoped to ONE org unit —
+   * who gets 403 merely reading a user outside it — would otherwise be able
+   * to add a directory-wide attribute, or mark one self-editable. Identical
+   * finding, and identical fix, to the sibling
+   * `AttributeTargetMappingsController`.
+   */
+  it('rejects an org-unit-scoped super_admin with 403, because a definition is directory-wide', async () => {
+    const scope = await makeOrgUnit('Scoped Super')
+    await actAs('super_admin', scope.id)
+
+    const res = await post(validBody()).expect(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+    expect(res.body.message).toMatch(/global/i)
+  })
+
+  it('creates a definition, returns 201 with the stored shape, and persists the row', async () => {
+    await actAs('super_admin')
+    const body = validBody({ label: 'Cost centre', required: true, sortOrder: 3 })
+
+    const res = await post(body).expect(201)
+    expect(res.body).toMatchObject({
+      key: body.key,
+      label: 'Cost centre',
+      dataType: 'string',
+      appliesTo: 'user',
+      required: true,
+      isActive: true,
+      selfEditable: false,
+      sensitive: false,
+    })
+    expect(res.body.id).toEqual(expect.any(String))
+
+    const [stored] = await ctx.db
+      .select()
+      .from(attributeDefinitions)
+      .where(eq(attributeDefinitions.id, res.body.id))
+    expect(stored).toMatchObject({ key: body.key, label: 'Cost centre', sortOrder: 3 })
+  })
+
+  it('writes exactly one attribute_definition:create audit row, attributed to the actor, with before null', async () => {
+    const actorId = await actAs('super_admin')
+
+    const res = await post(validBody()).expect(201)
+    const rows = await auditRowsFor(res.body.id)
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      action: 'attribute_definition:create',
+      resourceType: 'attribute_definition',
+      resourceId: res.body.id,
+      actorUserId: actorId,
+      before: null,
+    })
+    expect(rows[0].after).toMatchObject({ key: res.body.key, sensitive: false, selfEditable: false })
+  })
+
+  it('records a definition created sensitive with sensitive true in `after`, under the create action', async () => {
+    await actAs('super_admin')
+
+    const res = await post(validBody({ sensitive: true })).expect(201)
+    const rows = await auditRowsFor(res.body.id)
+
+    expect(rows.map((r) => r.action)).toEqual(['attribute_definition:create'])
+    expect(rows[0].after).toMatchObject({ sensitive: true })
+  })
+
+  it('rejects an unknown body field with 400 rather than silently ignoring it', async () => {
+    await actAs('super_admin')
+
+    const res = await post(validBody({ syncToKeycloak: true })).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+  })
+
+  it('surfaces the repository key refusal as 400, naming the key', async () => {
+    await actAs('super_admin')
+
+    const res = await post(validBody({ key: 'has space' })).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+    expect(JSON.stringify(res.body.issues)).toMatch(/key/)
+  })
+
+  it('surfaces the reserved-key refusal as 400', async () => {
+    await actAs('super_admin')
+
+    const res = await post(validBody({ key: '__proto__' })).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+  })
+
+  it('surfaces the validationRules.pattern refusal as 400 pointing at format', async () => {
+    await actAs('super_admin')
+
+    const res = await post(validBody({ validationRules: { pattern: '^(a+)+$' } })).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+    expect(JSON.stringify(res.body.issues)).toMatch(/format/)
+  })
+
+  it('surfaces the closed validationRules schema as 400 for an unknown rule', async () => {
+    await actAs('super_admin')
+
+    const res = await post(validBody({ validationRules: { nonsense: 1 } })).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+  })
+
+  it('surfaces the selfEditable escalation refusal as 409, naming the business role', async () => {
+    await actAs('super_admin')
+    const key = uniqueKey('escalate')
+    const roleName = await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${key}`)
+
+    const res = await post(validBody({ key, selfEditable: true })).expect(409)
+    expect(res.body.code).toBe('CONFLICT')
+    expect(res.body.message).toContain(roleName)
+  })
+
+  it('surfaces the (key, appliesTo) uniqueness violation as 409 without echoing the key back', async () => {
+    await actAs('super_admin')
+    const existing = await seedDefinition()
+
+    const res = await post(validBody({ key: existing.key, appliesTo: 'user' })).expect(409)
+    expect(res.body.code).toBe('CONFLICT')
+    expect(res.body.message).not.toContain(existing.key)
+  })
+
+  it('rejects a non-scalar defaultValue with 400 — an attribute value is a scalar in every dataType', async () => {
+    await actAs('super_admin')
+
+    const res = await post(validBody({ defaultValue: { nested: true } })).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+  })
+
+  it('leaves no row behind when the create is refused', async () => {
+    await actAs('super_admin')
+    const key = uniqueKey('rolledback')
+    await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${key}`)
+
+    await post(validBody({ key, selfEditable: true })).expect(409)
+
+    const rows = await ctx.db
+      .select()
+      .from(attributeDefinitions)
+      .where(eq(attributeDefinitions.key, key))
+    expect(rows).toHaveLength(0)
+  })
+})
+
+describe('PATCH /attribute-definitions/:id (Milestone 8, Task 7)', () => {
+  const patch = (id: string, body: object) =>
+    request(app.getHttpServer()).patch(`/attribute-definitions/${id}`).send(body)
+
+  it('rejects a caller holding attribute:read but not attribute:manage with 403', async () => {
+    await actAs('user_admin')
+    const definition = await seedDefinition()
+
+    await patch(definition.id, { label: 'Nope' }).expect(403)
+  })
+
+  it('rejects an org-unit-scoped super_admin with 403', async () => {
+    const scope = await makeOrgUnit('Scoped Patcher')
+    await actAs('super_admin', scope.id)
+    const definition = await seedDefinition()
+
+    const res = await patch(definition.id, { label: 'Nope' }).expect(403)
+    expect(res.body.message).toMatch(/global/i)
+  })
+
+  it('rejects a non-UUID id with 400', async () => {
+    await actAs('super_admin')
+
+    const res = await patch('not-a-uuid', { label: 'X' }).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+  })
+
+  it('returns 404 for an id that does not exist', async () => {
+    await actAs('super_admin')
+
+    const res = await patch(randomUUID(), { label: 'X' }).expect(404)
+    expect(res.body.code).toBe('NOT_FOUND')
+  })
+
+  /**
+   * `dataType` and `appliesTo` rewrite every stored value in
+   * `users.attributes`. Refused BY NAME, ahead of the generic `.strict()`
+   * scan, so the caller is told what to use instead rather than getting
+   * "unrecognized key" — the same idiom `parseValidationRules` uses for
+   * `pattern`.
+   */
+  it('rejects a PATCH carrying dataType with 400 pointing at the preview/commit route', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition()
+
+    const res = await patch(definition.id, { dataType: 'number' }).expect(400)
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+    const issues = JSON.stringify(res.body.issues)
+    expect(issues).toMatch(/dataType/)
+    expect(issues).toMatch(/preview/i)
+    expect(issues).toMatch(/commit/i)
+  })
+
+  it('rejects a PATCH carrying appliesTo with 400 pointing at the preview/commit route', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition()
+
+    const res = await patch(definition.id, { appliesTo: 'group' }).expect(400)
+    const issues = JSON.stringify(res.body.issues)
+    expect(issues).toMatch(/appliesTo/)
+    expect(issues).toMatch(/preview/i)
+  })
+
+  it('leaves dataType untouched in the database when a PATCH carrying it is refused', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'string' })
+
+    await patch(definition.id, { dataType: 'number', label: 'Also renamed' }).expect(400)
+
+    const [row] = await ctx.db
+      .select()
+      .from(attributeDefinitions)
+      .where(eq(attributeDefinitions.id, definition.id))
+    expect(row).toMatchObject({ dataType: 'string', label: 'Seeded' })
+  })
+
+  /**
+   * `key` is immutable BY CONSTRUCTION — `SafeFieldPatch` excludes it (Task
+   * 5), because a key is what every `users.attributes` blob is actually
+   * keyed BY, so renaming the definition orphans every value already
+   * written under the old name. Refused by name, with that reason.
+   */
+  it('rejects a PATCH carrying key with 400 explaining that a key is immutable', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition()
+
+    const res = await patch(definition.id, { key: uniqueKey('renamed') }).expect(400)
+    const issues = JSON.stringify(res.body.issues)
+    expect(issues).toMatch(/key/)
+    expect(issues).toMatch(/users\.attributes|orphan/i)
+  })
+
+  it('updates a safe field and writes one attribute_definition:update audit row carrying both sides', async () => {
+    const actorId = await actAs('super_admin')
+    const definition = await seedDefinition({ label: 'Before label' })
+
+    const res = await patch(definition.id, { label: 'After label' }).expect(200)
+    expect(res.body).toMatchObject({ label: 'After label' })
+
+    const rows = await auditRowsFor(definition.id)
+    expect(rows.map((r) => r.action)).toEqual(['attribute_definition:update'])
+    expect(rows[0]).toMatchObject({ resourceType: 'attribute_definition', actorUserId: actorId })
+    expect(rows[0].before).toMatchObject({ label: 'Before label' })
+    expect(rows[0].after).toMatchObject({ label: 'After label' })
+  })
+
+  it('surfaces the selfEditable escalation refusal as 409 on the PATCH path too', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition()
+    const roleName = await seedRoleWithCondition(`${ATTRIBUTE_PREFIX}${definition.key}`)
+
+    const res = await patch(definition.id, { selfEditable: true }).expect(409)
+    expect(res.body.message).toContain(roleName)
+
+    const rows = await auditRowsFor(definition.id)
+    expect(rows).toHaveLength(0)
+  })
+
+  // =========================================================================
+  // The `sensitive` ordering
+  // =========================================================================
+
+  /**
+   * Turning `sensitive` ON reduces what the audit log can show. If the row
+   * for that change is written from a post-change read, the change that
+   * blinds the audit is itself blinded — the one event that most needs to
+   * be legible. `audit_log` is append-only at the database level, so there
+   * is no fixing it afterwards.
+   */
+  it('records a sensitive flag change with the values that were visible before it', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ sensitive: false })
+
+    await patch(definition.id, { sensitive: true }).expect(200)
+
+    const rows = await auditRowsFor(definition.id, 'attribute_definition:sensitive_changed')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].before).toMatchObject({ sensitive: false })
+    expect(rows[0].after).toMatchObject({ sensitive: true })
+  })
+
+  it('gives the sensitive change its own action rather than folding it into a generic update', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ sensitive: false })
+
+    await patch(definition.id, { sensitive: true }).expect(200)
+
+    const rows = await auditRowsFor(definition.id)
+    expect(rows.map((r) => r.action)).toEqual(['attribute_definition:sensitive_changed'])
+  })
+
+  it('records turning sensitive back OFF under the same distinct action, both sides intact', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ sensitive: true })
+
+    await patch(definition.id, { sensitive: false }).expect(200)
+
+    const rows = await auditRowsFor(definition.id, 'attribute_definition:sensitive_changed')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].before).toMatchObject({ sensitive: true })
+    expect(rows[0].after).toMatchObject({ sensitive: false })
+  })
+
+  /**
+   * NON-VACUITY, in the test file itself: a check that fired on "the caller
+   * mentioned `sensitive`" rather than "`sensitive` actually changed" would
+   * pass every test above while filling the log with transitions that never
+   * happened.
+   */
+  it('writes no sensitive_changed row when the patch restates the value it already had', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ sensitive: true, label: 'Restate' })
+
+    await patch(definition.id, { sensitive: true, label: 'Restated' }).expect(200)
+
+    const rows = await auditRowsFor(definition.id)
+    expect(rows.map((r) => r.action)).toEqual(['attribute_definition:update'])
+  })
+
+  it('records the sensitive change first when one patch changes sensitive and another field', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ sensitive: false, label: 'Both' })
+
+    await patch(definition.id, { sensitive: true, label: 'Both changed' }).expect(200)
+
+    const rows = await auditRowsFor(definition.id)
+    expect(rows.map((r) => r.action)).toEqual([
+      'attribute_definition:sensitive_changed',
+      'attribute_definition:update',
+    ])
+    // Both rows carry the PRE-change side, not a re-read of the row after
+    // the UPDATE statement.
+    expect(rows[0].before).toMatchObject({ sensitive: false, label: 'Both' })
+    expect(rows[1].before).toMatchObject({ sensitive: false, label: 'Both' })
+  })
+
+  // =========================================================================
+  // Deactivation
+  // =========================================================================
+
+  it('records deactivating a definition under attribute_definition:deactivate', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ isActive: true })
+
+    await patch(definition.id, { isActive: false }).expect(200)
+
+    const rows = await auditRowsFor(definition.id)
+    expect(rows.map((r) => r.action)).toEqual(['attribute_definition:deactivate'])
+    expect(rows[0].before).toMatchObject({ isActive: true })
+    expect(rows[0].after).toMatchObject({ isActive: false })
+  })
+
+  it('records RE-activating under the generic update action, not deactivate', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ isActive: false })
+
+    await patch(definition.id, { isActive: true }).expect(200)
+
+    const rows = await auditRowsFor(definition.id)
+    expect(rows.map((r) => r.action)).toEqual(['attribute_definition:update'])
+  })
+
+  it('writes no deactivate row when the patch restates isActive false', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ isActive: false })
+
+    await patch(definition.id, { isActive: false }).expect(200)
+
+    const rows = await auditRowsFor(definition.id)
+    expect(rows.map((r) => r.action)).toEqual(['attribute_definition:update'])
+  })
+
+  it('records a no-op patch as a single generic update row rather than nothing at all', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition()
+
+    await patch(definition.id, {}).expect(200)
+
+    const rows = await auditRowsFor(definition.id)
+    expect(rows.map((r) => r.action)).toEqual(['attribute_definition:update'])
   })
 })
