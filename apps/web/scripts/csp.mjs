@@ -130,6 +130,15 @@ export function buildPolicy({ hashes, issuer, apiBaseUrl }) {
     `script-src 'self' ${hashes.join(' ')}`.trimEnd(),
     // One linked stylesheet from /assets. React's `style={{…}}` props are set
     // through the CSSOM, which CSP does not police, so they survive this.
+    //
+    // MEASURED 2026-08-13, in Chromium, Firefox AND WebKit, against the real
+    // policy as nginx serves it — this used to be reasoned about and true only
+    // in a local Chromium run. All three engines agree:
+    //   el.style.width = '123px'          -> APPLIED, no violation  (React's path)
+    //   el.setAttribute('style', '…')     -> BLOCKED, style-src-attr
+    //   document.head.append(<style>)     -> BLOCKED, style-src-elem
+    // So the directive costs React nothing and still refuses both paths an
+    // injection would actually use.
     `style-src 'self'`,
     // No images ship today; `data:` is here because inlined icons are the one
     // thing an SPA routinely adds, and a data: image cannot execute.
@@ -138,8 +147,21 @@ export function buildPolicy({ hashes, issuer, apiBaseUrl }) {
     // Same-origin /api, plus Keycloak: discovery, token, JWKS and revocation
     // are all cross-origin XHR to the issuer.
     `connect-src ${connect.join(' ')}`,
-    // Keycloak's authorize endpoint is framed by oidc-client-ts's silent
+    // Keycloak's authorize endpoint would be framed by oidc-client-ts's silent
     // renew; nothing else is ever framed.
+    //
+    // KEPT, THOUGH MEASURED TO BE UNUSED. oidc-client-ts 3.5.0's
+    // `signinSilent()` takes the REFRESH TOKEN branch whenever the stored user
+    // has one and only falls back to an iframe otherwise, and `monitorSession`
+    // defaults to false. A real signed-in session against the lab host, in all
+    // three engines on 2026-08-13, held a refresh token and had ZERO iframes on
+    // the page. The iframe fallback could not work here anyway: it needs
+    // `silent_redirect_uri`, which this console does not set.
+    // Left in place rather than tightened to 'none' because framing the ISSUER
+    // is not a threat to this origin — `frame-ancestors 'none'` and
+    // X-Frame-Options are what stop this console being framed — and removing it
+    // would only trade a measured non-risk for a sign-in flow nobody can
+    // re-test on every future oidc-client-ts upgrade.
     `frame-src ${frame.join(' ')}`,
     // Matches the X-Frame-Options: DENY already served alongside this.
     `frame-ancestors 'none'`,

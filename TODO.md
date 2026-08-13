@@ -574,16 +574,27 @@ state of each.
       seeded `admin@example.com` credential would break `smoke:dev`, the E2E
       login and CI's `bootstrap:admin`, which is far beyond what a LOW finding
       on a dev fixture justifies.
-- [ ] **CS-M2 residuals.** The policy itself is shipped (see the resolved table
-      above), but two things are only reasoned about, not observed:
-      `style-src 'self'` carries no `'unsafe-inline'` on the belief that React's
-      `style={{…}}` props go through the CSSOM, which CSP does not police —
-      true in the local Chromium run, unverified in other engines; and
-      oidc-client-ts's silent-renew iframe (`automaticSilentRenew` defaults to
-      `true`) is allowed to reach the issuer by `frame-src`, but its callback
-      leg is still blocked by the pre-existing `X-Frame-Options: DENY`, so
-      silent renew does not work now and did not before. Not a regression;
-      worth closing properly.
+- [x] **CS-M2 residuals.** Both closed 2026-08-13 by measurement, in Chromium,
+      Firefox AND WebKit, against the real policy as the lab's nginx serves it.
+      **`style-src 'self'` is correct.** All three engines agree:
+      `el.style.width = '123px'` (React's CSSOM path) APPLIES with no violation,
+      while `setAttribute('style', …)` is blocked as `style-src-attr` and an
+      injected `<style>` element as `style-src-elem`. The directive costs React
+      nothing and still refuses both paths an injection would use.
+      **The silent-renew claim was wrong.** It read "its callback leg is still
+      blocked by `X-Frame-Options: DENY`, so silent renew does not work now and
+      did not before." oidc-client-ts 3.5.0's `signinSilent()` takes the REFRESH
+      TOKEN branch whenever the stored user has one and only falls back to an
+      iframe otherwise, and `monitorSession` defaults to false. A real signed-in
+      session in all three engines held a refresh token (750 chars) and had ZERO
+      iframes on the page — so `X-Frame-Options` never applies to it, and silent
+      renew works. The iframe fallback could not work here regardless: it needs
+      `silent_redirect_uri`, which this console does not set.
+      `frame-src` is left as it is, deliberately: it is now known-unused, but
+      framing the ISSUER was never a threat to this origin (`frame-ancestors
+      'none'` is what protects the console), so tightening it would trade a
+      measured non-risk for a flow needing a re-test on every library upgrade.
+
 - [ ] **CS-M6.** `vite@5.4.21` + `esbuild@0.21.5` dev-server advisories, unfixed on
       the 5.x line. Developer workstations only, but this project's dev platform is
       Windows, where the path-traversal case is live.
