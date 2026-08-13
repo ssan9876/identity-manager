@@ -270,10 +270,31 @@ Task 2's gate is now closed: the full suite, the migration spec against a real
 container, and the drift check all pass on the merged tree. Its two remaining
 asks stand:
 
-- [ ] **Review `17cd3f8` properly.** It is still the only task with no review.
-- [ ] **Justify or revert three files Task 2 touched that its brief never
-      named:** `test/business-roles-schema.spec.ts`, `test/support/pg.ts`,
-      `src/organizations/organizations.repository.ts`.
+- [x] **Review `17cd3f8`.** Done 2026-08-13. The commit is honest about itself —
+      it says `tsc` passed, the vitest suite was NOT run, and that a data-backfill
+      migration is "exactly the kind of change a typecheck cannot vouch for". The
+      review is therefore mostly a matter of retiring that admission with evidence:
+      `organizations.migration.spec.ts`, both schema specs and `readiness.spec.ts`
+      now run green against a real container (24/24), and the whole migration tail
+      from `0027` replays cleanly. Its third self-reported defect — `0023` citing a
+      `task-2-report.md` that exists nowhere — is gone from the tree. Nothing in the
+      commit needs reverting.
+- [x] **Justify or revert three files Task 2 touched that its brief never named.**
+      Done 2026-08-13 — all three justified, none reverted:
+      - `src/organizations/organizations.repository.ts` is a NEW file the task
+        cannot exist without; the commit message names it even though the brief
+        did not.
+      - `test/support/pg.ts` changes exactly one word, widening
+        `swallowShutdownErrors` to an export so the migration harness could reuse
+        it rather than copy it. It has since gained a second consumer in
+        `readiness.spec.ts`, so the widening earned itself twice over.
+      - `test/business-roles-schema.spec.ts` was FORCED, not incidental: Task 2
+        made `org_units.organization_id` NOT NULL, and that spec raw-inserts org
+        units via `db.insert(...)`, bypassing the repository that derives the
+        column. Without the fixture repair it fails on a NOT NULL violation. That
+        is the ordinary collateral of adding a NOT NULL column, and the honest
+        alternative — reverting it — would simply have left the suite red.
+      (The file is now `business-roles.schema.spec.ts`; see the naming item below.)
 
 Carry-forward findings, already diagnosed:
 
@@ -289,8 +310,15 @@ Carry-forward findings, already diagnosed:
       the DNS-label shape a Keycloak realm name needs, which is far more than
       case-folding; the expression index enforced nothing the CHECK did not
       already, and made the index unusable for a plain `WHERE slug = $1`.
-- [ ] Minor: `organizations.schema.spec.ts` imports `sql` unused, and uses a dot
-      separator where its sibling uses a hyphen.
+- [x] **Minor: unused import, and the naming inconsistency.** Done 2026-08-13.
+      The unused `sql` import is gone. The separator was the other way round from
+      how this entry read: 33 specs in `apps/api/test` use
+      `<subject>.<kind>.spec.ts` and exactly ONE used a hyphen, so
+      `organizations.schema.spec.ts` was already right and its sibling was the
+      outlier. Renamed `business-roles-schema.spec.ts` →
+      `business-roles.schema.spec.ts`. The archived plan that cites the old path is
+      left alone deliberately: it is a record of what was done at the time, not a
+      live pointer.
 - [x] **SETTLED by Task 11, and it is subtler than the question asked.** A
       realm's creator DOES keep admin rights on a realm it created, so
       `ensureRealm` needs no explicit `<realm>-realm` grant. But the
@@ -312,8 +340,14 @@ Carry-forward findings, already diagnosed:
       SQL is deliberately narrower than the schema declaration and both files
       say why; composite FKs were added before the unique indexes they
       reference; and an edge column was made NOT NULL with no backfill.
-- [ ] **NEW CONSTRAINT from Task 4: every migration from `0027` onward must be
-      re-runnable.** `migrate.spec.ts` used to rewind the ledger by deleting the
+- [x] **NEW CONSTRAINT from Task 4: every migration from `0027` onward must be
+      re-runnable.** Verified 2026-08-13: all 17 migrations from `0027` on carry
+      their guards — a static scan for unguarded `ADD COLUMN` / `CREATE TABLE` /
+      `CREATE INDEX` / `CREATE TYPE` / `ADD CONSTRAINT` finds nothing — and both
+      `migrate.spec.ts` and `migrations.spec.ts` replay the tail green. The
+      constraint is self-enforcing from here: the rewind described below replays
+      every migration after `0027`, so a future one that is not re-runnable breaks
+      that test rather than a production upgrade. `migrate.spec.ts` used to rewind the ledger by deleting the
       newest `created_at` row, which silently stopped testing `0027`'s guard the
       moment any later migration landed — it would have kept passing while
       asserting nothing. It now rewinds to `0027`'s own journal `when`, so the
@@ -763,7 +797,7 @@ Two traps worth knowing, both of which made a working fix look broken:
       was fixed in the two files above by resting each comment on something
       that lives in this repository.
 
-- [ ] **`stash@{0}` is superseded** — "WIP on feat/user-activate…". Its four
+- [x] **`stash@{0}` is superseded, and dropped 2026-08-13.** — "WIP on feat/user-activate…". Its four
       files became `c3524c6` and `a734538`, which are 66 lines further along.
       Droppable.
 
