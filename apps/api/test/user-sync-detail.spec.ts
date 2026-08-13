@@ -123,6 +123,8 @@ describe('GET /users/:id/sync', () => {
         RoleReconciler,
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         UsersRepository,
+        // UsersController resolves the DESTINATION org unit for POST :id/transfer.
+        OrgUnitsRepository,
         PermissionEngine,
         PrivilegeGuards,
         AuditWriter,

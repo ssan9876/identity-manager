@@ -88,6 +88,8 @@ describe('scope narrowing (Milestone 3b, Task 1)', () => {
       const moduleRef = await Test.createTestingModule({
         controllers: [UsersController],
         providers: [
+          // UsersController resolves the DESTINATION org unit for POST :id/transfer.
+          OrgUnitsRepository,
           // Milestone 17, Task 9: UsersController now re-evaluates business roles
           // inside its own create/update transactions, and its RoleReconciler
           // parameter is deliberately NOT @Optional() (an absent reconciler would

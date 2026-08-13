@@ -75,6 +75,8 @@ describe('GET /users', () => {
         RoleReconciler,
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         UsersRepository,
+        // UsersController resolves the DESTINATION org unit for POST :id/transfer.
+        OrgUnitsRepository,
         PermissionEngine,
         // Milestone 3b, Task 2: UsersController's write handlers now also
         // depend on PrivilegeGuards and AuditWriter (to pair assertCanIn

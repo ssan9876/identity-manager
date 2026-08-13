@@ -90,6 +90,8 @@ describe('synchronous revocation on deactivate (Milestone 4, Task 4)', () => {
         RoleReconciler,
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         UsersRepository,
+        // UsersController resolves the DESTINATION org unit for POST :id/transfer.
+        OrgUnitsRepository,
         PermissionEngine,
         PrivilegeGuards,
         AuditWriter,

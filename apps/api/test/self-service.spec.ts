@@ -145,6 +145,8 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
       providers: [
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         UsersRepository,
+        // UsersController resolves the DESTINATION org unit for POST :id/transfer.
+        OrgUnitsRepository,
         GroupsRepository,
         PermissionEngine,
         AuditWriter,
@@ -767,6 +769,11 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
           'business_role:read',
           'recert:read',
           'attribute:read',
+          // Lifecycle rules, read only, on attribute:read's exact terms: a JML
+          // rule is the only actor here that changes an account with no human
+          // in the loop, so someone who cannot read the rules cannot explain a
+          // change they are looking at.
+          'jml:read',
         ].sort(),
       )
     })
@@ -812,6 +819,7 @@ describe('SelfServiceController (Milestone 6, Task 3)', () => {
           'business_role:read',
           'recert:read',
           'attribute:read',
+          'jml:read',
         ].sort(),
       )
     })
@@ -1034,6 +1042,8 @@ describe('PATCH /self racing PATCH /users/:id (finding H4, docs/archive/audits/a
     const moduleRef = await Test.createTestingModule({
       controllers: [SelfServiceController, UsersController],
       providers: [
+        // UsersController resolves the DESTINATION org unit for POST :id/transfer.
+        OrgUnitsRepository,
         // Milestone 17, Task 9: UsersController now re-evaluates business roles
         // inside its own create/update transactions, and its RoleReconciler
         // parameter is deliberately NOT @Optional() (an absent reconciler would

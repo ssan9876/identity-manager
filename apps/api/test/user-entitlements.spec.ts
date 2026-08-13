@@ -27,6 +27,7 @@ import { OrganizationsRepository } from '../src/organizations/organizations.repo
 import { OutboxWriter } from '../src/outbox/outbox.writer'
 import { SyncDetailRepository } from '../src/outbox/sync-detail.repository'
 import { SyncStateRepository } from '../src/outbox/sync-state.repository'
+import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { UsersController } from '../src/users/users.controller'
 import { UsersRepository } from '../src/users/users.repository'
 import { type TestDatabase, withTestDatabase } from './support/pg'
@@ -250,6 +251,8 @@ describe('GET /users/:id/entitlements (Milestone 17, Task 12)', () => {
         RoleReconciler,
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         UsersRepository,
+        // UsersController resolves the DESTINATION org unit for POST :id/transfer.
+        OrgUnitsRepository,
         PermissionEngine,
         PermissionGuard,
         PrivilegeGuards,
