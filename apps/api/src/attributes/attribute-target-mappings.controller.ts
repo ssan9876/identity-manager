@@ -1,4 +1,16 @@
-import { Body, Controller, Delete, Get, Inject, Param, Patch, Post, Req, UseGuards } from '@nestjs/common'
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Inject,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
 import { DIRECTORY_TARGETS } from '../connectors/connector'
@@ -17,6 +29,7 @@ import * as schema from '../db/schema/index'
 import {
   AttributeTargetMappingsRepository,
   type AttributeTargetMappingRow,
+  type ExportImpact,
   type MappingRecord,
 } from './attribute-target-mappings.repository'
 
@@ -48,6 +61,23 @@ const createMappingBodySchema = z
   })
   .strict()
   .refine((body) => (body.attributeDefinitionId !== undefined) !== (body.coreField !== undefined), {
+    message: 'exactly one of attributeDefinitionId or coreField is required, never both, never neither',
+  })
+
+/**
+ * The export-impact query. Same `attributeDefinitionId` XOR `coreField`
+ * discriminant every row in this table carries, and the same `.refine` the
+ * create body uses — a caller who names both is asking about two different
+ * populations at once, and a caller who names neither is asking about none.
+ */
+const exportImpactQuerySchema = z
+  .object({
+    target: connectorTargetSchema,
+    attributeDefinitionId: z.string().uuid().optional(),
+    coreField: coreFieldSchema.optional(),
+  })
+  .strict()
+  .refine((q) => (q.attributeDefinitionId !== undefined) !== (q.coreField !== undefined), {
     message: 'exactly one of attributeDefinitionId or coreField is required, never both, never neither',
   })
 
@@ -125,6 +155,33 @@ export class AttributeTargetMappingsController {
   @RequirePermission('connector:read')
   async list(): Promise<AttributeTargetMappingRow[]> {
     return this.mappings.listAllRows()
+  }
+
+  /**
+   * What enabling this mapping would newly export, as a number — security
+   * finding 5.
+   *
+   * A GET, and `connector:read`, because this returns a COUNT and a boolean
+   * and never a stored value. The attribute migration's preview is a POST
+   * precisely because it hands back real values out of `users.attributes`,
+   * and a GET is the shape of a thing browsers prefetch, proxies retry and
+   * logs record whole; nothing crossing this route is worth that care. Gated
+   * beside the sibling list for the same reason: an auditor who can see WHICH
+   * mappings exist can see how much each one carries.
+   *
+   * The count itself, and the scoping that makes it meaningful, belong to
+   * `countExportImpact` — this method neither derives nor second-guesses it.
+   */
+  @Get('export-impact')
+  @RequirePermission('connector:read')
+  async exportImpact(@Query() query: unknown): Promise<{ target: string } & ExportImpact> {
+    const parsed = parseBody(exportImpactQuerySchema, query)
+    const impact = await this.mappings.countExportImpact({
+      target: parsed.target,
+      attributeDefinitionId: parsed.attributeDefinitionId ?? null,
+      coreField: parsed.coreField ?? null,
+    })
+    return { target: parsed.target, ...impact }
   }
 
   /**

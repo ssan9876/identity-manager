@@ -14,6 +14,7 @@ import { AttributeTargetMappingsRepository } from '../src/attributes/attribute-t
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { attributeDefinitions } from '../src/db/schema/attribute-definitions'
+import { connectorTargets } from '../src/db/schema/connector-targets'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { UsersRepository, type User } from '../src/users/users.repository'
 import { withTestDatabase } from './support/pg'
@@ -337,5 +338,90 @@ describe('AttributeTargetMappingsController (Milestone 14, Task 9)', () => {
     await request(app.getHttpServer())
       .delete('/attribute-target-mappings/00000000-0000-0000-0000-000000000000')
       .expect(404)
+  })
+  // =========================================================================
+  // GET export-impact — security finding 5
+  // =========================================================================
+
+  /**
+   * Enables a target for the master organization, which is where every user
+   * this spec seeds lands. `connector_targets.organization_id` defaults to
+   * `master_organization_id()`.
+   */
+  async function enableTarget(target: 'active_directory' | 'entra_id'): Promise<void> {
+    await ctx.db
+      .insert(connectorTargets)
+      .values({ target, enabled: true, config: {} })
+      .onConflictDoUpdate({
+        target: [connectorTargets.organizationId, connectorTargets.target],
+        set: { enabled: true },
+      })
+  }
+
+  it('reports the export impact of a custom attribute, as a count and a flag', async () => {
+    const admin = await makeActiveUser('super_admin')
+    currentUsername = admin.username
+    const def = await makeAttributeDefinition()
+    await enableTarget('active_directory')
+    await usersRepo().create({
+      primaryEmail: `impact-${nextTag()}@example.com`,
+      username: `impact-${nextTag()}`,
+      firstName: 'Impact',
+      lastName: 'Holder',
+      orgUnitId,
+      attributes: { [def.key]: 'held' },
+    })
+
+    const res = await request(app.getHttpServer())
+      .get(`/attribute-target-mappings/export-impact?target=active_directory&attributeDefinitionId=${def.id}`)
+      .expect(200)
+
+    expect(res.body).toMatchObject({ target: 'active_directory', sensitive: false })
+    expect(res.body.holderCount).toBeGreaterThanOrEqual(1)
+  })
+
+  it('rejects an export-impact request naming both an attribute and a core field', async () => {
+    const admin = await makeActiveUser('super_admin')
+    currentUsername = admin.username
+    const def = await makeAttributeDefinition()
+
+    await request(app.getHttpServer())
+      .get(
+        `/attribute-target-mappings/export-impact?target=active_directory&coreField=title&attributeDefinitionId=${def.id}`,
+      )
+      .expect(400)
+  })
+
+  it('rejects an export-impact request naming neither', async () => {
+    const admin = await makeActiveUser('super_admin')
+    currentUsername = admin.username
+
+    await request(app.getHttpServer())
+      .get('/attribute-target-mappings/export-impact?target=active_directory')
+      .expect(400)
+  })
+
+  /**
+   * `connector:read`, not `connector:manage`. This route returns a COUNT and
+   * a boolean and never a stored value, so it is gated exactly like the
+   * sibling list it sits beside — an auditor who can see which mappings
+   * exist can see how much each one carries.
+   */
+  it('allows an auditor — the route returns a count, never a value', async () => {
+    const actor = await makeActiveUser('auditor')
+    currentUsername = actor.username
+
+    await request(app.getHttpServer())
+      .get('/attribute-target-mappings/export-impact?target=active_directory&coreField=title')
+      .expect(200)
+  })
+
+  it('rejects a caller holding no role at all with 403', async () => {
+    const actor = await makeActiveUser()
+    currentUsername = actor.username
+
+    await request(app.getHttpServer())
+      .get('/attribute-target-mappings/export-impact?target=active_directory&coreField=title')
+      .expect(403)
   })
 })
