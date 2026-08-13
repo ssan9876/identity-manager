@@ -66,14 +66,38 @@ There is no Milestone 20 and never was.
 | Docs accuracy pass, plus the `check-docs` gate | Done | — |
 | **Attribute definitions write path** (2026-08-12) | Done, 12/12 tasks | **2** — below |
 
-### The attribute write path's two open gaps
+### The attribute write path — what running it found
 
-Newest work, so the least settled. Neither blocks anything.
+It HAS now been run, end to end, against the real stack, and the page has been
+looked at. That closed the first gap this section used to list and is worth
+recording, because of what it cost: the milestone shipped with every gate
+green — 1990 API tests, both typechecks, four static checks, a docs gate — and
+a High-severity bug that made people and groups unsavable.
 
-- [ ] **Nothing in it has been driven in a running application.** Every part is
-      covered by tests, typechecks and static gates, and the console page at
-      `/attributes` has never rendered against a live API. There is no e2e spec
-      for it either — `apps/web/e2e/` has no `attributes.spec.ts`.
+- [x] **Driven live, and covered.** `apps/web/e2e/attributes.spec.ts` is the
+      first e2e coverage `/attributes` has had. Nothing in the suite could have
+      caught the bug below before it existed: creating an enum or date
+      definition required the console, and until this milestone there was no
+      console.
+- [x] **An empty optional field made every person and group unsavable.**
+      `coerceAttributeValue` mapped `'' -> undefined` for `number` alone, and
+      `.optional()` admits `undefined`, never `''`. One optional `enum`, `date`
+      or formatted `string` definition was enough. Fixed, with the regression
+      test proven red first.
+- [x] **A row's third action sat off the edge of the table** at 1280px —
+      Deactivate/Reactivate, the one control that undoes something, behind a
+      scroll the table gives no hint of. The cause was two unbounded columns to
+      its left, which a second screenshot showed and reading the CSS had not.
+- [x] **The e2e suite could not be green from the README's own Quickstart**,
+      and had been that way long enough to be normal: three organizations
+      specs need a provisioning client `.env.example` ships commented out,
+      `import.spec.ts` asserted a row limit that changed months ago, and
+      `sso-apps.spec.ts` was not re-runnable. Four standing reasons to ignore a
+      red suite, between a real regression and anyone noticing it. Now 57
+      passed, 3 skipped, 0 failed from a stock Quickstart.
+
+Still open, and the one thing that pass did NOT close:
+
 - [ ] **A `sensitive` attribute cannot have its type migrated.** Reversing a
       migration needs the previous values in the audit row, and keeping values
       out of the audit log is exactly what `sensitive` means (finding SEC-M1),
@@ -99,9 +123,9 @@ dead letter.
 ## State of `master`
 
 All unique work is merged. Verified 2026-08-12 on the merged tree
-(`5af373c`) — the merge was a clean `--no-ff` of a branch whose base was
-master's tip, and `git diff` against the tested branch tip is empty, so these
-numbers describe exactly the tree that ran them:
+(`5239cf8`) — each merge was a clean `--no-ff` of a branch whose base was
+master's tip, with `git diff` against the tested branch tip empty before the
+push, so these numbers describe exactly the tree that ran them:
 
 | Gate | Result |
 |---|---|
@@ -111,6 +135,7 @@ numbers describe exactly the tree that ran them:
 | `apps/web` build | clean, 167 modules |
 | `node scripts/check-docs.mjs` | OK |
 | `pnpm verify:quick` | passed |
+| `apps/web` Playwright e2e | **57 passed, 3 skipped, 0 failed** |
 
 `test/dev-environment.spec.ts` fetches
 `http://localhost:8080/realms/identity-manager/.well-known/openid-configuration`
