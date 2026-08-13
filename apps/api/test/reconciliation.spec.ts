@@ -307,7 +307,6 @@ describe('ReconciliationJob (Milestone 4, Task 4)', () => {
         lastName: 'Only',
         enabled: true,
         attributes: {},
-        groups: [],
       },
       [],
     )

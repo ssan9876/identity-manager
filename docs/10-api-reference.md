@@ -700,7 +700,8 @@ values *and* their reasons are redacted; the counts are not.
 
 `previewHash` is **required** — a commit with no hash is a **400**. The plan is re-derived
 inside the writing transaction and the hash compared against it; a mismatch is a **409**.
-Unconvertible values, a `sensitive` definition and a scope move each refuse with a **400**
+Unconvertible values, a scope move, and a `sensitive` definition whose values would not
+survive a round trip, each refuse with a **400**
 that `force` cannot answer; `force` overrides the blast-radius refusal alone, and is
 recorded in the audit row. The same migration is available as
 `pnpm --filter @idm/api run attribute-migrate`.

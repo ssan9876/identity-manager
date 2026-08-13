@@ -1142,9 +1142,17 @@ Three refusals, and only one of them can be overridden:
   and compared against the hash you presented; if anyone edited a holder's value in the
   meantime, the preview you read is no longer the migration you would be committing.
 
-A **sensitive** attribute cannot be migrated at all. Reversing a migration needs the
-previous values in the audit row, and writing them there is precisely what `sensitive`
-exists to prevent — in an append-only table, where it could not be undone. Turn
+A **sensitive** attribute migrates only when every affected value **converts back to
+exactly what it was**. Reversing a migration normally needs the previous values in the
+audit row, and writing them there is precisely what `sensitive` exists to prevent — in an
+append-only table, where it could not be undone. But when the conversion round-trips
+(`"1"` → `1` → `"1"`), the undo is a calculation rather than a lookup, so nothing needs
+recording and the flag has nothing to protect: the migration is allowed and the audit row
+names the affected people without carrying a single value.
+
+When some value would NOT survive the round trip — `"1.50"` converts to `1.5` and comes
+back as `"1.5"`, losing the trailing zero — the migration is refused, because that lost
+detail is exactly what the previous values exist to restore. To migrate anyway, turn
 `sensitive` off (itself audited), migrate, turn it back on; during that window the values
 land in ordinary user audit rows, which is the cost of the round trip and the reason it
 is not done for you.

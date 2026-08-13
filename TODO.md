@@ -98,15 +98,27 @@ a High-severity bug that made people and groups unsavable.
 
 Still open, and the one thing that pass did NOT close:
 
-- [ ] **A `sensitive` attribute cannot have its type migrated.** Reversing a
-      migration needs the previous values in the audit row, and keeping values
-      out of the audit log is exactly what `sensitive` means (finding SEC-M1),
-      in a table that is append-only at the database level. The migration is
-      refused rather than run irreversibly; the admin turns `sensitive` off,
-      migrates, and turns it back on, and during that window the values land in
-      ordinary user audit rows. Documented and audited rather than silent, but
-      it is a hole, not a closed door.
-
+- [x] **A `sensitive` attribute could not have its type migrated.** Closed
+      2026-08-13, by narrowing the refusal to the case that actually justifies
+      it rather than adding a second place to keep sensitive values.
+      The refusal rested on one premise: a migration is reversible only because
+      its audit row carries every affected user's prior value, and that is what
+      `sensitive` forbids. True — but only when those values are NEEDED to
+      reverse it. `"1"` -> `1` -> `"1"` returns exactly what it started as, so
+      the undo is a computation, not a lookup, and there is nothing to record.
+      `isReversibleConversion` converts forward, converts straight back, and
+      compares; a sensitive definition migrates when EVERY affected value
+      survives that, and its audit row then names the affected holders while
+      carrying no value on either side (an id is not what SEC-M1 is about).
+      Where a value would not survive — `"1.50"` converts to `1.5` and returns
+      as `"1.5"` — the refusal stands, because the lost detail is exactly what
+      the prior values exist to restore. The escape hatch is unchanged.
+      Considered and rejected: a separate, purgeable snapshot table. It would
+      have bought reversibility for the lossy cases by creating a SECOND store
+      of the values the flag exists to contain — the very shape of SEC-M1, with
+      nothing auditing reads of it.
+      Both sides tested, and the refusal proven non-vacuous by forcing
+      reversibility true and watching the lossy case pass.
 ### What exists in the API but has no console screen
 
 Maintained in `docs/07-admin-guide.md` under "What the console cannot do yet",
