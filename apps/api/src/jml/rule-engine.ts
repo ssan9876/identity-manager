@@ -78,6 +78,19 @@ const KNOWN_TRIGGERS = closedSet<JmlTrigger>([
  */
 export const KNOWN_ACTION_NAMES: readonly JmlActionType[] = ['set_attribute', 'deactivate']
 
+/**
+ * The trigger catalog, as a list — for `JmlRulesController`'s create DTO.
+ *
+ * DERIVED from `KNOWN_TRIGGERS` rather than re-listed, for the reason
+ * `parseOptionalTarget` in outbox.controller.ts learned the hard way: a
+ * hand-copied catalog beside a real one is stale the moment the real one
+ * grows, and the failure is silent — the API would reject a trigger
+ * `matchRules` accepts, or (far worse) accept one it can never dispatch on,
+ * which is precisely the "asserted the opposite of the truth" bug finding
+ * INJ-INFO closed in `simulate` above.
+ */
+export const KNOWN_TRIGGER_NAMES: readonly JmlTrigger[] = Object.keys(KNOWN_TRIGGERS) as JmlTrigger[]
+
 const KNOWN_ACTIONS = closedSet<JmlActionType>(KNOWN_ACTION_NAMES)
 
 type FieldExtractor = (user: User) => unknown

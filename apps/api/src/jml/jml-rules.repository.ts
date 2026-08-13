@@ -231,7 +231,7 @@ export class JmlRulesRepository {
     }
 
     throw new ValidationError([
-      `enabled: rule "${current.name}" has not been simulated yet — call simulate() and then markSimulated() before enabling it`,
+      `enabled: rule "${current.name}" has not been simulated yet — preview it, then record that the preview was reviewed, before enabling it`,
     ])
   }
 }

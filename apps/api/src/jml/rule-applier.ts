@@ -20,7 +20,19 @@ export interface ApplyResult {
 }
 
 const groupActionParamsSchema = z.object({ groupId: z.string().uuid() }).strict()
-const setAttributeActionParamsSchema = z.object({ key: z.string().min(1), value: z.unknown() }).strict()
+/**
+ * EXPORTED so `JmlRulesController` can reject a malformed `set_attribute`
+ * rule at CREATE time rather than at 3am. Until there was an HTTP create
+ * path this schema only ran here, at apply time, where a rule missing its
+ * `key` produces a `console.warn` and a silent skip — a rule that looks
+ * live in every listing and does nothing, forever. Validating the same
+ * schema at both ends means the runtime check stays the real gate (a rule
+ * seeded straight through the repository still meets it) while the API
+ * refuses to write one that could only ever be skipped.
+ */
+export const setAttributeActionParamsSchema = z
+  .object({ key: z.string().min(1), value: z.unknown() })
+  .strict()
 
 type ActionHandler = (
   rule: { id: string; name: string },
