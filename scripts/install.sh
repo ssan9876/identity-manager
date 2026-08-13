@@ -287,16 +287,32 @@ install -d -m 0700 -o postgres -g postgres /var/backups/identity-manager
 # every token then fails verification with 401 despite being perfectly valid.
 # NODE_EXTRA_CA_CERTS trusts THAT ONE certificate; NODE_TLS_REJECT_UNAUTHORIZED=0
 # would disable verification for every outbound connection this process makes.
+#
+# EVERY NODE UNIT THAT TALKS TO KEYCLOAK, not just the API — the bug this list
+# fixes. The drop-in used to be written for `idm-api` alone, because the
+# failure it was written for was the JWKS fetch. But `reconcile-cli` and
+# `lifecycle-cli` call Keycloak's Admin API too, and they are `Type=oneshot`
+# units run by TIMERS: with no trusted certificate they fail on every single
+# scheduled run, and a timer-driven failure is one nobody is watching. Found
+# on a real deployment, where `idm-reconcile` had been failing every run —
+# `[reconcile] failed: fetch failed`, which is Node's DEPTH_ZERO_SELF_SIGNED_CERT
+# wearing a friendlier name. Reconciliation is the drift-correction path, so
+# the system had quietly stopped correcting drift.
+#
+# `idm-backup` is deliberately absent: it runs `backup.sh` as postgres and
+# never speaks to Keycloak.
 if [[ -n "${KEYCLOAK_CA_CERT:-}" ]]; then
   [[ -f "$KEYCLOAK_CA_CERT" ]] || die "KEYCLOAK_CA_CERT does not exist: $KEYCLOAK_CA_CERT"
   install -m 644 "$KEYCLOAK_CA_CERT" /usr/local/share/ca-certificates/keycloak.crt
   update-ca-certificates >/dev/null 2>&1 || true
-  mkdir -p /etc/systemd/system/idm-api.service.d
-  cat >/etc/systemd/system/idm-api.service.d/ca.conf <<EOF
+  for unit in idm-api idm-reconcile idm-lifecycle; do
+    mkdir -p "/etc/systemd/system/${unit}.service.d"
+    cat >"/etc/systemd/system/${unit}.service.d/ca.conf" <<EOF
 [Service]
 Environment="NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/keycloak.crt"
 EOF
-  ok "trusting the supplied Keycloak certificate for JWKS verification"
+  done
+  ok "trusting the supplied Keycloak certificate for the API, reconcile and lifecycle units"
 fi
 
 systemctl daemon-reload
