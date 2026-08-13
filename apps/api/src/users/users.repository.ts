@@ -441,6 +441,43 @@ export class UsersRepository {
    * are excluded from self-service for exactly this reason), so a
    * permanently-inconsistent derived value is a real, not cosmetic, defect.
    */
+  /**
+   * Move a user to another org unit.
+   *
+   * A SEPARATE method from `update`, not a field of it, for the reason
+   * `update`'s own doc comment gives: reassigning `orgUnitId` is a materially
+   * different authorization question than editing a person in place. It needs
+   * a scope check against the DESTINATION unit as well as the current one,
+   * and a caller that could smuggle it through the ordinary PATCH surface
+   * would only ever be checked against the unit the person is leaving —
+   * which is precisely backwards, because the unit they arrive in is the one
+   * that inherits reach over them.
+   *
+   * Keeping it separate is what makes that impossible to forget: there is no
+   * `orgUnitId` key on `UpdateUserInput` to accidentally honour.
+   *
+   * `findByIdForUpdate`, like `update`, so the caller's audit `before` image
+   * and this write are not separated by an unlocked window (finding INT-L2).
+   */
+  async transferOrgUnit(
+    id: string,
+    orgUnitId: string,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<User> {
+    const current = await this.findByIdForUpdate(id, db)
+    if (current === null) {
+      throw new NotFoundError('user', id)
+    }
+
+    const [row] = await db
+      .update(users)
+      .set({ orgUnitId, updatedAt: new Date() })
+      .where(eq(users.id, id))
+      .returning()
+
+    return row as User
+  }
+
   async update(
     id: string,
     patch: UpdateUserInput,

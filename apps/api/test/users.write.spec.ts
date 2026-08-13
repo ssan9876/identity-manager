@@ -142,6 +142,9 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
         { provide: KEYCLOAK_ADMIN_CONFIG, useValue: UNREACHABLE_KEYCLOAK_CONFIG },
         KeycloakAdminClient,
         GroupsRepository,
+        // POST /users/:id/transfer resolves the DESTINATION unit before
+        // authorizing against it — a nonexistent unit must 404, not 403.
+        OrgUnitsRepository,
         SyncStateRepository,
       SyncDetailRepository,
         SyncDetailRepository,
@@ -1327,6 +1330,143 @@ describe('user write endpoints (Milestone 3b, Task 2)', () => {
       for (const forbidden of ['password', 'passwd', 'secret', 'hash', 'salt', 'credential', 'token']) {
         expect(serialized).not.toContain(forbidden)
       }
+    })
+  })
+
+  // =========================================================================
+  // Moving a person between org units
+  // =========================================================================
+
+  /**
+   * `UsersRepository.update` deliberately refuses `orgUnitId` because
+   * reassigning it "is a materially different authorization question than
+   * editing a user in place — it would need its own scope check against the
+   * DESTINATION unit, not just the current one." POST :id/transfer is that
+   * check, and these tests are about the check rather than the move.
+   */
+  describe('POST /users/:id/transfer', () => {
+    it('moves a person between units for a global admin, and records both sides', async () => {
+      const from = await makeOrgUnit('Transfer From')
+      const to = await makeOrgUnit('Transfer To')
+      const admin = await makeActiveUser('super_admin', from.id)
+      await grant(admin.id, 'super_admin', null)
+      const subject = await makeActiveUser('read_only', from.id)
+
+      currentUsername = admin.username
+      const res = await request(app.getHttpServer())
+        .post(`/users/${subject.id}/transfer`)
+        .send({ orgUnitId: to.id })
+        .expect(200)
+      expect(res.body.orgUnitId).toBe(to.id)
+
+      const rows = await auditRowsFor(ctx, subject.id)
+      const transfer = rows.find((row) => row.action === 'user:transfer')
+      expect(transfer?.before).toMatchObject({ orgUnitId: from.id })
+      expect(transfer?.after).toMatchObject({ orgUnitId: to.id })
+    })
+
+    /**
+     * THE escalation this route exists to stop. A scoped admin who may write
+     * in their own subtree, and who can reach a person elsewhere, must not be
+     * able to pull that person INTO their subtree — the destination unit
+     * inherits reach over whoever is in it, so a move with only a
+     * source-side check hands the mover authority they were never granted.
+     */
+    it('refuses a move INTO a subtree the caller controls, from one they do not', async () => {
+      const outside = await makeOrgUnit('Outside')
+      const mine = await makeOrgUnit('Mine')
+      const scoped = await makeActiveUser('user_admin', mine.id)
+      await grant(scoped.id, 'user_admin', mine.id)
+      const subject = await makeActiveUser('read_only', outside.id)
+
+      currentUsername = scoped.username
+      await request(app.getHttpServer())
+        .post(`/users/${subject.id}/transfer`)
+        .send({ orgUnitId: mine.id })
+        .expect(403)
+
+      // Untouched.
+      const rows = await auditRowsFor(ctx, subject.id)
+      expect(rows.some((row) => row.action === 'user:transfer')).toBe(false)
+    })
+
+    /** The mirror image: reachable source, unreachable destination. */
+    it('refuses a move OUT of a subtree the caller controls, into one they do not', async () => {
+      const mine = await makeOrgUnit('Mine Source')
+      const elsewhere = await makeOrgUnit('Elsewhere')
+      const scoped = await makeActiveUser('user_admin', mine.id)
+      await grant(scoped.id, 'user_admin', mine.id)
+      const subject = await makeActiveUser('read_only', mine.id)
+
+      currentUsername = scoped.username
+      await request(app.getHttpServer())
+        .post(`/users/${subject.id}/transfer`)
+        .send({ orgUnitId: elsewhere.id })
+        .expect(403)
+    })
+
+    it('allows a move WITHIN the subtree a scoped admin controls', async () => {
+      const root = await makeOrgUnit('Scoped Root')
+      const left = await makeChildOrgUnit(root.id, 'Left')
+      const right = await makeChildOrgUnit(root.id, 'Right')
+      const scoped = await makeActiveUser('user_admin', root.id)
+      await grant(scoped.id, 'user_admin', root.id)
+      const subject = await makeActiveUser('read_only', left.id)
+
+      currentUsername = scoped.username
+      const res = await request(app.getHttpServer())
+        .post(`/users/${subject.id}/transfer`)
+        .send({ orgUnitId: right.id })
+        .expect(200)
+      expect(res.body.orgUnitId).toBe(right.id)
+    })
+
+    /**
+     * A nonexistent destination has no path, so an authorization-first order
+     * would answer 403 — telling the caller they lack permission for a unit
+     * that is simply not there.
+     */
+    it('404s for a destination org unit that does not exist', async () => {
+      const from = await makeOrgUnit('Transfer 404')
+      const admin = await makeActiveUser('super_admin', from.id)
+      await grant(admin.id, 'super_admin', null)
+      const subject = await makeActiveUser('read_only', from.id)
+
+      currentUsername = admin.username
+      await request(app.getHttpServer())
+        .post(`/users/${subject.id}/transfer`)
+        .send({ orgUnitId: '00000000-0000-0000-0000-000000000000' })
+        .expect(404)
+    })
+
+    /** A transfer that moved nobody is not an event. */
+    it('is a silent no-op when the person is already in that unit', async () => {
+      const unit = await makeOrgUnit('Same Unit')
+      const admin = await makeActiveUser('super_admin', unit.id)
+      await grant(admin.id, 'super_admin', null)
+      const subject = await makeActiveUser('read_only', unit.id)
+
+      currentUsername = admin.username
+      const before = await totalAuditCount(ctx)
+      await request(app.getHttpServer())
+        .post(`/users/${subject.id}/transfer`)
+        .send({ orgUnitId: unit.id })
+        .expect(200)
+      expect(await totalAuditCount(ctx)).toBe(before)
+    })
+
+    /** `.strict()` — a transfer is not a place to smuggle a profile edit through. */
+    it('refuses a body that also names a profile field', async () => {
+      const unit = await makeOrgUnit('Strict Unit')
+      const admin = await makeActiveUser('super_admin', unit.id)
+      await grant(admin.id, 'super_admin', null)
+      const subject = await makeActiveUser('read_only', unit.id)
+
+      currentUsername = admin.username
+      await request(app.getHttpServer())
+        .post(`/users/${subject.id}/transfer`)
+        .send({ orgUnitId: unit.id, firstName: 'Sneaky' })
+        .expect(400)
     })
   })
 })

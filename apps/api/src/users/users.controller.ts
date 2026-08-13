@@ -51,6 +51,7 @@ import { KeycloakAdminClient } from '../keycloak/keycloak-admin.client'
 import { OutboxWriter } from '../outbox/outbox.writer'
 import { SyncDetailRepository, type UserSyncDetail } from '../outbox/sync-detail.repository'
 import { type SyncState, SyncStateRepository } from '../outbox/sync-state.repository'
+import { OrgUnitsRepository } from '../org-units/org-units.repository'
 import { UsersRepository, type User, type UserStatus } from './users.repository'
 
 /**
@@ -181,6 +182,15 @@ const createUserBodySchema = z
 // primaryEmail, username, orgUnitId and status are deliberately absent —
 // see UsersRepository.update's doc comment for why each is out of this
 // milestone's PATCH surface.
+/**
+ * `POST /users/:id/transfer`. Deliberately its OWN schema with exactly one
+ * field rather than an addition to `updateUserBodySchema` — see the route's
+ * doc comment. `.strict()` means a caller who tries to combine a transfer
+ * with a profile edit is told no rather than silently having half of it
+ * applied.
+ */
+const transferBodySchema = z.object({ orgUnitId: z.string().uuid() }).strict()
+
 const updateUserBodySchema = z
   .object({
     // noFormatChar for the same reason as the create schema above (INJ-L-1):
@@ -417,6 +427,7 @@ export class UsersController {
   constructor(
     @Inject(UsersRepository) private readonly users: UsersRepository,
     @Inject(PermissionEngine) private readonly engine: PermissionEngine,
+    @Inject(OrgUnitsRepository) private readonly orgUnits: OrgUnitsRepository,
     @Inject(PrivilegeGuards) private readonly privileges: PrivilegeGuards,
     @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
     @Inject(OutboxWriter) private readonly outboxWriter: OutboxWriter,
@@ -896,6 +907,108 @@ export class UsersController {
       }
 
       return updated
+    })
+
+    const syncState = await this.syncStates.resolveForUser(id)
+    return this.attachSyncState(updated, syncState)
+  }
+
+  /**
+   * Move a person to another org unit.
+   *
+   * A SEPARATE route from PATCH, not a field on it, and the reason is the
+   * whole point of the feature: `UsersRepository.update` deliberately refuses
+   * `orgUnitId` because reassigning it "is a materially different
+   * authorization question than editing a user in place — it would need its
+   * own scope check against the DESTINATION unit, not just the current one."
+   * That check is here, and it is the only thing this route exists to
+   * enforce.
+   *
+   * BOTH sides are checked, and neither subsumes the other:
+   *   - the SOURCE, because moving someone out of a subtree is a write
+   *     against that subtree, and a scoped admin must not be able to remove
+   *     people from a unit they cannot otherwise touch;
+   *   - the DESTINATION, because the unit a person arrives in INHERITS reach
+   *     over them. Without this check a scoped admin could move any person
+   *     they can reach into their own subtree and thereby acquire authority
+   *     over an account they were never granted — a privilege escalation
+   *     performed entirely with legitimate permissions, which is exactly what
+   *     the repository's refusal was holding the line against.
+   *
+   * `assertCanModifyPrincipal` runs too, on PATCH's terms: scope alone would
+   * let a help-desk relocate a global super_admin who merely happens to sit in
+   * their subtree.
+   *
+   * Roles are ALWAYS re-evaluated afterwards, unconditionally — unlike PATCH,
+   * which skips the sweep for fields that cannot move anyone between roles.
+   * An org unit is a business-role condition field (`orgUnitId`, and
+   * `orgUnitPath` for whole-subtree conditions), so a transfer is one of the
+   * few writes that can change what someone is entitled to without touching a
+   * single attribute of theirs.
+   *
+   * Moving someone to the unit they are already in is a no-op that writes
+   * nothing — no audit row, no outbox event, no sweep. A transfer that did
+   * not move anybody is not an event, and recording it would put noise in the
+   * one log that answers "who moved this person, and when".
+   */
+  @Post(':id/transfer')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('user:update')
+  async transfer(
+    @Param('id') rawId: string,
+    @Body() body: unknown,
+    @Req() request: AuthorizedRequest,
+  ): Promise<UserWithSyncState> {
+    const id = parseId(rawId)
+    const parsed = parseBody(transferBodySchema, body)
+
+    const updated = await this.db.transaction(async (tx) => {
+      const current = await this.users.findByIdForUpdate(id, tx)
+      if (current === null) {
+        throw new NotFoundError('user', id)
+      }
+
+      if (current.orgUnitId === parsed.orgUnitId) {
+        return current
+      }
+
+      // The destination must EXIST before it is authorized against: a
+      // nonexistent unit has no path, so `canIn` would answer "no" and the
+      // caller would be told they lack permission for a unit that is simply
+      // not there. Wrong answer, and an unhelpful one.
+      const destination = await this.orgUnits.findById(parsed.orgUnitId, tx)
+      if (destination === null) {
+        throw new NotFoundError('org unit', parsed.orgUnitId)
+      }
+
+      // Both, in this order, before anything is written. `tx` passed
+      // explicitly to every check — never defaulted to the pool while this
+      // handler already holds a connection (finding C1).
+      await this.engine.assertCanIn(request.actor, 'user:update', current.orgUnitId, tx)
+      await this.engine.assertCanIn(request.actor, 'user:update', destination.id, tx)
+      await this.privileges.assertCanModifyPrincipal(request.actor, current.id, tx)
+
+      const moved = await this.users.transferOrgUnit(id, destination.id, tx)
+
+      await this.auditWriter.record(tx, {
+        actorUserId: request.actor.userId,
+        action: 'user:transfer',
+        resourceType: 'user',
+        resourceId: id,
+        before: { orgUnitId: current.orgUnitId },
+        after: { orgUnitId: moved.orgUnitId },
+      })
+
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'user',
+        aggregateId: id,
+        eventType: 'updated',
+        payload: { ...snapshotUser(moved), action: 'user:transfer' },
+      })
+
+      await this.reevaluateRoles(tx, id, request.actor)
+
+      return moved
     })
 
     const syncState = await this.syncStates.resolveForUser(id)
