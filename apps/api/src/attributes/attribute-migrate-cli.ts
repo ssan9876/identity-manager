@@ -274,10 +274,19 @@ async function main(): Promise<void> {
       actorUserId: actor.userId,
     })
     printReport(report)
+    // Two different sentences, because the two cases are reversible for
+    // DIFFERENT reasons and saying "the audit row carries every prior value"
+    // about a sensitive definition would be flatly untrue — that row carries
+    // the holder ids and nothing else. Caught by running this on a real
+    // deployment, where the message printed the false half.
     console.log(
       `[attribute-migrate] COMMITTED — ${report.changedCount} stored value(s) converted` +
         (force && report.blastRadius.tripped ? ', blast-radius guard overridden with --force' : '') +
-        '. The audit row carries every prior value; it is what makes this reversible.',
+        (report.sensitive
+          ? '. This definition is sensitive, so NO prior values were written to the audit log: ' +
+            'every value converts back on its own, which is what made the migration permissible ' +
+            'and is what makes it reversible.'
+          : '. The audit row carries every prior value; it is what makes this reversible.'),
     )
   } finally {
     await pool.end()
