@@ -305,6 +305,39 @@ for timer_path in "$REPO_ROOT"/deploy/systemd/*.timer; do
   timer="$(basename "$timer_path")"
   systemctl enable --now "$timer" >/dev/null 2>&1 || warn "could not enable $timer"
 done
+# The CA drop-in, propagated to every Node unit that talks to Keycloak.
+#
+# THE SAME CLASS OF SILENT GAP THIS SCRIPT'S HEADER IS ABOUT, one level down.
+# install.sh used to write this drop-in for `idm-api` alone, because the
+# failure it was written for was the API's JWKS fetch — but `reconcile-cli`
+# and `lifecycle-cli` call Keycloak's Admin API too, and they run from TIMERS,
+# where a failure is one nobody is watching. On a real deployment
+# `idm-reconcile` had been failing every scheduled run with
+# `[reconcile] failed: fetch failed` (Node's DEPTH_ZERO_SELF_SIGNED_CERT),
+# which meant drift correction had quietly stopped.
+#
+# install.sh now writes all three, but a host installed BEFORE that fix only
+# ever runs this script — so the repair belongs here too, or those hosts stay
+# broken forever. Keyed off the API's own drop-in, which is the record of what
+# the operator supplied at install time; nothing is invented when no
+# certificate was ever configured.
+API_CA_DROPIN=/etc/systemd/system/idm-api.service.d/ca.conf
+if [[ -f "$API_CA_DROPIN" ]]; then
+  ca_repaired=0
+  for unit in idm-reconcile idm-lifecycle; do
+    dropin="/etc/systemd/system/${unit}.service.d/ca.conf"
+    if [[ ! -f "$dropin" ]]; then
+      mkdir -p "$(dirname "$dropin")"
+      cp "$API_CA_DROPIN" "$dropin"
+      ca_repaired=1
+    fi
+  done
+  if (( ca_repaired )); then
+    systemctl daemon-reload
+    ok "propagated the Keycloak CA trust to the reconcile and lifecycle units"
+  fi
+fi
+
 ok "systemd units re-rendered and reloaded"
 
 info "re-rendering nginx"
