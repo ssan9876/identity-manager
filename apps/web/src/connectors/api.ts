@@ -286,6 +286,16 @@ export interface CreateMappingInput {
   target: ConnectorTarget
   remoteName: string
   enabled?: boolean
+  /**
+   * The export impact the caller was shown, echoed back.
+   *
+   * REQUIRED by the API whenever this write would leave the mapping enabled
+   * over a non-empty population — a missing one is a 400 naming the real
+   * number, a stale one a 409. The API re-derives it inside the writing
+   * transaction, so this console neither computes nor caches it: it shows the
+   * number the API gave it and hands the same number back.
+   */
+  acknowledgedExportCount?: number
 }
 
 export function createAttributeTargetMapping(
@@ -302,6 +312,16 @@ export function createAttributeTargetMapping(
 export interface UpdateMappingInput {
   remoteName?: string
   enabled?: boolean
+  /**
+   * The export impact the caller was shown, echoed back.
+   *
+   * REQUIRED by the API whenever this write would leave the mapping enabled
+   * over a non-empty population — a missing one is a 400 naming the real
+   * number, a stale one a 409. The API re-derives it inside the writing
+   * transaction, so this console neither computes nor caches it: it shows the
+   * number the API gave it and hands the same number back.
+   */
+  acknowledgedExportCount?: number
 }
 
 export function updateAttributeTargetMapping(
@@ -314,6 +334,35 @@ export function updateAttributeTargetMapping(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
   })
+}
+
+/**
+ * What enabling a mapping would newly export — security finding 5.
+ *
+ * `holderCount` is scoped to organizations that actually have the target
+ * enabled, so it is the number of people whose values genuinely leave, not a
+ * directory-wide over-estimate. `sensitive` says the audit log is forbidden
+ * to record those values, which makes the export unrecoverable from the log
+ * afterwards.
+ */
+export interface ExportImpact {
+  target: ConnectorTarget
+  holderCount: number
+  sensitive: boolean
+}
+
+export function fetchExportImpact(
+  accessToken: string,
+  query: { target: ConnectorTarget; attributeDefinitionId?: string; coreField?: CoreProfileField },
+): Promise<ExportImpact> {
+  return authorizedRequest<ExportImpact>(
+    `/attribute-target-mappings/export-impact${buildQuery({
+      target: query.target,
+      attributeDefinitionId: query.attributeDefinitionId,
+      coreField: query.coreField,
+    })}`,
+    accessToken,
+  )
 }
 
 export function deleteAttributeTargetMapping(accessToken: string, id: string): Promise<{ deleted: true }> {
