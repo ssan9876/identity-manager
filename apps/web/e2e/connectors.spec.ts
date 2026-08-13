@@ -314,6 +314,35 @@ test('mapping a core field to one target leaves it visibly unmapped for every ot
     await echoCell.getByTestId('mapping-add-button').click()
     await echoCell.getByTestId('mapping-add-input').fill(remoteName)
     await echoCell.getByTestId('mapping-add-save').click()
+
+    // SECURITY FINDING 5's confirmation may or may not appear here, and BOTH
+    // are correct — which is why this is a conditional rather than an
+    // assertion either way. The guard fires only over a non-empty population,
+    // and whether anyone holds a `title` at this instant is not something this
+    // test controls: import.spec.ts loads a CSV carrying a `jobTitle` column
+    // into the SAME shared database, concurrently, and its users are cleaned
+    // up at the end of the run. So this test saw no confirmation when run
+    // alone and a confirmation when run with the others, which is exactly the
+    // shape of flake that gets "fixed" by a retry and never understood.
+    // The guard's own behaviour is pinned deterministically in the dedicated
+    // test below, over `Given name`, where `first_name` is NOT NULL on every
+    // user and the count therefore cannot be zero.
+    // Waited for, never sampled. `isVisible()` is an instantaneous snapshot,
+    // and the panel only appears after the export-impact round trip returns —
+    // so a bare `if (await isVisible())` loses the race whenever that request
+    // is slower than the click handler, skips the confirm, and then fails on
+    // a toggle that was never going to appear. Wait until ONE of the two
+    // legitimate outcomes is on screen, then act on whichever it is.
+    const exportConfirm = page.getByTestId('mapping-export-confirm')
+    const enabledToggle = echoCell.getByTestId('mapping-enabled-toggle')
+    await expect(async () => {
+      expect((await exportConfirm.isVisible()) || (await enabledToggle.isVisible())).toBe(true)
+    }).toPass({ timeout: 15_000 })
+
+    if (await exportConfirm.isVisible()) {
+      await page.getByTestId('mapping-export-confirm-button').click()
+    }
+
     await expect(echoCell.getByTestId('mapping-enabled-toggle')).toBeVisible()
     await expect(echoCell).toContainText(remoteName)
 
@@ -346,4 +375,71 @@ test('mapping a core field to one target leaves it visibly unmapped for every ot
       }
     }
   }
+})
+
+/**
+ * SECURITY FINDING 5, end to end — and deliberately NON-MUTATING.
+ *
+ * Enabling a mapping exports every existing holder's value outward on their
+ * next sync, retroactively, and nothing recalls it. The console reads the
+ * impact first and states the number; the API requires that number echoed
+ * back and re-derives it inside the writing transaction.
+ *
+ * WHAT THIS TEST ASSERTS, AND WHY IT STOPS SHORT. It proves the gate holds:
+ * the panel appears, it names a real count, and NOTHING is created while it
+ * is open. It then cancels. It deliberately does not go on to confirm,
+ * because this suite runs 8 parallel workers against ONE shared database (see
+ * this file's own header) and `Given name` -> Keycloak is the only pair with
+ * a guaranteed non-empty population — creating it raced the sibling test
+ * above, which asserts other cells read "not mapped". The confirm-and-create
+ * path is covered where it costs nothing: ten API tests, each refusal broken
+ * and watched to fail.
+ *
+ * The pair is chosen rather than stumbled on: `first_name` is NOT NULL on
+ * every user and `keycloak` is the target this bootstrap enables, so the
+ * count cannot be zero. The Title -> Echo case above has no holders and
+ * correctly gets no ceremony; between them they pin both sides of the rule.
+ */
+test('enabling a mapping over a non-empty population states the number, and creates nothing until confirmed', async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  await signIn(page)
+  await page.goto('http://localhost:5173/connectors')
+  await page.getByRole('tab', { name: /attribute mappings/i }).click()
+
+  const givenNameRow = page.getByTestId('mapping-editor-row').nth(0)
+  const keycloakCell = givenNameRow.getByTestId('mapping-editor-cell').nth(0)
+
+  // If a previous run left this pair mapped there is no add control to click.
+  const alreadyMapped = await keycloakCell.getByTestId('mapping-enabled-toggle').isVisible()
+  test.skip(alreadyMapped, 'Given name -> Keycloak is already mapped')
+
+  await keycloakCell.getByTestId('mapping-add-button').click()
+  await keycloakCell.getByTestId('mapping-add-input').fill(`e2eAck${Date.now()}`)
+  await keycloakCell.getByTestId('mapping-add-save').click()
+
+  const confirm = page.getByTestId('mapping-export-confirm')
+  await expect(confirm).toBeVisible()
+  await expect(confirm).toContainText(/exports \d+ (person|people)/i)
+
+  // THE GATE: still nothing created while the panel is open.
+  await expect(keycloakCell.getByTestId('mapping-enabled-toggle')).toBeHidden()
+
+  // The panel's own Cancel — the add form beneath carries one too, so a bare
+  // role+name lookup is ambiguous.
+  await page.getByTestId('mapping-export-cancel').click()
+  await expect(confirm).toBeHidden()
+
+  // And cancelling really did create nothing, after a full reload.
+  await page.reload()
+  await page.getByRole('tab', { name: /attribute mappings/i }).click()
+  await expect(
+    page
+      .getByTestId('mapping-editor-row')
+      .nth(0)
+      .getByTestId('mapping-editor-cell')
+      .nth(0)
+      .getByTestId('mapping-unmapped'),
+  ).toHaveText('not mapped')
 })

@@ -257,12 +257,29 @@ describe('KeycloakSsoConnector — SAML', () => {
     const connector = new KeycloakSsoConnector(admin)
     await connector.applyApp(SAML_DESIRED)
     expect(admin.clients[0].attributes?.['saml.client.signature']).toBe('false')
+    // Never set in the first place on a client that never had one, so absent
+    // is right here — unlike the removal case below, where absent would be a
+    // silent no-op.
     expect(admin.clients[0].attributes?.['saml.signing.certificate']).toBeUndefined()
   })
 
-  it('removes the stale stored certificate when the SP certificate is cleared', async () => {
-    // Read-modify-write would otherwise preserve the half-state forever: a
-    // client that no longer requires signatures still holding a key.
+  it('CLEARS the stale stored certificate with an explicit empty value, never by omission', async () => {
+    /**
+     * This assertion used to read `toBeUndefined()`, and it was green and
+     * WRONG. It checked the shape of the payload the connector builds, against
+     * a fake that stores whatever it is handed — so the code dropped the key,
+     * the fake dropped the key, and the two agreed with each other about a
+     * Keycloak that does not behave that way.
+     *
+     * Measured on the lab host against Keycloak 26.4 (2026-08-13): the
+     * `attributes` map MERGES. A key omitted from a PUT keeps its stored
+     * value; only an explicit `""` or `null` clears it. Under the old code a
+     * removed SP certificate stayed in Keycloak forever, which is the precise
+     * half-state the connector's own comment promised to prevent.
+     *
+     * So the empty string is the assertion, and `toBeUndefined()` would now be
+     * the bug.
+     */
     const admin = fakeAdmin([
       {
         id: 'uuid-hr',
@@ -279,7 +296,7 @@ describe('KeycloakSsoConnector — SAML', () => {
 
     const after = admin.clients[0]
     expect(after.attributes?.['saml.client.signature']).toBe('false')
-    expect(after.attributes?.['saml.signing.certificate']).toBeUndefined()
+    expect(after.attributes?.['saml.signing.certificate']).toBe('')
   })
 
   it('asserts the SAML groups attribute mapper, never the OIDC claim mapper', async () => {

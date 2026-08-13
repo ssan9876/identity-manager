@@ -1,4 +1,3 @@
-import { sql } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import { organizationStatus, organizations } from '../src/db/schema/organizations'
 import { withTestDatabase } from './support/pg'

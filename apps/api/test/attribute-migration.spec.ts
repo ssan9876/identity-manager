@@ -479,22 +479,60 @@ describe('AttributeMigrationJob.commit', () => {
     expect(await storedValues(holders, key)).toEqual(['1', '2', '3'])
   })
 
-  it('refuses to migrate a sensitive definition, whose values may not be written to the audit log', async () => {
+  /**
+   * THE TENSION THIS SETTLES, and why the answer is no longer a flat refusal.
+   *
+   * A migration is reversible because its audit row carries the before-values
+   * (see the test above) — and `sensitive` is precisely the flag saying this
+   * attribute's values must NEVER be copied into `audit_log`, whose
+   * UPDATE/DELETE/TRUNCATE are blocked by privilege AND trigger (SEC-M1).
+   * Writing them would reintroduce that finding permanently; writing a
+   * redacted row would overwrite the most sensitive values in the directory
+   * with no way back at all.
+   *
+   * But that argument only holds when the values are NEEDED to reverse the
+   * migration. `'1'` -> `1` -> `'1'` returns exactly what it started as, so
+   * the undo is a computation, not a lookup, and there is nothing to record.
+   * The refusal now applies to migrations that genuinely lose something, and
+   * the flag no longer blocks the ones that do not.
+   */
+  it('migrates a sensitive definition when every value converts back, recording NO values', async () => {
     const { id, key } = await seedDefinition({ dataType: 'string', sensitive: true })
     const holders = await seedHolders(key, ['1', '2'])
     const actorUserId = await seedActor()
 
     const preview = await job().preview(id, { dataType: 'number' })
+    await job().commit(id, { dataType: 'number' }, preview.previewHash, { actorUserId })
 
-    // The tension this task had to settle. A migration is only reversible
-    // because its audit row carries the before-values (see the test above) —
-    // and `sensitive` is precisely the flag that says this attribute's values
-    // must NEVER be copied into `audit_log`, whose UPDATE/DELETE/TRUNCATE are
-    // blocked by privilege AND trigger (finding SEC-M1). Writing them would
-    // reintroduce that finding permanently; writing a redacted row instead
-    // would overwrite the most sensitive values in the directory with no way
-    // back. Refusing is the only option that destroys nothing, and it is not
-    // forceable: `force` is the blast-radius override alone.
+    expect(await storedValues(holders, key)).toEqual([1, 2])
+    expect(await storedDataType(id)).toBe('number')
+
+    const [row] = await auditRowsFor(id)
+    const before = row.before as { values: { userId: string; value?: unknown }[] }
+    const after = row.after as { values: { userId: string; value?: unknown }[]; reversibleByInverseConversion: boolean }
+
+    // The holders are named — an undo has to know whom to touch — but not one
+    // value appears on either side. An id is not the thing SEC-M1 is about.
+    expect(before.values.map((v) => v.userId).sort()).toEqual([...holders].sort())
+    expect(before.values.every((v) => !('value' in v))).toBe(true)
+    expect(after.values.every((v) => !('value' in v))).toBe(true)
+    expect(after.reversibleByInverseConversion).toBe(true)
+
+    // And the row genuinely holds no trace of them, however it is serialised.
+    expect(JSON.stringify(row)).not.toContain('"1"')
+  })
+
+  it('still refuses a sensitive definition when a value would not survive the round trip', async () => {
+    const { id, key } = await seedDefinition({ dataType: 'string', sensitive: true })
+    // '1.50' CONVERTS to 1.5 — the number rule ignores presentational zeros —
+    // but converts BACK to '1.5', which is not what the user had. That lost
+    // trailing zero is exactly the kind of thing the before-values exist to
+    // restore, and exactly what may not be written here.
+    const holders = await seedHolders(key, ['1.50', '2'])
+    const actorUserId = await seedActor()
+
+    const preview = await job().preview(id, { dataType: 'number' })
+
     const refusal = job().commit(id, { dataType: 'number' }, preview.previewHash, {
       actorUserId,
       force: true,
@@ -502,7 +540,7 @@ describe('AttributeMigrationJob.commit', () => {
     await expect(refusal).rejects.toBeInstanceOf(ValidationError)
     await expect(refusal).rejects.toThrow(/sensitive/)
 
-    expect(await storedValues(holders, key)).toEqual(['1', '2'])
+    expect(await storedValues(holders, key)).toEqual(['1.50', '2'])
     expect(await storedDataType(id)).toBe('string')
     expect(await auditRowsFor(id)).toHaveLength(0)
   })

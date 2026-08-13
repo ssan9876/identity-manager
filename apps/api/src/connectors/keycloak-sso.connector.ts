@@ -50,12 +50,20 @@ const MANAGED_KEYS = [
  * adds, untouched. Same discipline as `setEnabledPreservingOtherBits` for
  * Active Directory's `userAccountControl`.
  *
- * NOT YET VERIFIED EMPIRICALLY against Keycloak 26 — the plan's Task 5 Step 1
- * called for confirming what a partial PUT does to absent fields, and Docker
- * was unavailable. Read-modify-write is the safe choice under either answer
- * (if a partial PUT preserves absent fields it simply writes the same values
- * back), so the behaviour here is correct regardless; what remains unproven is
- * only whether the weaker approach would ALSO have worked.
+ * VERIFIED EMPIRICALLY against Keycloak 26.4 on 2026-08-13, on the lab host,
+ * by creating a client and re-reading it after a partial `PUT`:
+ *
+ *   - A TOP-LEVEL field omitted from the payload is PRESERVED. `description`
+ *     and `redirectUris` both survived a PUT carrying only `clientId` and
+ *     `enabled`, and `enabled` — the one field sent — changed.
+ *   - The `attributes` MAP also merges. A key omitted from the map keeps its
+ *     stored value; only an explicit `""` or `null` clears it.
+ *
+ * So read-modify-write was never load-bearing for correctness here, and the
+ * weaker approach would also have worked — but the second half of that answer
+ * mattered a great deal: `mergeSaml` used to remove a stale certificate with
+ * `delete`, which under a MERGING map removed it from the request and never
+ * from Keycloak. See that method for the fix.
  */
 export class KeycloakSsoConnector implements SsoConnector {
   constructor(private readonly admin: SsoAdminApi) {}
@@ -201,10 +209,12 @@ export class KeycloakSsoConnector implements SsoConnector {
    *    requiring signatures silently verifies nothing. Coupling them makes
    *    the inconsistent states unrepresentable. The stored value is the PEM
    *    stripped to base64 DER, which is the shape Keycloak keeps. When the
-   *    certificate is REMOVED, the stale attribute is deleted rather than
-   *    left behind — a lingering key on a client that no longer requires
-   *    signatures is exactly the confusing half-state read-modify-write can
-   *    otherwise preserve forever.
+   *    certificate is REMOVED, the stale attribute is CLEARED with an
+   *    explicit empty string rather than dropped from the payload — a
+   *    lingering key on a client that no longer requires signatures is exactly
+   *    the confusing half-state read-modify-write can otherwise preserve
+   *    forever, and dropping the key achieves precisely nothing because
+   *    Keycloak merges this map.
    *
    * Asserting the same desired state twice writes byte-identical attributes,
    * preserving the convergence property planApp's diff depends on.
@@ -229,7 +239,25 @@ export class KeycloakSsoConnector implements SsoConnector {
       ...(certificate === null ? {} : { 'saml.signing.certificate': certificate }),
     }
     if (certificate === null) {
-      delete attributes['saml.signing.certificate']
+      // AN EXPLICIT EMPTY STRING, NOT `delete` — and only for a key that is
+      // actually there.
+      //
+      // Keycloak MERGES the attributes map on update: a key absent from the
+      // payload keeps whatever is already stored. `delete` therefore removed
+      // the certificate from the REQUEST and left it in Keycloak forever — the
+      // exact half-state the block below promises to prevent, and the fake in
+      // the spec agreed with the code because it stores whatever it is handed.
+      // Measured against Keycloak 26.4 on 2026-08-13: omitting a key preserves
+      // it; sending `""` or `null` clears the value, which reads back as null.
+      //
+      // Guarded on the key already existing so a client that never had a
+      // certificate does not acquire an empty one just for passing through
+      // here. Converges either way: once cleared, the stored value reads back
+      // null, the key is still present, and the next assert writes the same
+      // empty string.
+      if (attributes['saml.signing.certificate'] !== undefined) {
+        attributes['saml.signing.certificate'] = ''
+      }
     }
 
     return {

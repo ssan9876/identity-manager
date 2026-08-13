@@ -1291,12 +1291,25 @@ describe('POST /attribute-definitions/:id/commit (Milestone 8, Task 10)', () => 
   it('surfaces the sensitive refusal as 400, naming the flag', async () => {
     await actAs('super_admin')
     const definition = await seedDefinition({ dataType: 'string', sensitive: true })
-    await seedHolders(definition.key, ['1'])
+    // '1.50' converts to 1.5 but comes BACK as '1.5', so this migration needs
+    // the prior values to be undoable — which is what `sensitive` forbids
+    // recording. A value that round-trips is allowed through instead; see the
+    // pair of tests in attribute-migration.spec.ts.
+    await seedHolders(definition.key, ['1.50'])
     const hash = await previewHashFor(definition.id, { dataType: 'number' })
 
     const res = await commit(definition.id, { dataType: 'number', previewHash: hash }).expect(400)
     expect(res.body.code).toBe('VALIDATION_FAILED')
     expect(JSON.stringify(res.body.issues)).toMatch(/sensitive/i)
+  })
+
+  it('lets a sensitive definition migrate when every value converts back', async () => {
+    await actAs('super_admin')
+    const definition = await seedDefinition({ dataType: 'string', sensitive: true })
+    await seedHolders(definition.key, ['1'])
+    const hash = await previewHashFor(definition.id, { dataType: 'number' })
+
+    await commit(definition.id, { dataType: 'number', previewHash: hash }).expect(200)
   })
 
   it('surfaces the unconvertible refusal as 400, which force cannot answer', async () => {

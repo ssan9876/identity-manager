@@ -98,15 +98,27 @@ a High-severity bug that made people and groups unsavable.
 
 Still open, and the one thing that pass did NOT close:
 
-- [ ] **A `sensitive` attribute cannot have its type migrated.** Reversing a
-      migration needs the previous values in the audit row, and keeping values
-      out of the audit log is exactly what `sensitive` means (finding SEC-M1),
-      in a table that is append-only at the database level. The migration is
-      refused rather than run irreversibly; the admin turns `sensitive` off,
-      migrates, and turns it back on, and during that window the values land in
-      ordinary user audit rows. Documented and audited rather than silent, but
-      it is a hole, not a closed door.
-
+- [x] **A `sensitive` attribute could not have its type migrated.** Closed
+      2026-08-13, by narrowing the refusal to the case that actually justifies
+      it rather than adding a second place to keep sensitive values.
+      The refusal rested on one premise: a migration is reversible only because
+      its audit row carries every affected user's prior value, and that is what
+      `sensitive` forbids. True — but only when those values are NEEDED to
+      reverse it. `"1"` -> `1` -> `"1"` returns exactly what it started as, so
+      the undo is a computation, not a lookup, and there is nothing to record.
+      `isReversibleConversion` converts forward, converts straight back, and
+      compares; a sensitive definition migrates when EVERY affected value
+      survives that, and its audit row then names the affected holders while
+      carrying no value on either side (an id is not what SEC-M1 is about).
+      Where a value would not survive — `"1.50"` converts to `1.5` and returns
+      as `"1.5"` — the refusal stands, because the lost detail is exactly what
+      the prior values exist to restore. The escape hatch is unchanged.
+      Considered and rejected: a separate, purgeable snapshot table. It would
+      have bought reversibility for the lossy cases by creating a SECOND store
+      of the values the flag exists to contain — the very shape of SEC-M1, with
+      nothing auditing reads of it.
+      Both sides tested, and the refusal proven non-vacuous by forcing
+      reversibility true and watching the lossy case pass.
 ### What exists in the API but has no console screen
 
 Maintained in `docs/07-admin-guide.md` under "What the console cannot do yet",
@@ -270,10 +282,31 @@ Task 2's gate is now closed: the full suite, the migration spec against a real
 container, and the drift check all pass on the merged tree. Its two remaining
 asks stand:
 
-- [ ] **Review `17cd3f8` properly.** It is still the only task with no review.
-- [ ] **Justify or revert three files Task 2 touched that its brief never
-      named:** `test/business-roles-schema.spec.ts`, `test/support/pg.ts`,
-      `src/organizations/organizations.repository.ts`.
+- [x] **Review `17cd3f8`.** Done 2026-08-13. The commit is honest about itself —
+      it says `tsc` passed, the vitest suite was NOT run, and that a data-backfill
+      migration is "exactly the kind of change a typecheck cannot vouch for". The
+      review is therefore mostly a matter of retiring that admission with evidence:
+      `organizations.migration.spec.ts`, both schema specs and `readiness.spec.ts`
+      now run green against a real container (24/24), and the whole migration tail
+      from `0027` replays cleanly. Its third self-reported defect — `0023` citing a
+      `task-2-report.md` that exists nowhere — is gone from the tree. Nothing in the
+      commit needs reverting.
+- [x] **Justify or revert three files Task 2 touched that its brief never named.**
+      Done 2026-08-13 — all three justified, none reverted:
+      - `src/organizations/organizations.repository.ts` is a NEW file the task
+        cannot exist without; the commit message names it even though the brief
+        did not.
+      - `test/support/pg.ts` changes exactly one word, widening
+        `swallowShutdownErrors` to an export so the migration harness could reuse
+        it rather than copy it. It has since gained a second consumer in
+        `readiness.spec.ts`, so the widening earned itself twice over.
+      - `test/business-roles-schema.spec.ts` was FORCED, not incidental: Task 2
+        made `org_units.organization_id` NOT NULL, and that spec raw-inserts org
+        units via `db.insert(...)`, bypassing the repository that derives the
+        column. Without the fixture repair it fails on a NOT NULL violation. That
+        is the ordinary collateral of adding a NOT NULL column, and the honest
+        alternative — reverting it — would simply have left the suite red.
+      (The file is now `business-roles.schema.spec.ts`; see the naming item below.)
 
 Carry-forward findings, already diagnosed:
 
@@ -289,8 +322,15 @@ Carry-forward findings, already diagnosed:
       the DNS-label shape a Keycloak realm name needs, which is far more than
       case-folding; the expression index enforced nothing the CHECK did not
       already, and made the index unusable for a plain `WHERE slug = $1`.
-- [ ] Minor: `organizations.schema.spec.ts` imports `sql` unused, and uses a dot
-      separator where its sibling uses a hyphen.
+- [x] **Minor: unused import, and the naming inconsistency.** Done 2026-08-13.
+      The unused `sql` import is gone. The separator was the other way round from
+      how this entry read: 33 specs in `apps/api/test` use
+      `<subject>.<kind>.spec.ts` and exactly ONE used a hyphen, so
+      `organizations.schema.spec.ts` was already right and its sibling was the
+      outlier. Renamed `business-roles-schema.spec.ts` →
+      `business-roles.schema.spec.ts`. The archived plan that cites the old path is
+      left alone deliberately: it is a record of what was done at the time, not a
+      live pointer.
 - [x] **SETTLED by Task 11, and it is subtler than the question asked.** A
       realm's creator DOES keep admin rights on a realm it created, so
       `ensureRealm` needs no explicit `<realm>-realm` grant. But the
@@ -312,8 +352,14 @@ Carry-forward findings, already diagnosed:
       SQL is deliberately narrower than the schema declaration and both files
       say why; composite FKs were added before the unique indexes they
       reference; and an edge column was made NOT NULL with no backfill.
-- [ ] **NEW CONSTRAINT from Task 4: every migration from `0027` onward must be
-      re-runnable.** `migrate.spec.ts` used to rewind the ledger by deleting the
+- [x] **NEW CONSTRAINT from Task 4: every migration from `0027` onward must be
+      re-runnable.** Verified 2026-08-13: all 17 migrations from `0027` on carry
+      their guards — a static scan for unguarded `ADD COLUMN` / `CREATE TABLE` /
+      `CREATE INDEX` / `CREATE TYPE` / `ADD CONSTRAINT` finds nothing — and both
+      `migrate.spec.ts` and `migrations.spec.ts` replay the tail green. The
+      constraint is self-enforcing from here: the rewind described below replays
+      every migration after `0027`, so a future one that is not re-runnable breaks
+      that test rather than a production upgrade. `migrate.spec.ts` used to rewind the ledger by deleting the
       newest `created_at` row, which silently stopped testing `0027`'s guard the
       moment any later migration landed — it would have kept passing while
       asserting nothing. It now rewinds to `0027`'s own journal `when`, so the
@@ -372,11 +418,24 @@ Item 2 (run the full API suite) is done and green.
       environment-dependent. It asserts the 409 "has not synced to Keycloak yet"
       path because `keycloak_sso` is unconfigured in dev; configuring that target
       means updating the test to assert the modal instead.
-- [ ] **Confirm Keycloak 26's partial-PUT semantics.** Does `PUT /clients/{uuid}`
-      omitting a field clear or preserve it? `KeycloakSsoConnector` is correct
-      under either answer, so this is not a latent bug — only the doc comment in
-      `keycloak-sso.connector.ts` is unproven. Replace it with the empirical
-      result.
+- [x] **Confirm Keycloak 26's partial-PUT semantics.** Measured 2026-08-13 against
+      Keycloak 26.4 on the lab host. **Omitting a field PRESERVES it** —
+      `description` and `redirectUris` both survived a PUT carrying only
+      `clientId` and `enabled`, while `enabled` changed. The `attributes` MAP
+      merges the same way: a key omitted keeps its stored value, and only an
+      explicit empty string or null clears it (the value then reads back null).
+      **This entry was wrong that it was "not a latent bug".** It was one.
+      `mergeSaml` removed a stale SP certificate with
+      `delete attributes['saml.signing.certificate']`, which under a merging map
+      removes it from the REQUEST and never from Keycloak — so a client that no
+      longer required signatures kept its old signing certificate forever, the
+      exact half-state the connector's own comment promised to prevent. The spec
+      asserted `toBeUndefined()` and was green, because it checked the payload
+      the connector builds against a fake that stores whatever it is handed: the
+      code and the fake agreed with each other about a Keycloak that does not
+      behave that way. Fixed to send an explicit empty string, guarded on the key
+      already existing so a client that never had a certificate does not acquire
+      an empty one. Proven by restoring the `delete` and watching the test fail.
 
 ---
 
@@ -492,20 +551,44 @@ state of each.
       **Deliberately not closed:** `sensitive` still does not stop propagation —
       connectors provision from outbox payloads, so that is a separate decision with
       real consequences — and nothing retro-revokes what earlier enables already sent.
-- [ ] **6. Reconciliation cannot see Keycloak-only accounts.** Still true: the
-      pass walks users in this database and compares each against Keycloak, so an
-      account that exists ONLY in Keycloak is never looked at.
-      **The second half of this finding has expired.** It read "and nothing
-      schedules it — `deploy/systemd/` has no reconciliation timer." Both
-      `idm-reconcile.service` and `idm-reconcile.timer` now ship in
-      `deploy/systemd/`, and the timer is enabled and firing on the lab host.
-      What it did NOT do until 2026-08-13 was succeed: it lacked the Keycloak CA
-      trust `idm-api` had, so every scheduled run died on
-      `DEPTH_ZERO_SELF_SIGNED_CERT` and drift correction silently never ran
-      (fixed in `644b346`). Scheduled and failing looks identical to unscheduled
-      from the outside, which is how this stayed unnoticed.
-- [ ] **7. `syncState` derivation degrades linearly** with unsettled aggregates, on
-      the directory's main list page.
+- [x] **6. Reconciliation cannot see Keycloak-only accounts.** Fixed 2026-08-13.
+      The drift walk starts from THIS database and asks Keycloak about each user
+      it finds, so it was structurally incapable of noticing an account only
+      Keycloak has. `ReconciliationJob` now asks the question from the other end
+      too: `KeycloakAdminClient.listAllUsers` pages the realm, and any username
+      no user here claims — whatever their status, since a deactivated user
+      still owns theirs — is reported as `keycloakOnlyUsernames` and printed by
+      the CLI.
+      **Reported, never repaired**, and the asymmetry is deliberate. Every other
+      kind of drift here is a divergence from a state this system owns, so
+      pushing it back is unambiguous; an account this system never created may
+      be a service account, a break-glass administrator or a federated identity,
+      and deleting it automatically is how a reconciliation job locks a human
+      out of the identity provider. The operator is told plainly and decides.
+      Covered by a test that plants an account through a plain admin-client call
+      — an operator with the admin console, not this system's own controllers —
+      and asserts it is both SEEN and STILL THERE afterwards. Proven non-vacuous
+      by bypassing the detector and watching that test fail.
+      (The second half of this finding, "nothing schedules it", expired earlier:
+      the timer ships and fires. What it did not do until `644b346` was succeed.)
+- [x] **7. `syncState` derivation degrades linearly.** Fixed 2026-08-13, and it
+      was worse than this entry said. `resolveForUsers` fetched EVERY unsettled
+      `group` and `membership` event in the database — unscoped, for any page
+      size — and then discarded almost all of them in memory. On top of that it
+      ran `listEffectiveUserMembers` once PER troubled group and once per
+      membership event carrying a `childGroupId`, each a recursive CTE: an N+1
+      hiding behind the linear scan, on the directory's main list page.
+      Now one recursive walk resolves which groups can reach the requested users
+      (`GroupsRepository.listEffectiveGroupMembershipsForUsers`, the batched
+      inverse of `listEffectiveUserMembers`), and both aggregate reads are
+      scoped by it — the membership one by the two payload keys the caller
+      actually reads, pushed into SQL. The per-group expansions became map
+      lookups. The query count no longer depends on how much of the system is
+      unsettled.
+      Semantics unchanged, and the spec that proves it already covered the two
+      cases most likely to break: a troubled NESTED ANCESTOR group reaching a
+      user through effective membership, and an unrelated healthy group not
+      reaching them. 22/22 there, full API suite green.
 - [x] **8. Committed dev fixtures are real, working, `sslRequired: "none"`
       secrets.** Done: renamed to `identity-manager-realm.dev.json`,
       `sslRequired: "external"`, `idm-test-client` imported disabled, plus
@@ -527,19 +610,39 @@ state of each.
       seeded `admin@example.com` credential would break `smoke:dev`, the E2E
       login and CI's `bootstrap:admin`, which is far beyond what a LOW finding
       on a dev fixture justifies.
-- [ ] **CS-M2 residuals.** The policy itself is shipped (see the resolved table
-      above), but two things are only reasoned about, not observed:
-      `style-src 'self'` carries no `'unsafe-inline'` on the belief that React's
-      `style={{…}}` props go through the CSSOM, which CSP does not police —
-      true in the local Chromium run, unverified in other engines; and
-      oidc-client-ts's silent-renew iframe (`automaticSilentRenew` defaults to
-      `true`) is allowed to reach the issuer by `frame-src`, but its callback
-      leg is still blocked by the pre-existing `X-Frame-Options: DENY`, so
-      silent renew does not work now and did not before. Not a regression;
-      worth closing properly.
-- [ ] **CS-M6.** `vite@5.4.21` + `esbuild@0.21.5` dev-server advisories, unfixed on
-      the 5.x line. Developer workstations only, but this project's dev platform is
-      Windows, where the path-traversal case is live.
+- [x] **CS-M2 residuals.** Both closed 2026-08-13 by measurement, in Chromium,
+      Firefox AND WebKit, against the real policy as the lab's nginx serves it.
+      **`style-src 'self'` is correct.** All three engines agree:
+      `el.style.width = '123px'` (React's CSSOM path) APPLIES with no violation,
+      while `setAttribute('style', …)` is blocked as `style-src-attr` and an
+      injected `<style>` element as `style-src-elem`. The directive costs React
+      nothing and still refuses both paths an injection would use.
+      **The silent-renew claim was wrong.** It read "its callback leg is still
+      blocked by `X-Frame-Options: DENY`, so silent renew does not work now and
+      did not before." oidc-client-ts 3.5.0's `signinSilent()` takes the REFRESH
+      TOKEN branch whenever the stored user has one and only falls back to an
+      iframe otherwise, and `monitorSession` defaults to false. A real signed-in
+      session in all three engines held a refresh token (750 chars) and had ZERO
+      iframes on the page — so `X-Frame-Options` never applies to it, and silent
+      renew works. The iframe fallback could not work here regardless: it needs
+      `silent_redirect_uri`, which this console does not set.
+      `frame-src` is left as it is, deliberately: it is now known-unused, but
+      framing the ISSUER was never a threat to this origin (`frame-ancestors
+      'none'` is what protects the console), so tightening it would trade a
+      measured non-risk for a flow needing a re-test on every library upgrade.
+
+- [x] **CS-M6.** Closed 2026-08-13. `vite` 5.4.21 -> 7.3.6 and
+      `@vitejs/plugin-react` 4 -> 5 on the console; `vitest` 2.1.9 -> 3.2.7 on the
+      API, which is what dragged the vulnerable `vite` in transitively; and
+      `drizzle-kit` 0.28 -> 0.31, whose deprecated `@esbuild-kit/*` chain still
+      pinned `esbuild@0.18`, finished off with a workspace `esbuild: >=0.25.0`
+      override. `pnpm audit` now reports ZERO vite/esbuild/vitest advisories,
+      including the Windows `server.fs.deny` bypass this entry singled out, and
+      the one critical finding in the tree is gone (32 -> 25 total).
+      Verified rather than assumed: the full API suite is 119 files / 2010 tests
+      green under vitest 3 — identical to vitest 2 — `drizzle-kit generate` still
+      reports no schema drift, and the Playwright suite runs green against the
+      vite 7 dev server.
 - [x] **`Referrer-Policy` is `no-referrer`, and this item was stale.** It claimed
       the header was still `same-origin` and offered
       `same-origin-when-cross-origin` / `strict-origin-when-cross-origin` as the
@@ -763,7 +866,7 @@ Two traps worth knowing, both of which made a working fix look broken:
       was fixed in the two files above by resting each comment on something
       that lives in this repository.
 
-- [ ] **`stash@{0}` is superseded** — "WIP on feat/user-activate…". Its four
+- [x] **`stash@{0}` is superseded, and dropped 2026-08-13.** — "WIP on feat/user-activate…". Its four
       files became `c3524c6` and `a734538`, which are 66 lines further along.
       Droppable.
 

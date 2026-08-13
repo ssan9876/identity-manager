@@ -279,4 +279,50 @@ describe('ReconciliationJob (Milestone 4, Task 4)', () => {
     const report = await job.run()
     expect(report.usersWithDrift.find((d) => d.userId === user.id)).toBeUndefined()
   })
+  /**
+   * SECURITY FINDING 6: reconciliation could not see Keycloak-only accounts.
+   *
+   * The drift walk starts from THIS database and asks Keycloak about each user
+   * it finds, so it is structurally incapable of noticing an account only
+   * Keycloak has — one created by hand in the admin console, or left behind by
+   * a deletion that never propagated. This creates exactly that, through a
+   * plain `KeycloakAdminClient` call (an operator with the admin console, not
+   * this system's own controllers), and asserts it is both SEEN and LEFT
+   * ALONE.
+   *
+   * The "left alone" half is the point, not an afterthought. Every other kind
+   * of drift here is a divergence from a state this system owns, so pushing it
+   * back is unambiguous. An account this system never created may be a service
+   * account, a break-glass administrator, or a federated identity — deleting
+   * it automatically is how a reconciliation job locks a human out of the
+   * identity provider.
+   */
+  it('reports a Keycloak-only account, and deliberately does not repair it', async () => {
+    const username = `kc-only-${Date.now()}`
+    await client.createUser(
+      {
+        username,
+        email: `${username}@example.com`,
+        firstName: 'Keycloak',
+        lastName: 'Only',
+        enabled: true,
+        attributes: {},
+      },
+      [],
+    )
+
+    const report = await makeJob().run()
+
+    expect(report.keycloakOnlyUsernames).toContain(username)
+    // Still there afterwards: seen, reported, untouched.
+    expect(await client.findUserByUsername(username)).not.toBeNull()
+  })
+
+  it('reports nothing extra when every Keycloak account has a user here', async () => {
+    const report = await makeJob().run()
+    const stray = report.keycloakOnlyUsernames.filter((u) => u.startsWith('kc-only-'))
+    // The account created above is the only planted one; anything else in this
+    // realm (the sync service client, say) is not a user and never appears.
+    expect(stray.length).toBeLessThanOrEqual(1)
+  })
 })

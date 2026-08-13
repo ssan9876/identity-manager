@@ -12,7 +12,7 @@ import {
   type BlastRadiusEvaluation,
   evaluateBlastRadius,
 } from '../outbox/target-reconciliation.job'
-import { type AttributeDataType, convertValue } from './attribute-conversion'
+import { type AttributeDataType, convertValue, isReversibleConversion } from './attribute-conversion'
 // TYPE-ONLY, and it has to stay that way. The catalogue of this resource's
 // audit actions lives beside the other writers of it
 // (attribute-definitions.controller.ts) so there is one list to read, but
@@ -376,10 +376,17 @@ export class AttributeMigrationJob {
         .limit(1)
       if (definition === undefined) throw new NotFoundError('attribute definition', definitionId)
 
-      assertNotSensitive(definition)
       assertScopeStays(definition, change)
 
       const { report, changes, target } = await this.plan(tx, definitionId, change)
+
+      // AFTER the plan, not before, because the question it now asks is about
+      // the values themselves: can every one of them convert BACK? Walking a
+      // sensitive definition's population to find out is not a new exposure —
+      // `preview` already walks it for any caller, and nothing here leaves
+      // this transaction: on the refusal path the values are neither returned
+      // nor written anywhere.
+      assertNotSensitive(definition, reversibleWithoutRecord(definition, target, changes))
 
       if (report.previewHash !== previewHash) {
         throw new ConflictError(
@@ -453,7 +460,15 @@ export class AttributeMigrationJob {
             appliesTo: definition.appliesTo,
             defaultValue: definition.defaultValue,
           },
-          values: changes.map((planned) => ({ userId: planned.userId, value: planned.before })),
+          // VALUES ONLY WHEN THE LOG IS ALLOWED TO HOLD THEM. A sensitive
+          // definition reaches this line only because every affected value
+          // round-trips, which is what makes the migration undoable WITHOUT a
+          // copy — so the copy is not written. The holder ids are still
+          // recorded: an undo needs to know whom to touch, and an id is not
+          // the value SEC-M1 is about.
+          values: definition.sensitive
+            ? changes.map((planned) => ({ userId: planned.userId }))
+            : changes.map((planned) => ({ userId: planned.userId, value: planned.before })),
         },
         after: {
           definition: {
@@ -463,7 +478,13 @@ export class AttributeMigrationJob {
             appliesTo: target.appliesTo,
             defaultValue,
           },
-          values: changes.map((planned) => ({ userId: planned.userId, value: planned.after })),
+          values: definition.sensitive
+            ? changes.map((planned) => ({ userId: planned.userId }))
+            : changes.map((planned) => ({ userId: planned.userId, value: planned.after })),
+          // How an undo is possible for a sensitive definition with no values
+          // recorded: every one of them converts back. Stated in the row so a
+          // reader is not left inferring it from an absence.
+          reversibleByInverseConversion: definition.sensitive,
           populationSize: report.populationSize,
           changedCount: report.changedCount,
           // An overridden migration and an ordinary one are not the same
@@ -753,17 +774,48 @@ type CommittableDefinition = Pick<
  * Not forceable. `force` is the blast-radius override; see
  * `AttributeMigrationCommitOptions`.
  */
-function assertNotSensitive(definition: CommittableDefinition): void {
+/**
+ * Could this migration be undone from the definition alone, with no record of
+ * what anybody held?
+ *
+ * True when EVERY value this migration would rewrite converts back to exactly
+ * itself. The conversions are canonical — the number rule accepts text only
+ * when it is the double's own decimal identity, dates only in ISO calendar
+ * form — so surviving the round trip means surviving it exactly, and an undo
+ * is then a computation rather than a lookup.
+ *
+ * ALL of them, not most: one value that cannot come back is one user whose
+ * data this migration destroys, and a migration that is 99% reversible is not
+ * reversible. Unconvertible values do not reach here at all — commit refuses
+ * those separately, and force cannot override that either.
+ */
+function reversibleWithoutRecord(
+  definition: CommittableDefinition,
+  target: { dataType: AttributeDataType; options?: readonly string[] },
+  changes: readonly PlannedAttributeChange[],
+): boolean {
+  const options = readEnumOptions(definition.validationRules)
+  return changes.every((planned) =>
+    isReversibleConversion(planned.before, definition.dataType, target.dataType, options ?? target.options),
+  )
+}
+
+function assertNotSensitive(definition: CommittableDefinition, reversible: boolean): void {
   if (!definition.sensitive) return
+  // A migration whose every affected value converts BACK to what it was
+  // needs no record of those values, so the reason to refuse disappears.
+  if (reversible) return
 
   throw new ValidationError([
-    `attribute definition "${definition.key}" is marked sensitive, and a migration is only ` +
-      'reversible because its audit row carries every affected user’s prior value — which is ' +
-      'exactly what this flag forbids writing to audit_log (finding SEC-M1), a table whose rows ' +
-      'can never be edited or removed. Recording a redacted row instead would overwrite those ' +
-      'values with no way back at all. To migrate this attribute, turn sensitive off first ' +
-      '(PATCH, itself recorded as attribute_definition:sensitive_changed), migrate, then turn it ' +
-      'back on. force does not override this — it overrides the blast-radius refusal alone.',
+    `attribute definition "${definition.key}" is marked sensitive, and THIS migration is not ` +
+      'reversible without recording every affected user’s prior value — which is exactly what ' +
+      'this flag forbids writing to audit_log (finding SEC-M1), a table whose rows can never be ' +
+      'edited or removed. Recording a redacted row instead would overwrite those values with no ' +
+      'way back at all. A migration whose every affected value converts BACK to what it was ' +
+      'needs no such record and IS allowed; this one has at least one value that does not. ' +
+      'To migrate it anyway, turn sensitive off first (PATCH, itself recorded as ' +
+      'attribute_definition:sensitive_changed), migrate, then turn it back on. force does not ' +
+      'override this — it overrides the blast-radius refusal alone.',
   ])
 }
 

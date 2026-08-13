@@ -313,6 +313,7 @@ export function AttributeMappingsEditor({ canManage }: { canManage: boolean }) {
               className="btn btn--secondary"
               onClick={() => setPendingExport(null)}
               disabled={busyCell === pendingExport.cell}
+              data-testid="mapping-export-cancel"
             >
               Cancel
             </button>

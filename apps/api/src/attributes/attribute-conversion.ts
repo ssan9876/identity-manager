@@ -185,3 +185,39 @@ function normaliseDecimal(s: string): string | null {
 
   return `${sign === '-' ? '-' : ''}${withoutTrailingZeros}e${exponent}`
 }
+
+/**
+ * Would converting this value be UNDOABLE without keeping a copy of it?
+ *
+ * Convert forward, convert straight back, and compare. When the original
+ * returns unchanged, the pair of conversions is an identity for this value,
+ * so an undo can be computed rather than looked up — no record of the prior
+ * value is needed anywhere.
+ *
+ * WHY THIS EXISTS. `AttributeMigrationJob.commit` is reversible only because
+ * its audit row carries every affected user's prior value, and that is exactly
+ * what a `sensitive` definition forbids writing to `audit_log` (finding
+ * SEC-M1). Those two facts made a sensitive attribute unmigratable, and the
+ * documented way around it — turn the flag off, migrate, turn it back on —
+ * puts the values into ordinary user audit rows for the duration, which is
+ * the very exposure the flag exists to prevent. A value that round-trips
+ * needs neither: the migration stays undoable and nothing is ever recorded.
+ *
+ * STRICT EQUALITY, deliberately. The conversions here are canonical — the
+ * number rule accepts text only when it is the double's own decimal identity,
+ * dates only in ISO calendar form — so a value that survives the round trip
+ * survives it exactly, and anything looser would be claiming reversibility
+ * this function cannot actually deliver.
+ */
+export function isReversibleConversion(
+  value: unknown,
+  from: AttributeDataType,
+  to: AttributeDataType,
+  options?: readonly string[],
+): boolean {
+  const forward = convertValue(value, from, to, options)
+  if (!forward.ok) return false
+
+  const back = convertValue(forward.value, to, from, options)
+  return back.ok && back.value === value
+}

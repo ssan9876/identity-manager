@@ -77,6 +77,24 @@ async function main(): Promise<void> {
     console.log(
       `[reconcile] enqueued ${report.eventsEnqueued} repair event(s); drained ${report.eventsProcessed} outbox event(s) total`,
     )
+
+    // Security finding 6. Reported, never repaired — see the report field's
+    // own doc comment for why this system does not get to delete an account
+    // in a realm it shares. The operator is told plainly and decides.
+    if (report.keycloakOnlyUsernames.length > 0) {
+      console.log(
+        `[reconcile] ${report.keycloakOnlyUsernames.length} Keycloak account(s) correspond to no user here:`,
+      )
+      for (const username of report.keycloakOnlyUsernames) {
+        console.log(`[reconcile]   - ${username}`)
+      }
+      console.log(
+        '[reconcile] these are NOT repaired automatically: an account this system never created may be a',
+      )
+      console.log(
+        '[reconcile] service account, a break-glass admin, or a federated identity. Review before removing.',
+      )
+    }
   } finally {
     await pool.end()
   }
