@@ -1,3 +1,6 @@
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { expect, test, type Page } from '@playwright/test'
 import { slugFromName } from '../src/organizations/slug'
 import { syncLabel } from '../src/organizations/status'
@@ -5,6 +8,52 @@ import type { Organization } from '../src/organizations/api'
 
 const USERNAME = 'admin@example.com'
 const PASSWORD = 'dev_password_change_me'
+
+/**
+ * Creating a tenant needs a Keycloak client that can call `POST /admin/realms`
+ * — a master-realm endpoint — and `.env.example` ships both of its variables
+ * COMMENTED OUT, behind an opt-in step:
+ *
+ *   SETUP_PROVISIONER=1 bash scripts/keycloak-setup.sh
+ *
+ * So the README's own Quickstart cannot produce a green run of this file, and
+ * for a long time it did not: three specs here failed on every clean machine,
+ * with an error the console renders perfectly clearly and a test result that
+ * looked like a regression. A gate that is red for a documented, expected
+ * reason teaches everyone to ignore it.
+ *
+ * SKIPPED, NOT DELETED, and not silently passed either — a skip states the
+ * precondition and names the command that satisfies it, which a failure never
+ * did. Every spec here that only READS organizations still runs everywhere.
+ *
+ * Checked against the process environment FIRST (a CI runner or an operator
+ * may export these rather than write a file), then the repo-root `.env`. The
+ * `^` anchor under /m is what tells a real setting from the commented
+ * template line.
+ */
+function provisionerConfigured(): boolean {
+  const fromEnv =
+    (process.env.KEYCLOAK_PROVISION_CLIENT_ID ?? '') !== '' &&
+    (process.env.KEYCLOAK_PROVISION_CLIENT_SECRET ?? '') !== ''
+  if (fromEnv) return true
+
+  // `import.meta.url`, not `__dirname`: Playwright runs this suite as ESM, so
+  // `__dirname` is not defined and referencing it threw a ReferenceError
+  // INSIDE the guard — turning "skip when unconfigured" into three failures
+  // with a new cause, which is worse than the problem it was fixing.
+  const here = path.dirname(fileURLToPath(import.meta.url))
+  const envPath = path.resolve(here, '..', '..', '..', '.env')
+  if (!fs.existsSync(envPath)) return false
+  const text = fs.readFileSync(envPath, 'utf8')
+  return (
+    /^KEYCLOAK_PROVISION_CLIENT_ID=.+$/m.test(text) &&
+    /^KEYCLOAK_PROVISION_CLIENT_SECRET=.+$/m.test(text)
+  )
+}
+
+const NEEDS_PROVISIONER =
+  'needs a realm-provisioning client: run `SETUP_PROVISIONER=1 bash scripts/keycloak-setup.sh` ' +
+  'and put the two values it prints into .env as KEYCLOAK_PROVISION_CLIENT_ID / _SECRET'
 
 /** Same real sign-in flow every other E2E spec in this suite already proves — Keycloak's own hosted login page, no form of this app's own. */
 async function signInAsAdmin(page: Page): Promise<void> {
@@ -104,6 +153,7 @@ test.describe('syncLabel', () => {
 // End to end, against the real stack.
 // ---------------------------------------------------------------------
 test('creates an organization and shows it provisioning', async ({ page }) => {
+  test.skip(!provisionerConfigured(), NEEDS_PROVISIONER)
   await signInAsAdmin(page)
   const slug = uniqueSlug('e2e-acme')
 
@@ -126,6 +176,7 @@ test('creates an organization and shows it provisioning', async ({ page }) => {
 })
 
 test('the Targets column links to that tenant\'s own connector scope, not a guessed label', async ({ page }) => {
+  test.skip(!provisionerConfigured(), NEEDS_PROVISIONER)
   await signInAsAdmin(page)
   const slug = uniqueSlug('e2e-globex')
 
@@ -151,6 +202,7 @@ test('the Targets column links to that tenant\'s own connector scope, not a gues
 })
 
 test('suspends and reactivates a tenant, and never offers to delete one', async ({ page }) => {
+  test.skip(!provisionerConfigured(), NEEDS_PROVISIONER)
   await signInAsAdmin(page)
   const slug = uniqueSlug('e2e-initech')
 

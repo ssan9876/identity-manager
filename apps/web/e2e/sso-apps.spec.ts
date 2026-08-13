@@ -33,30 +33,45 @@ async function getAccessToken(page: Page): Promise<string> {
  * Unique per run. There is no DELETE for an SSO application by design, so a
  * fixture cannot be removed afterwards — a fixed clientId would 409 on the
  * second run of this suite against the same dev database.
+ *
+ * THE SAME REASONING APPLIES TO THE NAME, which it did not used to. The
+ * clientId was uniqued and the display NAME left fixed, while the assertions
+ * located the application BY that name — so the second run against one
+ * database found two "E2E Billing Portal" links and died of Playwright's
+ * strict-mode ambiguity rather than of anything under test. It went unnoticed
+ * because this spec had never actually been run twice (TODO.md carried it as
+ * "has never executed"), and the run that revealed it was the first one that
+ * followed another.
  */
 function uniqueClientId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 10_000)}`
 }
 
+/** A display name nobody else will be carrying, for the same reason the client id is unique. */
+function uniqueName(base: string): string {
+  return `${base} ${Date.now()}-${Math.floor(Math.random() * 10_000)}`
+}
+
 test('registers an application and shows it on the detail page', async ({ page }) => {
   await signIn(page)
   const clientId = uniqueClientId('e2e-billing')
+  const name = uniqueName('E2E Billing Portal')
 
   await page.goto('/applications')
   await page.getByRole('link', { name: 'Register application' }).click()
 
   await page.getByLabel('Client ID').fill(clientId)
-  await page.getByLabel('Name').fill('E2E Billing Portal')
+  await page.getByLabel('Name').fill(name)
   await page.getByLabel('Redirect URIs').fill('https://billing.example.com/callback')
   await page.getByRole('button', { name: 'Register' }).click()
 
-  await expect(page.getByRole('heading', { name: 'E2E Billing Portal' })).toBeVisible()
+  await expect(page.getByRole('heading', { name })).toBeVisible()
   await expect(page.getByText(clientId).first()).toBeVisible()
   await expect(page.getByText('Confidential client')).toBeVisible()
 
   // And it appears in the list.
   await page.goto('/applications')
-  await expect(page.getByRole('link', { name: 'E2E Billing Portal' })).toBeVisible()
+  await expect(page.getByRole('link', { name })).toBeVisible()
 })
 
 test('refuses a wildcard redirect URI, showing the API reason verbatim', async ({ page }) => {
@@ -112,11 +127,12 @@ test('disables an application without offering any way to delete it', async ({ p
 
   await page.goto('/applications/new')
   await page.getByLabel('Client ID').fill(clientId)
-  await page.getByLabel('Name').fill('E2E Toggle App')
+  const name = uniqueName('E2E Toggle App')
+  await page.getByLabel('Name').fill(name)
   await page.getByLabel('Redirect URIs').fill('https://toggle.example.com/cb')
   await page.getByRole('button', { name: 'Register' }).click()
 
-  await expect(page.getByRole('heading', { name: 'E2E Toggle App' })).toBeVisible()
+  await expect(page.getByRole('heading', { name })).toBeVisible()
 
   await page.getByRole('button', { name: 'Disable' }).click()
   await expect(page.getByRole('button', { name: 'Enable' })).toBeVisible()
@@ -134,12 +150,13 @@ test('a public client is offered no client secret button', async ({ page }) => {
 
   await page.goto('/applications/new')
   await page.getByLabel('Client ID').fill(clientId)
-  await page.getByLabel('Name').fill('E2E Public App')
+  const name = uniqueName('E2E Public App')
+  await page.getByLabel('Name').fill(name)
   await page.getByLabel('Redirect URIs').fill('https://spa.example.com/cb')
   await page.getByLabel('Public client').check()
   await page.getByRole('button', { name: 'Register' }).click()
 
-  await expect(page.getByRole('heading', { name: 'E2E Public App' })).toBeVisible()
+  await expect(page.getByRole('heading', { name })).toBeVisible()
   await expect(page.getByText('Public client (PKCE)')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Generate client secret' })).toHaveCount(0)
 })
@@ -153,11 +170,12 @@ test('minting before the first sync explains itself rather than failing opaquely
 
   await page.goto('/applications/new')
   await page.getByLabel('Client ID').fill(clientId)
-  await page.getByLabel('Name').fill('E2E Unsynced App')
+  const name = uniqueName('E2E Unsynced App')
+  await page.getByLabel('Name').fill(name)
   await page.getByLabel('Redirect URIs').fill('https://unsynced.example.com/cb')
   await page.getByRole('button', { name: 'Register' }).click()
 
-  await expect(page.getByRole('heading', { name: 'E2E Unsynced App' })).toBeVisible()
+  await expect(page.getByRole('heading', { name })).toBeVisible()
   await page.getByRole('button', { name: 'Generate client secret' }).click()
 
   await expect(page.getByText(/has not synced to Keycloak yet/i)).toBeVisible()
