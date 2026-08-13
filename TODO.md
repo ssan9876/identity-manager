@@ -1,35 +1,155 @@
 # TODO
 
-Rewritten 2026-08-08 after every outstanding branch was merged into `master`.
-The previous version of this file described a world of eleven parallel
-worktrees that no longer exists, and was wrong on both of its branch-disposition
-claims (see "Corrections" at the bottom).
+Rewritten 2026-08-12: added the **milestone ledger** below and refreshed
+`State of master`. The 2026-08-08 rewrite this replaces described a world of
+eleven parallel worktrees that no longer exists, and was wrong on both of its
+branch-disposition claims (see "Corrections" at the bottom).
 
-Finished work is not listed. Everything below is unverified, deferred, or
-known-defective.
+**The ledger says what is done. Everything after it is what is not** —
+unverified, deferred, or known-defective. Finished work is not itemised outside
+the ledger.
+
+---
+
+## Milestones
+
+### Read this before trusting a milestone number
+
+**The numbers are historical, not a roadmap, and they do not run in order.**
+They stop at 19. Everything built since is named by subject instead, because
+the numbered sequence was a plan for the original build-out and that plan ran
+out before the work did.
+
+**There are two Milestone 8s, and they are unrelated.** The numbered one is the
+admin console (`2026-08-06-idp-milestone-8-admin-console.md`). The
+attribute-definitions write path, planned four days later, also calls itself
+"Milestone 8" throughout its own plan and its own code comments. Nothing
+renames either at this point — the comments are load-bearing and scattered —
+so read a "Milestone 8" reference by its date and subject, never by its number.
+A reference to Milestone 8 Task 7 means the attribute write path; a reference
+to Milestone 8's install script means the console.
+
+### The numbered sequence — all done
+
+Each row's plan is in `docs/archive/plans/`. Archived means finished and
+merged; there is no plan outside that directory today.
+
+| # | Milestone | Plan |
+|---|---|---|
+| 1 | Foundation — repo, dev env, schema, OIDC console | `2026-08-04-idp-milestone-1-foundation.md` |
+| 2 | Core CRUD — groups, nesting, effective membership, error taxonomy | `2026-08-05-idp-milestone-2-core-crud.md` |
+| 3a | RBAC engine, privilege guards, append-only audit log | `2026-08-05-idp-milestone-3a-rbac-audit.md` |
+| 3b | Scope narrowing, and audited write endpoints | `2026-08-05-idp-milestone-3b-write-endpoints.md` |
+| 4 | Transactional outbox + Keycloak sync worker | `2026-08-05-idp-milestone-4-outbox-sync.md` |
+| 5–7 | Bulk import, self-service portal, JML automation | `2026-08-05-idp-milestones-5-7.md` |
+| 8 | One-command install + the admin console | `2026-08-06-idp-milestone-8-admin-console.md` |
+| 9 | CI and a local `verify` gate, dark mode, person picker | `2026-08-06-idp-milestone-9-ci-and-polish.md` |
+| 10–14 | Directory connectors — AD, Entra ID, Google Workspace | `2026-08-06-idp-milestones-10-14-directory-connectors.md` |
+| 15 | Business roles — schema and grant provenance | `2026-08-08-business-roles-entitlements.md` |
+| 16 | Business roles — the evaluator | *(same plan)* |
+| 17 | Business roles — reconciler, publish gate, API | *(same plan)* |
+| 18 | Business roles — sync integration | *(same plan)* |
+| 19 | Business roles — JML cleanup and the console | *(same plan)* |
+
+There is no Milestone 20 and never was.
+
+### Named workstreams since — all shipped, some with open follow-ups
+
+| Workstream | Status | Open items |
+|---|---|---|
+| Mail server connector | Done | — |
+| User activation endpoint (`POST /users/:id/activate`) | Done | — |
+| Sync diagnostics — badges that explain themselves | Done | — |
+| Organizations and multi-tenancy | Done | **4** — see [below](#organizations-and-multi-tenancy--tasks-316) |
+| SSO application onboarding | Done | **2**, both verification — see [below](#sso-application-onboarding) |
+| Business roles and entitlements (= 15–19 above) | Done | — |
+| Docs accuracy pass, plus the `check-docs` gate | Done | — |
+| **Attribute definitions write path** (2026-08-12) | Done, 12/12 tasks | **2** — below |
+
+### The attribute write path — what running it found
+
+It HAS now been run, end to end, against the real stack, and the page has been
+looked at. That closed the first gap this section used to list and is worth
+recording, because of what it cost: the milestone shipped with every gate
+green — 1990 API tests, both typechecks, four static checks, a docs gate — and
+a High-severity bug that made people and groups unsavable.
+
+- [x] **Driven live, and covered.** `apps/web/e2e/attributes.spec.ts` is the
+      first e2e coverage `/attributes` has had. Nothing in the suite could have
+      caught the bug below before it existed: creating an enum or date
+      definition required the console, and until this milestone there was no
+      console.
+- [x] **An empty optional field made every person and group unsavable.**
+      `coerceAttributeValue` mapped `'' -> undefined` for `number` alone, and
+      `.optional()` admits `undefined`, never `''`. One optional `enum`, `date`
+      or formatted `string` definition was enough. Fixed, with the regression
+      test proven red first.
+- [x] **A row's third action sat off the edge of the table** at 1280px —
+      Deactivate/Reactivate, the one control that undoes something, behind a
+      scroll the table gives no hint of. The cause was two unbounded columns to
+      its left, which a second screenshot showed and reading the CSS had not.
+- [x] **The e2e suite could not be green from the README's own Quickstart**,
+      and had been that way long enough to be normal: three organizations
+      specs need a provisioning client `.env.example` ships commented out,
+      `import.spec.ts` asserted a row limit that changed months ago, and
+      `sso-apps.spec.ts` was not re-runnable. Four standing reasons to ignore a
+      red suite, between a real regression and anyone noticing it. Now 57
+      passed, 3 skipped, 0 failed from a stock Quickstart.
+
+Still open, and the one thing that pass did NOT close:
+
+- [ ] **A `sensitive` attribute cannot have its type migrated.** Reversing a
+      migration needs the previous values in the audit row, and keeping values
+      out of the audit log is exactly what `sensitive` means (finding SEC-M1),
+      in a table that is append-only at the database level. The migration is
+      refused rather than run irreversibly; the admin turns `sensitive` off,
+      migrates, and turns it back on, and during that window the values land in
+      ordinary user audit rows. Documented and audited rather than silent, but
+      it is a hole, not a closed door.
+
+### What exists in the API but has no console screen
+
+Maintained in `docs/07-admin-guide.md` under "What the console cannot do yet",
+which is the copy to trust — it sits beside the walkthroughs and is checked
+when they are. Summarised here so this file is not silent about it: JML rules
+(database plus CLI), marking a business role requestable, committing an HR feed
+(preview only; the commit is the `hr:sync --commit` CLI), editing a registered
+SSO application, listing a business role's members, recertification comments
+and role-scoped campaigns, moving a person between org units, and retrying a
+dead letter.
 
 ---
 
 ## State of `master`
 
-All unique work is merged. Verified on the merged tree:
+All unique work is merged. Verified 2026-08-12 on the merged tree
+(`5239cf8`) — each merge was a clean `--no-ff` of a branch whose base was
+master's tip, with `git diff` against the tested branch tip empty before the
+push, so these numbers describe exactly the tree that ran them:
 
 | Gate | Result |
 |---|---|
 | `pnpm typecheck` (api + web) | clean |
-| `apps/api` suite, 3 forks | **1304/1305 pass, 83/84 files** |
-| `apps/web` `check-css-tokens` | clean |
-| `apps/web` build | clean, 127 modules |
-| `drizzle-kit generate` drift check | "No schema changes, nothing to migrate" |
+| `apps/api` suite, 3 forks | **1990/1990 pass, 118/118 files** |
+| `apps/web` checks — CSS tokens, connector drift, attribute-format drift, CSP | clean |
+| `apps/web` build | clean, 167 modules |
+| `node scripts/check-docs.mjs` | OK |
+| `pnpm verify:quick` | passed |
+| `apps/web` Playwright e2e | **57 passed, 3 skipped, 0 failed** |
 
-The single failing test is **`test/dev-environment.spec.ts`** — it fetches
+`test/dev-environment.spec.ts` fetches
 `http://localhost:8080/realms/identity-manager/.well-known/openid-configuration`
-and needs the dev Keycloak running. It is unrelated to any merged change; bring
-the compose stack up before reading it as a regression.
+and needs the dev Keycloak running. Bring the compose stack up before reading
+it as a regression — it is the one test in the suite that fails for a purely
+environmental reason, and it has been mistaken for a real failure more than
+once. The run above had the stack up, which is why it is 118/118 rather than
+the 117/118 you get otherwise.
 
-### What the merge itself had to fix
+### What the 2026-08-08 merge had to fix
 
-Recorded because none of it was visible as a merge conflict:
+History, not current state — this describes the merge that consolidated eleven
+worktrees on 2026-08-08, not the attribute-write-path merge above. Recorded
+because none of it was visible as a merge conflict:
 
 - **Migration index collision.** `feat/sso-apps` and `feat/organizations` both
   claimed `0022` and `0023`. organizations was renumbered to `0024`/`0025`;
