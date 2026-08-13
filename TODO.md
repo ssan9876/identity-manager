@@ -492,8 +492,18 @@ state of each.
       **Deliberately not closed:** `sensitive` still does not stop propagation —
       connectors provision from outbox payloads, so that is a separate decision with
       real consequences — and nothing retro-revokes what earlier enables already sent.
-- [ ] **6. Reconciliation cannot see Keycloak-only accounts, and nothing schedules
-      it.** `deploy/systemd/` has no reconciliation timer.
+- [ ] **6. Reconciliation cannot see Keycloak-only accounts.** Still true: the
+      pass walks users in this database and compares each against Keycloak, so an
+      account that exists ONLY in Keycloak is never looked at.
+      **The second half of this finding has expired.** It read "and nothing
+      schedules it — `deploy/systemd/` has no reconciliation timer." Both
+      `idm-reconcile.service` and `idm-reconcile.timer` now ship in
+      `deploy/systemd/`, and the timer is enabled and firing on the lab host.
+      What it did NOT do until 2026-08-13 was succeed: it lacked the Keycloak CA
+      trust `idm-api` had, so every scheduled run died on
+      `DEPTH_ZERO_SELF_SIGNED_CERT` and drift correction silently never ran
+      (fixed in `644b346`). Scheduled and failing looks identical to unscheduled
+      from the outside, which is how this stayed unnoticed.
 - [ ] **7. `syncState` derivation degrades linearly** with unsettled aggregates, on
       the directory's main list page.
 - [x] **8. Committed dev fixtures are real, working, `sslRequired: "none"`
