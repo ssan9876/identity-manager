@@ -1,4 +1,11 @@
 import { expect, test, type Page } from '@playwright/test'
+// The console's own mirror of the API's IMPORT_MAX_ROWS default. Imported
+// rather than restated: this spec asserted a hard-coded '5,000' against a
+// limit that has been 1,000 since the per-row lookups were batched, so it
+// failed on every run and told whoever read it that the LIMIT was wrong when
+// the TEST was. A literal here is a second source of truth for a number that
+// already has one.
+import { IMPORT_MAX_ROWS } from '../src/imports/limits'
 import { trackUser } from './support/cleanup-tracker'
 
 const USERNAME = 'admin@example.com'
@@ -205,10 +212,14 @@ test('the row-count and file-size limits are surfaced before upload, and an over
   await signIn(page)
 
   await page.goto('http://localhost:5173/import')
-  await expect(page.getByTestId('import-format-help')).toContainText('5,000')
+  await expect(page.getByTestId('import-format-help')).toContainText(
+    IMPORT_MAX_ROWS.toLocaleString(),
+  )
 
+  // One row past the limit — not five thousand. The old fixed 5,001 built a
+  // file five times larger than the smallest one that proves the point.
   const tooManyRows = buildCsv(
-    Array.from({ length: 5_001 }, (_, i) => ({
+    Array.from({ length: IMPORT_MAX_ROWS + 1 }, (_, i) => ({
       employeeId: `BULK-${i}`,
       primaryEmail: `bulk-${i}@example.com`,
       username: `bulk-${i}`,
@@ -224,7 +235,9 @@ test('the row-count and file-size limits are surfaced before upload, and an over
     buffer: Buffer.from(tooManyRows, 'utf-8'),
   })
 
-  await expect(page.getByTestId('import-file-error')).toContainText('5,000')
+  await expect(page.getByTestId('import-file-error')).toContainText(
+    IMPORT_MAX_ROWS.toLocaleString(),
+  )
   // Blocked before ever reaching the preview step.
   await expect(page.getByTestId('import-chosen-file')).toHaveCount(0)
 })

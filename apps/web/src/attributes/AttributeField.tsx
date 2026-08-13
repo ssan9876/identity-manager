@@ -12,9 +12,46 @@ import type { AttributeDefinition } from './api'
  * now imports this instead of defining its own copy.
  */
 export function coerceAttributeValue(definition: AttributeDefinition, raw: string): unknown {
+  // AN EMPTY INPUT IS AN ABSENT VALUE, FOR EVERY dataType.
+  //
+  // This used to be the `number` branch's private trick, and every other type
+  // returned `''` — which the API refuses for any attribute whose schema is
+  // narrower than "a string". `buildAttributeSchema` makes an optional field
+  // `field.optional()`, and `.optional()` admits `undefined`, never `''`. So
+  // an OPTIONAL `enum`, `date`, or `string` carrying a `format` made the whole
+  // record unsavable while its field was left blank:
+  //
+  //   enum   -> Invalid enum value. Expected 'a' | 'b', received ''
+  //   date   -> must be a valid ISO calendar date (YYYY-MM-DD)
+  //   email  -> Invalid email
+  //
+  // A plain `string` and a `number` were the only two that worked, which is
+  // why this survived: those are the two types the seeded definitions use.
+  // The failure lands on PERSON and GROUP writes — `POST /users`,
+  // `PATCH /users/:id`, `POST /groups` — not on the attribute itself, so it
+  // reads as "this person cannot be saved" with no hint that an unrelated,
+  // optional, EMPTY field is the cause.
+  //
+  // `boolean` stays outside the check on purpose: its control is a
+  // `<select>`/checkbox that always submits `'true'` or `'false'`, never the
+  // empty string, so there is no empty state to map.
+  //
+  // Callers already drop `undefined` keys (SelfServicePage, and the create/
+  // edit user and group forms), so this makes the other four behave exactly
+  // as `number` already did rather than inventing a new convention. Note what
+  // that means on the two write paths, because they differ: an admin form
+  // REPLACES the whole attributes bag, so an omitted key genuinely clears the
+  // value; `PATCH /self` MERGES onto the stored bag, so an omitted key leaves
+  // the previous value untouched. Self-service therefore still cannot clear
+  // an attribute it once set — a pre-existing limitation of the merge, true
+  // for `number` since Milestone 6 and now uniformly true, not something this
+  // change introduces. Clearing from `/self` needs an explicit null the merge
+  // understands, which is an API change, not a coercion change.
+  if (raw === '' && definition.dataType !== 'boolean') return undefined
+
   switch (definition.dataType) {
     case 'number':
-      return raw === '' ? undefined : Number(raw)
+      return Number(raw)
     case 'boolean':
       return raw === 'true'
     default:
