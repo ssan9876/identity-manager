@@ -156,6 +156,43 @@ export interface EnabledChangeResult extends BusinessRoleDetail {
   principalsGranted: number
 }
 
+/** Mirrors `BusinessRoleMember` in apps/api/src/business-roles/business-roles.controller.ts. */
+export interface BusinessRoleMember {
+  userId: string
+  username: string | null
+  firstName: string | null
+  lastName: string | null
+  primaryEmail: string | null
+  status: string | null
+  /** `formula` — their own data puts them here. `include_exception` — a person did. */
+  via: 'formula' | 'include_exception'
+}
+
+export interface BusinessRoleMembersReport {
+  roleId: string
+  scanned: number
+  /** Exact, never truncated. */
+  total: number
+  /** True when `members` is a sample of `total`. */
+  truncated: boolean
+  members: BusinessRoleMember[]
+}
+
+/**
+ * Who holds this role right now.
+ *
+ * Computed per request from the published formula and the exceptions — there
+ * is no membership table, which is what makes a business role a policy rather
+ * than a list. Distinct from `simulateBusinessRole`, which needs an
+ * unpublished draft and reports the DIFF that draft would cause.
+ */
+export function fetchBusinessRoleMembers(
+  accessToken: string,
+  id: string,
+): Promise<BusinessRoleMembersReport> {
+  return authorizedRequest<BusinessRoleMembersReport>(`/business-roles/${id}/members`, accessToken)
+}
+
 export function fetchBusinessRoles(accessToken: string): Promise<BusinessRole[]> {
   return authorizedRequest<BusinessRole[]>('/business-roles', accessToken)
 }
