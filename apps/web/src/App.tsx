@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useAuth } from 'react-oidc-context'
 import { Route, Routes } from 'react-router-dom'
 import AttributeDefinitionsPage from './attributes/AttributeDefinitionsPage'
+import LifecycleRulesPage from './jml/LifecycleRulesPage'
 import AuditPage from './audit/AuditPage'
 import BusinessRoleDetailPage from './business-roles/BusinessRoleDetailPage'
 import BusinessRolesPage from './business-roles/BusinessRolesPage'
@@ -231,6 +232,7 @@ export default function App() {
           <Route path="/connectors/:target" element={<TargetDetailPage />} />
           <Route path="/data-flows" element={<DataFlowsPage />} />
           <Route path="/hr-sources" element={<HrSourcesPage />} />
+          <Route path="/lifecycle-rules" element={<LifecycleRulesPage />} />
           <Route path="/self" element={<SelfServicePage />} />
           <Route path="/approvals" element={<ApprovalsPage />} />
         </Route>

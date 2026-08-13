@@ -66,6 +66,18 @@ export type Action =
   // gets a 403. The API decides; the console renders the refusal.
   | 'attribute:read'
   | 'attribute:manage'
+  // Joiner/mover/leaver rules. `jml:read` is ordinary directory work on
+  // `attribute:read`'s exact terms — super_admin, user_admin, auditor and
+  // read_only — because a JML rule is the only actor in this system that
+  // changes accounts with no human in the loop, and someone who cannot read
+  // the rules cannot explain a change they are looking at. `jml:manage` is
+  // super_admin's ALONE and the API further requires it to be GLOBAL
+  // (`requireGlobalManageGrant` — a rule names no org unit and runs against
+  // every user the lifecycle pass walks). As everywhere else here,
+  // `GET /self/permissions` reports the ACTION and not its scope, so holding
+  // `jml:manage` is not a promise that a write will succeed.
+  | 'jml:read'
+  | 'jml:manage'
 
 /** Mirrors SelfPermissionsResponse from apps/api/src/self-service/self-service.controller.ts. */
 export interface SelfPermissionsResponse {
