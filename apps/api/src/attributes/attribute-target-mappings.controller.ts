@@ -19,17 +19,19 @@ import { AuditWriter } from '../audit/audit.writer'
 import { PermissionGuard, type AuthorizedRequest } from '../authz/permission.guard'
 import { RequirePermission } from '../authz/require-permission.decorator'
 import { DB_CLIENT } from '../common/db.token'
-import { NotFoundError } from '../common/errors'
+import { ConflictError, NotFoundError, ValidationError } from '../common/errors'
 import { PermissionEngine } from '../authz/permission.engine'
 import { ForbiddenError } from '../common/errors'
 import { parseBody } from '../common/http/parse-body'
 import { parseId } from '../common/http/parse-id'
 import { noNulChar } from '../common/http/safe-string'
 import * as schema from '../db/schema/index'
+import type { DbHandle } from '../outbox/outbox.writer'
 import {
   AttributeTargetMappingsRepository,
   type AttributeTargetMappingRow,
   type ExportImpact,
+  type ExportImpactQuery,
   type MappingRecord,
 } from './attribute-target-mappings.repository'
 
@@ -58,6 +60,10 @@ const createMappingBodySchema = z
     target: connectorTargetSchema,
     remoteName: remoteNameSchema,
     enabled: z.boolean().default(true),
+    // The count the caller was shown. Required only when the write would
+    // leave this row enabled over a non-empty population — see
+    // `assertAcknowledged`, which re-derives it rather than trusting it.
+    acknowledgedExportCount: z.number().int().nonnegative().optional(),
   })
   .strict()
   .refine((body) => (body.attributeDefinitionId !== undefined) !== (body.coreField !== undefined), {
@@ -85,16 +91,28 @@ const updateMappingBodySchema = z
   .object({
     remoteName: remoteNameSchema.optional(),
     enabled: z.boolean().optional(),
+    // The count the caller was shown. Required only when the write would
+    // leave this row enabled over a non-empty population — see
+    // `assertAcknowledged`, which re-derives it rather than trusting it.
+    acknowledgedExportCount: z.number().int().nonnegative().optional(),
   })
   .strict()
 
-function snapshotMapping(row: MappingRecord): Record<string, unknown> {
+function snapshotMapping(row: MappingRecord, impact: ExportImpact | null = null): Record<string, unknown> {
   return {
     attributeDefinitionId: row.attributeDefinitionId,
     coreField: row.coreField,
     target: row.target,
     remoteName: row.remoteName,
     enabled: row.enabled,
+    // Present only on the write that turned propagation ON, which is the only
+    // moment the number means anything. Finding 4 leaves an audit row unable
+    // to show a sensitive attribute's values; this at least records how many
+    // people's values one click sent outward, and whether they were values
+    // the log is forbidden to hold.
+    ...(impact === null
+      ? {}
+      : { acknowledgedExportCount: impact.holderCount, sensitive: impact.sensitive }),
   }
 }
 
@@ -158,6 +176,63 @@ export class AttributeTargetMappingsController {
   }
 
   /**
+   * The acknowledgement, RE-DERIVED INSIDE the caller's transaction.
+   *
+   * Security finding 5. Enabling a mapping exports every existing holder's
+   * value on their next sync, retroactively and silently. This does not
+   * refuse that — an admin who reads the number and means it proceeds — it
+   * refuses to let it happen without the number having been in front of
+   * someone.
+   *
+   * RE-DERIVING is the whole difference between a guard and a decoration. A
+   * bulk import landing between the caller's GET and their POST invalidates
+   * the acknowledgement rather than slipping under it, because the count this
+   * compares against is the one true inside the transaction that is about to
+   * write.
+   *
+   * A count of zero requires nothing, which is what keeps every existing
+   * caller that exports nothing working unchanged.
+   *
+   * Absent is a ValidationError naming the real number — the message IS the
+   * information the caller was missing, so a curl user and the console learn
+   * the same thing. A mismatch is a ConflictError, the same status and the
+   * same reasoning as a superseded `previewHash` on the attribute migration:
+   * they acknowledged a smaller export than the one they are about to
+   * perform, and the honest answer is "re-read it", not "close enough".
+   */
+  private async assertAcknowledged(
+    tx: DbHandle,
+    query: ExportImpactQuery,
+    acknowledged: number | undefined,
+  ): Promise<ExportImpact> {
+    const impact = await this.mappings.countExportImpact(query, tx)
+    if (impact.holderCount === 0) return impact
+
+    const people = impact.holderCount === 1 ? "1 person's" : `${impact.holderCount} people's`
+
+    if (acknowledged === undefined) {
+      throw new ValidationError([
+        `acknowledgedExportCount: enabling this mapping exports ${people} values to ` +
+          `${query.target} on their next sync, and nothing recalls them afterwards` +
+          (impact.sensitive
+            ? '. This attribute is marked sensitive, so the audit log will not record what was sent'
+            : '') +
+          `. Send acknowledgedExportCount: ${impact.holderCount} to confirm.`,
+      ])
+    }
+
+    if (acknowledged !== impact.holderCount) {
+      throw new ConflictError(
+        `acknowledgedExportCount ${acknowledged} is no longer the number: enabling this mapping ` +
+          `now exports ${people} values to ${query.target}. Re-read the export impact and ` +
+          'confirm the current number.',
+      )
+    }
+
+    return impact
+  }
+
+  /**
    * What enabling this mapping would newly export, as a number — security
    * finding 5.
    *
@@ -199,6 +274,20 @@ export class AttributeTargetMappingsController {
     const parsed = parseBody(createMappingBodySchema, body)
 
     return this.db.transaction(async (tx) => {
+      // `enabled` defaults to true, so an ordinary create IS an enable — the
+      // shortest path to exporting everything, and therefore guarded.
+      const impact = (parsed.enabled ?? true)
+        ? await this.assertAcknowledged(
+            tx,
+            {
+              target: parsed.target,
+              attributeDefinitionId: parsed.attributeDefinitionId ?? null,
+              coreField: parsed.coreField ?? null,
+            },
+            parsed.acknowledgedExportCount,
+          )
+        : null
+
       const row = await this.mappings.create(tx, {
         attributeDefinitionId: parsed.attributeDefinitionId ?? null,
         coreField: parsed.coreField ?? null,
@@ -218,7 +307,7 @@ export class AttributeTargetMappingsController {
         resourceType: 'attribute_target_mapping',
         resourceId: row.id,
         before: null,
-        after: snapshotMapping(row),
+        after: snapshotMapping(row, impact),
       })
 
       return row
@@ -243,6 +332,22 @@ export class AttributeTargetMappingsController {
         throw new NotFoundError('attribute target mapping', id)
       }
 
+      // Only a transition INTO enabled is a new export. `true -> true`
+      // changes nothing about what flows, `-> false` reduces it, and a
+      // `remoteName` rename relocates values that already flow.
+      const turningOn = parsed.enabled === true && !before.enabled
+      const impact = turningOn
+        ? await this.assertAcknowledged(
+            tx,
+            {
+              target: before.target,
+              attributeDefinitionId: before.attributeDefinitionId,
+              coreField: before.coreField,
+            },
+            parsed.acknowledgedExportCount,
+          )
+        : null
+
       const after = await this.mappings.update(tx, id, parsed)
 
       await this.auditWriter.record(tx, {
@@ -251,7 +356,7 @@ export class AttributeTargetMappingsController {
         resourceType: 'attribute_target_mapping',
         resourceId: id,
         before: snapshotMapping(before),
-        after: snapshotMapping(after),
+        after: snapshotMapping(after, impact),
       })
 
       return after
