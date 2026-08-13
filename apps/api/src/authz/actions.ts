@@ -17,6 +17,8 @@ export type Action =
   | 'group:manage_members'
   | 'org_unit:read'
   | 'org_unit:create'
+  | 'org_unit:update'
+  | 'org_unit:delete'
   | 'role:assign'
   | 'audit:read'
   | 'connector:read'
@@ -55,6 +57,24 @@ export const ALL_ACTIONS: readonly Action[] = [
   'group:manage_members',
   'org_unit:read',
   'org_unit:create',
+  // Renaming and deleting an org unit. BOTH super_admin's alone (reachable
+  // only through ALL_ACTIONS below), and deliberately NOT granted to the
+  // user_admin who already holds `org_unit:create`, because neither is the
+  // same kind of act as adding a unit:
+  //
+  //   - a rename REWRITES THE PATH of the unit and every descendant, and
+  //     scoped grants are resolved by path (PermissionEngine.scopePathsFor).
+  //     Renaming a unit therefore moves the reach of every administrator
+  //     scoped anywhere inside it.
+  //   - a delete is irreversible and sits next to an ON DELETE CASCADE on
+  //     `role_assignments.scope_org_unit_id` (see
+  //     OrgUnitsRepository.deleteIfUnused, which refuses rather than let it
+  //     fire).
+  //
+  // Creating a unit adds a leaf and moves nothing, which is why it can sit
+  // with the ordinary directory-editing role and these two cannot.
+  'org_unit:update',
+  'org_unit:delete',
   'role:assign',
   'audit:read',
   'connector:read',

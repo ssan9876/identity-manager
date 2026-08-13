@@ -1,4 +1,18 @@
-import { Body, Controller, Get, Inject, Param, Post, Query, Req, UseGuards } from '@nestjs/common'
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Inject,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
 import { JwtGuard } from '../auth/jwt.guard'
@@ -19,6 +33,19 @@ import { OrgUnitsRepository, type OrgUnit } from './org-units.repository'
 // noNulChar — see docs/archive/audits/audit-injection.md's HIGH "JSON-escaped
 // NUL" finding (confirmed live on POST /org-units) and safe-string.ts's own
 // doc comment.
+/**
+ * Rename only. `parentId` is deliberately absent: re-parenting a unit is a
+ * different operation with a different authorization question — it needs a
+ * scope check against the DESTINATION parent as well as the current one,
+ * exactly as moving a PERSON between units does (see
+ * UsersController.transfer). `.strict()` refuses it by name rather than
+ * ignoring it, so a caller who believes they moved a subtree is told they
+ * did not.
+ */
+const renameOrgUnitBodySchema = z
+  .object({ name: noNulChar(z.string().min(1).max(255)) })
+  .strict()
+
 const createOrgUnitBodySchema = z
   .object({
     name: noNulChar(z.string().min(1).max(255)),
@@ -151,6 +178,124 @@ export class OrgUnitsController {
       })
 
       return unit
+    })
+  }
+
+  /**
+   * Rename an org unit.
+   *
+   * Authorized against the unit ITSELF, not its parent — unlike `create`,
+   * which asks about the parent because that is where the new unit will
+   * live. A rename changes something that already exists inside this unit's
+   * own scope.
+   *
+   * `org_unit:update` is super_admin's alone, and deliberately not granted to
+   * the user_admin who may already create units. A rename is not cosmetic:
+   * `path` is derived from the name, so it rewrites this unit's path AND
+   * every descendant's, and scoped grants resolve BY PATH. Renaming a unit
+   * moves the reach of every administrator scoped anywhere inside it. The
+   * grant rows key on `scope_org_unit_id` and so follow the unit correctly,
+   * which is why this is safe — but it is the reason the permission is not
+   * the ordinary directory-editing one.
+   *
+   * The audit row carries both paths, not just both names. The name is what a
+   * human changed; the path is what actually decides authorization, and an
+   * audit log that recorded only the former would not explain a scope change
+   * that happened at the same instant.
+   */
+  @Patch(':id')
+  @RequirePermission('org_unit:update')
+  async rename(
+    @Param('id') rawId: string,
+    @Body() body: unknown,
+    @Req() request: AuthorizedRequest,
+  ): Promise<OrgUnit> {
+    const id = parseId(rawId)
+    const parsed = parseBody(renameOrgUnitBodySchema, body)
+
+    return this.db.transaction(async (tx) => {
+      const current = await this.orgUnits.findById(id, tx)
+      if (current === null) {
+        throw new NotFoundError('org unit', id)
+      }
+
+      await this.engine.assertCanIn(request.actor, 'org_unit:update', id, tx)
+
+      const renamed = await this.orgUnits.rename(id, parsed.name, tx)
+
+      await this.auditWriter.record(tx, {
+        actorUserId: request.actor.userId,
+        action: 'org_unit:rename',
+        resourceType: 'org_unit',
+        resourceId: id,
+        before: snapshotOrgUnit(current),
+        after: snapshotOrgUnit(renamed),
+      })
+
+      await this.outboxWriter.record(tx, {
+        aggregateType: 'org_unit',
+        aggregateId: id,
+        eventType: 'updated',
+        payload: { ...snapshotOrgUnit(renamed), action: 'org_unit:rename' },
+      })
+
+      return renamed
+    })
+  }
+
+  /**
+   * Delete an org unit that nothing depends on.
+   *
+   * The repository counts every blocker and refuses by name — children,
+   * people, groups, and scoped role assignments. That last one is the
+   * important one and is why this cannot simply be handed to the foreign
+   * keys: three of the four references are ON DELETE RESTRICT and would stop
+   * themselves, but `role_assignments.scope_org_unit_id` CASCADES. A delete
+   * that reached the database would silently revoke every scoped grant
+   * pointing here, with no audit row and no way to find out afterwards
+   * except by noticing an administrator has quietly stopped being able to
+   * work.
+   *
+   * A root unit is never deletable: an organization owns exactly one, and
+   * removing it leaves a tenant with nowhere to file anybody.
+   */
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @RequirePermission('org_unit:delete')
+  async remove(@Param('id') rawId: string, @Req() request: AuthorizedRequest): Promise<void> {
+    const id = parseId(rawId)
+
+    await this.db.transaction(async (tx) => {
+      const current = await this.orgUnits.findById(id, tx)
+      if (current === null) {
+        throw new NotFoundError('org unit', id)
+      }
+
+      await this.engine.assertCanIn(request.actor, 'org_unit:delete', id, tx)
+
+      // The audit row is written BEFORE the delete, inside the same
+      // transaction: `audit_log.resource_id` is not a foreign key, so the row
+      // survives the unit it describes — which is the entire point of
+      // recording a deletion — but the `before` image has to be captured
+      // while there is still something to capture.
+      await this.auditWriter.record(tx, {
+        actorUserId: request.actor.userId,
+        action: 'org_unit:delete',
+        resourceType: 'org_unit',
+        resourceId: id,
+        before: snapshotOrgUnit(current),
+        after: null,
+      })
+
+      // NO outbox event, deliberately, and `OutboxEventType` has no
+      // 'deleted' member to write one with. Adding one would mean an enum
+      // migration for an event with nothing to carry: this route only
+      // succeeds when the unit has no people, no groups, no children and no
+      // scoped grants, so nothing about it was ever projected into a
+      // connected directory and there is nothing downstream to retract. The
+      // audit row above is the whole record, which is what a deletion of an
+      // empty container should leave behind.
+      await this.orgUnits.deleteIfUnused(id, tx)
     })
   }
 }

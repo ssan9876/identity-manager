@@ -15,6 +15,15 @@ export type Action =
   | 'group:manage_members'
   | 'org_unit:read'
   | 'org_unit:create'
+  // Renaming and deleting an org unit. BOTH super_admin's alone, and
+  // deliberately not granted alongside `org_unit:create`: creating a unit adds
+  // a leaf and moves nothing, while a rename rewrites the path of the unit and
+  // every descendant (paths are derived from names, and scoped grants resolve
+  // by path), and a delete is irreversible and sits next to an ON DELETE
+  // CASCADE on role_assignments.scope_org_unit_id that the API refuses rather
+  // than lets fire.
+  | 'org_unit:update'
+  | 'org_unit:delete'
   | 'role:assign'
   | 'audit:read'
   | 'connector:read'

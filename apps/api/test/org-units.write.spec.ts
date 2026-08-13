@@ -374,4 +374,234 @@ describe('org unit write endpoints (Milestone 3b, Task 3)', () => {
       }
     })
   })
+
+  // =======================================================================
+  // PATCH /org-units/:id — renaming
+  // =======================================================================
+
+  describe('PATCH /org-units/:id', () => {
+    /**
+     * `path` is DERIVED from the name, so a rename is never a one-column
+     * update: every descendant is prefixed by this unit's path and all of
+     * them move together or the tree is inconsistent — and since scoped
+     * grants resolve BY PATH, an inconsistent tree is an authorization bug,
+     * not a cosmetic one.
+     */
+    it('rewrites the whole subtree', async () => {
+      const root = await makeOrgUnit('Rename Root')
+      const sales = await orgUnitsRepo().createChild(root.id, 'Sales')
+      const emea = await orgUnitsRepo().createChild(sales.id, 'EMEA')
+      const actor = await makeActiveUser('super_admin', root.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .patch('/org-units/' + sales.id)
+        .send({ name: 'Revenue' })
+        .expect(200)
+      expect(res.body.path).toBe(root.path + '.revenue')
+
+      const moved = await orgUnitsRepo().findById(emea.id)
+      expect(moved?.path).toBe(root.path + '.revenue.emea')
+      // The descendant kept its own name; only the inherited prefix moved.
+      expect(moved?.name).toBe('EMEA')
+    })
+
+    /**
+     * toLabel('Sales') and toLabel('SALES!') are both `sales`, so this
+     * changes the display name and touches no path. Rewriting a subtree to
+     * the value it already holds would be write amplification for nothing.
+     */
+    it('changes the name without touching paths when the label is unchanged', async () => {
+      const root = await makeOrgUnit('Label Root')
+      const sales = await orgUnitsRepo().createChild(root.id, 'Sales')
+      const emea = await orgUnitsRepo().createChild(sales.id, 'EMEA')
+      const actor = await makeActiveUser('super_admin', root.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .patch('/org-units/' + sales.id)
+        .send({ name: 'SALES!' })
+        .expect(200)
+      expect(res.body.name).toBe('SALES!')
+      expect(res.body.path).toBe(root.path + '.sales')
+      expect((await orgUnitsRepo().findById(emea.id))?.path).toBe(root.path + '.sales.emea')
+    })
+
+    it('refuses a colliding rename and rolls the subtree back whole', async () => {
+      const root = await makeOrgUnit('Collide Root')
+      const sales = await orgUnitsRepo().createChild(root.id, 'Sales')
+      const emea = await orgUnitsRepo().createChild(sales.id, 'EMEA')
+      await orgUnitsRepo().createChild(root.id, 'Marketing')
+      const actor = await makeActiveUser('super_admin', root.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .patch('/org-units/' + sales.id)
+        .send({ name: 'Marketing' })
+        .expect(409)
+      expect(res.body.code).toBe('CONFLICT')
+
+      expect((await orgUnitsRepo().findById(emea.id))?.path).toBe(root.path + '.sales.emea')
+    })
+
+    /**
+     * The name is what a human changed; the PATH is what decides
+     * authorization. An audit row recording only the former would not
+     * explain a scope change that happened at the same instant.
+     */
+    it('records both paths, not just both names', async () => {
+      const root = await makeOrgUnit('Audit Root')
+      const sales = await orgUnitsRepo().createChild(root.id, 'Sales')
+      const actor = await makeActiveUser('super_admin', root.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      await request(app.getHttpServer())
+        .patch('/org-units/' + sales.id)
+        .send({ name: 'Revenue' })
+        .expect(200)
+
+      const { rows } = await ctx.pool.query(
+        "SELECT before, after FROM audit_log WHERE resource_id = $1 AND action = 'org_unit:rename'",
+        [sales.id],
+      )
+      expect((rows[0] as { before: { path: string } }).before.path).toBe(root.path + '.sales')
+      expect((rows[0] as { after: { path: string } }).after.path).toBe(root.path + '.revenue')
+    })
+
+    /** Re-parenting is a different operation with a different scope question. */
+    it('refuses a body that tries to re-parent the unit', async () => {
+      const root = await makeOrgUnit('Reparent Root')
+      const sales = await orgUnitsRepo().createChild(root.id, 'Sales')
+      const actor = await makeActiveUser('super_admin', root.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      await request(app.getHttpServer())
+        .patch('/org-units/' + sales.id)
+        .send({ name: 'Revenue', parentId: root.id })
+        .expect(400)
+    })
+
+    it('refuses a scoped actor whose grant does not cover the unit', async () => {
+      const root = await makeOrgUnit('Scoped Rename Root')
+      const mine = await orgUnitsRepo().createChild(root.id, 'Mine')
+      const theirs = await orgUnitsRepo().createChild(root.id, 'Theirs')
+      const actor = await makeActiveUser('super_admin', mine.id)
+      await grant(actor.id, 'super_admin', mine.id)
+      currentUsername = actor.username
+
+      await request(app.getHttpServer())
+        .patch('/org-units/' + theirs.id)
+        .send({ name: 'Taken' })
+        .expect(403)
+    })
+  })
+
+  // =======================================================================
+  // DELETE /org-units/:id
+  // =======================================================================
+
+  describe('DELETE /org-units/:id', () => {
+    it('deletes a unit that nothing depends on, and the record outlives it', async () => {
+      const root = await makeOrgUnit('Delete Root')
+      const spare = await orgUnitsRepo().createChild(root.id, 'Spare')
+      const actor = await makeActiveUser('super_admin', root.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      await request(app.getHttpServer()).delete('/org-units/' + spare.id).expect(204)
+      expect(await orgUnitsRepo().findById(spare.id)).toBeNull()
+
+      // audit_log.resource_id is deliberately not a foreign key, which is
+      // what lets the record of a deletion survive the thing deleted.
+      const { rows } = await ctx.pool.query(
+        "SELECT before FROM audit_log WHERE resource_id = $1 AND action = 'org_unit:delete'",
+        [spare.id],
+      )
+      expect(rows).toHaveLength(1)
+    })
+
+    it('refuses a unit that still has children, and names them', async () => {
+      const root = await makeOrgUnit('Blocked Root')
+      const sales = await orgUnitsRepo().createChild(root.id, 'Sales')
+      await orgUnitsRepo().createChild(sales.id, 'EMEA')
+      const actor = await makeActiveUser('super_admin', root.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .delete('/org-units/' + sales.id)
+        .expect(409)
+      expect(String(res.body.message)).toMatch(/1 child org unit/)
+    })
+
+    it('refuses a unit that still has people in it', async () => {
+      const root = await makeOrgUnit('Peopled Root')
+      const branch = await orgUnitsRepo().createChild(root.id, 'Branch')
+      await makeActiveUser('read_only', branch.id)
+      const actor = await makeActiveUser('super_admin', root.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .delete('/org-units/' + branch.id)
+        .expect(409)
+      expect(String(res.body.message)).toMatch(/1 person/)
+    })
+
+    /**
+     * THE one that would not have stopped itself. Three of the four foreign
+     * keys into org_units are ON DELETE RESTRICT;
+     * role_assignments.scope_org_unit_id CASCADES, so a delete that reached
+     * the database would silently revoke every scoped grant pointing here,
+     * with no audit row and no way to discover it afterwards.
+     */
+    it('refuses a unit scoped role assignments point at, rather than cascading them away', async () => {
+      const root = await makeOrgUnit('Granted Root')
+      const branch = await orgUnitsRepo().createChild(root.id, 'Branch')
+      const scoped = await makeActiveUser('user_admin', root.id)
+      await grant(scoped.id, 'user_admin', branch.id)
+      const actor = await makeActiveUser('super_admin', root.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .delete('/org-units/' + branch.id)
+        .expect(409)
+      expect(String(res.body.message)).toMatch(/scoped role assignment/)
+
+      // Still there, and so is the grant.
+      expect(await orgUnitsRepo().findById(branch.id)).not.toBeNull()
+      const { rows } = await ctx.pool.query(
+        'SELECT 1 FROM role_assignments WHERE scope_org_unit_id = $1',
+        [branch.id],
+      )
+      expect(rows).toHaveLength(1)
+    })
+
+    it('refuses a root org unit', async () => {
+      const root = await makeOrgUnit('Root Delete')
+      const actor = await makeActiveUser('super_admin', root.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer()).delete('/org-units/' + root.id).expect(409)
+      expect(String(res.body.message)).toMatch(/root org unit/i)
+    })
+
+    it('404s for a unit that does not exist', async () => {
+      const root = await makeOrgUnit('Missing Root')
+      const actor = await makeActiveUser('super_admin', root.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      await request(app.getHttpServer())
+        .delete('/org-units/00000000-0000-0000-0000-000000000000')
+        .expect(404)
+    })
+  })
 })

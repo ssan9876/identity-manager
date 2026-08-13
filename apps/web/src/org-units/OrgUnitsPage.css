@@ -173,3 +173,33 @@
   gap: var(--space-2);
   flex: none;
 }
+
+/* Rename/delete controls — see OrgUnitDetailPane. */
+.org-unit-detail__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.org-unit-detail__heading-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.org-unit-detail__rename {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.org-unit-detail__rename-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
