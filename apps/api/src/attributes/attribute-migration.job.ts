@@ -222,6 +222,16 @@ export interface AttributeMigrationReport {
    * converts, and destroys, a value nobody previewed.
    */
   previewHash: string
+  /**
+   * Whether the definition is marked `sensitive`.
+   *
+   * Reported so a caller can explain ITSELF without a second query: the
+   * preview's unconvertible sample is redacted for such a definition, and a
+   * committed migration writes no prior values to the audit log because every
+   * value converts back. A caller that had to re-derive this would be a second
+   * place deciding what may be said about a sensitive attribute.
+   */
+  sensitive: boolean
 }
 
 /**
@@ -668,6 +678,7 @@ export class AttributeMigrationJob {
           ATTRIBUTE_MIGRATION_FLOOR,
         ),
         previewHash: hash.digest('hex'),
+        sensitive: definition.sensitive,
       },
       changes,
       sensitive: definition.sensitive,
