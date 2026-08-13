@@ -8,7 +8,7 @@ import { ConfirmDialog } from '../shell/ConfirmDialog'
 import { useSelfPermissions } from '../shell/permissions'
 import { useToast } from '../shell/ToastProvider'
 import { formatDateOnly, formatDateTime } from '../format'
-import { activatePerson, deactivatePerson, fetchGroupsForUser, fetchPeopleByIds, fetchPerson, type Group, type Person } from './api'
+import { activatePerson, deactivatePerson, fetchGroupsForUser, fetchPeopleByIds, fetchPerson, transferPerson, type Group, type Person } from './api'
 import { StatusBadge, SYNC_WORD, SyncBadge } from './badges'
 import { PersonSyncTab } from './PersonSyncTab'
 import { PersonRolesTab } from './PersonRolesTab'
@@ -214,6 +214,38 @@ export default function PersonDetailPage() {
   const [activeTab, setActiveTab] = useState<TabKey>('profile')
   const [deactivateOpen, setDeactivateOpen] = useState(false)
   const [activateOpen, setActivateOpen] = useState(false)
+
+  /**
+   * Moving this person to another org unit. The API checks the caller's scope
+   * against BOTH ends, so this control does not try to predict which units are
+   * legal — it offers the roster and lets the refusal come back in the API's
+   * own words, naming the end that failed.
+   */
+  const [transferOpen, setTransferOpen] = useState(false)
+  const [transferTo, setTransferTo] = useState('')
+  const [transferring, setTransferring] = useState(false)
+
+  async function handleConfirmTransfer() {
+    if (accessToken === undefined || person === null || transferTo === '') return
+    setTransferring(true)
+    try {
+      const moved = await transferPerson(accessToken, person.id, transferTo)
+      setPerson(moved)
+      setTransferOpen(false)
+      setTransferTo('')
+      showToast(`Moved ${moved.displayName}.`)
+    } catch (cause) {
+      // Verbatim. A 403 here can mean either end of the move, and the API's
+      // message is the only thing that says which — re-wording it would throw
+      // away the one piece of information the caller needs.
+      showToast(
+        cause instanceof ApiError ? cause.message : 'Could not move this person.',
+        'danger',
+      )
+    } finally {
+      setTransferring(false)
+    }
+  }
   const tabRefs = useRef<Record<TabKey, HTMLButtonElement | null>>({
     profile: null,
     groups: null,
@@ -453,6 +485,19 @@ export default function PersonDetailPage() {
             <SyncBadge state={person.syncState} />
           </button>
           <span className="mono cell-muted">{orgUnitPath ?? person.orgUnitId}</span>
+          {canUpdate && person.status !== 'deactivated' && (
+            <button
+              type="button"
+              className="btn btn--secondary btn--sm"
+              onClick={() => {
+                setTransferTo('')
+                setTransferOpen(true)
+              }}
+              data-testid="move-person"
+            >
+              Move
+            </button>
+          )}
           {person.status === 'deactivated' && person.deactivatedAt !== null && (
             <span className="cell-muted" data-testid="deactivated-at">
               Deactivated {formatDateTime(person.deactivatedAt)}
@@ -460,6 +505,43 @@ export default function PersonDetailPage() {
           )}
         </div>
       </header>
+
+      <ConfirmDialog
+        open={transferOpen}
+        title={`Move ${person.displayName}?`}
+        confirmLabel={transferring ? 'Moving…' : 'Move'}
+        tone="primary"
+        onConfirm={handleConfirmTransfer}
+        onDismiss={() => setTransferOpen(false)}
+        testId="move-dialog"
+      >
+        <p>
+          Moving someone changes who can administer them: the unit they arrive in inherits reach
+          over them, and business roles that key on an org unit are re-evaluated immediately, so
+          this can change what they have access to.
+        </p>
+        <label className="field__label" htmlFor="transfer-org-unit">
+          New org unit
+        </label>
+        <select
+          id="transfer-org-unit"
+          className="select"
+          value={transferTo}
+          disabled={transferring}
+          onChange={(e) => setTransferTo(e.target.value)}
+          data-testid="move-target"
+        >
+          <option value="">Choose a unit…</option>
+          {orgUnits.status === 'ready' &&
+            orgUnits.list
+              .filter((unit) => unit.id !== person.orgUnitId)
+              .map((unit) => (
+                <option key={unit.id} value={unit.id}>
+                  {unit.path}
+                </option>
+              ))}
+        </select>
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={activateOpen}

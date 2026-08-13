@@ -158,6 +158,25 @@ export function updatePerson(accessToken: string, id: string, patch: UpdatePerso
  * caller's post-action toast report the real, current sync state rather
  * than assuming one.
  */
+/**
+ * Move a person to another org unit.
+ *
+ * Its own route, not a field on `updatePerson`: the API checks the caller's
+ * scope against BOTH the unit being left and the unit being joined, because
+ * the destination inherits reach over whoever is in it. A 403 here can mean
+ * either end, and the API's message says which.
+ */
+export function transferPerson(
+  accessToken: string,
+  id: string,
+  orgUnitId: string,
+): Promise<Person> {
+  return authorizedRequest<Person>(`/users/${id}/transfer`, accessToken, {
+    method: 'POST',
+    body: JSON.stringify({ orgUnitId }),
+  })
+}
+
 export function deactivatePerson(accessToken: string, id: string): Promise<Person> {
   return authorizedRequest<Person>(`/users/${id}/deactivate`, accessToken, { method: 'POST' })
 }
