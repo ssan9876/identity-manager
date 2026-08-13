@@ -327,7 +327,18 @@ test('mapping a core field to one target leaves it visibly unmapped for every ot
     // The guard's own behaviour is pinned deterministically in the dedicated
     // test below, over `Given name`, where `first_name` is NOT NULL on every
     // user and the count therefore cannot be zero.
+    // Waited for, never sampled. `isVisible()` is an instantaneous snapshot,
+    // and the panel only appears after the export-impact round trip returns —
+    // so a bare `if (await isVisible())` loses the race whenever that request
+    // is slower than the click handler, skips the confirm, and then fails on
+    // a toggle that was never going to appear. Wait until ONE of the two
+    // legitimate outcomes is on screen, then act on whichever it is.
     const exportConfirm = page.getByTestId('mapping-export-confirm')
+    const enabledToggle = echoCell.getByTestId('mapping-enabled-toggle')
+    await expect(async () => {
+      expect((await exportConfirm.isVisible()) || (await enabledToggle.isVisible())).toBe(true)
+    }).toPass({ timeout: 15_000 })
+
     if (await exportConfirm.isVisible()) {
       await page.getByTestId('mapping-export-confirm-button').click()
     }
