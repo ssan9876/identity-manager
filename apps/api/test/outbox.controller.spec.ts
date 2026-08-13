@@ -11,6 +11,7 @@ import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { OrgUnitsRepository, type OrgUnit } from '../src/org-units/org-units.repository'
 import { OutboxController } from '../src/outbox/outbox.controller'
+import { AuditWriter } from '../src/audit/audit.writer'
 import { OutboxRepository } from '../src/outbox/outbox.repository'
 import { UsersRepository, type User } from '../src/users/users.repository'
 import { withTestDatabase } from './support/pg'
@@ -47,6 +48,7 @@ describe('OutboxController (finding H3, docs/archive/audits/audit-integrity.md)'
       providers: [
         { provide: DB_CLIENT, useFactory: () => ctx.db },
         OutboxRepository,
+        AuditWriter,
         PermissionEngine,
         PermissionGuard,
         RoleAssignmentsRepository,
@@ -249,6 +251,116 @@ describe('OutboxController (finding H3, docs/archive/audits/audit-integrity.md)'
 
       const res = await request(app.getHttpServer()).get('/outbox/dead-letters?target=not-a-real-target').expect(400)
       expect(res.body.code).toBe('VALIDATION_FAILED')
+    })
+  })
+  // =========================================================================
+  // Retrying a dead letter
+  // =========================================================================
+
+  /**
+   * Until this route existed, reconciliation was the only retry path — which
+   * works for a `user` aggregate and not at all for the others. A
+   * dead-lettered `group`, `membership` or `sso_app` event is never
+   * re-derived by a walk over users, so it stayed failed forever and the only
+   * remedy was an UPDATE against `outbox_events` by hand.
+   */
+  describe('POST /outbox/dead-letters/:id/retry', () => {
+    async function statusOf(id: number): Promise<{ status: string; attempts: number }> {
+      const { rows } = await ctx.pool.query<{ status: string; attempts: number }>(
+        'SELECT status, attempts FROM outbox_events WHERE id = $1',
+        [id],
+      )
+      return { status: rows[0]!.status, attempts: Number(rows[0]!.attempts) }
+    }
+
+    it('puts a dead letter back in the queue and resets its attempt count', async () => {
+      const admin = await makeActiveUser('super_admin')
+      // `makeActiveUser` only names the user — the grant is a separate step,
+      // and GLOBAL (scopeOrgUnitId null) because this route demands it.
+      await rolesRepo().assign({ userId: admin.id, roleKey: 'super_admin', scopeOrgUnitId: null })
+      currentUsername = admin.username
+      const id = await insertOutboxEvent('group', 'failed', 'target refused the write')
+
+      const res = await request(app.getHttpServer())
+        .post(`/outbox/dead-letters/${id}/retry`)
+        .expect(200)
+      expect(res.body).toMatchObject({ id, status: 'pending' })
+
+      // Reset to zero, not continued: the backoff exists to stop a failing
+      // event hammering a target, and an operator who fixed the cause has
+      // supplied the judgement it stood in for. Leaving the count at 8 would
+      // dead-letter it again on the first hiccup.
+      expect(await statusOf(id)).toEqual({ status: 'pending', attempts: 0 })
+    })
+
+    it('records who did it, and what it looked like before', async () => {
+      const admin = await makeActiveUser('super_admin')
+      // `makeActiveUser` only names the user — the grant is a separate step,
+      // and GLOBAL (scopeOrgUnitId null) because this route demands it.
+      await rolesRepo().assign({ userId: admin.id, roleKey: 'super_admin', scopeOrgUnitId: null })
+      currentUsername = admin.username
+      const id = await insertOutboxEvent('membership', 'failed', 'boom')
+
+      await request(app.getHttpServer()).post(`/outbox/dead-letters/${id}/retry`).expect(200)
+
+      // Keyed on the AGGREGATE: audit_log.resource_id is a uuid, and someone
+      // asking why a user re-synced looks the user up, not an event number.
+      const { rows } = await ctx.pool.query<{ action: string; before: unknown; actor_user_id: string }>(
+        `SELECT action, before, actor_user_id FROM audit_log WHERE action = 'outbox:retry' ORDER BY created_at DESC LIMIT 1`,
+      )
+      expect(rows[0]?.action).toBe('outbox:retry')
+      expect(rows[0]?.actor_user_id).toBe(admin.id)
+      expect(rows[0]?.before).toMatchObject({ outboxEventId: id, status: 'failed', attempts: 8 })
+    })
+
+    /**
+     * A retry asked about a live event is a request built on a stale screen,
+     * and "not a dead letter" and "does not exist" are the same answer.
+     */
+    it('404s for an event that is not dead-lettered', async () => {
+      const admin = await makeActiveUser('super_admin')
+      // `makeActiveUser` only names the user — the grant is a separate step,
+      // and GLOBAL (scopeOrgUnitId null) because this route demands it.
+      await rolesRepo().assign({ userId: admin.id, roleKey: 'super_admin', scopeOrgUnitId: null })
+      currentUsername = admin.username
+      const id = await insertOutboxEvent('user', 'pending')
+
+      await request(app.getHttpServer()).post(`/outbox/dead-letters/${id}/retry`).expect(404)
+      expect((await statusOf(id)).attempts).toBe(8)
+    })
+
+    it('404s for an id that does not exist at all', async () => {
+      const admin = await makeActiveUser('super_admin')
+      // `makeActiveUser` only names the user — the grant is a separate step,
+      // and GLOBAL (scopeOrgUnitId null) because this route demands it.
+      await rolesRepo().assign({ userId: admin.id, roleKey: 'super_admin', scopeOrgUnitId: null })
+      currentUsername = admin.username
+      await request(app.getHttpServer()).post('/outbox/dead-letters/999999999/retry').expect(404)
+    })
+
+    it('400s for an id that is not a positive integer', async () => {
+      const admin = await makeActiveUser('super_admin')
+      // `makeActiveUser` only names the user — the grant is a separate step,
+      // and GLOBAL (scopeOrgUnitId null) because this route demands it.
+      await rolesRepo().assign({ userId: admin.id, roleKey: 'super_admin', scopeOrgUnitId: null })
+      currentUsername = admin.username
+      await request(app.getHttpServer()).post('/outbox/dead-letters/not-a-number/retry').expect(400)
+    })
+
+    /**
+     * READING a dead letter is an investigation; RETRYING one writes to a real
+     * directory. The permission matches the consequence, not the screen the
+     * button happens to sit on — so an auditor who can see the list cannot
+     * act on it.
+     */
+    it('refuses an auditor, who may READ dead letters but not cause a write', async () => {
+      const auditor = await makeActiveUser('auditor')
+      await rolesRepo().assign({ userId: auditor.id, roleKey: 'auditor', scopeOrgUnitId: null })
+      currentUsername = auditor.username
+      const id = await insertOutboxEvent('group', 'failed', 'boom')
+
+      await request(app.getHttpServer()).post(`/outbox/dead-letters/${id}/retry`).expect(403)
+      expect((await statusOf(id)).status).toBe('failed')
     })
   })
 })

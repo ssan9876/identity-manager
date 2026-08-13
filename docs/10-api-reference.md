@@ -706,6 +706,23 @@ that `force` cannot answer; `force` overrides the blast-radius refusal alone, an
 recorded in the audit row. The same migration is available as
 `pnpm --filter @idm/api run attribute-migrate`.
 
+### `POST /outbox/dead-letters/:id/retry` — `connector:manage` **(global)**
+
+→ `{ "id": 412, "status": "pending" }`
+
+Puts one dead letter back in the queue, resetting `attempts` to zero. Until this
+existed, reconciliation was the only retry path — which re-derives `user`
+aggregates and nothing else, so a dead-lettered `group`, `membership` or
+`sso_app` event stayed failed forever.
+
+`connector:manage`, not the `audit:read` that LISTS dead letters: reading one is
+an investigation, retrying it writes to a real directory, and the permission
+follows the consequence. An event that is not `failed` is a **404** — "not a
+dead letter" and "does not exist" are the same answer to a request built on a
+stale screen. Audited as `outbox:retry` against the AGGREGATE, not the event:
+`audit_log.resource_id` is a uuid, and the person asking why a user re-synced
+looks up the user.
+
 ### `GET /attribute-target-mappings` — `connector:read`
 
 Every mapping row.

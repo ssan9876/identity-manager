@@ -1,4 +1,4 @@
-import { Controller, Get, Inject, Query, Req, UseGuards } from '@nestjs/common'
+import { Controller, Get, HttpCode, HttpStatus, Inject, Param, Post, Query, Req, UseGuards } from '@nestjs/common'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { z } from 'zod'
 import { ALL_CONNECTOR_TARGETS } from '../connectors/connector'
@@ -6,8 +6,9 @@ import { JwtGuard } from '../auth/jwt.guard'
 import { PermissionEngine } from '../authz/permission.engine'
 import { PermissionGuard, type AuthorizedRequest } from '../authz/permission.guard'
 import { RequirePermission } from '../authz/require-permission.decorator'
+import { AuditWriter } from '../audit/audit.writer'
 import { DB_CLIENT } from '../common/db.token'
-import { ForbiddenError, ValidationError } from '../common/errors'
+import { ForbiddenError, NotFoundError, ValidationError } from '../common/errors'
 import { parseId } from '../common/http/parse-id'
 import { type Page, parsePageQuery } from '../common/pagination'
 import * as schema from '../db/schema/index'
@@ -63,6 +64,7 @@ export class OutboxController {
     @Inject(OutboxRepository) private readonly outbox: OutboxRepository,
     @Inject(DB_CLIENT) private readonly db: NodePgDatabase<typeof schema>,
     @Inject(PermissionEngine) private readonly engine: PermissionEngine,
+    @Inject(AuditWriter) private readonly auditWriter: AuditWriter,
   ) {}
 
   /**
@@ -111,5 +113,89 @@ export class OutboxController {
     ])
 
     return { items, total, limit: page.limit, offset: page.offset }
+  }
+
+  /**
+   * Put one dead letter back in the queue.
+   *
+   * Until now reconciliation was the only retry path, which works for a
+   * `user` aggregate and not at all for the others: a dead-lettered
+   * `group`, `membership` or `sso_app` event is never re-derived by a walk
+   * over users, so it stayed failed forever and the only remedy was an
+   * UPDATE against `outbox_events` by hand.
+   *
+   * `connector:manage`, not `audit:read`. Reading dead letters is an
+   * investigation; retrying one causes a real write to a real directory, and
+   * the permission has to match the consequence rather than the screen the
+   * button happens to sit on. Globally held, for the reason every other
+   * outbox-wide grant is: these events span every org unit.
+   *
+   * `attempts` is RESET to zero rather than continued. The backoff schedule
+   * exists to stop a failing event hammering a target; an operator who has
+   * fixed the cause and asked for a retry has supplied the judgement that
+   * schedule was standing in for, and leaving the count where it was would
+   * dead-letter the event again on its first hiccup. `lastError` is kept: it
+   * is the record of why this needed a human, and nothing else preserves it.
+   *
+   * Idempotent by state, not by ceremony: an event that is not `failed` is a
+   * 404 rather than a silent success, because "retry this dead letter" about
+   * a live one is a request based on a stale screen.
+   */
+  @Post('dead-letters/:id/retry')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('connector:manage')
+  async retryDeadLetter(
+    @Param('id') rawId: string,
+    @Req() request: AuthorizedRequest,
+  ): Promise<{ id: number; status: 'pending' }> {
+    await this.requireGlobalManageGrant(request)
+
+    const id = Number(rawId)
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new ValidationError(['id: must be a positive integer outbox event id'])
+    }
+
+    return this.db.transaction(async (tx) => {
+      const event = await this.outbox.findFailedById(tx, id)
+      if (event === null) throw new NotFoundError('dead-lettered outbox event', String(id))
+
+      await this.outbox.markForRetry(tx, id, {
+        attempts: 0,
+        nextAttemptAt: new Date(),
+        lastError: event.lastError ?? 'retried by an operator',
+      })
+
+      await this.auditWriter.record(tx, {
+        actorUserId: request.actor.userId,
+        action: 'outbox:retry',
+        // The AGGREGATE, not the event. `audit_log.resource_id` is a uuid and
+        // an outbox id is a bigint, so the event id could not go there even if
+        // it were the better key — and it is not: someone asking "why did this
+        // user re-sync" looks the user up, not an event number they never saw.
+        // The event id rides in the payload, where the type is free.
+        resourceType: event.aggregateType,
+        resourceId: event.aggregateId,
+        before: {
+          outboxEventId: id,
+          status: 'failed',
+          attempts: event.attempts,
+          lastError: event.lastError,
+        },
+        after: { outboxEventId: id, status: 'pending', attempts: 0 },
+      })
+
+      return { id, status: 'pending' as const }
+    })
+  }
+
+  /** The same global-grant rule the read above applies, for the write. */
+  private async requireGlobalManageGrant(request: AuthorizedRequest): Promise<void> {
+    const scopePaths = await this.engine.scopePathsFor(request.actor, 'connector:manage')
+    if (scopePaths !== null) {
+      throw new ForbiddenError(
+        'retrying a dead letter requires a global grant of connector:manage — an outbox event ' +
+          'spans every org unit and its retry writes to a directory outside any one subtree',
+      )
+    }
   }
 }

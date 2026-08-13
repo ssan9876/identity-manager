@@ -31,6 +31,23 @@ export interface DeadLetterEvent {
 /** Mirrors `SyncWorkerConfig.maxAttempts`'s default (sync.worker.ts) — not configurable anywhere in app.module.ts's DI wiring today, so this default is what every deployment actually runs. Display only ("8 of 8 attempts") — every row this endpoint returns has, by definition, already reached this ceiling (OutboxRepository.markFailed's own call site). */
 export const DEFAULT_MAX_ATTEMPTS = 8
 
+/**
+ * Put one dead letter back in the queue.
+ *
+ * `connector:manage`, not the `audit:read` that lists them: reading a dead
+ * letter is an investigation, retrying one writes to a real directory, and the
+ * permission follows the consequence rather than the screen. The API resets
+ * `attempts` to zero — an operator who fixed the cause has supplied the
+ * judgement the backoff was standing in for.
+ */
+export function retryDeadLetter(accessToken: string, id: number): Promise<{ id: number; status: 'pending' }> {
+  return authorizedRequest<{ id: number; status: 'pending' }>(
+    `/outbox/dead-letters/${id}/retry`,
+    accessToken,
+    { method: 'POST' },
+  )
+}
+
 export interface DeadLetterListParams {
   limit: number
   offset: number
