@@ -118,3 +118,58 @@
   color: var(--ink-muted);
   font-size: var(--text-sm);
 }
+
+/* The edit form — an inline disclosure under the header, not a route or a
+   modal (docs/design-system.md bans modal-as-first-thought). */
+.sso-detail__header-actions {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.sso-detail__edit {
+  margin-bottom: var(--space-5);
+  padding: var(--space-5);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.sso-detail__edit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.sso-detail__edit-wide {
+  grid-column: 1 / -1;
+}
+
+.sso-detail__edit-grid .input {
+  width: 100%;
+}
+
+.sso-detail__textarea {
+  resize: vertical;
+  font-family: var(--font-mono);
+}
+
+.sso-detail__check {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  max-width: 72ch;
+  font-size: var(--text-base);
+  color: var(--ink);
+  text-wrap: pretty;
+}
+
+.sso-detail__edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}

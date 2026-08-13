@@ -6,7 +6,14 @@ import { keycloakIssuer } from '../auth/oidc-config'
 import { EnabledBadge } from '../connectors/badges'
 import { useSelfPermissions } from '../shell/permissions'
 import { SecretModal } from './SecretModal'
-import { fetchSsoApp, mintClientSecret, setSsoAppEnabled, type SsoApp } from './api'
+import {
+  fetchSsoApp,
+  linesToList,
+  mintClientSecret,
+  setSsoAppEnabled,
+  updateSsoApp,
+  type SsoApp,
+} from './api'
 import './SsoApps.css'
 
 export default function SsoAppDetailPage() {
@@ -20,6 +27,80 @@ export default function SsoAppDetailPage() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [secret, setSecret] = useState<string | null>(null)
+
+  /**
+   * The edit form — `PATCH /sso-apps/:id` has existed since registration did,
+   * and no screen called it, so an application's name, description, redirect
+   * URIs or ACS URLs could only be corrected in the database. A typo'd
+   * redirect URI is the difference between a working login and a broken one.
+   *
+   * `clientId`, `publicClient` and `protocol` are deliberately absent: the API
+   * rejects each BY NAME rather than ignoring it, because changing any of them
+   * in place is a different application, and an admin who thinks they renamed
+   * a clientId must not be told it worked.
+   */
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
+  const [form, setForm] = useState({
+    name: '',
+    description: '',
+    redirectUris: '',
+    webOrigins: '',
+    acsUrls: '',
+    groupsClaim: false,
+    signAssertions: false,
+  })
+
+  function startEdit(current: SsoApp) {
+    setForm({
+      name: current.name,
+      description: current.description ?? '',
+      redirectUris: (current.redirectUris ?? []).join('\n'),
+      webOrigins: (current.webOrigins ?? []).join('\n'),
+      acsUrls: (current.samlAcsUrls ?? []).join('\n'),
+      groupsClaim: current.groupsClaim === true,
+      signAssertions: current.samlSignAssertions === true,
+    })
+    setEditError(null)
+    setEditing(true)
+  }
+
+  async function handleSave() {
+    if (accessToken === undefined || app === null) return
+    setSaving(true)
+    setEditError(null)
+    try {
+      // The PATCH shape is chosen by the ROW's protocol, not by the form: a
+      // SAML field sent to an OIDC application is a 400 naming the field.
+      const patch =
+        app.protocol === 'saml'
+          ? {
+              name: form.name.trim(),
+              description: form.description.trim(),
+              acsUrls: linesToList(form.acsUrls),
+              signAssertions: form.signAssertions,
+              groupsClaim: form.groupsClaim,
+            }
+          : {
+              name: form.name.trim(),
+              description: form.description.trim(),
+              redirectUris: linesToList(form.redirectUris),
+              webOrigins: linesToList(form.webOrigins),
+              groupsClaim: form.groupsClaim,
+            }
+
+      setApp(await updateSsoApp(accessToken, app.id, patch))
+      setEditing(false)
+    } catch (cause) {
+      // Verbatim: the API's refusals here name the offending field — a
+      // wildcard redirect URI, a reserved client id — and re-wording them
+      // would be a second, drifting copy of a rule it owns.
+      setEditError(cause instanceof ApiError ? cause.message : 'Could not save this application.')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const load = useCallback(async () => {
     if (accessToken === undefined || id === undefined) return
@@ -96,8 +177,170 @@ export default function SsoAppDetailPage() {
                 : 'Confidential client'}
           </p>
         </div>
-        <EnabledBadge enabled={app.enabled} />
+        <div className="sso-detail__header-actions">
+          <EnabledBadge enabled={app.enabled} />
+          {!editing && (
+            <button
+              type="button"
+              className="btn btn--secondary"
+              onClick={() => startEdit(app)}
+              data-testid="edit-sso-app"
+            >
+              Edit
+            </button>
+          )}
+        </div>
       </header>
+
+      {editing && (
+        <form
+          className="sso-detail__edit"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void handleSave()
+          }}
+          data-testid="sso-app-edit-form"
+        >
+          <h2 className="text-title">Edit application</h2>
+          <p className="cell-muted">
+            The client ID and protocol cannot be changed — either would be a different
+            application, and the API refuses both by name rather than ignoring them.
+          </p>
+
+          <div className="sso-detail__edit-grid">
+            <div className="field">
+              <label className="field__label" htmlFor="sso-edit-name">
+                Name
+              </label>
+              <input
+                id="sso-edit-name"
+                className="input"
+                value={form.name}
+                maxLength={255}
+                disabled={saving}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                data-testid="sso-edit-name"
+              />
+            </div>
+
+            <div className="field">
+              <label className="field__label" htmlFor="sso-edit-description">
+                Description
+              </label>
+              <input
+                id="sso-edit-description"
+                className="input"
+                value={form.description}
+                maxLength={2000}
+                disabled={saving}
+                onChange={(e) => setForm({ ...form, description: e.target.value })}
+              />
+            </div>
+
+            {app.protocol === 'saml' ? (
+              <div className="field sso-detail__edit-wide">
+                <label className="field__label" htmlFor="sso-edit-acs">
+                  ACS URLs
+                </label>
+                <textarea
+                  id="sso-edit-acs"
+                  className="input sso-detail__textarea"
+                  rows={3}
+                  value={form.acsUrls}
+                  disabled={saving}
+                  onChange={(e) => setForm({ ...form, acsUrls: e.target.value })}
+                  data-testid="sso-edit-acs"
+                />
+                <p className="field__hint">One per line.</p>
+              </div>
+            ) : (
+              <>
+                <div className="field sso-detail__edit-wide">
+                  <label className="field__label" htmlFor="sso-edit-redirects">
+                    Redirect URIs
+                  </label>
+                  <textarea
+                    id="sso-edit-redirects"
+                    className="input sso-detail__textarea"
+                    rows={3}
+                    value={form.redirectUris}
+                    disabled={saving}
+                    onChange={(e) => setForm({ ...form, redirectUris: e.target.value })}
+                    data-testid="sso-edit-redirects"
+                  />
+                  <p className="field__hint">
+                    One per line. A wildcard is refused by the API, which is what stops an
+                    authorization code being sent to someone else's host.
+                  </p>
+                </div>
+
+                <div className="field sso-detail__edit-wide">
+                  <label className="field__label" htmlFor="sso-edit-origins">
+                    Web origins
+                  </label>
+                  <textarea
+                    id="sso-edit-origins"
+                    className="input sso-detail__textarea"
+                    rows={2}
+                    value={form.webOrigins}
+                    disabled={saving}
+                    onChange={(e) => setForm({ ...form, webOrigins: e.target.value })}
+                  />
+                </div>
+              </>
+            )}
+
+            <label className="sso-detail__check">
+              <input
+                type="checkbox"
+                checked={form.groupsClaim}
+                disabled={saving}
+                onChange={(e) => setForm({ ...form, groupsClaim: e.target.checked })}
+              />
+              <span>Include the user's groups in tokens issued to this application.</span>
+            </label>
+
+            {app.protocol === 'saml' && (
+              <label className="sso-detail__check">
+                <input
+                  type="checkbox"
+                  checked={form.signAssertions}
+                  disabled={saving}
+                  onChange={(e) => setForm({ ...form, signAssertions: e.target.checked })}
+                />
+                <span>Sign assertions individually, as well as the response document.</span>
+              </label>
+            )}
+          </div>
+
+          {editError !== null && (
+            <p className="field__error" role="alert" data-testid="sso-edit-error">
+              {editError}
+            </p>
+          )}
+
+          <div className="sso-detail__edit-actions">
+            <button
+              type="button"
+              className="btn btn--secondary"
+              disabled={saving}
+              onClick={() => setEditing(false)}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="btn btn--primary"
+              disabled={saving}
+              data-loading={saving ? 'true' : undefined}
+              data-testid="sso-edit-save"
+            >
+              <span className="btn__label">Save</span>
+              <span className="btn__spinner" aria-hidden="true" />
+            </button>
+          </div>
+        </form>
+      )}
 
       {error && (
         <p className="banner banner--error" role="alert">
