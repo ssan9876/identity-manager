@@ -595,9 +595,18 @@ state of each.
       'none'` is what protects the console), so tightening it would trade a
       measured non-risk for a flow needing a re-test on every library upgrade.
 
-- [ ] **CS-M6.** `vite@5.4.21` + `esbuild@0.21.5` dev-server advisories, unfixed on
-      the 5.x line. Developer workstations only, but this project's dev platform is
-      Windows, where the path-traversal case is live.
+- [x] **CS-M6.** Closed 2026-08-13. `vite` 5.4.21 -> 7.3.6 and
+      `@vitejs/plugin-react` 4 -> 5 on the console; `vitest` 2.1.9 -> 3.2.7 on the
+      API, which is what dragged the vulnerable `vite` in transitively; and
+      `drizzle-kit` 0.28 -> 0.31, whose deprecated `@esbuild-kit/*` chain still
+      pinned `esbuild@0.18`, finished off with a workspace `esbuild: >=0.25.0`
+      override. `pnpm audit` now reports ZERO vite/esbuild/vitest advisories,
+      including the Windows `server.fs.deny` bypass this entry singled out, and
+      the one critical finding in the tree is gone (32 -> 25 total).
+      Verified rather than assumed: the full API suite is 119 files / 2010 tests
+      green under vitest 3 — identical to vitest 2 — `drizzle-kit generate` still
+      reports no schema drift, and the Playwright suite runs green against the
+      vite 7 dev server.
 - [x] **`Referrer-Policy` is `no-referrer`, and this item was stale.** It claimed
       the header was still `same-origin` and offered
       `same-origin-when-cross-origin` / `strict-origin-when-cross-origin` as the
