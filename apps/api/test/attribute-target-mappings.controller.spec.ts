@@ -1,6 +1,7 @@
 import { type CanActivate, type ExecutionContext, type INestApplication } from '@nestjs/common'
 import { Reflector } from '@nestjs/core'
 import { Test } from '@nestjs/testing'
+import { eq } from 'drizzle-orm'
 import request from 'supertest'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { JwtGuard } from '../src/auth/jwt.guard'
@@ -14,6 +15,8 @@ import { AttributeTargetMappingsRepository } from '../src/attributes/attribute-t
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { attributeDefinitions } from '../src/db/schema/attribute-definitions'
+import { auditLog } from '../src/db/schema/audit-log'
+import { connectorTargets } from '../src/db/schema/connector-targets'
 import { OrgUnitsRepository } from '../src/org-units/org-units.repository'
 import { UsersRepository, type User } from '../src/users/users.repository'
 import { withTestDatabase } from './support/pg'
@@ -337,5 +340,318 @@ describe('AttributeTargetMappingsController (Milestone 14, Task 9)', () => {
     await request(app.getHttpServer())
       .delete('/attribute-target-mappings/00000000-0000-0000-0000-000000000000')
       .expect(404)
+  })
+  // =========================================================================
+  // GET export-impact — security finding 5
+  // =========================================================================
+
+  /**
+   * Enables a target for the master organization, which is where every user
+   * this spec seeds lands. `connector_targets.organization_id` defaults to
+   * `master_organization_id()`.
+   */
+  async function enableTarget(target: 'active_directory' | 'entra_id'): Promise<void> {
+    await ctx.db
+      .insert(connectorTargets)
+      .values({ target, enabled: true, config: {} })
+      .onConflictDoUpdate({
+        target: [connectorTargets.organizationId, connectorTargets.target],
+        set: { enabled: true },
+      })
+  }
+
+  it('reports the export impact of a custom attribute, as a count and a flag', async () => {
+    const admin = await makeActiveUser('super_admin')
+    currentUsername = admin.username
+    const def = await makeAttributeDefinition()
+    await enableTarget('active_directory')
+    await usersRepo().create({
+      primaryEmail: `impact-${nextTag()}@example.com`,
+      username: `impact-${nextTag()}`,
+      firstName: 'Impact',
+      lastName: 'Holder',
+      orgUnitId,
+      attributes: { [def.key]: 'held' },
+    })
+
+    const res = await request(app.getHttpServer())
+      .get(`/attribute-target-mappings/export-impact?target=active_directory&attributeDefinitionId=${def.id}`)
+      .expect(200)
+
+    expect(res.body).toMatchObject({ target: 'active_directory', sensitive: false })
+    expect(res.body.holderCount).toBeGreaterThanOrEqual(1)
+  })
+
+  it('rejects an export-impact request naming both an attribute and a core field', async () => {
+    const admin = await makeActiveUser('super_admin')
+    currentUsername = admin.username
+    const def = await makeAttributeDefinition()
+
+    await request(app.getHttpServer())
+      .get(
+        `/attribute-target-mappings/export-impact?target=active_directory&coreField=title&attributeDefinitionId=${def.id}`,
+      )
+      .expect(400)
+  })
+
+  it('rejects an export-impact request naming neither', async () => {
+    const admin = await makeActiveUser('super_admin')
+    currentUsername = admin.username
+
+    await request(app.getHttpServer())
+      .get('/attribute-target-mappings/export-impact?target=active_directory')
+      .expect(400)
+  })
+
+  /**
+   * `connector:read`, not `connector:manage`. This route returns a COUNT and
+   * a boolean and never a stored value, so it is gated exactly like the
+   * sibling list it sits beside — an auditor who can see which mappings
+   * exist can see how much each one carries.
+   */
+  it('allows an auditor — the route returns a count, never a value', async () => {
+    const actor = await makeActiveUser('auditor')
+    currentUsername = actor.username
+
+    await request(app.getHttpServer())
+      .get('/attribute-target-mappings/export-impact?target=active_directory&coreField=title')
+      .expect(200)
+  })
+
+  it('rejects a caller holding no role at all with 403', async () => {
+    const actor = await makeActiveUser()
+    currentUsername = actor.username
+
+    await request(app.getHttpServer())
+      .get('/attribute-target-mappings/export-impact?target=active_directory&coreField=title')
+      .expect(403)
+  })
+  // =========================================================================
+  // The acknowledgement — security finding 5's enforcement half
+  // =========================================================================
+
+  /** A user holding a value for `key`, so the population this mapping would export is non-empty. */
+  async function seedHolder(key: string): Promise<void> {
+    const tag = nextTag()
+    await usersRepo().create({
+      primaryEmail: `holder-${tag}@example.com`,
+      username: `holder-${tag}`,
+      firstName: 'Ack',
+      lastName: `Holder${tag}`,
+      orgUnitId,
+      attributes: { [key]: 'held' },
+    })
+  }
+
+  async function impactOf(definitionId: string): Promise<number> {
+    const res = await request(app.getHttpServer())
+      .get(
+        `/attribute-target-mappings/export-impact?target=active_directory&attributeDefinitionId=${definitionId}`,
+      )
+      .expect(200)
+    return res.body.holderCount as number
+  }
+
+  it('refuses to create an ENABLED mapping without the acknowledgement, naming the real count', async () => {
+    const admin = await makeActiveUser('super_admin')
+    currentUsername = admin.username
+    const def = await makeAttributeDefinition()
+    await enableTarget('active_directory')
+    await seedHolder(def.key)
+    const count = await impactOf(def.id)
+
+    const res = await request(app.getHttpServer())
+      .post('/attribute-target-mappings')
+      .send({ attributeDefinitionId: def.id, target: 'active_directory', remoteName: 'ackless' })
+      .expect(400)
+
+    expect(res.body.code).toBe('VALIDATION_FAILED')
+    expect(JSON.stringify(res.body.issues)).toContain(String(count))
+  })
+
+  it('refuses a STALE acknowledgement with 409, the status a superseded previewHash earns', async () => {
+    const admin = await makeActiveUser('super_admin')
+    currentUsername = admin.username
+    const def = await makeAttributeDefinition()
+    await enableTarget('active_directory')
+    await seedHolder(def.key)
+
+    const res = await request(app.getHttpServer())
+      .post('/attribute-target-mappings')
+      .send({
+        attributeDefinitionId: def.id,
+        target: 'active_directory',
+        remoteName: 'stale',
+        acknowledgedExportCount: 0,
+      })
+      .expect(409)
+
+    expect(res.body.code).toBe('CONFLICT')
+  })
+
+  it('creates when the acknowledgement matches the re-derived count', async () => {
+    const admin = await makeActiveUser('super_admin')
+    currentUsername = admin.username
+    const def = await makeAttributeDefinition()
+    await enableTarget('active_directory')
+    await seedHolder(def.key)
+    const count = await impactOf(def.id)
+
+    await request(app.getHttpServer())
+      .post('/attribute-target-mappings')
+      .send({
+        attributeDefinitionId: def.id,
+        target: 'active_directory',
+        remoteName: 'acked',
+        acknowledgedExportCount: count,
+      })
+      .expect(201)
+  })
+
+  /**
+   * The existing callers this must not break: a mapping over a population of
+   * nobody exports nothing, so it needs no ceremony.
+   */
+  it('needs no acknowledgement when the mapping would export nothing', async () => {
+    const admin = await makeActiveUser('super_admin')
+    currentUsername = admin.username
+    const def = await makeAttributeDefinition()
+    await enableTarget('active_directory')
+
+    await request(app.getHttpServer())
+      .post('/attribute-target-mappings')
+      .send({ attributeDefinitionId: def.id, target: 'active_directory', remoteName: 'empty' })
+      .expect(201)
+  })
+
+  it('needs no acknowledgement to create a DISABLED mapping', async () => {
+    const admin = await makeActiveUser('super_admin')
+    currentUsername = admin.username
+    const def = await makeAttributeDefinition()
+    await enableTarget('active_directory')
+    await seedHolder(def.key)
+
+    await request(app.getHttpServer())
+      .post('/attribute-target-mappings')
+      .send({
+        attributeDefinitionId: def.id,
+        target: 'active_directory',
+        remoteName: 'dormant',
+        enabled: false,
+      })
+      .expect(201)
+  })
+
+  it('requires the acknowledgement when a PATCH turns a dormant mapping ON', async () => {
+    const admin = await makeActiveUser('super_admin')
+    currentUsername = admin.username
+    const def = await makeAttributeDefinition()
+    await enableTarget('active_directory')
+    await seedHolder(def.key)
+
+    const created = await request(app.getHttpServer())
+      .post('/attribute-target-mappings')
+      .send({
+        attributeDefinitionId: def.id,
+        target: 'active_directory',
+        remoteName: 'toEnable',
+        enabled: false,
+      })
+      .expect(201)
+
+    await request(app.getHttpServer())
+      .patch(`/attribute-target-mappings/${created.body.id}`)
+      .send({ enabled: true })
+      .expect(400)
+
+    const count = await impactOf(def.id)
+    await request(app.getHttpServer())
+      .patch(`/attribute-target-mappings/${created.body.id}`)
+      .send({ enabled: true, acknowledgedExportCount: count })
+      .expect(200)
+  })
+
+  it('requires nothing to turn a mapping OFF — that reduces exposure', async () => {
+    const admin = await makeActiveUser('super_admin')
+    currentUsername = admin.username
+    const def = await makeAttributeDefinition()
+    await enableTarget('active_directory')
+    await seedHolder(def.key)
+    const count = await impactOf(def.id)
+
+    const created = await request(app.getHttpServer())
+      .post('/attribute-target-mappings')
+      .send({
+        attributeDefinitionId: def.id,
+        target: 'active_directory',
+        remoteName: 'toDisable',
+        acknowledgedExportCount: count,
+      })
+      .expect(201)
+
+    await request(app.getHttpServer())
+      .patch(`/attribute-target-mappings/${created.body.id}`)
+      .send({ enabled: false })
+      .expect(200)
+  })
+
+  it('requires nothing to rename remoteName on an enabled mapping — those values already flow', async () => {
+    const admin = await makeActiveUser('super_admin')
+    currentUsername = admin.username
+    const def = await makeAttributeDefinition()
+    await enableTarget('active_directory')
+    await seedHolder(def.key)
+    const count = await impactOf(def.id)
+
+    const created = await request(app.getHttpServer())
+      .post('/attribute-target-mappings')
+      .send({
+        attributeDefinitionId: def.id,
+        target: 'active_directory',
+        remoteName: 'beforeRename',
+        acknowledgedExportCount: count,
+      })
+      .expect(201)
+
+    await request(app.getHttpServer())
+      .patch(`/attribute-target-mappings/${created.body.id}`)
+      .send({ remoteName: 'afterRename' })
+      .expect(200)
+  })
+
+  it('records the acknowledged count and the sensitive flag in the audit row', async () => {
+    const admin = await makeActiveUser('super_admin')
+    currentUsername = admin.username
+    const tag = nextTag()
+    const [def] = await ctx.db
+      .insert(attributeDefinitions)
+      .values({
+        key: `sens_${tag}`,
+        label: `Sensitive ${tag}`,
+        dataType: 'string',
+        appliesTo: 'user',
+        sensitive: true,
+      })
+      .returning()
+    await enableTarget('active_directory')
+    await seedHolder(def.key)
+    const count = await impactOf(def.id)
+
+    const created = await request(app.getHttpServer())
+      .post('/attribute-target-mappings')
+      .send({
+        attributeDefinitionId: def.id,
+        target: 'active_directory',
+        remoteName: 'audited',
+        acknowledgedExportCount: count,
+      })
+      .expect(201)
+
+    const rows = await ctx.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.resourceId, created.body.id as string))
+    expect(rows).toHaveLength(1)
+    expect(rows[0].after).toMatchObject({ acknowledgedExportCount: count, sensitive: true })
   })
 })

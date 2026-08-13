@@ -5,6 +5,7 @@ import type { CoreProfileField, ResolvedTargetMapping } from '../connectors/attr
 import type { ConnectorTarget } from '../connectors/connector'
 import { DB_CLIENT } from '../common/db.token'
 import { ConflictError, NotFoundError } from '../common/errors'
+import { attributeDefinitions } from '../db/schema/attribute-definitions'
 import { attributeTargetMappings } from '../db/schema/attribute-target-mappings'
 import * as schema from '../db/schema/index'
 import type { DbHandle } from '../outbox/outbox.writer'
@@ -276,6 +277,78 @@ export class AttributeTargetMappingsRepository {
     }
     throw cause
   }
+
+  /**
+   * How many people enabling this mapping would newly export, and whether the
+   * attribute is one the audit log is forbidden to record.
+   *
+   * SECURITY FINDING 5. Enabling a mapping is the write that turns
+   * default-deny into propagation, and until this existed it cost one boolean
+   * and said nothing. Read together with finding 4 it is sharper than it
+   * sounds: `sensitive` withholds an attribute's values from audit snapshots
+   * but was deliberately NOT applied to outbox payloads, because connectors
+   * provision from those — so an attribute whose values the audit log may not
+   * record could be pushed into Active Directory by a toggle, and afterwards
+   * the log could not show what was sent.
+   *
+   * SCOPED TO ORGANIZATIONS THAT ACTUALLY HAVE THE TARGET ENABLED.
+   * `connector_targets` is keyed `(organization_id, target)` and
+   * `OutboxWriter.record` treats "no row" and "a row with enabled = false"
+   * identically, so a tenant without an enabled row exports nothing however
+   * many of its users hold a value. Counting the whole directory would
+   * over-state this wherever one tenant of twenty is configured, and an
+   * alarming number that is also wrong is one people learn to click past.
+   *
+   * Deliberately NOT filtered by user status: a deactivated account keeps its
+   * stored value and exports it on reactivation, so excluding it would
+   * under-state what enabling this mapping ultimately sends.
+   *
+   * Takes an OPTIONAL trailing handle, defaulting to the pooled connection —
+   * the same connection-discipline contract every other method here follows.
+   * The controller passes its own `tx`, because a count re-derived inside the
+   * writing transaction is the difference between a guard and a decoration.
+   */
+  async countExportImpact(
+    query: ExportImpactQuery,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<ExportImpact> {
+    const scoped = sql`
+      FROM users u
+      JOIN connector_targets ct
+        ON ct.organization_id = u.organization_id
+       AND ct.target = ${query.target}
+       AND ct.enabled = true
+    `
+
+    if (query.attributeDefinitionId != null) {
+      const [definition] = await db
+        .select({ key: attributeDefinitions.key, sensitive: attributeDefinitions.sensitive })
+        .from(attributeDefinitions)
+        .where(eq(attributeDefinitions.id, query.attributeDefinitionId))
+      if (!definition) {
+        throw new NotFoundError('attribute definition', query.attributeDefinitionId)
+      }
+
+      // `?` asks whether the key is present at all; the `jsonb_typeof` guard
+      // then excludes a key explicitly set to JSON null, which carries no
+      // value to export. Presence alone would count someone whose value was
+      // cleared.
+      const rows = await db.execute(sql`
+        SELECT COUNT(*)::int AS count ${scoped}
+        WHERE u.attributes ? ${definition.key}
+          AND jsonb_typeof(u.attributes -> ${definition.key}) <> 'null'
+      `)
+      return { holderCount: Number(rows.rows[0]?.count ?? 0), sensitive: definition.sensitive }
+    }
+
+    // A core field has no `attribute_definitions` row, so nothing can mark it
+    // sensitive. `first_name`, `last_name` and `org_unit_id` are NOT NULL, so
+    // every in-scope user holds those three; only `job_title` is nullable.
+    const predicate = query.coreField === 'title' ? sql`WHERE u.job_title IS NOT NULL` : sql``
+    const rows = await db.execute(sql`SELECT COUNT(*)::int AS count ${scoped} ${predicate}`)
+    return { holderCount: Number(rows.rows[0]?.count ?? 0), sensitive: false }
+  }
+
 }
 
 /** The console's own read shape for `listAllRows` — every row, admin-facing. */
@@ -295,3 +368,16 @@ export interface AttributeTargetMappingRow {
 
 /** Drizzle's own inferred row shape for `attributeTargetMappings` — what `create`/`update`/`findById` return directly, one level lower than the joined, display-ready `AttributeTargetMappingRow` above. */
 export type MappingRecord = typeof attributeTargetMappings.$inferSelect
+
+/** Which (field, target) pair an export-impact count is being asked about — `attributeDefinitionId` XOR `coreField`, the same discriminant every row in this table carries. */
+export interface ExportImpactQuery {
+  target: ConnectorTarget
+  attributeDefinitionId?: string | null
+  coreField?: CoreProfileField | null
+}
+
+/** What enabling that pair would cost: how many people's values leave, and whether the audit log is allowed to record them. */
+export interface ExportImpact {
+  holderCount: number
+  sensitive: boolean
+}

@@ -249,3 +249,36 @@
 .dry-run__result p:last-child {
   margin-bottom: 0;
 }
+
+/* The export confirmation — security finding 5. Above the grid rather than in
+   a dialog: docs/design-system.md bans "modal as first thought", and the same
+   inline-note shape ImportPage uses for its own "nothing has been written
+   yet" banner. --warn, because this is in flight and not yet acted on; a FULL
+   border, never a side stripe. */
+.mapping-editor__confirm {
+  margin-bottom: var(--space-5);
+  padding: var(--space-4);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-md);
+  background: var(--warn-bg);
+  color: var(--ink);
+}
+
+.mapping-editor__confirm-lead,
+.mapping-editor__confirm-sensitive {
+  max-width: 72ch;
+  font-size: var(--text-base);
+  line-height: var(--line-height-normal);
+  text-wrap: pretty;
+}
+
+.mapping-editor__confirm-sensitive {
+  margin-top: var(--space-3);
+}
+
+.mapping-editor__confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}

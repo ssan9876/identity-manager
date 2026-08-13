@@ -280,6 +280,36 @@ UPDATE, so a pre-check would be a second, racy authority on the same question), 
 user cannot wait for the outbox), and does *not* fire `start_date_reached` JML rules —
 that remains `LifecycleJob`'s job, not a hand-click's.
 
+### Enabling a propagation mapping exported withheld values unannounced — closed 2026-08-12
+
+`attribute_target_mappings` is the opt-in that turns default-deny into
+propagation, and that structure was never in doubt: `listForTarget` filters on
+`enabled = true`, so a field with no row never reaches a connector. What was
+missing was any friction on the moment the opt-in is granted. `POST` defaults
+`enabled` to `true` and `PATCH` toggles it, neither said anything, and every
+existing holder's value then flowed outward on their next sync — retroactively,
+for a population nobody had counted.
+
+Read together with the `sensitive` finding it was sharper still: `sensitive`
+withholds an attribute's values from audit snapshots but was deliberately not
+applied to outbox payloads, because connectors provision from those. So an
+attribute whose values the audit log may not record could be pushed into Active
+Directory by one boolean, and afterwards the log could not show what was sent.
+
+**Closed by:** `GET /attribute-target-mappings/export-impact`, which reports how
+many people's values an enable would export and whether the attribute is
+sensitive; and `acknowledgedExportCount` on both write paths, **re-derived
+inside the writing transaction** so an import landing mid-decision invalidates
+the acknowledgement rather than slipping under it. Absent is a 400 naming the
+real number, stale is a 409. The acknowledged count and the sensitive flag are
+recorded in the audit row, which is the one thing the log can still say about a
+sensitive attribute after export.
+
+**Not closed, deliberately:** `sensitive` still does not stop propagation.
+Making it do so is a separate decision with real consequences for connectors
+that provision from those payloads, and it was not smuggled in here. Nor does
+any of this retro-revoke what earlier enables already sent.
+
 ## Known open items
 
 Verify these still hold before looking elsewhere. Each entry states what was checked to
