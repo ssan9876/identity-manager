@@ -16,6 +16,7 @@ import {
   publishBusinessRole,
   saveBusinessRoleDraft,
   setBusinessRoleEnabled,
+  setBusinessRoleRequestable,
   simulateBusinessRole,
   type BusinessRoleDetail,
   type RoleDefinition,
@@ -93,6 +94,7 @@ export default function BusinessRoleDetailPage() {
 
   const [disableOpen, setDisableOpen] = useState(false)
   const [enabling, setEnabling] = useState(false)
+  const [togglingRequestable, setTogglingRequestable] = useState(false)
 
   const [activeTab, setActiveTab] = useState<TabKey>('definition')
   const tabRefs = useRef<Record<TabKey, HTMLButtonElement | null>>({
@@ -265,6 +267,41 @@ export default function BusinessRoleDetailPage() {
     }
   }
 
+  /**
+   * Publish this role into the self-service catalogue, or withdraw it.
+   *
+   * `PUT /business-roles/:id/requestable` has existed since the catalogue did,
+   * and nothing called it — so a role could be enabled and granting, and still
+   * be invisible to the people who might legitimately ask for it, with no way
+   * to change that outside the database.
+   *
+   * Deliberately NOT folded into the enable/disable control beside it.
+   * Withdrawing stops NEW requests and grants or revokes nothing; disabling
+   * revokes. Presenting them as one switch would invite an admin reaching for
+   * the smaller action to take the larger one.
+   */
+  async function handleToggleRequestable() {
+    if (accessToken === undefined || id === undefined || role === null) return
+    const next = !role.requestable
+    setTogglingRequestable(true)
+    try {
+      const updated = await setBusinessRoleRequestable(accessToken, id, next)
+      setRole((current) => (current === null ? current : { ...current, requestable: updated.requestable }))
+      showToast(
+        next
+          ? `${updated.name} is in the request catalogue — people can ask for it; nobody has been granted anything.`
+          : `${updated.name} is out of the request catalogue. Existing access is untouched; only new requests stop.`,
+      )
+    } catch (cause) {
+      showToast(
+        cause instanceof ApiError ? cause.message : 'Could not change the catalogue setting.',
+        'danger',
+      )
+    } finally {
+      setTogglingRequestable(false)
+    }
+  }
+
   async function handleEnable() {
     if (accessToken === undefined || id === undefined) return
     setEnabling(true)
@@ -421,6 +458,19 @@ export default function BusinessRoleDetailPage() {
                   <span className="btn__spinner" aria-hidden="true" />
                 </button>
               )}
+              <button
+                type="button"
+                className="btn btn--secondary"
+                disabled={togglingRequestable}
+                data-loading={togglingRequestable ? 'true' : undefined}
+                onClick={() => void handleToggleRequestable()}
+                data-testid="toggle-requestable"
+              >
+                <span className="btn__label">
+                  {role.requestable ? 'Remove from catalogue' : 'Add to request catalogue'}
+                </span>
+                <span className="btn__spinner" aria-hidden="true" />
+              </button>
             </>
           )}
         </div>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { useAuth } from 'react-oidc-context'
 import { Link, useNavigate } from 'react-router-dom'
 import { ApiError } from '../api/client'
+import { fetchBusinessRoles, type BusinessRole } from '../business-roles/api'
 import { useSelfPermissions } from '../shell/permissions'
 import { useToast } from '../shell/ToastProvider'
 import {
@@ -55,6 +56,16 @@ export default function RecertificationPage() {
   const [reviews, setReviews] = useState<MyReviewItem[] | null>(null)
   const [reviewsError, setReviewsError] = useState<string | null>(null)
   const [decidingId, setDecidingId] = useState<string | null>(null)
+  /**
+   * The reviewer's note, per item.
+   *
+   * `POST /recert/items/:id/decide` has always accepted a `comment`, and this
+   * queue always sent `null` — so the column exists in the API, in the item
+   * row and in the audit trail, and was unreachable from the one screen where
+   * a human forms the opinion. A revocation with no reason is the decision an
+   * auditor most wants explained.
+   */
+  const [comments, setComments] = useState<Record<string, string>>({})
   const [retryToken, setRetryToken] = useState(0)
 
   const loadReviews = useCallback(() => {
@@ -80,13 +91,25 @@ export default function RecertificationPage() {
 
   useEffect(() => loadReviews(), [loadReviews, retryToken])
 
+
   async function handleDecide(item: MyReviewItem, decision: 'certified' | 'revoked_requested') {
     if (accessToken === undefined) return
     setDecidingId(item.id)
     try {
-      const result = await decideItem(accessToken, item.id, { decision, comment: null })
+      // Trimmed, and empty means absent rather than an empty string: the API
+      // takes `string | null`, and a blank note is not a note.
+      const typed = (comments[item.id] ?? '').trim()
+      const result = await decideItem(accessToken, item.id, {
+        decision,
+        comment: typed.length > 0 ? typed : null,
+      })
       showToast(EFFECT_MESSAGE[result.effect])
       setReviews((current) => current?.filter((row) => row.id !== item.id) ?? null)
+      setComments((current) => {
+        const next = { ...current }
+        delete next[item.id]
+        return next
+      })
     } catch (cause) {
       showToast(
         cause instanceof ApiError
@@ -127,9 +150,36 @@ export default function RecertificationPage() {
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
   const [strategy, setStrategy] = useState<ReviewerStrategy>('manager_of_subject')
+  /**
+   * Which roles this campaign covers — empty meaning ALL of them.
+   *
+   * `POST /recert-campaigns` has always taken `scopeRoleIds`, and this form
+   * always sent `null`, so every campaign was directory-wide whether or not
+   * that was wanted. A quarterly review of two sensitive roles had to be run
+   * as a review of everything, which is how review fatigue starts.
+   */
+  const [scopeRoleIds, setScopeRoleIds] = useState<string[]>([])
+  const [roles, setRoles] = useState<BusinessRole[] | null>(null)
   const [dueDate, setDueDate] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!creating || accessToken === undefined || roles !== null) return
+    let cancelled = false
+    void fetchBusinessRoles(accessToken)
+      .then((list) => {
+        if (!cancelled) setRoles(list)
+      })
+      // A roster that will not load must not block campaign creation: the
+      // picker simply says so, and an unscoped campaign is still valid.
+      .catch(() => {
+        if (!cancelled) setRoles([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [creating, accessToken, roles])
   const nameRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -150,7 +200,9 @@ export default function RecertificationPage() {
     try {
       const created = await createCampaign(accessToken, {
         name: trimmed,
-        scopeRoleIds: null,
+        // Null, not [], for "every role": the API models the two differently
+        // and an empty array is rejected by its `.min(1).nullable()` schema.
+        scopeRoleIds: scopeRoleIds.length > 0 ? scopeRoleIds : null,
         reviewerStrategy: strategy,
         dueDate: dueDate.length > 0 ? dueDate : null,
       })
@@ -239,6 +291,44 @@ export default function RecertificationPage() {
                 onChange={(e) => setDueDate(e.target.value)}
               />
             </div>
+            <fieldset className="recert__scope">
+              <legend className="field__label">
+                Roles in scope <span className="recert__optional">all roles if none ticked</span>
+              </legend>
+              <p className="recert__scope-hint">
+                A campaign covering everything asks every manager about every role at once, which
+                is how a review becomes a formality. Narrow it to the roles this round is actually
+                about.
+              </p>
+              {roles === null ? (
+                <span className="skeleton" style={{ width: '14rem', height: '1rem', display: 'block' }} />
+              ) : roles.length === 0 ? (
+                <p className="cell-muted" data-testid="recert-scope-empty">
+                  No business roles to scope by — this campaign will cover everything.
+                </p>
+              ) : (
+                <div className="recert__scope-list" data-testid="recert-scope-list">
+                  {roles.map((role) => (
+                    <label key={role.id} className="recert__scope-option">
+                      <input
+                        type="checkbox"
+                        checked={scopeRoleIds.includes(role.id)}
+                        disabled={submitting}
+                        onChange={(e) =>
+                          setScopeRoleIds((current) =>
+                            e.target.checked
+                              ? [...current, role.id]
+                              : current.filter((id) => id !== role.id),
+                          )
+                        }
+                        data-testid="recert-scope-option"
+                      />
+                      <span>{role.name}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </fieldset>
           </div>
           {createError !== null && (
             <p className="field__error" role="alert">
@@ -336,6 +426,23 @@ export default function RecertificationPage() {
                     </td>
                     <td>{item.campaign.dueDate ?? <span className="cell-muted">—</span>}</td>
                     <td className="recert__row-actions">
+                      <label className="recert__comment">
+                        <span className="attributes-page__sr-only">
+                          Note on this decision (optional)
+                        </span>
+                        <input
+                          type="text"
+                          className="input"
+                          placeholder="Note (optional)"
+                          maxLength={2000}
+                          value={comments[item.id] ?? ''}
+                          disabled={decidingId !== null}
+                          onChange={(e) =>
+                            setComments((current) => ({ ...current, [item.id]: e.target.value }))
+                          }
+                          data-testid="recert-comment-input"
+                        />
+                      </label>
                       <button
                         type="button"
                         className="btn btn--secondary btn--sm"

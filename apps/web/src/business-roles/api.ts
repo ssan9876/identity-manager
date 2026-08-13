@@ -84,6 +84,16 @@ export interface BusinessRole {
   name: string
   description: string | null
   enabled: boolean
+  /**
+   * Whether this role appears in the self-service access-request catalogue.
+   *
+   * `select()` has always returned this column, so it was on the wire the
+   * whole time and simply undeclared here — which is why no screen could show
+   * it and `PUT /business-roles/:id/requestable` had no caller. NOT the
+   * enable/disable switch: withdrawing a role stops NEW requests and grants or
+   * revokes nothing, so there is no reconciliation sweep behind it.
+   */
+  requestable: boolean
   organizationId: string
   /** The unpublished draft, or null when there are no pending changes. */
   draftDefinition: RoleDefinition | null
@@ -167,6 +177,25 @@ export function createBusinessRole(
 }
 
 /** Mirrors `patchBodySchema` exactly. It is `.strict()`: sending anything that could affect access is a 400 naming the field, never a silent no-op. */
+/**
+ * Publish a role into the self-service catalogue, or withdraw it.
+ *
+ * A dedicated verb rather than a field on the PATCH, mirroring the API: it is
+ * separately audited, and folding it into a general update would let a rename
+ * quietly change who can request access.
+ */
+export function setBusinessRoleRequestable(
+  accessToken: string,
+  id: string,
+  requestable: boolean,
+): Promise<BusinessRole> {
+  return authorizedRequest<BusinessRole>(`/business-roles/${id}/requestable`, accessToken, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requestable }),
+  })
+}
+
 export function updateBusinessRole(
   accessToken: string,
   id: string,
