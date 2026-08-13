@@ -999,8 +999,8 @@ export default function AttributeDefinitionsPage() {
                 ) : (
                   definitions.map((definition) => (
                     <tr key={definition.id} data-testid="attributes-row">
-                      <td className="mono">{definition.key}</td>
-                      <td>{definition.label}</td>
+                      <td className="mono attributes-page__key">{definition.key}</td>
+                      <td className="attributes-page__label">{definition.label}</td>
                       <td className="cell-muted">{DATA_TYPE_LABEL[definition.dataType]}</td>
                       <td className="cell-muted">{describeRules(definition.validationRules)}</td>
                       <td>
@@ -1011,35 +1011,37 @@ export default function AttributeDefinitionsPage() {
                       </td>
                       {canManage && (
                         <td className="attributes-page__row-actions">
-                          <button
-                            type="button"
-                            className="btn btn--secondary btn--sm"
-                            onClick={() => startEdit(definition)}
-                            data-testid="attribute-edit"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn--secondary btn--sm"
-                            onClick={() => startMigration(definition)}
-                            data-testid="attribute-migrate"
-                          >
-                            Change type
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn--secondary btn--sm"
-                            disabled={togglingId === definition.id}
-                            data-loading={togglingId === definition.id ? 'true' : undefined}
-                            onClick={() => void handleToggleActive(definition)}
-                            data-testid="attribute-toggle-active"
-                          >
-                            <span className="btn__label">
-                              {definition.isActive ? 'Deactivate' : 'Reactivate'}
-                            </span>
-                            <span className="btn__spinner" aria-hidden="true" />
-                          </button>
+                          <div className="attributes-page__row-actions-inner">
+                            <button
+                              type="button"
+                              className="btn btn--secondary btn--sm"
+                              onClick={() => startEdit(definition)}
+                              data-testid="attribute-edit"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn--secondary btn--sm"
+                              onClick={() => startMigration(definition)}
+                              data-testid="attribute-migrate"
+                            >
+                              Change type
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn--secondary btn--sm"
+                              disabled={togglingId === definition.id}
+                              data-loading={togglingId === definition.id ? 'true' : undefined}
+                              onClick={() => void handleToggleActive(definition)}
+                              data-testid="attribute-toggle-active"
+                            >
+                              <span className="btn__label">
+                                {definition.isActive ? 'Deactivate' : 'Reactivate'}
+                              </span>
+                              <span className="btn__spinner" aria-hidden="true" />
+                            </button>
+                          </div>
                         </td>
                       )}
                     </tr>
