@@ -539,18 +539,26 @@ state of each.
       **Deliberately not closed:** `sensitive` still does not stop propagation —
       connectors provision from outbox payloads, so that is a separate decision with
       real consequences — and nothing retro-revokes what earlier enables already sent.
-- [ ] **6. Reconciliation cannot see Keycloak-only accounts.** Still true: the
-      pass walks users in this database and compares each against Keycloak, so an
-      account that exists ONLY in Keycloak is never looked at.
-      **The second half of this finding has expired.** It read "and nothing
-      schedules it — `deploy/systemd/` has no reconciliation timer." Both
-      `idm-reconcile.service` and `idm-reconcile.timer` now ship in
-      `deploy/systemd/`, and the timer is enabled and firing on the lab host.
-      What it did NOT do until 2026-08-13 was succeed: it lacked the Keycloak CA
-      trust `idm-api` had, so every scheduled run died on
-      `DEPTH_ZERO_SELF_SIGNED_CERT` and drift correction silently never ran
-      (fixed in `644b346`). Scheduled and failing looks identical to unscheduled
-      from the outside, which is how this stayed unnoticed.
+- [x] **6. Reconciliation cannot see Keycloak-only accounts.** Fixed 2026-08-13.
+      The drift walk starts from THIS database and asks Keycloak about each user
+      it finds, so it was structurally incapable of noticing an account only
+      Keycloak has. `ReconciliationJob` now asks the question from the other end
+      too: `KeycloakAdminClient.listAllUsers` pages the realm, and any username
+      no user here claims — whatever their status, since a deactivated user
+      still owns theirs — is reported as `keycloakOnlyUsernames` and printed by
+      the CLI.
+      **Reported, never repaired**, and the asymmetry is deliberate. Every other
+      kind of drift here is a divergence from a state this system owns, so
+      pushing it back is unambiguous; an account this system never created may
+      be a service account, a break-glass administrator or a federated identity,
+      and deleting it automatically is how a reconciliation job locks a human
+      out of the identity provider. The operator is told plainly and decides.
+      Covered by a test that plants an account through a plain admin-client call
+      — an operator with the admin console, not this system's own controllers —
+      and asserts it is both SEEN and STILL THERE afterwards. Proven non-vacuous
+      by bypassing the detector and watching that test fail.
+      (The second half of this finding, "nothing schedules it", expired earlier:
+      the timer ships and fires. What it did not do until `644b346` was succeed.)
 - [x] **7. `syncState` derivation degrades linearly.** Fixed 2026-08-13, and it
       was worse than this entry said. `resolveForUsers` fetched EVERY unsettled
       `group` and `membership` event in the database — unscoped, for any page

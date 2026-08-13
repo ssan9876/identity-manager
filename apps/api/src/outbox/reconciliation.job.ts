@@ -47,6 +47,21 @@ export interface ReconciliationReport {
   eventsEnqueued: number
   /** Total outbox events actually drained afterward — may exceed `eventsEnqueued` if other events were already pending. */
   eventsProcessed: number
+  /**
+   * Accounts that exist in Keycloak and correspond to no user here — carried
+   * security finding 6.
+   *
+   * REPORTED, NEVER REPAIRED, and that asymmetry is the whole design. Every
+   * other kind of drift this job finds is a divergence from a desired state
+   * this system owns, so pushing that state back is unambiguous. An account
+   * this system has never heard of is the opposite: it may be a leftover from
+   * a deletion that never propagated, or it may be a service account, a
+   * break-glass administrator, or a federated identity somebody created on
+   * purpose. Disabling or deleting it automatically would be this system
+   * asserting ownership over a realm it shares, and the failure mode is
+   * locking a human out of the identity provider itself.
+   */
+  keycloakOnlyUsernames: string[]
 }
 
 /** Set-equality on two `Record<string, string[]>` attribute maps, order-independent within each value array. */
@@ -175,8 +190,15 @@ export class ReconciliationJob {
     }
 
     const eventsProcessed = await this.syncWorker.drain()
+    const keycloakOnlyUsernames = await this.detectKeycloakOnly()
 
-    return { usersChecked: checked, usersWithDrift: drifted, eventsEnqueued: enqueued, eventsProcessed }
+    return {
+      usersChecked: checked,
+      usersWithDrift: drifted,
+      eventsEnqueued: enqueued,
+      eventsProcessed,
+      keycloakOnlyUsernames,
+    }
   }
 
   /**
@@ -190,6 +212,51 @@ export class ReconciliationJob {
    * nothing further to compare, and the repair path (create, via the
    * ordinary `reconcileUser`) is the same either way.
    */
+  /**
+   * Usernames present in Keycloak with no user in this database — carried
+   * security finding 6, "reconciliation cannot see Keycloak-only accounts".
+   *
+   * The walk above starts from THIS database and asks Keycloak about each
+   * user, so it is structurally incapable of noticing an account only Keycloak
+   * has. This asks the question from the other end.
+   *
+   * Compared on lowercased username because that is the identifier both sides
+   * agree on: `findUserByUsername` already matches case-insensitively, and
+   * Keycloak lowercases usernames by default, so anything else would report
+   * phantom differences.
+   *
+   * Runs AFTER the drain deliberately. A user this run just created in
+   * Keycloak would otherwise be read back as "Keycloak-only" in the same
+   * breath as being created, which is a false positive that would train
+   * operators to ignore the list.
+   */
+  private async detectKeycloakOnly(): Promise<string[]> {
+    // The same paged walk over every status the drift pass above uses — a
+    // Keycloak account is "extra" only if NO user here claims that username,
+    // whatever their status. A deactivated user still owns their username.
+    const local = new Set<string>()
+    for (const status of ALL_USER_STATUSES) {
+      let offset = 0
+      for (;;) {
+        const page = await this.usersRepository.list({
+          status,
+          limit: PAGE_SIZE,
+          offset,
+          scopePaths: null,
+        })
+        for (const user of page) local.add(user.username.toLowerCase())
+        if (page.length < PAGE_SIZE) break
+        offset += PAGE_SIZE
+      }
+    }
+
+    const extras: string[] = []
+    for (const remote of await this.keycloak.listAllUsers()) {
+      if (!local.has(remote.username.toLowerCase())) extras.push(remote.username)
+    }
+    return extras.sort()
+  }
+
   private async detectDrift(
     user: User,
     mappings: ResolvedTargetMapping[],

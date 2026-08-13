@@ -605,6 +605,45 @@ export class KeycloakAdminClient {
     return match ? toKeycloakUser(match) : null
   }
 
+  /**
+   * Every user in the realm, paged.
+   *
+   * Exists for reconciliation's Keycloak-ONLY detection (carried security
+   * finding 6): every other read here starts from a user this database
+   * already knows about, so an account that exists only in Keycloak — created
+   * by hand in the admin console, or left behind by a deletion this system
+   * never saw — was invisible to every code path we had.
+   *
+   * PAGED, and deliberately not `max=-1`. Keycloak's default page size is 100
+   * and a realm can hold far more; asking for everything in one request is how
+   * this becomes a timeout on the one deployment big enough to need it. The
+   * loop stops on a short page, which is the documented end-of-results signal.
+   *
+   * `briefRepresentation=true`: this caller compares identities, not profiles,
+   * and the brief shape still carries id, username, email and enabled. It
+   * keeps the response small on a realm with many users.
+   */
+  async listAllUsers(pageSize = 100): Promise<KeycloakUser[]> {
+    const all: KeycloakUser[] = []
+
+    for (let first = 0; ; first += pageSize) {
+      const res = await this.request(
+        'GET',
+        `/users?first=${first}&max=${pageSize}&briefRepresentation=true`,
+      )
+      if (!res.ok) {
+        throw new KeycloakAdminError(
+          res.status,
+          `list users failed: ${res.status} ${await describeError(res)}`,
+        )
+      }
+
+      const rows = (await res.json()) as RawKeycloakUser[]
+      for (const row of rows) all.push(toKeycloakUser(row))
+      if (rows.length < pageSize) return all
+    }
+  }
+
   private async requireUserId(username: string): Promise<string> {
     const user = await this.findUserByUsername(username)
     if (user === null) {
