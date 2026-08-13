@@ -14,17 +14,46 @@
   gap: var(--space-2);
 }
 
-/* Two small buttons per row, and the column must not stretch to fill the
-   table — `width: 1%` plus `white-space: nowrap` is the standard trick for
-   a shrink-to-fit cell without a hard pixel width that a longer label
-   would break. */
+/* THREE buttons per row, kept on ONE line — and the fix for their once
+   sitting past the right edge of `.table-wrap` is NOT here. Looking at the
+   rendered page is what sorted this out, twice over.
+
+   First attempt: let them wrap. Everything became visible and the page got
+   worse — the browser wraps as soon as it is allowed to, so all three
+   stacked, every row tripled in height, and the table went from 1800px to
+   3200px of stacked buttons.
+
+   The actual cause was the two columns to the LEFT. `key` is varchar(64) and
+   `label` varchar(255), both unbounded here, so one long key pushed the whole
+   actions column out of view. Bounding those two is what makes the row fit;
+   the buttons then need no help at all. A `<td>` cannot be a flex container
+   without losing the vertical alignment the rest of the row relies on, so the
+   flex lives on an inner element. */
+.attributes-page__row-actions-inner {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
 .attributes-page__row-actions {
   width: 1%;
   white-space: nowrap;
 }
 
-.attributes-page__row-actions .btn + .btn {
-  margin-left: var(--space-2);
+/* `overflow-wrap: anywhere` rather than `break-word`: a key has no spaces to
+   break at, so `break-word` would leave it unbroken and the column wide. */
+.attributes-page__key,
+.attributes-page__label {
+  overflow-wrap: anywhere;
+}
+
+.attributes-page__key {
+  max-width: 22ch;
+}
+
+.attributes-page__label {
+  max-width: 28ch;
 }
 
 .attributes-page__footnote {
