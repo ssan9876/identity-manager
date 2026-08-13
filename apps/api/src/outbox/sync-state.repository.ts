@@ -237,6 +237,27 @@ export class SyncStateRepository {
       return result
     }
 
+    // WHICH GROUPS CAN POSSIBLY MATTER, resolved once (carried finding 7).
+    //
+    // A user is an effective member of every group that is an ancestor-or-self
+    // of a group they belong to directly, so this one recursive walk gives the
+    // complete set of groups whose troubles can reach anyone on this page —
+    // and, per user, which of them are theirs.
+    //
+    // This is what lets the two aggregate reads below be SCOPED. They used to
+    // fetch every unsettled `group` and `membership` event in the database,
+    // for any page size, and then discard almost all of them in memory: the
+    // cost of rendering 25 rows grew with the number of unsettled aggregates
+    // in the whole system, which is what that finding names.
+    const memberships = await this.groups.listEffectiveGroupMembershipsForUsers(ids)
+    const usersByGroup = new Map<string, string[]>()
+    for (const { userId, groupId } of memberships) {
+      const list = usersByGroup.get(groupId)
+      if (list === undefined) usersByGroup.set(groupId, [userId])
+      else list.push(userId)
+    }
+    const relevantGroupIds = [...usersByGroup.keys()]
+
     const [identityRows, userEvents, groupEvents, membershipEvents] = await Promise.all([
       this.db
         .select({
@@ -247,8 +268,8 @@ export class SyncStateRepository {
         .from(externalIdentities)
         .where(and(inArray(externalIdentities.userId, ids), inArray(externalIdentities.system, targets))),
       this.latestUserEvents(ids, targets),
-      this.latestEventsForAggregateType('group', targets),
-      this.latestMembershipEvents(targets),
+      this.latestEventsForAggregateType('group', targets, relevantGroupIds),
+      this.latestMembershipEvents(targets, ids, relevantGroupIds),
     ])
 
     const eventByUserTarget = new Map<string, LatestAggregateEventRow['status']>()
@@ -286,12 +307,15 @@ export class SyncStateRepository {
       }
     }
 
+    // No `listEffectiveUserMembers` call per troubled group any more — that
+    // was one recursive query EACH, on the directory's main list page. The
+    // membership map above already answers "who on this page is under this
+    // group", and the query that built it ran once.
     const affectedByGroup = new Map<string, 'pending' | 'failed'>()
     for (const row of groupEvents) {
       const status = unsettledStatus(row.status)
       if (status === null) continue
-      const memberIds = await this.groups.listEffectiveUserMembers(row.aggregate_id)
-      for (const memberId of memberIds) {
+      for (const memberId of usersByGroup.get(row.aggregate_id) ?? []) {
         raiseWorst(affectedByGroup, memberId, status)
       }
     }
@@ -312,8 +336,7 @@ export class SyncStateRepository {
         raiseWorst(affectedByGroup, payload.userId, status)
       }
       if (typeof payload.childGroupId === 'string') {
-        const memberIds = await this.groups.listEffectiveUserMembers(payload.childGroupId)
-        for (const memberId of memberIds) {
+        for (const memberId of usersByGroup.get(payload.childGroupId) ?? []) {
           raiseWorst(affectedByGroup, memberId, status)
         }
       }
@@ -397,12 +420,19 @@ export class SyncStateRepository {
   private async latestEventsForAggregateType(
     aggregateType: 'group',
     targets: OutboxTarget[],
+    groupIds: string[],
   ): Promise<LatestAggregateEventRow[]> {
+    // Scoped to the groups that can actually reach the requested users
+    // (carried finding 7). Unscoped, this read grew with every unsettled
+    // aggregate in the system while the caller discarded all but a handful.
+    if (groupIds.length === 0) return []
+
     const { rows } = await this.db.execute<LatestAggregateEventRow>(sql`
       SELECT DISTINCT ON (aggregate_id, target) aggregate_id, target, status
         FROM outbox_events
        WHERE aggregate_type = ${aggregateType}
          AND target::text = ANY(${sql.param(targets)}::text[])
+         AND aggregate_id = ANY(${sql.param(groupIds)}::uuid[])
        ORDER BY aggregate_id, target, id DESC
     `)
     return rows
@@ -415,12 +445,32 @@ export class SyncStateRepository {
    * (finding H3; see `resolveForUsers`'s use of the result, and
    * `LatestMembershipEventRow`'s own doc comment for why).
    */
-  private async latestMembershipEvents(targets: OutboxTarget[]): Promise<LatestMembershipEventRow[]> {
+  private async latestMembershipEvents(
+    targets: OutboxTarget[],
+    userIds: string[],
+    groupIds: string[],
+  ): Promise<LatestMembershipEventRow[]> {
+    // Scoped by the same two payload keys the caller actually reads, pushed
+    // into SQL (carried finding 7): `payload.userId` names a direct add or
+    // remove's single affected user, and `payload.childGroupId` names a group
+    // whose effective members are affected. A row matching neither could never
+    // change any requested user's badge, and fetching it only to discard it is
+    // what made this read grow with the whole system's unsettled aggregates.
+    //
+    // `payload->>` rather than a jsonb containment operator because these are
+    // plain string comparisons against two known keys, and `->>` reads as what
+    // it is.
+    if (userIds.length === 0 && groupIds.length === 0) return []
+
     const { rows } = await this.db.execute<LatestMembershipEventRow>(sql`
       SELECT DISTINCT ON (aggregate_id, target) aggregate_id, target, status, payload
         FROM outbox_events
        WHERE aggregate_type = 'membership'
          AND target::text = ANY(${sql.param(targets)}::text[])
+         AND (
+              payload->>'userId' = ANY(${sql.param(userIds)}::text[])
+           OR payload->>'childGroupId' = ANY(${sql.param(groupIds)}::text[])
+         )
        ORDER BY aggregate_id, target, id DESC
     `)
     return rows

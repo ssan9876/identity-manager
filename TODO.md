@@ -551,8 +551,24 @@ state of each.
       `DEPTH_ZERO_SELF_SIGNED_CERT` and drift correction silently never ran
       (fixed in `644b346`). Scheduled and failing looks identical to unscheduled
       from the outside, which is how this stayed unnoticed.
-- [ ] **7. `syncState` derivation degrades linearly** with unsettled aggregates, on
-      the directory's main list page.
+- [x] **7. `syncState` derivation degrades linearly.** Fixed 2026-08-13, and it
+      was worse than this entry said. `resolveForUsers` fetched EVERY unsettled
+      `group` and `membership` event in the database — unscoped, for any page
+      size — and then discarded almost all of them in memory. On top of that it
+      ran `listEffectiveUserMembers` once PER troubled group and once per
+      membership event carrying a `childGroupId`, each a recursive CTE: an N+1
+      hiding behind the linear scan, on the directory's main list page.
+      Now one recursive walk resolves which groups can reach the requested users
+      (`GroupsRepository.listEffectiveGroupMembershipsForUsers`, the batched
+      inverse of `listEffectiveUserMembers`), and both aggregate reads are
+      scoped by it — the membership one by the two payload keys the caller
+      actually reads, pushed into SQL. The per-group expansions became map
+      lookups. The query count no longer depends on how much of the system is
+      unsettled.
+      Semantics unchanged, and the spec that proves it already covered the two
+      cases most likely to break: a troubled NESTED ANCESTOR group reaching a
+      user through effective membership, and an unrelated healthy group not
+      reaching them. 22/22 there, full API suite green.
 - [x] **8. Committed dev fixtures are real, working, `sslRequired: "none"`
       secrets.** Done: renamed to `identity-manager-realm.dev.json`,
       `sslRequired: "external"`, `idm-test-client` imported disabled, plus

@@ -733,6 +733,41 @@ export class GroupsRepository {
   }
 
   /**
+   * The same ancestor walk as `listEffectiveGroupsForUser`, for MANY users in
+   * ONE query, carrying the user through the recursion so the caller learns
+   * which user each group belongs to.
+   *
+   * Exists because the per-user version, called in a loop, is how
+   * `SyncStateRepository.resolveForUsers` used to cost one recursive query per
+   * troubled group on the directory's main list page (carried finding 7). The
+   * shape here is the inverse of `listEffectiveUserMembers`: a user is an
+   * effective member of every group that is an ancestor-or-self of a group
+   * they belong to directly, so the walk starts at their direct memberships
+   * and climbs child -> parent.
+   */
+  async listEffectiveGroupMembershipsForUsers(
+    userIds: readonly string[],
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<{ userId: string; groupId: string }[]> {
+    if (userIds.length === 0) return []
+
+    const { rows } = await db.execute<{ user_id: string; group_id: string }>(sql`
+      WITH RECURSIVE ancestors AS (
+        SELECT gum.user_id, gum.group_id AS id
+          FROM group_user_members gum
+         WHERE gum.user_id = ANY(${sql.param(userIds as string[])}::uuid[])
+        UNION
+        SELECT a.user_id, ggm.parent_group_id
+          FROM group_group_members ggm
+          JOIN ancestors a ON ggm.child_group_id = a.id
+      )
+      SELECT DISTINCT user_id, id AS group_id FROM ancestors
+    `)
+
+    return rows.map((row) => ({ userId: row.user_id, groupId: row.group_id }))
+  }
+
+  /**
    * Active, group-scoped custom attribute definitions, in the shape
    * `validateAttributes` expects — the group-side mirror of
    * UsersRepository.listActiveAttributeDefinitions. GroupsController's
