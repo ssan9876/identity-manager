@@ -362,12 +362,16 @@ Detail: `docs/archive/plans/2026-08-08-sso-app-onboarding-followups.md`.
 Its items 4 and 5 (rebase, PR targeting) are obsolete — the work is merged.
 Item 2 (run the full API suite) is done and green.
 
-- [ ] **Run `apps/web/e2e/sso-apps.spec.ts` — it has never executed.** Needs the
-      fixed-port dev stack and `scripts/keycloak-setup.sh` re-run so
-      `idm-sso-admin` exists. One expectation is environment-dependent: the
-      minting test asserts the 409 "has not synced to Keycloak yet" path because
-      `keycloak_sso` is unconfigured in dev; configuring that target means
-      updating the test to assert the modal instead.
+- [x] **Run `apps/web/e2e/sso-apps.spec.ts`.** Done 2026-08-12, and the SECOND run
+      is the one that mattered: the spec uniqued its `clientId` — with a comment
+      saying a fixed one would 409 on a rerun — then left the display NAME fixed
+      while locating the application by it, so run two died of Playwright's
+      strict-mode ambiguity rather than of anything under test. Fixed in `bec5bfa`,
+      along with three siblings carrying the same latent bug.
+      Still true from the original note: the minting test's expectation is
+      environment-dependent. It asserts the 409 "has not synced to Keycloak yet"
+      path because `keycloak_sso` is unconfigured in dev; configuring that target
+      means updating the test to assert the modal instead.
 - [ ] **Confirm Keycloak 26's partial-PUT semantics.** Does `PUT /clients/{uuid}`
       omitting a field clear or preserve it? `KeycloakSsoConnector` is correct
       under either answer, so this is not a latent bug — only the doc comment in
@@ -461,18 +465,33 @@ state of each.
       named in `attributesRedacted`. Applied to every audit path the finding
       lists — users create/update/activate/deactivate, self-service, imports, JML
       lifecycle, the rule applier and bulk-activate — and deliberately NOT to
-      outbox payloads, because connectors provision from those. **Correction to
-      an earlier note in this file:** the `attribute_definitions` write path has
-      NOT merged; that controller still exposes only `@Get()`. So this landed
-      before a write path exists, which is what the audit's fix direction asked
-      for, rather than after one as previously stated here.
+      outbox payloads, because connectors provision from those. **Correction, twice over:** an
+      earlier note in this file said the `attribute_definitions` write path had
+      merged when it had not — this landed BEFORE one existed, which is what the
+      audit's fix direction asked for. That correction has itself now expired: the
+      write path merged on 2026-08-12 (`5af373c`), so `sensitive` is settable from
+      the console rather than only by hand.
       **Known limitation:** with both `before` and `after` redacted, an audit row
       no longer shows whether a sensitive value CHANGED. A hash would restore
       that, but these values are low-entropy and a hash of one is reversible by
       enumeration, which would put the value back in the log by a side door.
-- [ ] **5. Enabling a propagation mapping retroactively exports withheld values**,
-      and is now reachable. Needs a confirmation step stating how many users' values
-      a new mapping will newly export. Interacts with item 4.
+- [x] **5. Enabling a propagation mapping retroactively exports withheld values.**
+      Closed 2026-08-12. `GET /attribute-target-mappings/export-impact` reports how
+      many people's values an enable would export — scoped to organizations that
+      actually have that target enabled, since a tenant with no enabled row exports
+      nothing and a directory-wide count would be alarming and wrong — plus whether
+      the attribute is `sensitive`. `acknowledgedExportCount` on both write paths is
+      then REQUIRED whenever the write leaves the row enabled over a non-empty
+      population, and is **re-derived inside the writing transaction**, so an import
+      landing mid-decision invalidates the acknowledgement rather than slipping under
+      it. Absent is a 400 naming the real number; stale is a 409. Only transitions
+      INTO enabled are guarded: disabling reduces exposure, and a `remoteName` rename
+      relocates values that already flow. The count and the flag reach the audit row,
+      which is the one thing the log can still say about a sensitive attribute after
+      export.
+      **Deliberately not closed:** `sensitive` still does not stop propagation —
+      connectors provision from outbox payloads, so that is a separate decision with
+      real consequences — and nothing retro-revokes what earlier enables already sent.
 - [ ] **6. Reconciliation cannot see Keycloak-only accounts, and nothing schedules
       it.** `deploy/systemd/` has no reconciliation timer.
 - [ ] **7. `syncState` derivation degrades linearly** with unsettled aggregates, on

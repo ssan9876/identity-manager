@@ -709,6 +709,25 @@ recorded in the audit row. The same migration is available as
 
 Every mapping row.
 
+### `GET /attribute-target-mappings/export-impact` — `connector:read`
+
+| Query | Notes |
+|---|---|
+| `target` | required |
+| `attributeDefinitionId` **XOR** `coreField` | exactly one; naming both, or neither, is a **400** |
+
+→ `{ "target": "active_directory", "holderCount": 412, "sensitive": false }`
+
+What enabling that mapping would newly export. `holderCount` counts users who
+hold a value AND sit in an organization that has this target **enabled** —
+`connector_targets` is keyed `(organization_id, target)`, and a tenant without
+an enabled row exports nothing. `sensitive` says the audit log is forbidden to
+record those values, so the export is unrecoverable from the log afterwards.
+
+A `GET`, and `connector:read`, because this returns a count and a boolean and
+never a stored value — unlike the attribute migration's preview, which is a
+POST precisely because it does.
+
 ### `POST /attribute-target-mappings` — `connector:manage` **(global)**
 
 ```json
@@ -717,16 +736,31 @@ Every mapping row.
   "coreField": null,
   "target": "active_directory",
   "remoteName": "extensionAttribute1",
-  "enabled": true
+  "enabled": true,
+  "acknowledgedExportCount": 412
 }
 ```
 
 Exactly one of `attributeDefinitionId` or `coreField` (`given_name` · `surname` ·
-`title` · `department`). `enabled` defaults to `true`. → **201**
+`title` · `department`). `enabled` defaults to `true`, so an ordinary create is
+an enable. → **201**
+
+`acknowledgedExportCount` is **required whenever this write would leave the row
+enabled over a non-empty population**, and is re-derived inside the writing
+transaction rather than trusted. Absent is a **400** naming the real number;
+a stale one is a **409**, the same status a superseded `previewHash` earns on
+the attribute migration. A mapping that would export nothing needs no
+acknowledgement, so callers creating dormant or empty mappings are unaffected.
 
 ### `PATCH /attribute-target-mappings/:id` — `connector:manage` **(global)**
 
-Only `enabled` and `remoteName`. Never which field or target the row governs.
+Only `enabled`, `remoteName` and `acknowledgedExportCount`. Never which field or
+target the row governs.
+
+The acknowledgement is required only on a transition **into** enabled. Turning a
+mapping off reduces exposure, `true → true` changes nothing about what flows,
+and renaming `remoteName` relocates values that already flow — none of the
+three is a new export.
 
 ### `DELETE /attribute-target-mappings/:id` — `connector:manage` **(global)**
 
