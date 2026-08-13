@@ -406,11 +406,24 @@ Item 2 (run the full API suite) is done and green.
       environment-dependent. It asserts the 409 "has not synced to Keycloak yet"
       path because `keycloak_sso` is unconfigured in dev; configuring that target
       means updating the test to assert the modal instead.
-- [ ] **Confirm Keycloak 26's partial-PUT semantics.** Does `PUT /clients/{uuid}`
-      omitting a field clear or preserve it? `KeycloakSsoConnector` is correct
-      under either answer, so this is not a latent bug — only the doc comment in
-      `keycloak-sso.connector.ts` is unproven. Replace it with the empirical
-      result.
+- [x] **Confirm Keycloak 26's partial-PUT semantics.** Measured 2026-08-13 against
+      Keycloak 26.4 on the lab host. **Omitting a field PRESERVES it** —
+      `description` and `redirectUris` both survived a PUT carrying only
+      `clientId` and `enabled`, while `enabled` changed. The `attributes` MAP
+      merges the same way: a key omitted keeps its stored value, and only an
+      explicit empty string or null clears it (the value then reads back null).
+      **This entry was wrong that it was "not a latent bug".** It was one.
+      `mergeSaml` removed a stale SP certificate with
+      `delete attributes['saml.signing.certificate']`, which under a merging map
+      removes it from the REQUEST and never from Keycloak — so a client that no
+      longer required signatures kept its old signing certificate forever, the
+      exact half-state the connector's own comment promised to prevent. The spec
+      asserted `toBeUndefined()` and was green, because it checked the payload
+      the connector builds against a fake that stores whatever it is handed: the
+      code and the fake agreed with each other about a Keycloak that does not
+      behave that way. Fixed to send an explicit empty string, guarded on the key
+      already existing so a client that never had a certificate does not acquire
+      an empty one. Proven by restoring the `delete` and watching the test fail.
 
 ---
 
