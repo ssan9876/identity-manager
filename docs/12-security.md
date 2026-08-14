@@ -29,20 +29,28 @@
 > **The backlog has been re-counted.** The "~twenty unverified findings" figure was
 > quoted for months as an upper bound nobody had checked. It was re-counted on
 > 2026-08-14 against the code rather than against a ledger
-> ([the addendum](archive/audits/carried-findings-verification.md)): **six had since
-> been closed**, leaving **fourteen**, of which **four are MEDIUM** and the rest are
+> ([the addendum](archive/audits/carried-findings-verification.md)): **eight had since
+> been closed**, leaving **twelve**, of which **two are MEDIUM** and the rest are
 > LOW or recorded decisions that were never findings.
 >
 > **Nothing HIGH or CRITICAL is open.** The one HIGH-if-opened item was the ReDoS
 > gate on `validationRules.pattern`; it is shut, and was confirmed shut before the
 > JML rules API was built on top of it.
 >
-> **The four MEDIUM findings**, so they are not buried: `SEC-L2` (a 409 on
-> `POST /users` discloses another org unit's email/username — the fix landed only on
-> the import path), `SEC-L5`, `INT-M7` (`syncState` derivation is serial and
-> O(unsettled aggregates)), and the open half of `CAR-system-actor` (a reconcile's
-> per-entity writes are not permission-checked, scope-narrowed, audited or outboxed,
-> so constraint 7 does not hold for that route).
+> **The two MEDIUM findings**, so they are not buried:
+>
+> - **`SEC-L5`, largely addressed; one residue.** The dev realm import was renamed to
+>   `.dev.json`, `sslRequired` moved from `none` to `external`, `idm-test-client` is
+>   now `enabled: false`, and `keycloak-setup.sh` builds a real realm through the
+>   Admin API with generated secrets instead. What remains is a seeded
+>   `admin@example.com` whose password `dev_password_change_me` is published in a
+>   public repository — so importing that file by mistake still creates one working
+>   account. Kept deliberately: removing it makes the file useless for local
+>   development, which is the only thing it is for.
+> - **The open half of `CAR-system-actor`.** A reconcile's per-entity writes are not
+>   permission-checked, scope-narrowed, audited or outboxed, so **constraint 7 does
+>   not hold for that route** — the only open finding that contradicts a stated
+>   claim.
 >
 > **One thing this does not cover.** The sixth pass deliberately did not audit
 > read-side exposure, because [constraint 12](#what-the-system-claims-to-uphold) does

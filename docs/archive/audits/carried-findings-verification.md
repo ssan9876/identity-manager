@@ -54,9 +54,17 @@ since as "roughly twenty unverified findings", including by
 Every one of those said it was an upper bound carried forward without
 re-counting. This is the re-count the roadmap asked for.
 
-**Six of the twenty have since been closed.** Verified by reading the code
-today, not by trusting a ledger — `TODO.md` has itself been wrong about
-closures before, by its own admission.
+**Eight of the twenty have since been closed.** Verified by reading the code,
+not by trusting a ledger — `TODO.md` has itself been wrong about closures
+before, by its own admission.
+
+> **This section was wrong on its first pass and is corrected here.** It
+> originally reported six closures and listed `SEC-L2` and `INT-M7` among the
+> open MEDIUMs. Both are closed. The mistake was the exact one this paragraph
+> claims to avoid: six closures were verified against the code and the *rest of
+> the table was taken at face value*. Verifying the closures you expect and
+> trusting the remainder is not a re-count. The two are added below with their
+> evidence.
 
 | ID | Was | Now | Evidence in the tree today |
 |---|---|---|---|
@@ -66,6 +74,8 @@ closures before, by its own admission.
 | `INJ-INFO` | Still holds (INFO) | **Closed** | `simulate()` now refuses a rule whose `trigger` is not in `KNOWN_TRIGGERS`, the same check `matchRules` makes |
 | `CAR-ReDoS` | Still holds (HIGH-if-opened) | **Closed** | `new RegExp` no longer appears in `src/` outside comments; `validationRules.pattern` is replaced by the closed `attribute-formats.ts` vocabulary, asserted by a static source scan |
 | `INJ-M-1` / `INT-M6` | Fixed, widened default (MEDIUM) | **Closed** | Cap is 1,000 (`b36e7ad`); measured at ~8.5 s worst case, and the console mirror that still said 5,000 was fixed |
+| `SEC-L2` | Still holds (MEDIUM) | **Closed** | `users.repository.ts` throws `'primaryEmail: not available'` / `'username: not available'`, with a comment naming SEC-L2 — the direct-create sibling the import fix missed |
+| `INT-M7` | Still holds (MEDIUM) | **Closed** | The serial `for … of await` loops are gone; `resolveForUsers` batches via `listEffectiveGroupMembershipsForUsers` under one `Promise.all`, and `listEffectiveUserMembers` is no longer called there at all |
 
 **`CAR-system-actor` is half-closed** and stays on the list. The acting
 `userId` is now threaded into `TargetReconciliationJob.auditOverride`, so a
@@ -76,11 +86,10 @@ constraint 7 does not hold for that route.
 
 ### The current count
 
-**Fourteen still hold**, of which:
+**Twelve still hold**, of which:
 
-- **MEDIUM — 4:** `SEC-L2` (409 discloses another org unit's email/username —
-  the fix landed only on the import path), `SEC-L5`, `INT-M7`,
-  `CAR-system-actor` (half).
+- **MEDIUM — 2:** `SEC-L5` (partially addressed — see below) and the open half
+  of `CAR-system-actor`.
 - **LOW — 6:** `AUTHZ-M-1`, `AUTHZ-L-4`, `INJ-H-1`, `INJ-H-2`, `INJ-L-1`,
   `INT-H4`, `INT-L2`, `SEC-L1`, `SEC-L4`, `SEC-L7`, `CAR-group-rename`,
   `CAR-jml-triggers` — counted as a band rather than individually, because
@@ -91,11 +100,24 @@ constraint 7 does not hold for that route.
   `CAR-jml-revocation`, `CAR-import-uuid`. These are recorded decisions, not
   a backlog.
 
+**`SEC-L5` is partially addressed**, which the table does not capture. The
+audit asked for "rename plus disable". The rename happened —
+`keycloak/realm-import/identity-manager-realm.dev.json` is now explicitly
+named as development-only, `scripts/keycloak-setup.sh` builds a real realm
+through the Admin API instead, and `sslRequired` has moved from `none` to
+`external`. The disable happened too: `idm-test-client` is now `enabled: false`. What
+remains is a seeded `admin@example.com` whose password
+`dev_password_change_me` is published in this repository, so importing the
+file by mistake still creates one working account. That is kept deliberately —
+removing it makes the file useless for the local development it exists for —
+which makes the residue a documentation-and-naming risk rather than an
+unaddressed finding.
+
 **Nothing HIGH or CRITICAL remains open.** `CAR-ReDoS` was the only
 HIGH-if-opened item and it is closed; the gate it guarded was confirmed shut
 before the JML rules API was built on top of it.
 
-The honest summary is therefore: **four MEDIUM findings and a band of LOW
+The honest summary is therefore: **two MEDIUM findings and a band of LOW
 ones**, none of them structural, plus a set of deliberate decisions that were
 never findings. That is a materially different picture from "roughly twenty
 unverified findings" and should be quoted instead of it.

@@ -12,10 +12,16 @@ systemd**. No Docker, so an LXC container can be **unprivileged with nesting off
 > disable through the API, and a cross-tenant transfer that was refused by the
 > database but reported as a 500.
 >
-> **Fourteen findings remain open**, re-counted against the code on 2026-08-14 —
-> the long-quoted "roughly twenty" was stale by six closures. **Four are MEDIUM and
-> nothing HIGH or CRITICAL is open.** They are named in
+> **Twelve findings remain open**, re-counted against the code on 2026-08-14 — the
+> long-quoted "roughly twenty" was stale by eight closures. **Two are MEDIUM and
+> nothing HIGH or CRITICAL is open.** Both are named in
 > [12 — Security model](12-security.md) rather than left as a number.
+>
+> One of them bears directly on installing: **do not import
+> `keycloak/realm-import/identity-manager-realm.dev.json`.** It seeds
+> `admin@example.com` with a password published in this repository. Use
+> `scripts/keycloak-setup.sh`, which builds the same realm through the Admin API with
+> generated secrets and no seeded user.
 >
 > See [12 — Security model](12-security.md) for the dimensions by name and what the
 > sixth pass deliberately did not cover — in particular, a **tenant-facing API would
