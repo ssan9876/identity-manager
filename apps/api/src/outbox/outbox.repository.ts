@@ -88,6 +88,40 @@ type RawClaimRow = {
  * must hold that transaction open across the Keycloak call it drives, not
  * just across this one query.
  */
+/**
+ * Make a connector's error message safe to STORE.
+ *
+ * Found by running it: a failing Active Directory sync produced a message
+ * containing a NUL byte, `markForRetry` wrote it into `last_error`, and
+ * Postgres refused the whole statement with `invalid byte sequence for
+ * encoding "UTF8": 0x00`. That throw happened INSIDE the failure-recording
+ * path, so it escaped `runOnce`'s per-event handling and aborted the entire
+ * drain — every target's events, not just the one that failed. The worker
+ * then retried the same poison event on the next tick and died the same way,
+ * so the outbox stopped moving permanently while looking merely "pending".
+ *
+ * Worse, the original error was destroyed in the process: the connector's own
+ * message is never logged before this write, so the failure that needs
+ * diagnosing was replaced by an encoding complaint about recording it.
+ *
+ * Sanitised HERE rather than at each call site for the reason this codebase
+ * already applies to its permission catalogs: a guard that every present and future
+ * caller must remember is only as good as the one that forgets. `lastError`
+ * is operator-facing text with no structure worth preserving, so control
+ * characters are simply dropped, and the result is capped — a vendor library
+ * can hand back a message carrying an entire LDIF payload, and `last_error`
+ * is a diagnostic, not a log sink.
+ */
+const MAX_LAST_ERROR_LENGTH = 2000
+
+export function sanitizeLastError(message: string): string {
+  // eslint-disable-next-line no-control-regex
+  const stripped = message.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '')
+  return stripped.length > MAX_LAST_ERROR_LENGTH
+    ? `${stripped.slice(0, MAX_LAST_ERROR_LENGTH)}… (truncated)`
+    : stripped
+}
+
 @Injectable()
 export class OutboxRepository {
   /**
@@ -243,7 +277,7 @@ export class OutboxRepository {
         status: 'pending',
         attempts: input.attempts,
         nextAttemptAt: input.nextAttemptAt,
-        lastError: input.lastError,
+        lastError: sanitizeLastError(input.lastError),
       })
       .where(eq(outboxEvents.id, id))
   }
@@ -258,7 +292,7 @@ export class OutboxRepository {
   async markFailed(tx: DbHandle, id: number, input: { attempts: number; lastError: string }): Promise<void> {
     await tx
       .update(outboxEvents)
-      .set({ status: 'failed', attempts: input.attempts, lastError: input.lastError })
+      .set({ status: 'failed', attempts: input.attempts, lastError: sanitizeLastError(input.lastError) })
       .where(eq(outboxEvents.id, id))
   }
 
