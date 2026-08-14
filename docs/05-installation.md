@@ -23,6 +23,13 @@ systemd**. No Docker, so an LXC container can be **unprivileged with nesting off
 > `scripts/keycloak-setup.sh`, which builds the same realm through the Admin API with
 > generated secrets and no seeded user.
 >
+> **Deploying this on an internal or enterprise network is reasonable**, on the
+> model it is built for: every administrator is a trusted platform operator
+> authenticating against the master realm. **Exposing a tenant-facing surface is
+> not** — tenants have no API of their own, and building one is a second
+> authorization model that no pass has examined. See
+> [12 — Security model](12-security.md#can-you-deploy-this).
+>
 > See [12 — Security model](12-security.md) for the dimensions by name and what the
 > sixth pass deliberately did not cover — in particular, a **tenant-facing API would
 > be a second authorization model and would need its own pass**.
