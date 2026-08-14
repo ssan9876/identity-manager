@@ -226,7 +226,7 @@ apps/api/src/connectors/connector-targets.controller.ts:62
 const configPatchValueSchema = z.union([z.string().max(4000), z.number(), z.boolean(), z.null()])
 ```
 
-`PATCH /connector-targets/:target` with `{"config":{"host":"a b"}}` reproduces the
+`PATCH /connector-targets/:target` with `{"config":{"host":"a\u0000b"}}` reproduces the
 original failure exactly: legal JSON, passes Zod, fails at Postgres as a raw `pg` error that
 `DomainExceptionFilter` (`@Catch(DomainError)`) does not touch, so an unmapped 500. This is
 a fix applied in one place while the same pattern exists elsewhere unfixed — and the
