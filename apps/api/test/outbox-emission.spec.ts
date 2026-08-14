@@ -713,7 +713,16 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
   // POST /org-units -> org_unit/created
   // =======================================================================
   describe('POST /org-units', () => {
-    it('emits exactly one org_unit/created outbox event', async () => {
+    /**
+     * Org-unit events now reach `active_directory` ALONE — the only target
+     * with a native OU tree (targetsForAggregate). With only `keycloak`
+     * enabled here, a created org unit emits NOTHING, and that is the point:
+     * before the org-unit connector existed these rows went to every enabled
+     * directory and SyncWorker no-opped every one, so each was a row written,
+     * claimed and drained to do nothing. Keycloak has realms and groups but
+     * no OU, and it never grew one.
+     */
+    it('emits NO outbox event for an org unit when no OU-capable target is enabled', async () => {
       const bootstrap = await makeOrgUnit('Bootstrap')
       const actor = await makeActiveUser('global-creator', bootstrap.id)
       await grant(actor.id, 'super_admin', null)
@@ -728,8 +737,38 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
         .send({ name: `Child ${tag}`, parentId: bootstrap.id })
         .expect(201)
 
-      const events = await outboxEventsFor(ctx, 'org_unit', res.body.id)
+      expect(await outboxEventsFor(ctx, 'org_unit', res.body.id)).toHaveLength(0)
+    })
+
+    /** ...and reaches Active Directory, with the payload the connector needs, once one IS. */
+    it('emits exactly one active_directory org_unit/created event when AD is enabled', async () => {
+      const bootstrap = await makeOrgUnit('Bootstrap AD')
+      const actor = await makeActiveUser('global-creator-ad', bootstrap.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const tag = nextTag()
+      // Enabled inline rather than through the `withActiveDirectoryEnabled`
+      // helper further down this file: that one is scoped to its own describe
+      // block and returns void, and reaching across for it would be the
+      // cheaper-looking change that couples two unrelated suites together.
+      await ctx.pool.query(
+        `INSERT INTO connector_targets (target, enabled) VALUES ('active_directory', true)
+         ON CONFLICT (organization_id, target) DO UPDATE SET enabled = true`,
+      )
+      let events
+      try {
+        const res = await request(app.getHttpServer())
+          .post('/org-units')
+          .send({ name: `Child ${tag}`, parentId: bootstrap.id })
+          .expect(201)
+        events = await outboxEventsFor(ctx, 'org_unit', res.body.id)
+      } finally {
+        await ctx.pool.query(`DELETE FROM connector_targets WHERE target = 'active_directory'`)
+      }
+
       expect(events).toHaveLength(1)
+      expect(events[0].target).toBe('active_directory')
       expect(events[0].event_type).toBe('created')
       expect(events[0].payload.action).toBe('org_unit:create')
       expect(events[0].payload.name).toBe(`Child ${tag}`)
@@ -1213,7 +1252,20 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
         })
       })
 
-      it('emits keycloak only for a tenant org unit', async () => {
+      /**
+       * `withActiveDirectoryEnabled` enables AD for the MASTER organization,
+       * not for this tenant — and a tenant fans out to whichever targets ITS
+       * OWN catalog enables, never another organization's rows. A freshly
+       * provisioned tenant is seeded with `keycloak` alone, which has no OU
+       * concept, so an org unit inside it reaches nothing at all.
+       *
+       * This is the property that makes per-tenant directories work rather
+       * than a limitation: giving THIS tenant its own `active_directory` row
+       * is what sends its org units to ITS OWN estate, and the composite
+       * (organization_id, target) key is what stops them reaching anybody
+       * else's.
+       */
+      it('emits nothing for a tenant org unit while the tenant has no OU-capable target', async () => {
         await withActiveDirectoryEnabled(async () => {
           const writer = new OutboxWriter()
           const tenant = await makeTenant('initech')
@@ -1228,7 +1280,7 @@ describe('outbox event emission (Milestone 4, Task 1)', () => {
           })
 
           expect((await outboxEventsFor(ctx, 'org_unit', tenant.rootId)).map((e) => e.target)).toEqual(
-            ['keycloak'],
+            [],
           )
         })
       })
