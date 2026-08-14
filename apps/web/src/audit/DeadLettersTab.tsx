@@ -2,12 +2,19 @@ import { useEffect, useState } from 'react'
 import { useAuth } from 'react-oidc-context'
 import { Link } from 'react-router-dom'
 import { ApiError } from '../api/client'
+import { useSelfPermissions } from '../shell/permissions'
+import { useToast } from '../shell/ToastProvider'
 import { ALL_CONNECTOR_TARGETS, CONNECTOR_TARGET_LABEL, type ConnectorTarget } from '../connectors/api'
 import { formatDateTime } from '../format'
 import { useGroups } from '../groups/GroupsContext'
 import type { Page } from '../org-units/api'
 import { fetchPeopleByIds, type Person } from '../people/api'
-import { DEFAULT_MAX_ATTEMPTS, fetchDeadLetters, type DeadLetterEvent } from './outbox-api'
+import {
+  DEFAULT_MAX_ATTEMPTS,
+  fetchDeadLetters,
+  retryDeadLetter,
+  type DeadLetterEvent,
+} from './outbox-api'
 import './AuditPage.css'
 
 const LIMIT = 25
@@ -135,6 +142,7 @@ export function DeadLettersTab({
 }: { fixedTarget?: ConnectorTarget; organizationId?: string } = {}) {
   const auth = useAuth()
   const accessToken = auth.user?.access_token
+  const { showToast } = useToast()
 
   const [offset, setOffset] = useState(0)
   const [targetFilter, setTargetFilter] = useState<ConnectorTarget | ''>('')
@@ -143,10 +151,36 @@ export function DeadLettersTab({
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [retryToken, setRetryToken] = useState(0)
+  const [retryingId, setRetryingId] = useState<number | null>(null)
+
+  // Retrying is `connector:manage`, while merely READING this table is
+  // `audit:read` — so an auditor sees the list and no buttons. The API decides
+  // either way; this only avoids offering a control that would 403.
+  const permissions = useSelfPermissions()
+  const canRetry = permissions.status === 'ready' && permissions.actions.has('connector:manage')
 
   const effectiveTarget = fixedTarget ?? (targetFilter === '' ? undefined : targetFilter)
   const showTargetColumn = fixedTarget === undefined
-  const columnCount = showTargetColumn ? 6 : 5
+  const columnCount = (showTargetColumn ? 6 : 5) + (canRetry ? 1 : 0)
+
+  async function handleRetry(id: number) {
+    if (accessToken === undefined) return
+    setRetryingId(id)
+    try {
+      await retryDeadLetter(accessToken, id)
+      showToast(
+        'Queued for another attempt. It leaves this list once the worker picks it up; if it fails again it comes back.',
+      )
+      setRetryToken((token) => token + 1)
+    } catch (cause) {
+      showToast(
+        cause instanceof ApiError ? cause.message : 'Could not retry this event.',
+        'danger',
+      )
+    } finally {
+      setRetryingId(null)
+    }
+  }
 
   useEffect(() => {
     if (accessToken === undefined) return
@@ -257,6 +291,11 @@ export function DeadLettersTab({
                 <th scope="col">Last error</th>
                 <th scope="col">Attempts</th>
                 <th scope="col">First failed</th>
+                {canRetry && (
+                  <th scope="col">
+                    <span className="attributes-page__sr-only">Actions</span>
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -282,6 +321,21 @@ export function DeadLettersTab({
                       {event.attempts} of {DEFAULT_MAX_ATTEMPTS}
                     </td>
                     <td className="cell-muted">{formatDateTime(event.createdAt)}</td>
+                    {canRetry && (
+                      <td className="dead-letters__actions">
+                        <button
+                          type="button"
+                          className="btn btn--secondary btn--sm"
+                          disabled={retryingId !== null}
+                          data-loading={retryingId === event.id ? 'true' : undefined}
+                          onClick={() => void handleRetry(event.id)}
+                          data-testid="dead-letter-retry"
+                        >
+                          <span className="btn__label">Retry</span>
+                          <span className="btn__spinner" aria-hidden="true" />
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))
               )}

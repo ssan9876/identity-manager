@@ -90,6 +90,15 @@ function AttributesIcon({ className }: { className?: string }) {
   )
 }
 
+function LifecycleRulesIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)}>
+      <path d="M4 10a6 6 0 0 1 10.5-4M16 10a6 6 0 0 1-10.5 4" />
+      <path d="M14.5 2.5V6H11M5.5 17.5V14H9" />
+    </svg>
+  )
+}
+
 function OrgUnitsIcon({ className }: { className?: string }) {
   return (
     <svg {...iconProps(className)}>
@@ -288,6 +297,24 @@ export const NAV_ITEMS: NavItem[] = [
   // Gated on `connector:read`, exactly like Connectors above: super_admin
   // and auditor see it; every mutating control inside is additionally
   // gated on a GLOBAL `connector:manage` grant by the API itself.
+  // Joiner/mover/leaver automation. In `operations` beside HR sources and
+  // Connectors because it is the same category of thing — machinery that acts
+  // on the directory on its own — rather than a place you look people up.
+  //
+  // Gated on `jml:read`, held by super_admin, user_admin, auditor and
+  // read_only: a rule is the only actor here that changes an account with no
+  // human in the loop, so someone who cannot read the rules cannot explain a
+  // change they are looking at. Every mutating control inside is gated
+  // separately on `jml:manage`, which is super_admin's ALONE and which the
+  // API additionally requires to be GLOBAL.
+  {
+    key: 'lifecycle-rules',
+    label: 'Lifecycle rules',
+    path: '/lifecycle-rules',
+    group: 'operations',
+    action: 'jml:read',
+    icon: LifecycleRulesIcon,
+  },
   {
     key: 'hr-sources',
     label: 'HR sources',

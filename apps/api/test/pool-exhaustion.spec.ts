@@ -149,6 +149,8 @@ describe('pool exhaustion (finding C1, docs/archive/audits/audit-integrity.md)',
         RoleReconciler,
         { provide: DB_CLIENT, useFactory: () => appClient.db },
         UsersRepository,
+        // UsersController resolves the DESTINATION org unit for POST :id/transfer.
+        OrgUnitsRepository,
         PermissionEngine,
         PermissionGuard,
         PrivilegeGuards,

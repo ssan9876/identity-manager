@@ -5,11 +5,13 @@ import { Field, fieldDescribedBy } from '../forms/Field'
 import { formatDateTime } from '../format'
 import { fetchOrganizationsPage, type Organization } from '../organizations/api'
 import { useSelfPermissions } from '../shell/permissions'
+import { ConfirmDialog } from '../shell/ConfirmDialog'
 import { useToast } from '../shell/ToastProvider'
 import {
   createHrSource,
   fetchHrSourceRuns,
   fetchHrSources,
+  runHrSourceCommit,
   runHrSourcePreview,
   updateHrSource,
   HR_SOURCE_KIND_LABEL,
@@ -555,6 +557,8 @@ export default function HrSourcesPage() {
   const [previewReport, setPreviewReport] = useState<HrSyncReport | null>(null)
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [previewing, setPreviewing] = useState(false)
+  const [committing, setCommitting] = useState(false)
+  const [commitOpen, setCommitOpen] = useState(false)
 
   const [runs, setRuns] = useState<HrSourceRunView[] | null>(null)
 
@@ -698,6 +702,46 @@ export default function HrSourcesPage() {
       reload()
     } finally {
       setPreviewing(false)
+    }
+  }
+
+  /**
+   * The destructive half. Deliberately reachable only after a preview in this
+   * same session: the API does not require that (it previews internally on
+   * every commit, so it cannot write something it did not evaluate), but the
+   * numbers on screen are what the operator is actually deciding on, and a
+   * Commit button that is live before anyone has seen a row count is an
+   * invitation to land a misconfigured feed across a whole directory.
+   */
+  async function handleCommit() {
+    if (accessToken === undefined || selected === null) return
+    setCommitOpen(false)
+    setCommitting(true)
+    setPreviewError(null)
+    try {
+      const report = await runHrSourceCommit(accessToken, selected.id)
+      setPreviewReport(report)
+      showToast(
+        report.commit === null
+          ? 'The run finished without committing — see the result below.'
+          : `Committed: ${report.commit.created} created, ${report.commit.updated} updated, ${report.commit.failed} failed.`,
+        report.commit !== null && report.commit.failed > 0 ? 'warn' : 'neutral',
+      )
+      reload()
+      fetchHrSourceRuns(accessToken, selected.id)
+        .then(setRuns)
+        .catch(() => undefined)
+    } catch (cause) {
+      // Verbatim: the commonest refusal names the source's own `enabled` flag,
+      // which is exactly what the operator has to change.
+      setPreviewError(
+        cause instanceof ApiError
+          ? cause.message
+          : 'Could not commit this feed. Check the feed URL and your connection, then try again.',
+      )
+      reload()
+    } finally {
+      setCommitting(false)
     }
   }
 
@@ -934,6 +978,24 @@ export default function HrSourcesPage() {
                 >
                   {previewing ? 'Running preview…' : 'Run preview now'}
                 </button>
+                <button
+                  type="button"
+                  className="btn btn--primary"
+                  onClick={() => setCommitOpen(true)}
+                  disabled={
+                    !canManage || previewing || committing || previewReport === null || !selected.enabled
+                  }
+                  title={
+                    !selected.enabled
+                      ? 'This source is disabled. The API refuses to commit a disabled source.'
+                      : previewReport === null
+                        ? 'Run a preview first — commit acts on what you have seen.'
+                        : undefined
+                  }
+                  data-testid="hr-run-commit"
+                >
+                  {committing ? 'Committing…' : 'Commit this feed'}
+                </button>
               </div>
             </div>
 
@@ -943,6 +1005,31 @@ export default function HrSourcesPage() {
               </div>
             )}
             {previewReport !== null && <PreviewResult report={previewReport} />}
+
+            <ConfirmDialog
+              open={commitOpen}
+              title={`Commit ${selected.name}?`}
+              confirmLabel="Commit the feed"
+              tone="danger"
+              onConfirm={handleCommit}
+              onDismiss={() => setCommitOpen(false)}
+              testId="hr-commit-dialog"
+            >
+              <p data-testid="hr-commit-consequence">
+                This writes people. {previewReport?.preview !== null && previewReport !== null ? (
+                  <>
+                    The last preview found {previewReport.preview.summary.toCreate} to create and{' '}
+                    {previewReport.preview.summary.toUpdate} to update
+                    {previewReport.preview.summary.failed > 0
+                      ? `, with ${previewReport.preview.summary.failed} failing`
+                      : ''}
+                    .
+                  </>
+                ) : null}{' '}
+                The feed is re-fetched now, so the real numbers can differ if the source has changed
+                since.
+              </p>
+            </ConfirmDialog>
 
             <h3>Configuration</h3>
             <form onSubmit={(e) => void handleSave(e)}>

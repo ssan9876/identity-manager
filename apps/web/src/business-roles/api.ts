@@ -84,6 +84,16 @@ export interface BusinessRole {
   name: string
   description: string | null
   enabled: boolean
+  /**
+   * Whether this role appears in the self-service access-request catalogue.
+   *
+   * `select()` has always returned this column, so it was on the wire the
+   * whole time and simply undeclared here — which is why no screen could show
+   * it and `PUT /business-roles/:id/requestable` had no caller. NOT the
+   * enable/disable switch: withdrawing a role stops NEW requests and grants or
+   * revokes nothing, so there is no reconciliation sweep behind it.
+   */
+  requestable: boolean
   organizationId: string
   /** The unpublished draft, or null when there are no pending changes. */
   draftDefinition: RoleDefinition | null
@@ -146,6 +156,43 @@ export interface EnabledChangeResult extends BusinessRoleDetail {
   principalsGranted: number
 }
 
+/** Mirrors `BusinessRoleMember` in apps/api/src/business-roles/business-roles.controller.ts. */
+export interface BusinessRoleMember {
+  userId: string
+  username: string | null
+  firstName: string | null
+  lastName: string | null
+  primaryEmail: string | null
+  status: string | null
+  /** `formula` — their own data puts them here. `include_exception` — a person did. */
+  via: 'formula' | 'include_exception'
+}
+
+export interface BusinessRoleMembersReport {
+  roleId: string
+  scanned: number
+  /** Exact, never truncated. */
+  total: number
+  /** True when `members` is a sample of `total`. */
+  truncated: boolean
+  members: BusinessRoleMember[]
+}
+
+/**
+ * Who holds this role right now.
+ *
+ * Computed per request from the published formula and the exceptions — there
+ * is no membership table, which is what makes a business role a policy rather
+ * than a list. Distinct from `simulateBusinessRole`, which needs an
+ * unpublished draft and reports the DIFF that draft would cause.
+ */
+export function fetchBusinessRoleMembers(
+  accessToken: string,
+  id: string,
+): Promise<BusinessRoleMembersReport> {
+  return authorizedRequest<BusinessRoleMembersReport>(`/business-roles/${id}/members`, accessToken)
+}
+
 export function fetchBusinessRoles(accessToken: string): Promise<BusinessRole[]> {
   return authorizedRequest<BusinessRole[]>('/business-roles', accessToken)
 }
@@ -167,6 +214,25 @@ export function createBusinessRole(
 }
 
 /** Mirrors `patchBodySchema` exactly. It is `.strict()`: sending anything that could affect access is a 400 naming the field, never a silent no-op. */
+/**
+ * Publish a role into the self-service catalogue, or withdraw it.
+ *
+ * A dedicated verb rather than a field on the PATCH, mirroring the API: it is
+ * separately audited, and folding it into a general update would let a rename
+ * quietly change who can request access.
+ */
+export function setBusinessRoleRequestable(
+  accessToken: string,
+  id: string,
+  requestable: boolean,
+): Promise<BusinessRole> {
+  return authorizedRequest<BusinessRole>(`/business-roles/${id}/requestable`, accessToken, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requestable }),
+  })
+}
+
 export function updateBusinessRole(
   accessToken: string,
   id: string,

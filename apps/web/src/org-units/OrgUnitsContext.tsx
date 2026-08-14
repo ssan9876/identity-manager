@@ -29,11 +29,13 @@ interface OrgUnitsContextValue {
    * can create an org unit renders before this context has resolved.
    */
   addOrgUnit: (unit: OrgUnit) => void
+  refreshOrgUnits: () => void
 }
 
 const OrgUnitsCtx = createContext<OrgUnitsContextValue>({
   state: { status: 'loading' },
   addOrgUnit: () => {},
+  refreshOrgUnits: () => {},
 })
 
 /**
@@ -56,6 +58,16 @@ export function OrgUnitsProvider({ children }: { children: ReactNode }) {
   const auth = useAuth()
   const accessToken = auth.user?.access_token
   const [state, setState] = useState<OrgUnitsState>({ status: 'loading' })
+  /**
+   * Bumped by `refreshOrgUnits` to re-run the fetch below.
+   *
+   * `addOrgUnit`'s local merge is enough for a CREATE — one new leaf, whose
+   * row the caller already holds. It is not enough for a rename or a delete:
+   * a rename rewrites the path of the unit AND every descendant (the API
+   * derives `path` from the name), and a delete removes a row the merge has
+   * no way to take back out. Both need the set re-read rather than patched.
+   */
+  const [refreshToken, setRefreshToken] = useState(0)
 
   useEffect(() => {
     if (accessToken === undefined) return
@@ -77,7 +89,7 @@ export function OrgUnitsProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [accessToken])
+  }, [accessToken, refreshToken])
 
   const addOrgUnit = useCallback((unit: OrgUnit) => {
     setState((prev) => {
@@ -86,7 +98,12 @@ export function OrgUnitsProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  const value = useMemo<OrgUnitsContextValue>(() => ({ state, addOrgUnit }), [state, addOrgUnit])
+  const refreshOrgUnits = useCallback(() => setRefreshToken((token) => token + 1), [])
+
+  const value = useMemo<OrgUnitsContextValue>(
+    () => ({ state, addOrgUnit, refreshOrgUnits }),
+    [state, addOrgUnit, refreshOrgUnits],
+  )
 
   return <OrgUnitsCtx.Provider value={value}>{children}</OrgUnitsCtx.Provider>
 }
@@ -97,6 +114,11 @@ export function useOrgUnits(): OrgUnitsState {
 
 export function useAddOrgUnit(): (unit: OrgUnit) => void {
   return useContext(OrgUnitsCtx).addOrgUnit
+}
+
+/** Re-read the whole set — for renames and deletes, which a local merge cannot express. */
+export function useRefreshOrgUnits(): () => void {
+  return useContext(OrgUnitsCtx).refreshOrgUnits
 }
 
 /** The mono-rendered path for an org unit id, or a sensible fallback while loading/on error/for an id that isn't found. */

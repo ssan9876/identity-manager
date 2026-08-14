@@ -415,6 +415,45 @@ export class HrSourcesController {
     return this.sync.run(source, { commit: false, actor: request.actor })
   }
 
+  /**
+   * Actually ingest the feed.
+   *
+   * `HrSyncService.run` has taken a `commit` flag since it was written, and
+   * until now NOTHING in src/ ever passed it `true` — the whole commit half of
+   * the pipeline (batchId, per-row scope checks, no-op suppression, the
+   * terminal `hr_source:sync` audit row) was built, tested at the service
+   * level, and reachable from nothing. An operator could dry-run an HR feed
+   * from the console for ever and never land a single row of it.
+   *
+   * Identical authorization to `preview` — `connector:manage` held GLOBALLY —
+   * and deliberately NOT a weaker one just because this is the destructive
+   * half: the same person who may point a feed at a directory is the person
+   * who may run it.
+   *
+   * PREVIEW-FIRST IS STRUCTURAL and stays that way: `run` always previews and
+   * only then commits, on the SAME mapped csv, so this route cannot commit
+   * something it did not first evaluate. That is the service's property, not
+   * this route's, which is why this route is three lines.
+   *
+   * The gate against an accidental commit is the source's own `enabled` flag,
+   * checked inside `run`: a disabled source previews freely and refuses to
+   * commit, naming the flag. That is a server-side fact rather than a
+   * ceremony the console could forget to perform.
+   */
+  @Post(':id/commit')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('connector:manage')
+  async commit(
+    @Param('id') rawId: string,
+    @Body() body: unknown,
+    @Req() request: AuthorizedRequest,
+  ): Promise<HrSyncReport> {
+    await this.requireGlobalManageGrant(request)
+    parseBody(previewBodySchema, body ?? {})
+    const source = await this.requireSource(rawId)
+    return this.sync.run(source, { commit: true, actor: request.actor })
+  }
+
   private async requireSource(rawId: string): Promise<HrSource> {
     const id = parseId(rawId)
     const source = await this.sources.findById(id)

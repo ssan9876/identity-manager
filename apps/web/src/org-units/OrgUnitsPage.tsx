@@ -5,9 +5,10 @@ import { ApiError } from '../api/client'
 import { formatDateTime } from '../format'
 import { Field } from '../forms/Field'
 import { useSelfPermissions } from '../shell/permissions'
+import { ConfirmDialog } from '../shell/ConfirmDialog'
 import { useToast } from '../shell/ToastProvider'
-import { createOrgUnit, fetchOrgUnit, type OrgUnit } from './api'
-import { useAddOrgUnit, useOrgUnits } from './OrgUnitsContext'
+import { createOrgUnit, deleteOrgUnit, fetchOrgUnit, renameOrgUnit, type OrgUnit } from './api'
+import { useAddOrgUnit, useOrgUnits, useRefreshOrgUnits } from './OrgUnitsContext'
 import './OrgUnitsPage.css'
 
 const TREE_LINK_SELECTOR = '[data-tree-link="true"]'
@@ -210,22 +211,172 @@ function OrgUnitDetailPane({
   parentOutOfScope,
   children,
   canCreateChild,
+  canRename,
+  canDelete,
   onOrgUnitCreated,
+  onOrgUnitChanged,
+  onOrgUnitDeleted,
 }: {
   unit: OrgUnit
   parent: OrgUnit | undefined
   parentOutOfScope: boolean
   children: OrgUnit[]
   canCreateChild: boolean
+  canRename: boolean
+  canDelete: boolean
   onOrgUnitCreated: (unit: OrgUnit) => void
+  onOrgUnitChanged: () => void
+  onOrgUnitDeleted: () => void
 }) {
+  const auth = useAuth()
+  const accessToken = auth.user?.access_token
+  const { showToast } = useToast()
+
   const [showCreateChild, setShowCreateChild] = useState(false)
+  const [renaming, setRenaming] = useState(false)
+  const [renameValue, setRenameValue] = useState(unit.name)
+  const [renameBusy, setRenameBusy] = useState(false)
+  const [renameError, setRenameError] = useState<string | null>(null)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+
+  async function handleRename(event: FormEvent) {
+    event.preventDefault()
+    if (accessToken === undefined) return
+    setRenameBusy(true)
+    setRenameError(null)
+    try {
+      await renameOrgUnit(accessToken, unit.id, renameValue.trim())
+      setRenaming(false)
+      onOrgUnitChanged()
+      showToast(`Renamed to "${renameValue.trim()}".`)
+    } catch (cause) {
+      // Verbatim: a collision names the level it collided at, which is the
+      // one thing that tells an admin what to type instead.
+      setRenameError(
+        cause instanceof ApiError ? cause.message : 'Could not rename this org unit.',
+      )
+    } finally {
+      setRenameBusy(false)
+    }
+  }
+
+  async function handleDelete() {
+    if (accessToken === undefined) return
+    setDeleteBusy(true)
+    try {
+      await deleteOrgUnit(accessToken, unit.id)
+      setDeleteOpen(false)
+      showToast(`Deleted "${unit.name}".`)
+      onOrgUnitDeleted()
+    } catch (cause) {
+      // The refusal enumerates exactly what is still in the way — children,
+      // people, groups, scoped grants — so it is shown as-is.
+      showToast(
+        cause instanceof ApiError ? cause.message : 'Could not delete this org unit.',
+        'danger',
+      )
+      setDeleteOpen(false)
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
 
   return (
     <div className="org-unit-detail">
-      <h2 className="text-subject" data-testid="org-unit-detail-name">
-        {unit.name}
-      </h2>
+      <div className="org-unit-detail__heading">
+        <h2 className="text-subject" data-testid="org-unit-detail-name">
+          {unit.name}
+        </h2>
+        <div className="org-unit-detail__heading-actions">
+          {canRename && !renaming && (
+            <button
+              type="button"
+              className="btn btn--secondary btn--sm"
+              onClick={() => {
+                setRenameValue(unit.name)
+                setRenameError(null)
+                setRenaming(true)
+              }}
+              data-testid="rename-org-unit"
+            >
+              Rename
+            </button>
+          )}
+          {canDelete && unit.parentId !== null && (
+            <button
+              type="button"
+              className="btn btn--secondary btn--sm"
+              onClick={() => setDeleteOpen(true)}
+              data-testid="delete-org-unit"
+            >
+              Delete
+            </button>
+          )}
+        </div>
+      </div>
+
+      {renaming && (
+        <form className="org-unit-detail__rename" onSubmit={handleRename} data-testid="rename-form">
+          <label className="field__label" htmlFor="org-unit-rename">
+            New name
+          </label>
+          <input
+            id="org-unit-rename"
+            className="input"
+            value={renameValue}
+            maxLength={255}
+            required
+            disabled={renameBusy}
+            onChange={(e) => setRenameValue(e.target.value)}
+            data-testid="rename-input"
+          />
+          <p className="field__hint">
+            The path is derived from the name, so renaming this unit also renames the path of
+            everything beneath it. Administrators scoped inside keep their access — the grants
+            follow the unit — but the paths in the audit log will change from here on.
+          </p>
+          {renameError !== null && (
+            <p className="field__error" role="alert" data-testid="rename-error">
+              {renameError}
+            </p>
+          )}
+          <div className="org-unit-detail__rename-actions">
+            <button
+              type="button"
+              className="btn btn--secondary"
+              disabled={renameBusy}
+              onClick={() => setRenaming(false)}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="btn btn--primary"
+              disabled={renameBusy || renameValue.trim() === ''}
+              data-testid="rename-submit"
+            >
+              Rename
+            </button>
+          </div>
+        </form>
+      )}
+
+      <ConfirmDialog
+        open={deleteOpen}
+        title={`Delete ${unit.name}?`}
+        confirmLabel={deleteBusy ? 'Deleting…' : 'Delete'}
+        tone="danger"
+        onConfirm={handleDelete}
+        onDismiss={() => setDeleteOpen(false)}
+        testId="delete-org-unit-dialog"
+      >
+        <p>
+          This cannot be undone. It only succeeds if the unit is completely empty — no child units,
+          no people, no groups, and no administrators scoped to it. If any of those remain the API
+          refuses and says which.
+        </p>
+      </ConfirmDialog>
       <dl className="detail-grid">
         <div>
           <dt>Path</dt>
@@ -325,6 +476,20 @@ export default function OrgUnitsPage() {
   const permissions = useSelfPermissions()
 
   const canCreateOrgUnit = permissions.status === 'ready' && permissions.actions.has('org_unit:create')
+  // Both super_admin's alone, and deliberately separate from create: a rename
+  // rewrites paths (and therefore scope), and a delete is irreversible.
+  const canUpdateOrgUnit = permissions.status === 'ready' && permissions.actions.has('org_unit:update')
+  const canDeleteOrgUnit = permissions.status === 'ready' && permissions.actions.has('org_unit:delete')
+  const refreshOrgUnits = useRefreshOrgUnits()
+
+  /**
+   * After a delete the selected unit no longer exists, so staying on its
+   * route would show a 404 pane. Back to the tree root, then re-read.
+   */
+  function handleOrgUnitDeleted() {
+    refreshOrgUnits()
+    navigate('/org-units')
+  }
 
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [directFetch, setDirectFetch] = useState<
@@ -529,7 +694,11 @@ export default function OrgUnitsPage() {
               parentOutOfScope={selectedParentOutOfScope}
               children={selectedChildren}
               canCreateChild={canCreateOrgUnit}
+            canRename={canUpdateOrgUnit}
+            canDelete={canDeleteOrgUnit}
               onOrgUnitCreated={handleOrgUnitCreated}
+              onOrgUnitChanged={refreshOrgUnits}
+              onOrgUnitDeleted={handleOrgUnitDeleted}
             />
           ) : directFetch?.status === 'loading' ? (
             <div className="skeleton" style={{ width: '100%', height: '10rem' }} />

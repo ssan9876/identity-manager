@@ -17,6 +17,8 @@ export type Action =
   | 'group:manage_members'
   | 'org_unit:read'
   | 'org_unit:create'
+  | 'org_unit:update'
+  | 'org_unit:delete'
   | 'role:assign'
   | 'audit:read'
   | 'connector:read'
@@ -32,6 +34,8 @@ export type Action =
   | 'organization:update'
   | 'attribute:read'
   | 'attribute:manage'
+  | 'jml:read'
+  | 'jml:manage'
 
 export const ALL_ROLE_KEYS: readonly RoleKey[] = [
   'super_admin',
@@ -53,6 +57,24 @@ export const ALL_ACTIONS: readonly Action[] = [
   'group:manage_members',
   'org_unit:read',
   'org_unit:create',
+  // Renaming and deleting an org unit. BOTH super_admin's alone (reachable
+  // only through ALL_ACTIONS below), and deliberately NOT granted to the
+  // user_admin who already holds `org_unit:create`, because neither is the
+  // same kind of act as adding a unit:
+  //
+  //   - a rename REWRITES THE PATH of the unit and every descendant, and
+  //     scoped grants are resolved by path (PermissionEngine.scopePathsFor).
+  //     Renaming a unit therefore moves the reach of every administrator
+  //     scoped anywhere inside it.
+  //   - a delete is irreversible and sits next to an ON DELETE CASCADE on
+  //     `role_assignments.scope_org_unit_id` (see
+  //     OrgUnitsRepository.deleteIfUnused, which refuses rather than let it
+  //     fire).
+  //
+  // Creating a unit adds a leaf and moves nothing, which is why it can sit
+  // with the ordinary directory-editing role and these two cannot.
+  'org_unit:update',
+  'org_unit:delete',
   'role:assign',
   'audit:read',
   'connector:read',
@@ -119,6 +141,31 @@ export const ALL_ACTIONS: readonly Action[] = [
   // granted to `super_admin`, `user_admin`, `auditor` and `read_only`.
   'attribute:read',
   'attribute:manage',
+  // Joiner/mover/leaver rules. GLOBAL GRANT ONLY, on the same terms as
+  // business roles, recertification campaigns and SSO applications: a rule
+  // names no org unit and `matchRules` runs it against EVERY user the
+  // lifecycle pass walks, so its blast radius is the whole directory and
+  // there is nothing for a scoped grant to narrow to. See
+  // JmlRulesController.requireGlobalManageGrant.
+  //
+  // Until now there was no HTTP surface here AT ALL — rules were reachable
+  // only from `lifecycle-cli.ts`, so automation that can deactivate a person
+  // was invisible to the console and editable only by whoever had a shell on
+  // the API host. JmlRulesRepository's own doc comment gives the reason it
+  // was withheld: HTTP CRUD "would require closing the still-open ReDoS gate
+  // on attribute_definitions.validation_rules.pattern". That gate is now
+  // CLOSED — `new RegExp` no longer appears in `src/` at all (see
+  // attribute-formats.ts, and the static source scan asserting it in
+  // test/attribute-validator.spec.ts) — so the stated precondition is met.
+  //
+  // `jml:manage` is super_admin's ALONE (reachable only through ALL_ACTIONS
+  // above), on exactly `business_role:manage`'s and `role:assign`'s terms,
+  // and for a sharper reason than either: a rule's `deactivate` action
+  // switches off real people's accounts without a human in the loop, on a
+  // schedule. That is the largest blast radius any single write in this
+  // system has.
+  'jml:read',
+  'jml:manage',
 ]
 
 const READ_ONLY_ACTIONS: readonly Action[] = ['user:read', 'group:read', 'org_unit:read']
@@ -203,6 +250,11 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly Action[]> = Object.assig
       // through ALL_ACTIONS above) — see that catalog's own doc comment for
       // why (`sensitive` and `selfEditable` both carry privilege).
       'attribute:read',
+      // Lifecycle rules, READ only, mirroring `attribute:read` exactly: a
+      // user_admin asking "why was this person deactivated last night?"
+      // needs to see the rule that did it. `jml:manage` stays super_admin's
+      // alone — see ALL_ACTIONS above for why.
+      'jml:read',
     ],
     help_desk: ['user:read', 'user:update', 'group:read', 'org_unit:read'],
     // Milestone 14, Task 9 — connector admin console. `connector:read` joins
@@ -244,8 +296,19 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly Action[]> = Object.assig
       'business_role:read',
       'recert:read',
       'attribute:read',
+      // The purest case of this role's "what happened" visibility: a JML
+      // rule is the only actor in this system that changes accounts with no
+      // human in the loop, so an auditor who cannot read the rules cannot
+      // explain a change they are looking at.
+      'jml:read',
     ],
-    read_only: [...READ_ONLY_ACTIONS, 'business_role:read', 'recert:read', 'attribute:read'],
+    read_only: [
+      ...READ_ONLY_ACTIONS,
+      'business_role:read',
+      'recert:read',
+      'attribute:read',
+      'jml:read',
+    ],
   } satisfies Record<RoleKey, readonly Action[]>,
 )
 

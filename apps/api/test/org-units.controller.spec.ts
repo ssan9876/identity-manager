@@ -120,11 +120,15 @@ describe('GET /org-units', () => {
     expect(res.body.code).toBe('NOT_FOUND')
   })
 
-  // Milestone 3b, Task 3 added POST /org-units — see
-  // test/org-units.write.spec.ts for its full behavior (permission/scope/
-  // audit/error-mapping checks). This pin narrows to what remains
-  // permanently true: there is no route to delete an org unit.
-  it('exposes no delete route', async () => {
-    await request(app.getHttpServer()).delete(`/org-units/${rootId}`).expect(404)
+  // Milestone 3b, Task 3 added POST /org-units, and the console-completeness
+  // branch added PATCH and DELETE — see test/org-units.write.spec.ts for all
+  // three (permission/scope/audit/error-mapping, and the subtree path
+  // rewrite). They cannot live HERE: this suite stubs the permission guard
+  // with a synthetic actor and clears `users` between tests, so any handler
+  // that writes an audit row trips audit_log's actor foreign key.
+  it('still refuses an unknown org unit id on the read routes', async () => {
+    await request(app.getHttpServer())
+      .get('/org-units/00000000-0000-0000-0000-000000000000')
+      .expect(404)
   })
 })

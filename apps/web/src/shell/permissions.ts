@@ -15,6 +15,15 @@ export type Action =
   | 'group:manage_members'
   | 'org_unit:read'
   | 'org_unit:create'
+  // Renaming and deleting an org unit. BOTH super_admin's alone, and
+  // deliberately not granted alongside `org_unit:create`: creating a unit adds
+  // a leaf and moves nothing, while a rename rewrites the path of the unit and
+  // every descendant (paths are derived from names, and scoped grants resolve
+  // by path), and a delete is irreversible and sits next to an ON DELETE
+  // CASCADE on role_assignments.scope_org_unit_id that the API refuses rather
+  // than lets fire.
+  | 'org_unit:update'
+  | 'org_unit:delete'
   | 'role:assign'
   | 'audit:read'
   | 'connector:read'
@@ -66,6 +75,18 @@ export type Action =
   // gets a 403. The API decides; the console renders the refusal.
   | 'attribute:read'
   | 'attribute:manage'
+  // Joiner/mover/leaver rules. `jml:read` is ordinary directory work on
+  // `attribute:read`'s exact terms — super_admin, user_admin, auditor and
+  // read_only — because a JML rule is the only actor in this system that
+  // changes accounts with no human in the loop, and someone who cannot read
+  // the rules cannot explain a change they are looking at. `jml:manage` is
+  // super_admin's ALONE and the API further requires it to be GLOBAL
+  // (`requireGlobalManageGrant` — a rule names no org unit and runs against
+  // every user the lifecycle pass walks). As everywhere else here,
+  // `GET /self/permissions` reports the ACTION and not its scope, so holding
+  // `jml:manage` is not a promise that a write will succeed.
+  | 'jml:read'
+  | 'jml:manage'
 
 /** Mirrors SelfPermissionsResponse from apps/api/src/self-service/self-service.controller.ts. */
 export interface SelfPermissionsResponse {

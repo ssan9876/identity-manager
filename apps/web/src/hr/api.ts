@@ -90,6 +90,21 @@ export interface HrSyncReport {
     thresholdPercent: number
     floor: number
   } | null
+  /**
+   * Present only when a commit actually ran — mirrors `ImportCommitResponse`
+   * in apps/api/src/imports/imports.controller.ts. `unchanged` is counted
+   * apart from `updated` on purpose: re-running an unchanged feed used to
+   * write a full round of no-op audit rows and sync events (finding M4), so
+   * `updated` now means "the row genuinely changed something".
+   */
+  commit: {
+    batchId: string
+    created: number
+    updated: number
+    unchanged: number
+    failed: number
+    failures: Array<{ row: number; employeeId: string | null; reasons: string[] }>
+  } | null
   reasons: string[]
   batchId: string | null
 }
@@ -153,6 +168,23 @@ export function updateHrSource(
 }
 
 /** "Run preview now" — never a commit; commits are the `hr:sync --commit` CLI's job. */
+/**
+ * Actually ingest the feed.
+ *
+ * The API's `HrSyncService` has taken a `commit` flag since it was written and
+ * nothing ever passed it `true` — the console could dry-run a feed for ever
+ * and never land a row of it. The service still previews first and commits the
+ * SAME mapped rows, so this cannot write something it did not evaluate, and it
+ * refuses outright while the source is disabled.
+ */
+export function runHrSourceCommit(accessToken: string, id: string): Promise<HrSyncReport> {
+  return authorizedRequest<HrSyncReport>(`/hr-sources/${id}/commit`, accessToken, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+}
+
 export function runHrSourcePreview(accessToken: string, id: string): Promise<HrSyncReport> {
   return authorizedRequest<HrSyncReport>(`/hr-sources/${id}/preview`, accessToken, {
     method: 'POST',

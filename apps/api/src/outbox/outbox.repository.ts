@@ -192,6 +192,39 @@ export class OutboxRepository {
   }
 
   /**
+   * One dead letter by id, or null — the read a retry needs before it writes.
+   *
+   * Filtered on `status = 'failed'` in SQL rather than fetched-then-checked,
+   * so "this event is not a dead letter" and "this event does not exist" reach
+   * the caller as the same absence. A retry asked about a live event is a
+   * request built on a stale screen, and both answers are the same 404.
+   */
+  async findFailedById(
+    db: NodePgDatabase<typeof schema>,
+    id: number,
+  ): Promise<{
+    id: number
+    attempts: number
+    lastError: string | null
+    aggregateType: string
+    aggregateId: string
+  } | null> {
+    const [row] = await db
+      .select({
+        id: outboxEvents.id,
+        attempts: outboxEvents.attempts,
+        lastError: outboxEvents.lastError,
+        aggregateType: outboxEvents.aggregateType,
+        aggregateId: outboxEvents.aggregateId,
+      })
+      .from(outboxEvents)
+      .where(and(eq(outboxEvents.id, id), eq(outboxEvents.status, 'failed')))
+      .limit(1)
+
+    return row ?? null
+  }
+
+  /**
    * A retryable failure: stays `pending` (so the claim query above can pick
    * it up again once `nextAttemptAt` arrives) with `attempts`/`lastError`
    * updated to reflect THIS attempt. Never called with a `nextAttemptAt` in

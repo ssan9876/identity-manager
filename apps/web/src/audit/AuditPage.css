@@ -139,3 +139,9 @@
 .audit-diff__unchanged .detail-grid {
   margin-top: var(--space-3);
 }
+
+/* The retry control, in its own shrink-to-fit column. */
+.dead-letters__actions {
+  width: 1%;
+  white-space: nowrap;
+}

@@ -1,0 +1,100 @@
+/*
+ * Lifecycle rules. Deliberately thin: everything here that could be a shared
+ * token or a shared class already is one, and the only genuinely local
+ * decisions are the preview panel's emphasis and the two-column form grid.
+ */
+
+.jml-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.jml-page__header-actions {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.jml-page__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.jml-page__form-heading {
+  margin: 0;
+}
+
+.jml-page__form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: var(--space-4);
+}
+
+.jml-page__form-wide {
+  grid-column: 1 / -1;
+}
+
+.jml-page__form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+.jml-page__name {
+  font-weight: 600;
+}
+
+.jml-page__row-actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+/*
+ * The preview is the safety surface of this page, so it is visually the
+ * loudest thing on it — an accent border rather than the ordinary card
+ * treatment the form above uses.
+ */
+.jml-page__preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid var(--color-accent, var(--color-border));
+  border-left-width: 4px;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.jml-page__preview-count {
+  margin: 0;
+  font-size: var(--font-size-lg, 1.125rem);
+}
+
+.jml-page__preview-list {
+  margin: 0;
+  padding-left: var(--space-5);
+  max-height: 18rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.jml-page__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

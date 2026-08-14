@@ -234,6 +234,74 @@ describe('HrSourcesController', () => {
     await request(app.getHttpServer()).post(`/hr-sources/${created.body.id}/preview`).send({}).expect(403)
   })
 
+  /**
+   * `HrSyncService.run` has taken a `commit` flag since it was written, and
+   * before this route existed NOTHING in src/ ever passed it `true`: the
+   * commit half of the pipeline was built, service-tested, and reachable from
+   * nowhere. An operator could dry-run a feed for ever and never land a row.
+   */
+  describe('POST /hr-sources/:id/commit', () => {
+    it('refuses to commit a DISABLED source, naming the flag, and still previews it', async () => {
+      currentUsername = globalAdminUsername
+      const created = await request(app.getHttpServer())
+        .post('/hr-sources')
+        .send(sourceBody())
+        .expect(201)
+      expect(created.body.enabled).toBe(false)
+
+      const res = await request(app.getHttpServer())
+        .post(`/hr-sources/${created.body.id}/commit`)
+        .send({})
+        .expect(400)
+      expect(String(res.body.message ?? res.body.details)).toMatch(/disabled/i)
+
+      // The gate is on COMMITTING, not on looking: a disabled source previews
+      // freely, which is how an operator gets it right before enabling it.
+      // (Whatever the feed itself does, the request is not refused for being
+      // a preview of a disabled source.)
+      const preview = await request(app.getHttpServer())
+        .post(`/hr-sources/${created.body.id}/preview`)
+        .send({})
+      expect(preview.status).not.toBe(400)
+    })
+
+    it('is refused for a SCOPED connector:manage grant, exactly like preview', async () => {
+      currentUsername = globalAdminUsername
+      const created = await request(app.getHttpServer())
+        .post('/hr-sources')
+        .send(sourceBody())
+        .expect(201)
+
+      currentUsername = scopedAdminUsername
+      await request(app.getHttpServer())
+        .post(`/hr-sources/${created.body.id}/commit`)
+        .send({})
+        .expect(403)
+    })
+
+    it('is refused for an auditor, who may read runs but not cause one', async () => {
+      currentUsername = globalAdminUsername
+      const created = await request(app.getHttpServer())
+        .post('/hr-sources')
+        .send(sourceBody())
+        .expect(201)
+
+      currentUsername = auditorUsername
+      await request(app.getHttpServer())
+        .post(`/hr-sources/${created.body.id}/commit`)
+        .send({})
+        .expect(403)
+    })
+
+    it('404s for a source that does not exist', async () => {
+      currentUsername = globalAdminUsername
+      await request(app.getHttpServer())
+        .post('/hr-sources/00000000-0000-0000-0000-000000000000/commit')
+        .send({})
+        .expect(404)
+    })
+  })
+
   it('an auditor (connector:read) can list and read runs, but not mutate', async () => {
     currentUsername = globalAdminUsername
     const created = await request(app.getHttpServer()).post('/hr-sources').send(sourceBody()).expect(201)

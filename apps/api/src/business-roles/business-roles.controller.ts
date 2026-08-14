@@ -74,6 +74,35 @@ const PAGE_SIZE = 200
  */
 const SIMULATION_SAMPLE_LIMIT = 500
 
+/**
+ * How many members come back with names attached. The `total` beside them is
+ * exact regardless — see `members`.
+ */
+const MEMBER_SAMPLE_LIMIT = 500
+
+export interface BusinessRoleMember {
+  userId: string
+  /** Null only if the row vanished between the walk and the name lookup. */
+  username: string | null
+  firstName: string | null
+  lastName: string | null
+  primaryEmail: string | null
+  status: string | null
+  /** FORMULA means their own data puts them here; INCLUDE_EXCEPTION means a person did. */
+  via: 'formula' | 'include_exception'
+}
+
+export interface BusinessRoleMembersReport {
+  roleId: string
+  /** Everyone evaluated — the role's own tenant, not the whole directory. */
+  scanned: number
+  /** Exact holder count, never truncated. */
+  total: number
+  /** True when `members` is a sample of `total`. */
+  truncated: boolean
+  members: BusinessRoleMember[]
+}
+
 const nameSchema = noNulChar(z.string().min(1).max(255))
 const descriptionSchema = noNulChar(z.string().max(2000))
 
@@ -637,6 +666,117 @@ export class BusinessRolesController {
   @RequirePermission('business_role:read')
   async findOne(@Param('id') rawId: string) {
     return this.requireRole(parseId(rawId))
+  }
+
+  /**
+   * Who holds this role right now, and WHY.
+   *
+   * There is no membership table to read: a business role's holders are
+   * COMPUTED from its published formula and its exceptions, which is what
+   * makes the role a policy rather than a list. The console had no way to ask
+   * this question at all — `POST :id/simulate` looks like the answer and is
+   * not, because it refuses outright unless there is an unpublished draft
+   * ("there is no draft to simulate") and, when there is one, reports the
+   * DIFF the draft would cause rather than the current membership. So an
+   * administrator asking the most ordinary question about a role — "who is in
+   * it?" — had nothing to click.
+   *
+   * `via` is carried through from `explainRoleHold` and is not decoration:
+   * someone in the role by FORMULA is there because of their own data (fix
+   * the formula, or fix the person), while someone there by
+   * INCLUDE-EXCEPTION was put there by hand and has a recorded reason to
+   * revisit. A members list that cannot tell those apart cannot be acted on,
+   * which is the same argument the SoD report already makes for carrying it.
+   *
+   * Walks the whole population and counts EXACTLY, truncating only the
+   * returned sample — the same shape `runSimulation` uses, and for the same
+   * reason: a count that silently stops early is a number nobody can use.
+   * Population is the role's own tenant, not the whole directory.
+   *
+   * Refuses rather than under-reporting if any condition cannot be
+   * understood, via the same `explainHoldOrRefuse` the simulation uses. A
+   * members list computed over "everyone we happened to understand" is not
+   * the membership, and quietly omitting the people a newer migration's
+   * operator applies to is exactly the fail-open the evaluator's three-valued
+   * `RoleHold` exists to prevent.
+   */
+  @Get(':id/members')
+  @RequirePermission('business_role:read')
+  async members(@Param('id') rawId: string): Promise<BusinessRoleMembersReport> {
+    const id = parseId(rawId)
+    const role = await this.requireRole(id)
+    const now = new Date()
+
+    const evaluable: EvaluableRole = {
+      id: role.id,
+      name: role.name,
+      conditions: role.conditions,
+      grants: role.grants,
+      exceptions: role.exceptions,
+    }
+
+    const sample: { userId: string; via: 'formula' | 'include_exception' }[] = []
+    let scanned = 0
+    let total = 0
+    let truncated = false
+
+    let offset = 0
+    for (;;) {
+      const page = await this.roles.listEvaluableUsers(
+        this.db,
+        { limit: PAGE_SIZE, offset },
+        role.organizationId,
+      )
+      if (page.length === 0) break
+
+      for (const user of page) {
+        scanned += 1
+        const hold = this.explainHoldOrRefuse(evaluable, user, now)
+        if (!hold.held) continue
+        total += 1
+        if (sample.length < MEMBER_SAMPLE_LIMIT) {
+          sample.push({ userId: user.id, via: hold.via })
+        } else {
+          truncated = true
+        }
+      }
+
+      if (page.length < PAGE_SIZE) break
+      offset += PAGE_SIZE
+    }
+
+    // Names for the sample only. `EvaluableUser` deliberately carries just
+    // what the evaluator needs (no username, no display name), so a list a
+    // human reads needs this second, bounded lookup rather than widening the
+    // evaluation shape for every caller that does not want it.
+    const users =
+      sample.length === 0
+        ? []
+        : await this.users.list({
+            limit: sample.length,
+            offset: 0,
+            ids: sample.map((entry) => entry.userId),
+          })
+    const byId = new Map(users.map((user) => [user.id, user]))
+
+    return {
+      roleId: role.id,
+      scanned,
+      total,
+      truncated,
+      members: sample.map((entry) => {
+        const user = byId.get(entry.userId)
+        return {
+          userId: entry.userId,
+          username: user?.username ?? null,
+          firstName: user?.firstName ?? null,
+          lastName: user?.lastName ?? null,
+          primaryEmail: user?.primaryEmail ?? null,
+          status: user?.status ?? null,
+          via: entry.via,
+        }
+      }),
+    }
   }
 
   @Patch(':id')

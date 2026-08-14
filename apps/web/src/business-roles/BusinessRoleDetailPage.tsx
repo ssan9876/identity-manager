@@ -13,11 +13,14 @@ import { BusinessRoleStatusBadge, DRAFT_HEADLINE, DraftStateBadge } from './badg
 import {
   draftStateOf,
   fetchBusinessRole,
+  fetchBusinessRoleMembers,
   publishBusinessRole,
   saveBusinessRoleDraft,
   setBusinessRoleEnabled,
+  setBusinessRoleRequestable,
   simulateBusinessRole,
   type BusinessRoleDetail,
+  type BusinessRoleMembersReport,
   type RoleDefinition,
   type SimulationReport,
 } from './api'
@@ -93,8 +96,18 @@ export default function BusinessRoleDetailPage() {
 
   const [disableOpen, setDisableOpen] = useState(false)
   const [enabling, setEnabling] = useState(false)
+  const [togglingRequestable, setTogglingRequestable] = useState(false)
 
   const [activeTab, setActiveTab] = useState<TabKey>('definition')
+
+  /**
+   * Membership, fetched only when the tab is opened. It is a full walk of the
+   * tenant's users on the server, so it is not something to run on every
+   * page load for the benefit of the two tabs that don't show it.
+   */
+  const [members, setMembers] = useState<BusinessRoleMembersReport | null>(null)
+  const [membersLoading, setMembersLoading] = useState(false)
+  const [membersError, setMembersError] = useState<string | null>(null)
   const tabRefs = useRef<Record<TabKey, HTMLButtonElement | null>>({
     definition: null,
     exceptions: null,
@@ -265,6 +278,41 @@ export default function BusinessRoleDetailPage() {
     }
   }
 
+  /**
+   * Publish this role into the self-service catalogue, or withdraw it.
+   *
+   * `PUT /business-roles/:id/requestable` has existed since the catalogue did,
+   * and nothing called it — so a role could be enabled and granting, and still
+   * be invisible to the people who might legitimately ask for it, with no way
+   * to change that outside the database.
+   *
+   * Deliberately NOT folded into the enable/disable control beside it.
+   * Withdrawing stops NEW requests and grants or revokes nothing; disabling
+   * revokes. Presenting them as one switch would invite an admin reaching for
+   * the smaller action to take the larger one.
+   */
+  async function handleToggleRequestable() {
+    if (accessToken === undefined || id === undefined || role === null) return
+    const next = !role.requestable
+    setTogglingRequestable(true)
+    try {
+      const updated = await setBusinessRoleRequestable(accessToken, id, next)
+      setRole((current) => (current === null ? current : { ...current, requestable: updated.requestable }))
+      showToast(
+        next
+          ? `${updated.name} is in the request catalogue — people can ask for it; nobody has been granted anything.`
+          : `${updated.name} is out of the request catalogue. Existing access is untouched; only new requests stop.`,
+      )
+    } catch (cause) {
+      showToast(
+        cause instanceof ApiError ? cause.message : 'Could not change the catalogue setting.',
+        'danger',
+      )
+    } finally {
+      setTogglingRequestable(false)
+    }
+  }
+
   async function handleEnable() {
     if (accessToken === undefined || id === undefined) return
     setEnabling(true)
@@ -300,6 +348,32 @@ export default function BusinessRoleDetailPage() {
       'danger',
     )
   }
+
+  useEffect(() => {
+    if (activeTab !== 'members' || accessToken === undefined || id === undefined) return
+    let cancelled = false
+    setMembersLoading(true)
+    setMembersError(null)
+    void fetchBusinessRoleMembers(accessToken, id)
+      .then((report) => {
+        if (!cancelled) setMembers(report)
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) {
+          setMembersError(
+            // Verbatim: the commonest refusal here is a condition the server
+            // cannot evaluate, and its message names the condition.
+            cause instanceof ApiError ? cause.message : 'Could not work out who holds this role.',
+          )
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setMembersLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [activeTab, accessToken, id, reloadToken])
 
   function activateTab(key: TabKey) {
     setActiveTab(key)
@@ -421,6 +495,19 @@ export default function BusinessRoleDetailPage() {
                   <span className="btn__spinner" aria-hidden="true" />
                 </button>
               )}
+              <button
+                type="button"
+                className="btn btn--secondary"
+                disabled={togglingRequestable}
+                data-loading={togglingRequestable ? 'true' : undefined}
+                onClick={() => void handleToggleRequestable()}
+                data-testid="toggle-requestable"
+              >
+                <span className="btn__label">
+                  {role.requestable ? 'Remove from catalogue' : 'Add to request catalogue'}
+                </span>
+                <span className="btn__spinner" aria-hidden="true" />
+              </button>
             </>
           )}
         </div>
@@ -578,28 +665,81 @@ export default function BusinessRoleDetailPage() {
         tabIndex={0}
         className="tabpanel"
       >
-        {/*
-          There is no members route. `BusinessRolesController` ships eleven
-          routes and none of them answers "who does this role currently hold";
-          membership is a derived fact recomputed per user by the reconciler
-          and never materialised as a role-keyed list. Rather than a dead
-          tab or an invented endpoint, this says what it is and points at the
-          two screens that DO answer the question today — the same "honest
-          'coming in a later task' panel, never a dead link" posture the rest
-          of this console already takes.
-        */}
-        <div className="empty-state" data-testid="members-unavailable">
-          <h3>Membership is derived, and isn&rsquo;t listed yet</h3>
-          <p>
-            Nobody is stored as a member of a business role — the reconciler works out who it
-            describes, per person, whenever something about them changes. There is no endpoint that
-            lists them back, so this console does not guess at one.
-          </p>
-          <p>
-            To see who this role would hold, run a simulation on the Definition tab. To see why one
-            person holds something, open their Entitlements tab.
-          </p>
-        </div>
+        {membersError !== null ? (
+          <div className="error-panel" role="alert">
+            <p className="error-panel__message">{membersError}</p>
+            <button
+              type="button"
+              className="btn btn--secondary"
+              onClick={() => setReloadToken((token) => token + 1)}
+            >
+              Try again
+            </button>
+          </div>
+        ) : membersLoading && members === null ? (
+          <span className="skeleton" style={{ height: '8rem', display: 'block' }} />
+        ) : members === null ? null : members.total === 0 ? (
+          <div className="empty-state" data-testid="members-empty">
+            <h3>Nobody holds this role</h3>
+            <p>
+              {members.scanned} {members.scanned === 1 ? 'person was' : 'people were'} evaluated
+              against the published definition and none of them matched. An unpublished role holds
+              nobody by design — publish a definition on the Definition tab first.
+            </p>
+          </div>
+        ) : (
+          <>
+            <p className="cell-muted" data-testid="members-summary">
+              <strong>{members.total}</strong> of {members.scanned} people evaluated hold this role.
+              Membership is worked out from the published definition each time you ask — nobody is
+              stored as a member.
+            </p>
+            <table className="table" data-testid="members-table">
+              <thead>
+                <tr>
+                  <th scope="col">Person</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">In the role because</th>
+                </tr>
+              </thead>
+              <tbody>
+                {members.members.map((member) => (
+                  <tr key={member.userId} data-testid="member-row">
+                    <td>
+                      <Link to={`/people/${member.userId}`}>
+                        {member.firstName !== null || member.lastName !== null
+                          ? `${member.firstName ?? ''} ${member.lastName ?? ''}`.trim()
+                          : (member.username ?? member.userId)}
+                      </Link>
+                      <div className="cell-muted mono">{member.username ?? member.userId}</div>
+                    </td>
+                    <td className="cell-muted">{member.status ?? '—'}</td>
+                    <td>
+                      {/*
+                        Not decoration. Someone here by FORMULA is here because
+                        of their own data — fix the formula, or fix the person.
+                        Someone here by exception was put here by hand and has a
+                        recorded reason worth revisiting.
+                      */}
+                      {member.via === 'formula' ? (
+                        <span className="badge">Matches the formula</span>
+                      ) : (
+                        <span className="badge badge--warn" data-testid="member-via-exception">
+                          Added by exception
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {members.truncated && (
+              <p className="cell-muted">
+                Showing the first {members.members.length}. The count above is exact.
+              </p>
+            )}
+          </>
+        )}
       </div>
     </div>
   )

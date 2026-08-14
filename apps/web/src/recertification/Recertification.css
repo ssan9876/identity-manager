@@ -98,3 +98,48 @@
   font-size: var(--text-base);
   color: var(--ink-muted);
 }
+
+/* The reviewer's note, inline in the row's action cell — a decision and its
+   reason belong in the same gesture, not behind a second screen. */
+.recert__comment {
+  display: block;
+  margin-bottom: var(--space-2);
+}
+
+.recert__comment .input {
+  width: 100%;
+  min-width: 12rem;
+}
+
+/* Role scoping on a new campaign. A fieldset, because the checkboxes are one
+   question with one legend. */
+.recert__scope {
+  grid-column: 1 / -1;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+}
+
+.recert__scope-hint {
+  margin-top: var(--space-1);
+  margin-bottom: var(--space-3);
+  max-width: 72ch;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+.recert__scope-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: var(--space-2);
+}
+
+.recert__scope-option {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  font-size: var(--text-base);
+  color: var(--ink);
+}

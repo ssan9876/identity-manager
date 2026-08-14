@@ -77,6 +77,35 @@ export interface CreateOrgUnitInput {
   parentId: string
 }
 
+/**
+ * Rename an org unit.
+ *
+ * NOT cosmetic: `path` is derived from the name on the API side, so this
+ * rewrites this unit's path and every descendant's — and scoped grants
+ * resolve by path, so it moves the reach of every administrator scoped
+ * anywhere inside. `parentId` is deliberately not accepted (re-parenting is a
+ * different authorization question), and the API refuses it by name.
+ */
+export function renameOrgUnit(accessToken: string, id: string, name: string): Promise<OrgUnit> {
+  return authorizedRequest<OrgUnit>(`/org-units/${id}`, accessToken, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+}
+
+/**
+ * Delete an org unit that nothing depends on.
+ *
+ * The API counts every blocker and refuses by name — children, people,
+ * groups, and scoped role assignments. That last one matters most: its
+ * foreign key CASCADES, so without the refusal a delete would silently revoke
+ * grants. 204 on success, so there is no body to parse.
+ */
+export function deleteOrgUnit(accessToken: string, id: string): Promise<void> {
+  return authorizedRequest<void>(`/org-units/${id}`, accessToken, { method: 'DELETE' })
+}
+
 export function createOrgUnit(accessToken: string, input: CreateOrgUnitInput): Promise<OrgUnit> {
   return authorizedRequest<OrgUnit>('/org-units', accessToken, {
     method: 'POST',

@@ -200,6 +200,34 @@ queued outbox event is the durability fallback.
 
 ---
 
+### `POST /users/:id/transfer` — `user:update`
+
+```json
+{ "orgUnitId": "…uuid…" }
+```
+
+Moves a person to another org unit. A **separate** route from `PATCH /users/:id`, and its
+own one-field `.strict()` body, because reassigning `orgUnitId` is a different
+authorization question: it checks the caller's scope against **both** the unit being left
+and the unit being joined.
+
+Both, and neither subsumes the other. The **source**, because moving someone out of a
+subtree is a write against that subtree. The **destination**, because the unit a person
+arrives in inherits administrative reach over them — without that check a scoped
+administrator could move anyone they can reach into their own subtree and acquire
+authority over an account they were never granted.
+
+Business roles are re-evaluated unconditionally afterwards (unlike `PATCH`, which skips
+the sweep for fields that cannot move anyone between roles): an org unit is a
+business-role condition field, so a transfer is one of the few writes that changes what
+someone is entitled to without touching any attribute of theirs.
+
+Moving someone to the unit they are already in writes nothing at all — no audit row, no
+outbox event, no sweep. → **200**, **404** if the destination does not exist, **403** if
+either end is out of scope.
+
+---
+
 ## Role assignments
 
 Mounted under `/users`. All three require `role:assign`, plus the reachability, grant-
@@ -249,7 +277,45 @@ is deliberately no route that makes one. (Before organizations landed, omitting
 `parentId` created a root under a global grant; that branch is gone, and omitting it now
 is a **400**.)
 
-> There is no update or delete route for an org unit.
+### `PATCH /org-units/:id` — `org_unit:update` **(super_admin only)**
+
+```json
+{ "name": "Revenue" }
+```
+
+Renames the unit **and repaths its whole subtree**. `path` is derived from the name
+(`parent.path + '.' + slug(name)`), so every descendant's path is rewritten in the same
+transaction — one `UPDATE` over `path <@ oldPath`, not a walk.
+
+This is not cosmetic, which is why it needs its own permission rather than riding on
+`org_unit:create`. Scoped grants resolve **by path**, so renaming a unit moves the reach
+of every administrator scoped anywhere inside it. The grants themselves key on
+`scope_org_unit_id` and therefore follow the unit correctly; the audit row records the
+**old and new path**, not just the names, because the path is what actually decides
+authorization.
+
+A rename that leaves the slug unchanged (`Sales` → `SALES!`) changes the display name
+and touches no path at all. A name colliding with a sibling is a **409**, and the whole
+subtree rolls back with it.
+
+`parentId` is deliberately **not** accepted — re-parenting needs its own scope check
+against the destination, exactly as moving a person does — and `.strict()` refuses it by
+name rather than ignoring it. → **200**
+
+### `DELETE /org-units/:id` — `org_unit:delete` **(super_admin only)**
+
+Deletes a unit that nothing depends on. Every blocker is counted and named:
+child units, people, groups, and **scoped role assignments**.
+
+That last one is why this cannot be left to the foreign keys. Three of the four
+references into `org_units` are `ON DELETE RESTRICT` and would stop themselves;
+`role_assignments.scope_org_unit_id` **cascades**, so a delete that reached the database
+would silently revoke every scoped grant pointing at the unit — no audit row, and no way
+to discover it afterwards except by noticing an administrator has quietly stopped being
+able to work.
+
+A **root** org unit is never deletable: an organization owns exactly one, and removing it
+leaves a tenant with nowhere to file anybody. → **204**, or **409** naming what remains.
 
 ---
 
@@ -397,6 +463,39 @@ globally even though it is a GET.
 | `POST /business-roles/mining/drafts` | `business_role:manage` **(global)** | Adopts a recommendation as a new disabled role plus a pre-filled draft |
 
 There is no `DELETE /business-roles/:id`.
+
+---
+
+### `GET /business-roles/:id/members` — `business_role:read`
+
+Who holds this role **right now**, computed from the published formula and the
+exceptions. There is no membership table to read — that is what makes a business role a
+policy rather than a list — so this walks the role's own tenant and evaluates each person.
+
+Distinct from `POST :id/simulate`, which refuses unless there is an unpublished draft and
+reports the **diff** that draft would cause rather than current membership.
+
+```json
+{
+  "roleId": "…uuid…",
+  "scanned": 412,
+  "total": 37,
+  "truncated": false,
+  "members": [
+    { "userId": "…", "username": "a.smith", "firstName": "…", "lastName": "…",
+      "primaryEmail": "…", "status": "active", "via": "formula" }
+  ]
+}
+```
+
+`via` is `formula` (their own data puts them here — fix the formula, or the person) or
+`include_exception` (a person put them here by hand, with a recorded reason worth
+revisiting). A members list that cannot tell those apart cannot be acted on.
+
+`total` is exact; only `members` is truncated (to 500), and `truncated` says so. An
+unpublished role answers **nobody**, not an error. A condition the evaluator cannot
+understand aborts the whole answer with a **409** rather than under-reporting — a
+membership computed over "everyone we happened to understand" is not the membership.
 
 ---
 
@@ -706,6 +805,23 @@ that `force` cannot answer; `force` overrides the blast-radius refusal alone, an
 recorded in the audit row. The same migration is available as
 `pnpm --filter @idm/api run attribute-migrate`.
 
+### `POST /outbox/dead-letters/:id/retry` — `connector:manage` **(global)**
+
+→ `{ "id": 412, "status": "pending" }`
+
+Puts one dead letter back in the queue, resetting `attempts` to zero. Until this
+existed, reconciliation was the only retry path — which re-derives `user`
+aggregates and nothing else, so a dead-lettered `group`, `membership` or
+`sso_app` event stayed failed forever.
+
+`connector:manage`, not the `audit:read` that LISTS dead letters: reading one is
+an investigation, retrying it writes to a real directory, and the permission
+follows the consequence. An event that is not `failed` is a **404** — "not a
+dead letter" and "does not exist" are the same answer to a request built on a
+stale screen. Audited as `outbox:retry` against the AGGREGATE, not the event:
+`audit_log.resource_id` is a uuid, and the person asking why a user re-synced
+looks up the user.
+
 ### `GET /attribute-target-mappings` — `connector:read`
 
 Every mapping row.
@@ -864,6 +980,22 @@ never a commit; commits happen through the `hr:sync --commit` CLI. Writes nothin
 about any user, but records the run's outcome on the source row and one
 `hr_source:sync` audit row. → **200**
 
+### `POST /hr-sources/:id/commit` — `connector:manage` **(global)**
+
+The same run, committed. Fetches the feed, applies the mapping, previews, and then
+**writes people** — creating and updating users through the import pipeline's own
+per-row scope checks, with one `batchId` shared by every audit row of the batch.
+
+Preview-first is structural rather than a convention: `run` always previews and commits
+the *same* mapped rows, so a commit cannot write something it did not first evaluate.
+
+The gate against an accidental commit is the source's own `enabled` flag, checked before
+anything is fetched: a **disabled** source previews freely and refuses to commit, naming
+the flag. → **200**, or **400** naming `enabled`.
+
+Same authorization as `preview` — deliberately not something weaker for the destructive
+half. The person who may point a feed at a directory is the person who may run it.
+
 ---
 
 ## Data flows
@@ -928,6 +1060,89 @@ was minted, by whom, for which application, never the value. Rotation is a re-mi
 
 ---
 
+## Lifecycle (JML) rules
+
+Joiner/mover/leaver automation: the only actor in this system that changes accounts with
+no human in the loop, on a schedule.
+
+**Global grant only on every mutating route**, on business roles' terms and for a sharper
+reason: a rule names no org unit, `matchRules` runs it against every user the lifecycle
+pass walks, and a `deactivate` action switches off real people's accounts unattended.
+`jml:manage` is **super_admin's alone**. `jml:read` is ordinary directory work
+(super_admin, user_admin, auditor, read_only) — someone who cannot read the rules cannot
+explain a change they are looking at.
+
+### `GET /jml-rules` — `jml:read`
+
+Every rule, enabled or not.
+
+### `GET /jml-rules/:id` — `jml:read`
+
+### `POST /jml-rules` — `jml:manage` **(global)**
+
+```json
+{
+  "name": "Deactivate leavers",
+  "trigger": "end_date_reached",
+  "conditionField": "status",
+  "conditionOperator": "equals",
+  "conditionValue": "active",
+  "action": "deactivate"
+}
+```
+
+`trigger` is one of `user_created`, `user_attribute_changed`, `start_date_reached`,
+`end_date_reached` — validated against the engine's own catalog, so the API cannot accept
+a trigger nothing will ever dispatch on. `conditionOperator` is `equals`, `not_equals` or
+`in`; `in` requires an array and the other two refuse one. `conditionField` is a built-in
+field (`status`, `orgUnitId`, `employeeId`, …) or `attributes.<key>`.
+
+`action` is `deactivate` (no `actionParams`) or `set_attribute`, whose `actionParams` must
+be exactly `{ key, value }` — validated here with the **same schema the applier runs at
+apply time**, so a rule that could only ever be skipped is never written.
+
+Always lands `enabled: false`, `simulatedAt: null`. There is no way to create a live rule.
+→ **201**
+
+### `POST /jml-rules/:id/simulate` — `jml:manage` **(global)**
+
+Previews what the rule would do, **writing nothing** — not to `jml_rules`, not to `users`,
+not to the outbox.
+
+```json
+{ "ruleId": "…", "scanned": 412, "truncated": false, "wouldApplyCount": 37, "effects": [ … ] }
+```
+
+Bounded at 2000 users; `truncated: true` means the counts are a floor, not a total.
+
+Deliberately does **not** mark the rule simulated. Collapsing preview and acknowledgement
+would mean merely *requesting* a preview unlocks `enable`, with nobody having read the
+output — the gate would still be there and would have stopped meaning anything. → **200**
+
+### `POST /jml-rules/:id/acknowledge-simulation` — `jml:manage` **(global)**
+
+```json
+{ "wouldApplyCount": 37 }
+```
+
+Records that a human reviewed a preview. `wouldApplyCount` is the number the reviewer was
+**shown**, carried into the audit row so that "they enabled it having been told it would
+touch 37 people" is answerable afterwards. → **200**
+
+### `POST /jml-rules/:id/enable` — `jml:manage` **(global)**
+
+**The gate.** Enabling re-checks `simulated_at IS NOT NULL` inside the `UPDATE`'s own
+`WHERE` clause, against the row's committed value — so there is no read-then-write window
+for a concurrent acknowledgement to race, and no way for a caller to skip it.
+→ **200**, or **400** naming the missing simulation.
+
+### `POST /jml-rules/:id/disable` — `jml:manage` **(global)**
+
+Always allowed, simulation history or not. The gate only ever applies to off → on.
+→ **200**
+
+---
+
 ## Audit and dead letters
 
 Both require a **global** grant of `audit:read`. A scoped grant is rejected with an
@@ -983,12 +1198,9 @@ Worth stating explicitly, because their absence is a design decision:
 | Not available | Why |
 |---|---|
 | `DELETE /users/:id` | `deactivated` is terminal; users are never deleted |
-| `PATCH /org-units/:id` | Not built |
-| `DELETE /org-units/:id` | Not built |
 | `DELETE /groups/:id` | Not built |
 | `DELETE /business-roles/:id` | Retire via `POST .../disable` instead — a role's history (conflicts, exceptions, past simulations) survives |
-| Any `PATCH /users/:id` change to `orgUnitId`, `username`, `primaryEmail`, `status` | Out of the PATCH surface by design |
-| Any JML rule API | Database rows plus the `jml:lifecycle` CLI |
-| Dead-letter retry | Use reconciliation |
+| Any `PATCH /users/:id` change to `username`, `primaryEmail`, `status` | Out of the PATCH surface by design. `orgUnitId` has since got its own route — `POST /users/:id/transfer` — precisely because it needed a second scope check the PATCH surface could not express |
+| Re-parenting an org unit (moving a subtree under a different parent) | `PATCH /org-units/:id` renames only. Moving a subtree needs a scope check against the destination parent, the same shape `POST /users/:id/transfer` performs for a person |
 | `DELETE /organizations/:id` | Deleting a realm destroys every user, session, client and credential inside it. A retired tenant is `suspended` |
 | Any tenant-facing route | Every administrator is a platform operator authenticating against the master realm |

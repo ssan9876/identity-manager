@@ -681,4 +681,99 @@ describe('BusinessRolesController (Milestone 17, Task 11)', () => {
     expect(res.body.name).toBe(renamed)
     expect(await membershipsFor(memberId)).toHaveLength(1)
   })
+
+  // =========================================================================
+  // Who is actually in the role
+  // =========================================================================
+
+  /**
+   * The most ordinary question about a role — "who is in it?" — had no route
+   * at all. `POST :id/simulate` looks like the answer and is not: it refuses
+   * unless there is an unpublished draft, and reports the DIFF that draft
+   * would cause rather than current membership.
+   */
+  describe('GET /business-roles/:id/members', () => {
+    it('lists who the published formula puts in the role, and nobody else', async () => {
+      const { roleId, jobTitle, groupId, memberId, outsiderId } = await seedRoleAndPeople()
+      await goLive(roleId, jobTitle, groupId)
+
+      as(globalAdmin)
+      const res = await request(app.getHttpServer())
+        .get(`/business-roles/${roleId}/members`)
+        .expect(200)
+
+      expect(res.body.total).toBe(1)
+      expect(res.body.truncated).toBe(false)
+      expect(res.body.members).toHaveLength(1)
+      expect(res.body.members[0]).toMatchObject({ userId: memberId, via: 'formula' })
+      // A name, not just an id: EvaluableUser carries neither, so the route
+      // does a second bounded lookup for the sample.
+      expect(res.body.members[0].username).toEqual(expect.any(String))
+      expect(res.body.members.map((m: { userId: string }) => m.userId)).not.toContain(outsiderId)
+    })
+
+    /**
+     * `via` is not decoration. Someone in the role by FORMULA is there because
+     * of their own data; someone there by INCLUDE-EXCEPTION was put there by
+     * hand and has a recorded reason to revisit. A list that cannot tell them
+     * apart cannot be acted on.
+     */
+    it('distinguishes a hand-added member from one the formula matched', async () => {
+      const { roleId, jobTitle, groupId, memberId, outsiderId } = await seedRoleAndPeople()
+      await goLive(roleId, jobTitle, groupId)
+
+      as(globalAdmin)
+      await request(app.getHttpServer())
+        .post(`/business-roles/${roleId}/exceptions`)
+        .send({ userId: outsiderId, mode: 'include', reason: 'Covering parental leave' })
+        .expect(201)
+
+      const res = await request(app.getHttpServer())
+        .get(`/business-roles/${roleId}/members`)
+        .expect(200)
+
+      expect(res.body.total).toBe(2)
+      const byId = Object.fromEntries(
+        res.body.members.map((m: { userId: string; via: string }) => [m.userId, m.via]),
+      )
+      expect(byId[memberId]).toBe('formula')
+      expect(byId[outsiderId]).toBe('include_exception')
+    })
+
+    /**
+     * An unpublished role has no members, which is a fact and not an error —
+     * deliberately unlike `simulate`, which 409s with "there is no draft to
+     * simulate". A console asking "who is in this?" of a brand-new role
+     * should be told "nobody", not handed a refusal about drafts.
+     */
+    it('answers "nobody" for a role that has never been published', async () => {
+      const { roleId } = await seedRoleAndPeople()
+
+      as(globalAdmin)
+      const res = await request(app.getHttpServer())
+        .get(`/business-roles/${roleId}/members`)
+        .expect(200)
+
+      expect(res.body).toMatchObject({ roleId, total: 0, truncated: false })
+      expect(res.body.members).toEqual([])
+      expect(res.body.scanned).toBeGreaterThan(0)
+    })
+
+    /** A pure read: membership DESCRIBES access, it does not confer it. */
+    it('is readable by an auditor, who holds business_role:read and no manage', async () => {
+      const { roleId, jobTitle, groupId } = await seedRoleAndPeople()
+      await goLive(roleId, jobTitle, groupId)
+
+      const auditor = await makeActiveUser('auditor')
+      as(auditor)
+      await request(app.getHttpServer()).get(`/business-roles/${roleId}/members`).expect(200)
+    })
+
+    it('404s for a role that does not exist', async () => {
+      as(globalAdmin)
+      await request(app.getHttpServer())
+        .get('/business-roles/00000000-0000-0000-0000-000000000000/members')
+        .expect(404)
+    })
+  })
 })

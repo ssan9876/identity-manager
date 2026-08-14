@@ -231,6 +231,145 @@ export class OrgUnitsRepository {
    * org-units.repository.spec.ts's existing "rejects two siblings" test).
    * Anything unrecognized is rethrown verbatim, never swallowed.
    */
+  /**
+   * Rename an org unit, carrying its whole subtree with it.
+   *
+   * `path` is DERIVED from the name (`parent.path + '.' + toLabel(name)`),
+   * so a rename is not a one-column update: every descendant's path is
+   * prefixed by this unit's, and all of them move together or the tree is
+   * inconsistent. The rewrite is one `UPDATE` over `path <@ oldPath`, not a
+   * walk, so it is atomic and does not depend on how deep the subtree goes.
+   *
+   * SECURITY, and the reason this is not a cosmetic operation: scoped grants
+   * are resolved BY PATH (`PermissionEngine.scopePathsFor`), so moving a
+   * subtree's paths moves the reach of every grant that was written against
+   * them. The grant rows are keyed on `scope_org_unit_id` and therefore
+   * follow the unit automatically — which is the correct behaviour and worth
+   * stating, because the alternative (paths that no longer match) would
+   * silently strip administrators of access they still hold.
+   *
+   * Descendants are rewritten BEFORE the unit itself. `org_units_path_unique`
+   * is a plain (non-deferrable) unique index, so every intermediate state has
+   * to be legal: descendants move to `newPath.*`, which nothing occupies yet
+   * because `newPath` itself does not exist until the second statement. A
+   * name colliding with a sibling fails on that second statement and takes
+   * the whole transaction with it.
+   *
+   * A rename that does not change the LABEL (different capitalisation,
+   * punctuation the slug drops) touches no path at all — `toLabel('Sales')`
+   * and `toLabel('sales!')` are both `sales`, and rewriting a subtree to the
+   * value it already has would be a lot of write amplification for nothing.
+   */
+  async rename(
+    id: string,
+    name: string,
+    db: NodePgDatabase<typeof schema> = this.db,
+  ): Promise<OrgUnit> {
+    const current = await this.findById(id, db)
+    if (current === null) {
+      throw new NotFoundError('org unit', id)
+    }
+
+    const label = toLabel(name)
+    const segments = current.path.split('.')
+    const newPath = segments.length === 1 ? label : [...segments.slice(0, -1), label].join('.')
+
+    try {
+      if (newPath !== current.path) {
+        // Strict descendants only. `subpath(path, nlevel(old))` on the unit
+        // itself would be an empty ltree, and `newPath || ''` is not a value.
+        await db.execute(sql`
+          UPDATE org_units
+          SET path = ${newPath}::ltree || subpath(path, nlevel(${current.path}::ltree)),
+              updated_at = now()
+          WHERE path <@ ${current.path}::ltree AND path <> ${current.path}::ltree
+        `)
+      }
+
+      const [row] = await db
+        .update(orgUnits)
+        .set({ name, path: newPath, updatedAt: new Date() })
+        .where(eq(orgUnits.id, id))
+        .returning()
+
+      return row as OrgUnit
+    } catch (cause) {
+      this.translateWriteError(cause, name)
+    }
+  }
+
+  /**
+   * Delete an org unit, and ONLY if nothing depends on it.
+   *
+   * Every blocker is counted and named here rather than left to the foreign
+   * keys, for two reasons. The lesser one is the message: `restrict` gives a
+   * constraint name, and an administrator needs to be told "seven people are
+   * still filed here", not `org_units_parent_id_fkey`.
+   *
+   * The greater one is that ONE of the four references does not restrict at
+   * all. `role_assignments.scope_org_unit_id` is ON DELETE CASCADE, so a
+   * delete that reached the database would silently revoke every scoped grant
+   * pointing at this unit -- no audit row, no refusal, no way to discover it
+   * afterwards except by noticing that an administrator has quietly stopped
+   * being able to do their job. That is exactly the kind of write this system
+   * refuses to make implicitly, so a unit with scoped grants against it
+   * cannot be deleted until they are dealt with deliberately.
+   *
+   * A ROOT unit is never deletable: an organization "owns exactly one root
+   * org unit" (Task 1's design), and removing it would leave a tenant with
+   * nowhere to put anybody.
+   */
+  async deleteIfUnused(id: string, db: NodePgDatabase<typeof schema> = this.db): Promise<void> {
+    const current = await this.findById(id, db)
+    if (current === null) {
+      throw new NotFoundError('org unit', id)
+    }
+
+    if (current.parentId === null) {
+      throw new ConflictError(
+        `"${current.name}" is a root org unit and cannot be deleted — every organization owns ` +
+          'exactly one, and it is where a tenant with nowhere else to file someone puts them',
+      )
+    }
+
+    const { rows } = (await db.execute(sql`
+      SELECT
+        (SELECT count(*) FROM org_units WHERE parent_id = ${id}) AS children,
+        (SELECT count(*) FROM users WHERE org_unit_id = ${id}) AS people,
+        (SELECT count(*) FROM groups WHERE org_unit_id = ${id}) AS groups,
+        (SELECT count(*) FROM role_assignments WHERE scope_org_unit_id = ${id}) AS grants
+    `)) as unknown as {
+      rows: [{ children: string; people: string; groups: string; grants: string }]
+    }
+
+    const counts = rows[0]
+    const blockers: string[] = []
+    const child = Number(counts.children)
+    const people = Number(counts.people)
+    const groups = Number(counts.groups)
+    const grants = Number(counts.grants)
+
+    if (child > 0) blockers.push(`${child} child org unit${child === 1 ? '' : 's'}`)
+    if (people > 0) blockers.push(`${people} ${people === 1 ? 'person' : 'people'}`)
+    if (groups > 0) blockers.push(`${groups} group${groups === 1 ? '' : 's'}`)
+    if (grants > 0) {
+      // The cascade one. Named last and worded as a warning rather than a
+      // count, because unlike the others this would not have stopped itself.
+      blockers.push(
+        `${grants} scoped role assignment${grants === 1 ? '' : 's'} (deleting the unit would ` +
+          'revoke them silently -- the foreign key cascades)',
+      )
+    }
+
+    if (blockers.length > 0) {
+      throw new ConflictError(
+        `"${current.name}" still has ${blockers.join(', ')} — move or remove them first`,
+      )
+    }
+
+    await db.delete(orgUnits).where(eq(orgUnits.id, id))
+  }
+
   private translateWriteError(cause: unknown, name: string): never {
     const pgError = cause as { code?: string; constraint?: string }
 

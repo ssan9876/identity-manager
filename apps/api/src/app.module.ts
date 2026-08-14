@@ -41,6 +41,8 @@ import { GroupsRepository } from './groups/groups.repository'
 import { HealthController } from './health/health.controller'
 import { ReadinessController } from './health/readiness.controller'
 import { HrSourcesController } from './hr/hr-sources.controller'
+import { JmlRulesController } from './jml/jml-rules.controller'
+import { JmlRulesRepository } from './jml/jml-rules.repository'
 import { HrSourcesRepository } from './hr/hr-sources.repository'
 import { HrSyncService } from './hr/hr-sync.service'
 import { IMPORTS_CONFIG, ImportsController, type ImportsConfig } from './imports/imports.controller'
@@ -90,6 +92,7 @@ import { UsersRepository } from './users/users.repository'
     // only, like SelfServiceController — see guard-coverage.spec.ts).
     AccessRequestsController,
     OutboxController,
+    JmlRulesController,
     AttributeDefinitionsController,
     AuditController,
     // Milestone 14, Task 9: the connector admin console's API surface —
@@ -234,6 +237,7 @@ import { UsersRepository } from './users/users.repository'
     // one gets) — safe to register unconditionally, same property as
     // KeycloakAdminClient below.
     HrSourcesRepository,
+    JmlRulesRepository,
     HrSyncService,
     OutboxWriter,
     // Milestone 4, Task 4: registering these three constructs (never
