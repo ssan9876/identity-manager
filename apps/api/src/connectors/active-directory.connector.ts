@@ -6,9 +6,11 @@ import type {
   ConnectorHealth,
   ConnectorOperation,
   DesiredGroup,
+  DesiredOrgUnit,
   DesiredUser,
   DirectoryConnector,
   DirectoryGroupConnector,
+  DirectoryOrgUnitConnector,
 } from './connector'
 import { resolveSecret } from './secrets'
 
@@ -356,7 +358,9 @@ function objectGuidFilter(externalId: string): EqualityFilter {
  * task's own instruction to verify rather than assume).
  */
 @Injectable()
-export class ActiveDirectoryConnector implements DirectoryConnector, DirectoryGroupConnector {
+export class ActiveDirectoryConnector
+  implements DirectoryConnector, DirectoryGroupConnector, DirectoryOrgUnitConnector
+{
   private rawConfig: Record<string, unknown> = {}
   private client: Client | null = null
   private boundConfig: ActiveDirectoryConnectorConfig | null = null
@@ -803,6 +807,90 @@ export class ActiveDirectoryConnector implements DirectoryConnector, DirectoryGr
   private computeTargetDn(config: ActiveDirectoryConnectorConfig, desired: DesiredUser): string {
     const ouDn = this.ouDnForPath(config, desired.orgUnitPath ?? [])
     return `CN=${escapeDnValue(desired.username)},${ouDn}`
+  }
+
+  /**
+   * The org-unit half of this connector — Active Directory is the only
+   * target in the catalog with a native OU tree, which is why this
+   * capability exists as its own interface (see `DirectoryOrgUnitConnector`).
+   *
+   * Both methods reuse `ouDnForPath`/`ensureOrgUnitChain` rather than
+   * re-deriving a DN, so an org unit created ahead of its people lands at
+   * EXACTLY the DN `apply()` would later place a user into. Two code paths
+   * computing the same placement independently is how a directory ends up
+   * with `OU=sales` and `OU=Sales` side by side.
+   */
+  async planOrgUnit(desired: DesiredOrgUnit): Promise<ConnectorOperation[]> {
+    // An empty path is the tree's own root, which IS `baseDN` — it already
+    // exists by definition and there is nothing to create.
+    if (desired.path.length === 0) return []
+
+    return this.withClient(async (client, config) => {
+      const targetDn = this.ouDnForPath(config, desired.path)
+
+      if (desired.previousPath !== undefined && desired.previousPath.length > 0) {
+        const previousDn = this.ouDnForPath(config, desired.previousPath)
+        if (!dnEquals(previousDn, targetDn) && (await this.organizationalUnitExists(client, previousDn))) {
+          return [{ kind: 'update' as const, description: `move ${previousDn} to ${targetDn}` }]
+        }
+      }
+
+      const operations: ConnectorOperation[] = []
+      let parentDn = config.baseDN
+      for (const label of desired.path) {
+        const dn = `OU=${escapeDnValue(label)},${parentDn}`
+        if (!(await this.organizationalUnitExists(client, dn))) {
+          operations.push({ kind: 'create', description: `create organizational unit ${dn}` })
+        }
+        parentDn = dn
+      }
+      return operations
+    })
+  }
+
+  async applyOrgUnit(desired: DesiredOrgUnit): Promise<void> {
+    if (desired.path.length === 0) return
+
+    await this.withClient(async (client, config) => {
+      const targetDn = this.ouDnForPath(config, desired.path)
+
+      // RENAME: one move of one node, not a create-and-abandon.
+      //
+      // This system rewrites the path of the unit AND every descendant,
+      // because its tree is a materialised ltree path. AD's tree is real, so
+      // the identical change is a single `modifyDN` on this node and every
+      // child moves with it atomically — the same property `applyGroup`
+      // already relies on for nested groups.
+      //
+      // Unlike a GROUP rename, no companion attribute write is needed here.
+      // A group's `sAMAccountName` is a separate attribute AD never keeps in
+      // step with the DN, which is the bug that path had to fix; an OU's
+      // naming attribute IS `ou`, so `modifyDN` updates it as part of
+      // changing the RDN. Writing `ou` separately would be redundant at best.
+      if (desired.previousPath !== undefined && desired.previousPath.length > 0) {
+        const previousDn = this.ouDnForPath(config, desired.previousPath)
+        if (!dnEquals(previousDn, targetDn) && (await this.organizationalUnitExists(client, previousDn))) {
+          // The DESTINATION's ancestors first: nothing may move into a
+          // container that does not exist yet. `slice(0, -1)` is the parent
+          // chain — the node itself is what is being moved, not created.
+          await this.ensureOrgUnitChain(client, config, desired.path.slice(0, -1))
+          await client.modifyDN(previousDn, targetDn)
+
+          // The per-connection cache now holds a DN that no longer exists
+          // and is missing the one that does. Left stale, a later user sync
+          // on this same connection would "confirm" a container that moved.
+          this.knownOrgUnitDns.delete(previousDn)
+          this.knownOrgUnitDns.add(targetDn)
+          return
+        }
+        // Nothing at the old DN — fall through and create at the new one.
+        // That is the right answer for a rename applied twice (already
+        // moved) and for one whose target was never created in the first
+        // place, and it is why this method is safe to re-run.
+      }
+
+      await this.ensureOrgUnitChain(client, config, desired.path)
+    })
   }
 
   /**

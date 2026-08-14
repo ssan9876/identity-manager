@@ -45,5 +45,22 @@ export function targetsForAggregate(
   if (aggregateType === 'organization') {
     return enabledTargets.filter((target) => target === 'keycloak')
   }
+  // An org unit is a container in a directory TREE, and Active Directory is
+  // the only target in the catalog that has one. Keycloak has realms and
+  // groups but no OU; Entra and Google have no OU-equivalent either (the
+  // same reason `DesiredUser.orgUnitPath` carries an AD-only gate); the mail
+  // server addresses principals by OUR user id and knows nothing about
+  // structure. So this narrows to the targets that can actually act, on
+  // exactly the reasoning the `organization` branch above uses — and it is
+  // what stops an org-unit event being enqueued for a directory that would
+  // fail it, retry it with backoff, and dead-letter it as noise an operator
+  // has to learn to ignore.
+  //
+  // Before this branch existed the default below sent org-unit events to
+  // every directory, and `SyncWorker` no-opped every one of them. That was
+  // harmless only for as long as nothing acted on them.
+  if (aggregateType === 'org_unit') {
+    return enabledTargets.filter((target) => target === 'active_directory')
+  }
   return enabledTargets.filter((target) => target !== 'keycloak_sso')
 }

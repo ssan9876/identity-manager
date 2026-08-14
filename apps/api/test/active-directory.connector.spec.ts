@@ -860,4 +860,128 @@ describe('ActiveDirectoryConnector (Milestone 11, Task 5)', () => {
       expect(cResult.searchEntries).toHaveLength(1)
     }, 60_000)
   })
+
+  // =========================================================================
+  // The org-unit capability (DirectoryOrgUnitConnector)
+  // =========================================================================
+
+  /**
+   * Before this existed an org unit reached AD only when the first PERSON in
+   * it synced, because `apply()` creates a user's missing OU chain on the way
+   * to placing them. An empty unit never appeared at all, so an administrator
+   * laying out structure ahead of the people watched it silently not happen.
+   */
+  describe('applyOrgUnit', () => {
+    async function ouExists(dn: string): Promise<boolean> {
+      const client = freshClient()
+      try {
+        await client.bind(ad.adminDN, ad.adminPassword)
+        const { searchEntries } = await client.search(dn, { scope: 'base', filter: '(objectClass=organizationalUnit)' })
+        return searchEntries.length === 1
+      } catch {
+        return false
+      } finally {
+        await client.unbind().catch(() => undefined)
+      }
+    }
+
+    it('creates the whole missing chain, with nobody in it', async () => {
+      const connector = makeConnector({ createMissingOrgUnits: true })
+      const top = `ouchain-${randomUUID().slice(0, 8)}`
+      const mid = 'emea'
+      const leaf = 'sales'
+
+      await connector.applyOrgUnit({ id: randomUUID(), path: [top, mid, leaf] })
+
+      expect(await ouExists(`OU=${top},${ad.baseDN}`)).toBe(true)
+      expect(await ouExists(`OU=${mid},OU=${top},${ad.baseDN}`)).toBe(true)
+      expect(await ouExists(`OU=${leaf},OU=${mid},OU=${top},${ad.baseDN}`)).toBe(true)
+    })
+
+    /** The reconciler re-applies freely; a sweep must not accumulate anything. */
+    it('is idempotent — applying the same unit twice changes nothing', async () => {
+      const connector = makeConnector({ createMissingOrgUnits: true })
+      const top = `ouidem-${randomUUID().slice(0, 8)}`
+
+      await connector.applyOrgUnit({ id: randomUUID(), path: [top] })
+      await connector.applyOrgUnit({ id: randomUUID(), path: [top] })
+
+      const client = freshClient()
+      try {
+        await client.bind(ad.adminDN, ad.adminPassword)
+        const { searchEntries } = await client.search(ad.baseDN, {
+          scope: 'one',
+          filter: `(&(objectClass=organizationalUnit)(ou=${top}))`,
+        })
+        expect(searchEntries).toHaveLength(1)
+      } finally {
+        await client.unbind().catch(() => undefined)
+      }
+    })
+
+    /**
+     * THE property this capability exists for. This system rewrites the path
+     * of the unit AND every descendant, because its tree is a materialised
+     * ltree path. AD's tree is real, so the same change is ONE move of ONE
+     * node — and every child comes with it, WITHOUT being re-synced.
+     */
+    it('a rename MOVES the existing OU, carrying its users with it', async () => {
+      const connector = makeConnector({ createMissingOrgUnits: true })
+      const before = `ourename-a-${randomUUID().slice(0, 8)}`
+      const after = `ourename-b-${randomUUID().slice(0, 8)}`
+
+      // A person filed under the original OU.
+      const person = baseDesired({ enabled: true, orgUnitPath: [before] })
+      const { externalId } = await connector.apply(person)
+
+      await connector.applyOrgUnit({ id: randomUUID(), path: [after], previousPath: [before] })
+
+      // The OU moved, rather than a second one appearing beside it.
+      expect(await ouExists(`OU=${after},${ad.baseDN}`)).toBe(true)
+      expect(await ouExists(`OU=${before},${ad.baseDN}`)).toBe(false)
+
+      // And the user came with it — same object, new DN, never re-synced.
+      const byGuid = await searchByGuid(externalId, ['distinguishedName'])
+      expect(byGuid.searchEntries).toHaveLength(1)
+      expect(String((byGuid.searchEntries[0] as unknown as Record<string, unknown>).dn).toLowerCase()).toBe(
+        `cn=${person.username},ou=${after},${ad.baseDN}`.toLowerCase(),
+      )
+    })
+
+    /**
+     * A retried event, or one whose unit was never created in the target,
+     * must not fail — the reconciler applies the same event more than once
+     * as a matter of course.
+     */
+    it('falls through to a create when nothing is at the previous path', async () => {
+      const connector = makeConnector({ createMissingOrgUnits: true })
+      const after = `ouorphan-${randomUUID().slice(0, 8)}`
+
+      await connector.applyOrgUnit({
+        id: randomUUID(),
+        path: [after],
+        previousPath: [`never-existed-${randomUUID().slice(0, 8)}`],
+      })
+
+      expect(await ouExists(`OU=${after},${ad.baseDN}`)).toBe(true)
+    })
+
+    /** The tree's own root IS baseDN — it exists by definition. */
+    it('does nothing at all for an empty path', async () => {
+      const connector = makeConnector({ createMissingOrgUnits: true })
+      await expect(connector.applyOrgUnit({ id: randomUUID(), path: [] })).resolves.toBeUndefined()
+    })
+
+    /** Same contract as `plan()` — dry-runnable, writes nothing (design doc decision 7). */
+    it('planOrgUnit reports the creates without performing them', async () => {
+      const connector = makeConnector({ createMissingOrgUnits: true })
+      const top = `ouplan-${randomUUID().slice(0, 8)}`
+
+      const operations = await connector.planOrgUnit({ id: randomUUID(), path: [top, 'child'] })
+
+      expect(operations.map((o) => o.kind)).toEqual(['create', 'create'])
+      expect(operations[0]?.description).toContain(`OU=${top},${ad.baseDN}`)
+      expect(await ouExists(`OU=${top},${ad.baseDN}`)).toBe(false)
+    })
+  })
 })

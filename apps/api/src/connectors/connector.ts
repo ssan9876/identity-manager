@@ -459,6 +459,77 @@ export interface DirectoryGroupConnector {
   applyGroup(desired: DesiredGroup): Promise<{ externalId: string }>
 }
 
+/**
+ * One org unit's DESIRED placement in a target that has a native concept of
+ * one. Today that is Active Directory alone: Keycloak, Entra and Google have
+ * no OU tree, the mail server addresses principals by OUR user id, and
+ * `keycloak_sso` speaks only about applications — which is why this is a
+ * SEPARATE capability interface rather than two more methods on
+ * `DirectoryConnector`, exactly as `DirectoryGroupConnector` is.
+ * `ConnectorRegistry.resolveOrgUnitConnector` is how a caller discovers, per
+ * target, whether the capability exists at all; a target without one simply
+ * never sees an org-unit event, because `targetsForAggregate` does not fan
+ * one out to it.
+ *
+ * WHY THIS EXISTS AT ALL, given that `ActiveDirectoryConnector.apply()`
+ * already creates a user's missing OU chain on the way to placing them: that
+ * path only runs when a PERSON syncs, so an org unit created in this system
+ * did not exist in AD until somebody was filed under it, and an empty unit
+ * never appeared at all. An administrator building next quarter's structure
+ * ahead of the people saw their work silently not happen.
+ */
+export interface DesiredOrgUnit {
+  /** This system's own org-unit id. Never sent to the target — for logging and correlation only. */
+  id: string
+  /**
+   * Root-to-leaf labels, the SAME shape and source as
+   * `DesiredUser.orgUnitPath`, so both paths through a connector compute the
+   * identical DN for the identical unit. A connector must not re-derive this
+   * from a name.
+   */
+  path: readonly string[]
+  /**
+   * Where this unit lived BEFORE this event, present only for a rename.
+   *
+   * A rename in this system rewrites the unit's path and every descendant's
+   * (paths are derived from names), but in a directory whose tree is real
+   * rather than materialised, the same change is ONE move of ONE node:
+   * renaming the parent carries every child with it atomically. So a
+   * connector given this should MOVE the existing node rather than create a
+   * second one and leave the first behind — which is the difference between
+   * a directory that tracks this one and a directory that slowly fills with
+   * abandoned containers.
+   */
+  previousPath?: readonly string[]
+}
+
+/**
+ * A target that can represent this system's org-unit tree natively.
+ *
+ * DELIBERATELY NO `deleteOrgUnit`, and for a stronger reason than
+ * `DirectoryConnector`'s missing `delete`. Removing a container removes
+ * whatever is inside it, and this system cannot know what that is: the OU
+ * may hold service accounts, computers, contacts or nested OUs that were
+ * never ours and that we have no record of. Our own delete route already
+ * refuses unless the unit is empty HERE — which says nothing about whether
+ * it is empty THERE. So an org unit deleted in this system is left standing
+ * in the target for a human to remove, and the audit row is the record that
+ * it should be.
+ */
+export interface DirectoryOrgUnitConnector {
+  /** The operations `applyOrgUnit(desired)` WOULD run, writing nothing — same contract as `DirectoryConnector.plan`. */
+  planOrgUnit(desired: DesiredOrgUnit): Promise<ConnectorOperation[]>
+
+  /**
+   * Asserts that this org unit exists at `path` in the target, creating any
+   * missing ancestors, and MOVING it from `previousPath` when one is given
+   * and something is actually there. Idempotent: applying an unchanged unit
+   * twice must be a no-op the second time, because the reconciler re-applies
+   * freely and an operator re-running a sweep must not accumulate anything.
+   */
+  applyOrgUnit(desired: DesiredOrgUnit): Promise<void>
+}
+
 export interface DirectoryConnector {
   /** The operations `apply(desired)` WOULD run, writing nothing to the target. Every connector is dry-runnable (design doc decision 7). */
   plan(desired: DesiredUser): Promise<ConnectorOperation[]>

@@ -236,7 +236,17 @@ export class OrgUnitsController {
         aggregateType: 'org_unit',
         aggregateId: id,
         eventType: 'updated',
-        payload: { ...snapshotOrgUnit(renamed), action: 'org_unit:rename' },
+        // `previousPath` rides on the event because it cannot be recovered
+        // from anywhere else: the row now holds only where the unit ended
+        // up. A target whose tree is real rather than materialised needs the
+        // old location to MOVE the existing container — without it the only
+        // available action is creating a second one beside the first and
+        // leaving the original standing.
+        payload: {
+          ...snapshotOrgUnit(renamed),
+          previousPath: current.path,
+          action: 'org_unit:rename',
+        },
       })
 
       return renamed
