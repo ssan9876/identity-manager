@@ -26,17 +26,31 @@
 > landed *after* the audit plan was written, making it the one dimension the system
 > grew and never had examined.
 >
-> **Two things this does not mean.** The **~twenty unverified findings** figure was
-> **not re-counted** in the sixth pass and remains an upper bound carried forward
-> from a record that has itself drifted. And the sixth pass deliberately did not
-> audit read-side exposure, because [constraint 12](#what-the-system-claims-to-uphold)
-> does not claim it — administrators are platform operators and a global grant spans
-> every organization by design. **A tenant-facing API would be a second
-> authorization model and would need its own pass.**
+> **The backlog has been re-counted.** The "~twenty unverified findings" figure was
+> quoted for months as an upper bound nobody had checked. It was re-counted on
+> 2026-08-14 against the code rather than against a ledger
+> ([the addendum](archive/audits/carried-findings-verification.md)): **six had since
+> been closed**, leaving **fourteen**, of which **four are MEDIUM** and the rest are
+> LOW or recorded decisions that were never findings.
 >
-> **What that adds up to:** the planned dimensions are done, and the remaining risk
-> is the unverified backlog rather than an unexamined direction. The full record is
-> in [`archive/audits/`](archive/audits/).
+> **Nothing HIGH or CRITICAL is open.** The one HIGH-if-opened item was the ReDoS
+> gate on `validationRules.pattern`; it is shut, and was confirmed shut before the
+> JML rules API was built on top of it.
+>
+> **The four MEDIUM findings**, so they are not buried: `SEC-L2` (a 409 on
+> `POST /users` discloses another org unit's email/username — the fix landed only on
+> the import path), `SEC-L5`, `INT-M7` (`syncState` derivation is serial and
+> O(unsettled aggregates)), and the open half of `CAR-system-actor` (a reconcile's
+> per-entity writes are not permission-checked, scope-narrowed, audited or outboxed,
+> so constraint 7 does not hold for that route).
+>
+> **One thing this does not cover.** The sixth pass deliberately did not audit
+> read-side exposure, because [constraint 12](#what-the-system-claims-to-uphold) does
+> not claim it — administrators are platform operators and a global grant spans every
+> organization by design. **A tenant-facing API would be a second authorization model
+> and would need its own pass.**
+>
+> The full record is in [`archive/audits/`](archive/audits/).
 
 ## What the system claims to uphold
 

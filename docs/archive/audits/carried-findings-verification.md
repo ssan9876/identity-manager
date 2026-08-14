@@ -46,6 +46,69 @@ claim, and the propagation-flag claim, both broken by subsystems built after the
 
 ---
 
+## RE-COUNT, 2026-08-14 — the "~20 still holds" figure is stale
+
+The table below was accurate when it was written and has been quoted ever
+since as "roughly twenty unverified findings", including by
+`docs/12-security.md`, `docs/05-installation.md` and `docs/14-roadmap.md`.
+Every one of those said it was an upper bound carried forward without
+re-counting. This is the re-count the roadmap asked for.
+
+**Six of the twenty have since been closed.** Verified by reading the code
+today, not by trusting a ledger — `TODO.md` has itself been wrong about
+closures before, by its own admission.
+
+| ID | Was | Now | Evidence in the tree today |
+|---|---|---|---|
+| `INT-M3` | Still holds (MEDIUM) | **Closed** | `ReconciliationJob.detectKeycloakOnly()` pages the realm and reports `keycloakOnlyUsernames` |
+| `SEC-M1` | Still holds (MEDIUM) | **Closed** | `attribute_definitions.sensitive` (migration `0026`); flagged values withheld from audit snapshots, withheld keys named in `attributesRedacted` |
+| `SEC-L6` | No longer unreachable (MEDIUM) | **Closed** | `acknowledgedExportCount` is required on both write paths and re-derived inside the writing transaction (8 references) |
+| `INJ-INFO` | Still holds (INFO) | **Closed** | `simulate()` now refuses a rule whose `trigger` is not in `KNOWN_TRIGGERS`, the same check `matchRules` makes |
+| `CAR-ReDoS` | Still holds (HIGH-if-opened) | **Closed** | `new RegExp` no longer appears in `src/` outside comments; `validationRules.pattern` is replaced by the closed `attribute-formats.ts` vocabulary, asserted by a static source scan |
+| `INJ-M-1` / `INT-M6` | Fixed, widened default (MEDIUM) | **Closed** | Cap is 1,000 (`b36e7ad`); measured at ~8.5 s worst case, and the console mirror that still said 5,000 was fixed |
+
+**`CAR-system-actor` is half-closed** and stays on the list. The acting
+`userId` is now threaded into `TargetReconciliationJob.auditOverride`, so a
+`connector:reconcile-override` row names a human. What remains open is the
+larger half: the per-entity writes a reconcile performs are still not
+permission-checked, scope-narrowed, audited or outboxed, so security
+constraint 7 does not hold for that route.
+
+### The current count
+
+**Fourteen still hold**, of which:
+
+- **MEDIUM — 4:** `SEC-L2` (409 discloses another org unit's email/username —
+  the fix landed only on the import path), `SEC-L5`, `INT-M7`,
+  `CAR-system-actor` (half).
+- **LOW — 6:** `AUTHZ-M-1`, `AUTHZ-L-4`, `INJ-H-1`, `INJ-H-2`, `INJ-L-1`,
+  `INT-H4`, `INT-L2`, `SEC-L1`, `SEC-L4`, `SEC-L7`, `CAR-group-rename`,
+  `CAR-jml-triggers` — counted as a band rather than individually, because
+  several are "the pattern recurs in one new place" rather than a distinct
+  defect.
+- **INFO / deliberate — the remainder:** `AUTHZ-L-1`, `INT-L1`, `SEC-L3`,
+  `CAR-username`, `CAR-no-suspend`, `CAR-self-merge`, `CAR-self-editable`,
+  `CAR-jml-revocation`, `CAR-import-uuid`. These are recorded decisions, not
+  a backlog.
+
+**Nothing HIGH or CRITICAL remains open.** `CAR-ReDoS` was the only
+HIGH-if-opened item and it is closed; the gate it guarded was confirmed shut
+before the JML rules API was built on top of it.
+
+The honest summary is therefore: **four MEDIUM findings and a band of LOW
+ones**, none of them structural, plus a set of deliberate decisions that were
+never findings. That is a materially different picture from "roughly twenty
+unverified findings" and should be quoted instead of it.
+
+### What this re-count did NOT do
+
+It did not re-verify the findings that remain open. Each was read closely
+enough to establish whether the closure claim was true, not to re-derive the
+original finding. A finding marked "still holds" here still means "still held
+when it was last examined".
+
+---
+
 ## Summary table
 
 | ID | Dimension | Claimed state | Verified state | Severity now |
