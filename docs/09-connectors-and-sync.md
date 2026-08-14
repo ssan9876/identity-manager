@@ -178,6 +178,52 @@ LDAPS via `ldapts`. Configuration:
 
 Defaults: 5s connect timeout, 15s operation timeout.
 
+### What the bind account actually needs
+
+**Not Domain Admins.** The connector creates and updates two object classes and
+nothing else, so delegate exactly those. This was verified against a real
+Server 2022 domain controller on 2026-08-14: with the delegation below and the
+account removed from Domain Admins, it still created an OU and a user inside
+it; without any delegation it fails with `INSUFF_ACCESS_RIGHTS` (LDAP 0x32).
+
+```powershell
+$dn   = (Get-ADDomain).DistinguishedName        # or the ONE subtree you delegate
+$sid  = New-Object System.Security.Principal.SecurityIdentifier (Get-ADUser svc-idm-sync).SID
+$ou   = [GUID]'bf967aa5-0de6-11d0-a285-00aa003049e2'   # organizationalUnit
+$user = [GUID]'bf967aba-0de6-11d0-a285-00aa003049e2'   # user
+$any  = [GUID]'00000000-0000-0000-0000-000000000000'
+
+$acl = Get-Acl "AD:$dn"
+foreach ($class in @($ou, $user)) {
+  # create/delete that class anywhere beneath $dn ...
+  $acl.AddAccessRule((New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
+    $sid, 'CreateChild, DeleteChild', 'Allow', $class, 'All')))
+  # ... and manage the objects once they exist
+  $acl.AddAccessRule((New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
+    $sid, 'GenericAll', 'Allow', $any, 'Descendents', $class)))
+}
+Set-Acl -Path "AD:$dn" -AclObject $acl
+```
+
+**Scope `$dn` to the subtree the connector owns**, not the domain root, unless it
+genuinely manages the whole directory. The connector only ever writes beneath the
+OU path derived from `baseDN` plus a user's org unit, so a narrower `$dn` costs
+nothing.
+
+**`dsacls` is a trap here.** `dsacls <dn> /I:T /G "DOMAIN\svc:GA"` reports
+success and does not necessarily take effect — it did not, on the DC this was
+developed against, and the resulting `INSUFF_ACCESS_RIGHTS` looks identical to
+having granted nothing. Set the ACL and then **prove it** by binding as the
+service account and creating an object; a delegation you have not exercised is
+a delegation you do not have.
+
+**`DeleteChild` is granted but never used.** The connector has no delete for
+users (a leaver is disabled), and `DirectoryOrgUnitConnector` deliberately has
+no `deleteOrgUnit` — removing a container removes whatever is inside it, and
+this system cannot know what that is. It is in the grant only so that a future
+cleanup tool does not need the ACL changed; drop it if you would rather it were
+impossible.
+
 **Native group nesting.** A group-to-group `member` edge can only be written once the
 child group has its own AD DN to point at — which requires knowing whether the child has
 ever successfully synced. `external_group_identities` is the only place that fact lives,
