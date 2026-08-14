@@ -13,6 +13,7 @@ import { GroupsProvider } from '../groups/GroupsContext'
 import { OrgUnitsProvider } from '../org-units/OrgUnitsContext'
 import { NAV_GROUP_LABELS, NAV_GROUP_ORDER, NAV_ITEMS } from './nav-items'
 import { useSelfPermissions, type Action } from './permissions'
+import { OrganizationSwitcher } from '../organizations/OrganizationSwitcher'
 import { ThemeToggle } from './ThemeToggle'
 import { useNavMode } from './useMediaQuery'
 import './AppShell.css'
@@ -343,6 +344,7 @@ export default function AppShell() {
           </form>
 
           <div className="topbar__identity">
+            <OrganizationSwitcher />
             <ThemeToggle />
             {/* Beside My Profile, not in the permission-gated left nav: the
                 approvals inbox belongs to every authenticated user (an

@@ -1,0 +1,22 @@
+/* The tenant selector — see OrganizationSwitcher.tsx for why it is often absent. */
+.org-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.org-switcher__label {
+  font-size: var(--font-size-sm, 0.875rem);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.org-switcher__select {
+  font: inherit;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-2);
+  max-width: 14rem;
+}

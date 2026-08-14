@@ -98,6 +98,7 @@ user-returning routes respond with the same shape — the user record plus a der
 | `limit`, `offset` | Standard pagination |
 | `status` | `pending` · `active` · `suspended` · `deactivated`. **Omitted excludes deactivated users.** |
 | `orgUnitId` | UUID |
+| `organizationId` | UUID — restrict to one tenant. Applied in the same predicate that computes `total`, never by filtering the returned page. A malformed value is a **400**, never a silently-unfiltered result: a switcher whose narrowing is dropped shows one tenant's directory under another's name. |
 | `search` | Matches name, username or email. Empty/whitespace means "no search", never a 400. Max 255 chars. |
 | `ids` | Comma-separated UUIDs, max 200. Resolves a known set in one round trip. `ids=` (empty) means "match nothing", **never** "no filter". |
 
@@ -256,6 +257,11 @@ scope and rank checks described in [08 — Authorization](08-authorization.md#th
 ### `GET /org-units` — `org_unit:read`
 
 Paginated, scope-narrowed.
+
+| Query | Notes |
+|---|---|
+| `limit`, `offset` | Standard pagination |
+| `organizationId` | UUID — restrict to one tenant, for the console's organization switcher. **Independent of scope**: scope decides which subtrees you may see at all, tenant decides which one you are currently looking at, and both apply. Narrows `items` and `total` together; a malformed value is a **400**. |
 
 ### `GET /org-units/:id` — `org_unit:read`
 

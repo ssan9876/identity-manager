@@ -33,6 +33,7 @@ import SelfServicePage from './self-service/SelfServicePage'
 import AppShell from './shell/AppShell'
 import { BRAND, BrandLockup, BrandMark } from './brand'
 import { keycloakIssuer } from './auth/oidc-config'
+import { OrganizationsProvider } from './organizations/OrganizationContext'
 import { ToastProvider } from './shell/ToastProvider'
 import './SignInGate.css'
 
@@ -201,6 +202,10 @@ export default function App() {
 
   return (
     <ToastProvider>
+      {/* Outside <Routes>, like ToastProvider: the selected tenant applies
+          across People, Org units and Groups at once and must survive
+          navigation between them. */}
+      <OrganizationsProvider>
       <Routes>
         <Route element={<AppShell />}>
           <Route path="/" element={<PeopleListPage />} />
@@ -237,6 +242,7 @@ export default function App() {
           <Route path="/approvals" element={<ApprovalsPage />} />
         </Route>
       </Routes>
+      </OrganizationsProvider>
     </ToastProvider>
   )
 }

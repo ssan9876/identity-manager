@@ -194,6 +194,21 @@ export function computeBackoffDelayMs(
 }
 
 /**
+ * `previousPath` off an org-unit rename event's payload, or `undefined`.
+ *
+ * Defensive about shape rather than trusting it: the payload is jsonb read
+ * back out of Postgres, so it is `unknown` in the only sense that matters —
+ * an older row written before this field existed, or a hand-edited one, must
+ * degrade to "no previous path" (create at the new DN) rather than throw and
+ * dead-letter an event that is otherwise perfectly applicable.
+ */
+function readPreviousPath(payload: Record<string, unknown>): string[] | undefined {
+  const raw = payload.previousPath
+  if (typeof raw !== 'string' || raw.length === 0) return undefined
+  return raw.split('.')
+}
+
+/**
  * Drains `outbox_events` into Keycloak — the heart of Milestone 4.
  *
  * THE central design rule, everywhere below: reconcile to DESIRED STATE,
@@ -481,11 +496,7 @@ export class SyncWorker implements OnApplicationShutdown {
         await this.reconcileOrganization(tx, event.aggregateId)
         return
       case 'org_unit':
-        // Org units have no representation in ANY target in this milestone
-        // — no connector's DesiredUser carries anything derived from
-        // org-unit fields — so there is nothing to reconcile, regardless of
-        // target. The event still exists and is drained (marked `done`) so
-        // it does not sit `pending` forever.
+        await this.reconcileOrgUnit(tx, event)
         return
     }
   }
@@ -1219,6 +1230,56 @@ export class SyncWorker implements OnApplicationShutdown {
           updatedAt: new Date(),
         },
       })
+  }
+
+  /**
+   * Assert one org unit's placement in a target that has a native OU tree.
+   *
+   * This used to be a deliberate no-op: no connector represented an org unit,
+   * so the event was drained and nothing happened. The consequence was that
+   * an org unit only ever appeared in Active Directory when the FIRST PERSON
+   * in it synced (`ActiveDirectoryConnector.apply` creates a user's missing
+   * OU chain on the way to placing them), and an empty unit never appeared at
+   * all. An administrator laying out next quarter's structure ahead of the
+   * people watched their work silently not happen.
+   *
+   * `resolveOrgUnitConnector` returning `null` is the ordinary case for every
+   * target that has no OU concept, and means "nothing to do here" rather than
+   * an error — the same contract `resolveGroupConnector` uses. In practice
+   * `targetsForAggregate` has already narrowed org-unit fan-out to
+   * `active_directory`, so this is a second, cheap guard rather than the
+   * primary one: a target enabled between the write and the claim must not
+   * be handed an event it cannot act on.
+   *
+   * `previousPath` comes from the EVENT rather than the database, and has to:
+   * the row now holds only where the unit ended up, and a rename is the one
+   * case where a connector needs to know where it came from in order to MOVE
+   * the existing container instead of creating a second one beside it.
+   */
+  async reconcileOrgUnit(tx: DbHandle, event: ClaimedOutboxEvent): Promise<void> {
+    const orgUnit = await this.orgUnitsRepository.findById(event.aggregateId, tx)
+    if (orgUnit === null) {
+      // Deleted between the write and the claim. Nothing to assert, and
+      // deliberately not an error: this system never deletes an OU in a
+      // target (see DirectoryOrgUnitConnector's own doc comment on why), so
+      // there is no cleanup this could usefully do even if it wanted to.
+      return
+    }
+
+    const connector = await this.connectorRegistry.resolveOrgUnitConnector(
+      event.target,
+      tx,
+      orgUnit.organizationId,
+    )
+    if (connector === null) return
+
+    const previousPath = readPreviousPath(event.payload)
+
+    await connector.applyOrgUnit({
+      id: orgUnit.id,
+      path: orgUnit.path.split('.'),
+      ...(previousPath === undefined ? {} : { previousPath }),
+    })
   }
 
   async reconcileGroup(tx: DbHandle, groupId: string, target: OutboxTarget): Promise<void> {

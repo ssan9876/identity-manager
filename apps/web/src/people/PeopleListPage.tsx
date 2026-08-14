@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent }
 import { useAuth } from 'react-oidc-context'
 import { Link, useSearchParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
+import { useSelectedOrganizationId } from '../organizations/OrganizationContext'
 import { useOrgUnits } from '../org-units/OrgUnitsContext'
 import type { Page } from '../org-units/api'
 import { useSelfPermissions } from '../shell/permissions'
@@ -96,6 +97,7 @@ export default function PeopleListPage() {
   const auth = useAuth()
   const accessToken = auth.user?.access_token
   const orgUnits = useOrgUnits()
+  const selectedOrganizationId = useSelectedOrganizationId()
   const permissions = useSelfPermissions()
   // Hidden, not merely disabled, for a caller `GET /self/permissions`
   // doesn't grant `user:create` to — docs/product-brief.md: "The UI hides what you
@@ -166,6 +168,10 @@ export default function PeopleListPage() {
       search: search || undefined,
       status: status || undefined,
       orgUnitId: orgUnitId || undefined,
+      // The tenant switcher. Sent to the API rather than applied to the
+      // returned page: the API narrows `total` with the same predicate, so
+      // the paginator keeps agreeing with what it can actually show.
+      organizationId: selectedOrganizationId,
     })
       .then((res) => {
         if (cancelled) return
@@ -187,7 +193,10 @@ export default function PeopleListPage() {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessToken, search, status, orgUnitId, offset, retryToken])
+    // `selectedOrganizationId` belongs here: switching tenant must re-fetch,
+    // not quietly leave the previous tenant's people on screen under the new
+    // tenant's name.
+  }, [accessToken, search, status, orgUnitId, offset, retryToken, selectedOrganizationId])
 
   const orgUnitOptions = useMemo(() => {
     if (orgUnits.status !== 'ready') return []

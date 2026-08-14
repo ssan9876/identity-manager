@@ -10,6 +10,7 @@ import type {
   ConnectorTarget,
   DirectoryConnector,
   DirectoryGroupConnector,
+  DirectoryOrgUnitConnector,
   SsoConnector,
 } from './connector'
 import { EchoConnector } from './echo.connector'
@@ -26,6 +27,8 @@ type ConnectorFactory = (config: Record<string, unknown>) => DirectoryConnector
 /** The GROUP-shaped mirror of `ConnectorFactory`, for `resolveGroupConnector` below. */
 type GroupConnectorFactory = (config: Record<string, unknown>) => DirectoryGroupConnector
 type SsoConnectorFactory = (config: Record<string, unknown>) => SsoConnector
+/** The ORG-UNIT-shaped mirror of `ConnectorFactory`, for `resolveOrgUnitConnector` below. */
+type OrgUnitConnectorFactory = (config: Record<string, unknown>) => DirectoryOrgUnitConnector
 
 // Only the targets with a REAL implementation TODAY. Widening this (and the
 // `satisfies` literal in the constructor below) together, in the SAME
@@ -99,6 +102,16 @@ type ImplementedGroupConnectorTarget = 'active_directory' | 'echo'
 // a target belongs to.
 type ImplementedSsoConnectorTarget = 'keycloak_sso'
 
+// The FOURTH interface family, and the narrowest of them: Active Directory
+// is the only target in the catalog with a native organizational-unit tree.
+// Keycloak, Entra and Google have no OU concept, the mail server addresses
+// principals by OUR user id, and `keycloak_sso` speaks only about
+// applications — so a single entry here is the honest catalog, not a stub
+// waiting to be filled in. `targetsForAggregate` narrows org-unit fan-out to
+// match, which is what keeps a target without this capability from ever
+// being handed an event it could only fail.
+type ImplementedOrgUnitConnectorTarget = 'active_directory'
+
 /**
  * Target -> connector. This project has been bitten FOUR times by
  * prototype-chain bypasses (`'constructor' in obj` is `true`, and returns a
@@ -146,6 +159,7 @@ export class ConnectorRegistry {
   private readonly factories: Record<ImplementedConnectorTarget, ConnectorFactory>
   private readonly groupFactories: Record<ImplementedGroupConnectorTarget, GroupConnectorFactory>
   private readonly ssoFactories: Record<ImplementedSsoConnectorTarget, SsoConnectorFactory>
+  private readonly orgUnitFactories: Record<ImplementedOrgUnitConnectorTarget, OrgUnitConnectorFactory>
 
   constructor(
     @Inject(KeycloakAdminClient) keycloak: KeycloakAdminClient,
@@ -300,6 +314,18 @@ export class ConnectorRegistry {
           this.keycloakSsoConnectorFactory.configure(config),
       } satisfies Record<ImplementedSsoConnectorTarget, SsoConnectorFactory>,
     )
+    // Same shape again, one entry. Built with the `Object.create(null)` +
+    // `satisfies` defence the three catalogs above already carry rather than
+    // a plain literal, because `target` reaches it from `outbox_events.target`
+    // exactly as it reaches them — a single-entry lookup table indexed by an
+    // externally-sourced key is no less exposed to a prototype-chain hit than
+    // a five-entry one.
+    this.orgUnitFactories = Object.assign(
+      Object.create(null) as Record<ImplementedOrgUnitConnectorTarget, OrgUnitConnectorFactory>,
+      {
+        active_directory: (config: Record<string, unknown>) => this.activeDirectoryConnector.configure(config),
+      } satisfies Record<ImplementedOrgUnitConnectorTarget, OrgUnitConnectorFactory>,
+    )
   }
 
   /**
@@ -432,6 +458,30 @@ export class ConnectorRegistry {
     const config = await this.loadConfig(organizationId, target, tx)
     const factory = this.groupFactories[target as ImplementedGroupConnectorTarget]
     return factory(config)
+  }
+
+  /**
+   * Whether THIS target can represent an org-unit tree, and if so a
+   * connector configured for THIS organization.
+   *
+   * `null` rather than a throw for a target without the capability, exactly
+   * like `resolveGroupConnector`: the caller's correct response is "nothing
+   * to do for this target", not an error. Config is loaded per-organization
+   * through the same `loadConfig` every other resolver uses, so two tenants
+   * pointing at two different directories each get their own — the composite
+   * `(organization_id, target)` key is what makes that true rather than a
+   * convention.
+   */
+  async resolveOrgUnitConnector(
+    target: ConnectorTarget,
+    tx: DbHandle,
+    organizationId: string,
+  ): Promise<DirectoryOrgUnitConnector | null> {
+    if (!Object.hasOwn(this.orgUnitFactories, target)) {
+      return null
+    }
+    const config = await this.loadConfig(organizationId, target, tx)
+    return this.orgUnitFactories[target as ImplementedOrgUnitConnectorTarget](config)
   }
 
   /** The one Postgres read every `resolve*` method needs — `connector_targets.config` for `target`, via the CALLER's own `tx` (see `resolve`'s own doc comment on connection discipline). `undefined`/no row resolves to an empty config, same as before this was extracted. */
