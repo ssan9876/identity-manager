@@ -17,7 +17,7 @@ An honest inventory: what is finished, what is half-built, and what is not built
 |---|---|
 | People, org units, groups | Full CRUD except delete — nothing in this system is deleted |
 | Nested groups | Transitive effective membership, cycle-safe under an advisory lock |
-| RBAC with org-unit scoping | Five roles, **twenty-four** actions (it was fourteen when this file last claimed a number), three independent dimensions — action, scope, rank |
+| RBAC with org-unit scoping | Five roles, **thirty** actions (it was fourteen, then twenty-four, when this file last claimed a number), three independent dimensions — action, scope, rank |
 | Append-only audit log | Two independent enforcement mechanisms |
 | Transactional outbox + sync worker | Per-`(aggregate, target)` ordering, backoff, dead letters |
 | Synchronous offboarding | Disable + session revocation inline, before the response returns |
@@ -246,11 +246,11 @@ Re-verified in this pass unless marked otherwise.
 - **Group-rename fan-out re-syncs only current effective members.** Reconciliation is the
   backstop. *Carried forward from [12 — Security](12-security.md); not independently
   re-verified in this pass.*
-- **The security audit is incomplete.** Six dimensions were planned; five have run — the
-  fifth, the client-side and supply-chain pass, landed 2026-08-08 in `22283b5` — so **one**
-  remains unrun. The "roughly twenty" unverified findings figure was **not** re-counted in
-  this pass, so treat it as an upper bound rather than a current count. See
-  [12 — Security](12-security.md).
+- **The security audit's planned dimensions are done, and its backlog is counted.** All
+  six ran, the sixth (tenant isolation) on 2026-08-14, and the carried findings were
+  re-counted the same day: **at most nine open, two of them MEDIUM, nothing HIGH or
+  CRITICAL**. See [12 — Security](12-security.md) for the dimensions by name and the
+  two MEDIUMs by ID.
 
 ## If you are picking this up
 
@@ -258,18 +258,16 @@ The highest-value next steps, in order. **This ordering changed substantially**:
 previous list was written when business roles were the centre of gravity, and two of its
 four items are now either done or unblocked.
 
-1. **Finish the security audit** — unchanged at number one, and now more urgent, not less.
-   It is the one thing standing between this and a real network. One of the six planned
-   dimensions has never run at all.
-2. **A write path for attribute definitions** — promoted from third. The old caveat "fix
-   the ReDoS first, because that path is what makes it reachable" **no longer applies**:
-   the regex compile is gone and `validationRules.pattern` is rejected outright. This is
-   now a plain missing endpoint in front of a validator that is already safe, which makes
-   it the cheapest real capability left.
-3. **A JML rules API and console** — unchanged in substance, moved up one. The engine is
-   done and proven, and it got *smaller* when `0027` removed its group actions, so the
-   surface to build is now genuinely small: `set_attribute`, `deactivate`, and the
-   triggers.
+1. **Close the two MEDIUM findings.** The counting is done (2026-08-14): at most nine
+   open, two MEDIUM, nothing HIGH or CRITICAL. Take `CAR-system-actor`'s open half first —
+   it is the only open finding that contradicts a stated constraint (7), and a
+   constraint the code does not keep is worse than a gap nobody claimed to have
+   filled. `SEC-L5` is the other, and is mostly a matter of finishing a job already
+   half done: the dev realm was renamed, but still seeds a published password and a
+   password-grant client.
+2. ~~**A write path for attribute definitions**~~ — **shipped** 2026-08-12 (`5af373c`).
+3. ~~**A JML rules API and console**~~ — **shipped** 2026-08-13 (`7ba274c`, `600fd55`).
+   The ReDoS gate its plan was waiting on was confirmed closed before it was built.
 4. **A tenant-facing API** — new to this list, and the largest remaining structural piece
    now that per-organization connector targets have landed. It is deliberately last of
    the four because it is not a missing endpoint; it is a second authorization model, and

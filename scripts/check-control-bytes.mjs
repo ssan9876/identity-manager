@@ -1,0 +1,104 @@
+#!/usr/bin/env node
+// ============================================================================
+// No source or documentation file may contain a raw control byte.
+//
+// WHY THIS GUARD EXISTS. A literal NUL in a text file makes it BINARY to git,
+// grep and every reviewer's editor. `git diff` reports "Bin 22641 -> 22691
+// bytes" instead of showing the change; `grep` prints "Binary file matches"
+// instead of the line; a reviewer opening it sees nothing wrong. The file
+// still renders fine on GitHub, so nothing looks broken until the moment
+// somebody needs to review a change to it.
+//
+// This has happened three times in this repository:
+//
+//   1. `apps/api/src/jml/attribute-migration.job.ts` was written with a raw
+//      NUL and had to be repaired (`2f6d9f8`).
+//   2. `docs/archive/audits/audit-injection.md` and
+//      `carried-findings-verification.md` — the two documents DESCRIBING the
+//      NUL-byte injection finding — contained ten and one literal NULs
+//      respectively, pasted in with the payloads they document. The records of
+//      the hazard were unreviewable because of the hazard.
+//   3. A test written for the outbox NUL fix, caught before it was committed.
+//
+// Every instance was the same mistake: pasting a payload that contains the
+// byte, rather than writing the escape for it. So the rule is the escape.
+// `\u0000` in a doc or a TypeScript string is visible, greppable, diffable and
+// says exactly what it means; the raw byte says nothing at all.
+//
+// TAB, LF and CR are allowed — they are ordinary text. Everything else in
+// C0, plus DEL, is not.
+// ============================================================================
+import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import path from 'node:path'
+
+const REPO_ROOT = path.resolve(import.meta.dirname, '..')
+
+// Ask git for the tracked file list rather than walking the tree: it honours
+// .gitignore for free, and a file git does not track cannot break a review.
+const tracked = execFileSync('git', ['ls-files', '-z'], {
+  cwd: REPO_ROOT,
+  encoding: 'buffer',
+  maxBuffer: 64 * 1024 * 1024,
+})
+  .toString('utf8')
+  .split('\0')
+  .filter(Boolean)
+
+const TEXT_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+  '.md', '.json', '.yml', '.yaml', '.css', '.html',
+  '.sql', '.sh', '.env', '.txt',
+])
+
+/** Allowed: tab (9), LF (10), CR (13). Rejected: the rest of C0, and DEL. */
+function isForbidden(byte) {
+  if (byte === 9 || byte === 10 || byte === 13) return false
+  return byte < 32 || byte === 127
+}
+
+const offenders = []
+
+for (const rel of tracked) {
+  if (!TEXT_EXTENSIONS.has(path.extname(rel))) continue
+
+  let bytes
+  try {
+    bytes = readFileSync(path.join(REPO_ROOT, rel))
+  } catch {
+    continue // deleted between ls-files and now
+  }
+
+  const hits = []
+  for (let i = 0; i < bytes.length; i += 1) {
+    if (isForbidden(bytes[i])) {
+      // Report the LINE, so the message is actionable without a hex editor.
+      const line = bytes.subarray(0, i).toString('utf8').split('\n').length
+      hits.push({ line, byte: bytes[i] })
+      if (hits.length >= 5) break
+    }
+  }
+
+  if (hits.length > 0) offenders.push({ rel, hits })
+}
+
+if (offenders.length > 0) {
+  console.error('[check-control-bytes] FAILED — raw control bytes found.\n')
+  for (const { rel, hits } of offenders) {
+    const where = hits
+      .map((h) => `line ${h.line} (0x${h.byte.toString(16).padStart(2, '0')})`)
+      .join(', ')
+    console.error(`  ${rel}: ${where}`)
+  }
+  console.error(
+    '\n  A raw control byte makes the file BINARY to git and grep: `git diff` will\n' +
+      '  report a byte count instead of the change, and grep will refuse to show the\n' +
+      '  line. Write the escape instead — `\\u0000` in a doc or a TypeScript string is\n' +
+      '  visible, greppable and diffable, and says what it means.\n',
+  )
+  process.exit(1)
+}
+
+console.log(
+  `[check-control-bytes] OK — ${tracked.length} tracked file(s) scanned, no raw control bytes.`,
+)

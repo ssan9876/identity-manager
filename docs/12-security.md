@@ -2,28 +2,68 @@
 
 > ## Current status
 >
-> **The adversarial security audit for this build is incomplete.**
+> **Six adversarial dimensions were planned. Six have now run.** The sixth —
+> tenant isolation — ran 2026-08-14
+> ([`archive/audits/audit-tenant-isolation.md`](archive/audits/audit-tenant-isolation.md)).
 >
-> Five dimensions ran — authentication/authorization, injection, integrity/concurrency,
-> secrets, and client-side/supply-chain ([`archive/audits/audit-client-supply-chain.md`](archive/audits/audit-client-supply-chain.md),
-> dated 2026-08-08) — and their findings were fixed across five waves plus the
-> follow-up work in [Recently closed findings](#recently-closed-findings) below.
+> **The dimensions, by name.** This list did not exist until 2026-08-14; only a
+> drifting *count* did, in three files that disagreed. It is written down here so
+> the next person inherits a list rather than an argument:
 >
-> A planned dimension remains unrun and a number of findings are still unverified. The
-> only *total* on record is **six planned dimensions**, in
-> [14 — Roadmap](14-roadmap.md); five have now run, so **one** remains unrun. The
-> roadmap said "four of six ran" until it was corrected to match this banner — the
-> arithmetic above is derived from a record that has itself drifted,
-> not from an independent re-count, and no enumeration of the planned dimensions by
-> *name* exists anywhere. [`archive/README.md`](archive/README.md) carries only the
-> older "two never ran" figure.
+> | # | Dimension | Report |
+> |---|---|---|
+> | 1 | Authentication and authorization | [`audit-authz.md`](archive/audits/audit-authz.md) |
+> | 2 | Injection, and input validation | [`audit-injection.md`](archive/audits/audit-injection.md), [`security-audit-input.md`](archive/audits/security-audit-input.md) |
+> | 3 | Integrity, concurrency, availability | [`audit-integrity.md`](archive/audits/audit-integrity.md) |
+> | 4 | Secret handling | [`audit-secrets.md`](archive/audits/audit-secrets.md) |
+> | 5 | Client-side and supply chain | [`audit-client-supply-chain.md`](archive/audits/audit-client-supply-chain.md) |
+> | 6 | Tenant isolation | [`audit-tenant-isolation.md`](archive/audits/audit-tenant-isolation.md) |
 >
-> The **~twenty unverified findings** figure is likewise carried forward from that
-> record and was **not re-counted in this pass**. It predates the closures below, so
-> treat it as an upper bound rather than a current figure.
+> **The sixth was chosen, not recovered**, and that matters: no enumeration by name
+> ever existed, so nobody can say what the original sixth was meant to be. The
+> reasoning for the choice is in that report's own preamble. Availability turned out
+> to be inside dimension 3's title, which ruled out the obvious guess; multi-tenancy
+> landed *after* the audit plan was written, making it the one dimension the system
+> grew and never had examined.
 >
-> **Installing this on an internal or lab network is reasonable. Exposing it to
-> untrusted users is not, yet.** The full record is in [`archive/audits/`](archive/audits/).
+> **The backlog has been re-counted.** The "~twenty unverified findings" figure was
+> quoted for months as an upper bound nobody had checked. It was re-counted on
+> 2026-08-14 against the code rather than against a ledger
+> ([the addendum](archive/audits/carried-findings-verification.md)): **eleven had
+> since been closed**, leaving **at most nine**, of which **two are MEDIUM** and the
+> rest are LOW or recorded decisions that were never findings.
+>
+> **"At most" is deliberate.** Three rounds of checking each found more closures, and
+> every correction went the same way — the ledger over-reports and has never once
+> been found to call something closed that was open. The two MEDIUMs were verified
+> individually; the LOW band was not, and is probably smaller than nine.
+>
+> **Nothing HIGH or CRITICAL is open.** The one HIGH-if-opened item was the ReDoS
+> gate on `validationRules.pattern`; it is shut, and was confirmed shut before the
+> JML rules API was built on top of it.
+>
+> **The two MEDIUM findings**, so they are not buried:
+>
+> - **`SEC-L5`, largely addressed; one residue.** The dev realm import was renamed to
+>   `.dev.json`, `sslRequired` moved from `none` to `external`, `idm-test-client` is
+>   now `enabled: false`, and `keycloak-setup.sh` builds a real realm through the
+>   Admin API with generated secrets instead. What remains is a seeded
+>   `admin@example.com` whose password `dev_password_change_me` is published in a
+>   public repository — so importing that file by mistake still creates one working
+>   account. Kept deliberately: removing it makes the file useless for local
+>   development, which is the only thing it is for.
+> - **The open half of `CAR-system-actor`.** A reconcile's per-entity writes are not
+>   permission-checked, scope-narrowed, audited or outboxed, so **constraint 7 does
+>   not hold for that route** — the only open finding that contradicts a stated
+>   claim.
+>
+> **One thing this does not cover.** The sixth pass deliberately did not audit
+> read-side exposure, because [constraint 12](#what-the-system-claims-to-uphold) does
+> not claim it — administrators are platform operators and a global grant spans every
+> organization by design. **A tenant-facing API would be a second authorization model
+> and would need its own pass.**
+>
+> The full record is in [`archive/audits/`](archive/audits/).
 
 ## What the system claims to uphold
 

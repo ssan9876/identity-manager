@@ -36,13 +36,20 @@ check('migrations counted', () => {
   assert.ok(f.migrations.count >= 43, `only ${f.migrations.count}`)
   assert.match(f.migrations.latest, /^\d{4}_.*\.sql$/)
 })
-check('26 actions and 5 roles', () => {
+check('30 actions and 5 roles', () => {
   // Attribute definitions write path (2026-08-10 SDD), Task 3: ALL_ACTIONS
   // gains `attribute:read` and `attribute:manage`, 24 -> 26. Update this
   // count in the same change that adds/removes an action -- do not let it
   // drift, see docs/archive/plans/2026-08-10-docs-accuracy.md for what
   // happens when it does.
-  assert.equal(f.actions.length, 26)
+  //
+  // 26 -> 30 on 2026-08-13/14: `jml:read` and `jml:manage` with the lifecycle
+  // rules API, then `org_unit:update` and `org_unit:delete` with org-unit
+  // rename and delete. This assertion DID drift in between -- all four landed
+  // before it was updated, and it went unnoticed because `check:docs` is not
+  // part of either app's test script and nothing else runs it. That is the
+  // failure mode the comment above warns about, arriving exactly as described.
+  assert.equal(f.actions.length, 30)
   assert.equal(f.roles.length, 5)
   assert.ok(f.actions.includes('user:read'))
 })

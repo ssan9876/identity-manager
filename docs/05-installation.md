@@ -5,20 +5,27 @@ systemd**. No Docker, so an LXC container can be **unprivileged with nesting off
 
 > ## Read this first
 >
-> The adversarial security audit for this build is **incomplete**. It has found and
-> closed real issues — three authorization gaps where holding a permission *anywhere*
-> satisfied a route governing the whole directory, and a catalog drift that made a
-> live outbound integration impossible to disable through the API. The only *total*
-> on record is **six planned dimensions**; five have now run — the fifth, the
-> client-side and supply-chain pass, landed 2026-08-08 in `22283b5` — so **one**
-> remains unrun. A number of findings are still unverified: the "roughly twenty"
-> figure comes from that same drifted record and was **not** re-counted, so treat it
-> as an upper bound rather than a current count.
+> **All six planned adversarial audit dimensions have now run**, the sixth — tenant
+> isolation — on 2026-08-14. They found and closed real issues: three authorization
+> gaps where holding a permission *anywhere* satisfied a route governing the whole
+> directory, a catalog drift that made a live outbound integration impossible to
+> disable through the API, and a cross-tenant transfer that was refused by the
+> database but reported as a 500.
 >
-> Installing this on an internal or lab network is reasonable. Exposing it to
-> untrusted users is not, yet. See [12 — Security model](12-security.md), whose
-> banner carries the derivation and its caveats — including that no enumeration of
-> the planned dimensions by *name* exists anywhere.
+> **At most nine findings remain open**, re-counted against the code on 2026-08-14 —
+> the long-quoted "roughly twenty" was stale by eleven closures. **Two are MEDIUM and
+> nothing HIGH or CRITICAL is open.** Both are named in
+> [12 — Security model](12-security.md) rather than left as a number.
+>
+> One of them bears directly on installing: **do not import
+> `keycloak/realm-import/identity-manager-realm.dev.json`.** It seeds
+> `admin@example.com` with a password published in this repository. Use
+> `scripts/keycloak-setup.sh`, which builds the same realm through the Admin API with
+> generated secrets and no seeded user.
+>
+> See [12 — Security model](12-security.md) for the dimensions by name and what the
+> sixth pass deliberately did not cover — in particular, a **tenant-facing API would
+> be a second authorization model and would need its own pass**.
 
 ## What you need
 

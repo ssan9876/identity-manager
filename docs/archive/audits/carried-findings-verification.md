@@ -46,6 +46,111 @@ claim, and the propagation-flag claim, both broken by subsystems built after the
 
 ---
 
+## RE-COUNT, 2026-08-14 — the "~20 still holds" figure is stale
+
+The table below was accurate when it was written and has been quoted ever
+since as "roughly twenty unverified findings", including by
+`docs/12-security.md`, `docs/05-installation.md` and `docs/14-roadmap.md`.
+Every one of those said it was an upper bound carried forward without
+re-counting. This is the re-count the roadmap asked for.
+
+**Eight of the twenty have since been closed.** Verified by reading the code,
+not by trusting a ledger — `TODO.md` has itself been wrong about closures
+before, by its own admission.
+
+> **This section was wrong on its first pass and is corrected here.** It
+> originally reported six closures and listed `SEC-L2` and `INT-M7` among the
+> open MEDIUMs. Both are closed. The mistake was the exact one this paragraph
+> claims to avoid: six closures were verified against the code and the *rest of
+> the table was taken at face value*. Verifying the closures you expect and
+> trusting the remainder is not a re-count. The two are added below with their
+> evidence.
+
+| ID | Was | Now | Evidence in the tree today |
+|---|---|---|---|
+| `INT-M3` | Still holds (MEDIUM) | **Closed** | `ReconciliationJob.detectKeycloakOnly()` pages the realm and reports `keycloakOnlyUsernames` |
+| `SEC-M1` | Still holds (MEDIUM) | **Closed** | `attribute_definitions.sensitive` (migration `0026`); flagged values withheld from audit snapshots, withheld keys named in `attributesRedacted` |
+| `SEC-L6` | No longer unreachable (MEDIUM) | **Closed** | `acknowledgedExportCount` is required on both write paths and re-derived inside the writing transaction (8 references) |
+| `INJ-INFO` | Still holds (INFO) | **Closed** | `simulate()` now refuses a rule whose `trigger` is not in `KNOWN_TRIGGERS`, the same check `matchRules` makes |
+| `CAR-ReDoS` | Still holds (HIGH-if-opened) | **Closed** | `new RegExp` no longer appears in `src/` outside comments; `validationRules.pattern` is replaced by the closed `attribute-formats.ts` vocabulary, asserted by a static source scan |
+| `INJ-M-1` / `INT-M6` | Fixed, widened default (MEDIUM) | **Closed** | Cap is 1,000 (`b36e7ad`); measured at ~8.5 s worst case, and the console mirror that still said 5,000 was fixed |
+| `SEC-L2` | Still holds (MEDIUM) | **Closed** | `users.repository.ts` throws `'primaryEmail: not available'` / `'username: not available'`, with a comment naming SEC-L2 — the direct-create sibling the import fix missed |
+| `INT-M7` | Still holds (MEDIUM) | **Closed** | The serial `for … of await` loops are gone; `resolveForUsers` batches via `listEffectiveGroupMembershipsForUsers` under one `Promise.all`, and `listEffectiveUserMembers` is no longer called there at all |
+| `SEC-L1` | Still holds (LOW) | **Closed** | `oidc-config.ts` sets BOTH `userStore` and `stateStore` to `sessionStorage`, with a comment naming SEC-L1 and the `stateStore`-defaults-separately trap |
+| `SEC-L4` | Still holds (LOW) | **Closed** | `jwt.guard.ts` passes `requiredClaims: ['exp']` |
+| `INJ-H-2` residual | Fixed but incomplete (LOW) | **Closed** | `connector-targets.controller.ts` applies `noNulChar` to config values (4 references) |
+
+**`CAR-system-actor` is half-closed** and stays on the list. The acting
+`userId` is now threaded into `TargetReconciliationJob.auditOverride`, so a
+`connector:reconcile-override` row names a human. What remains open is the
+larger half: the per-entity writes a reconcile performs are still not
+permission-checked, scope-narrowed, audited or outboxed, so security
+constraint 7 does not hold for that route.
+
+### The current count
+
+**At most nine still hold** — and "at most" is doing real work in that
+sentence, for a reason worth stating plainly.
+
+Eleven closures are now verified against the code. Every one was found by
+checking a specific claim, and three separate rounds of checking each turned
+up more. That pattern is the actual finding: **this ledger's "still holds"
+column has been wrong in one direction only — it over-reports.** Nothing has
+ever been found to be open that it called closed.
+
+So nine is a CEILING, not a count. The MEDIUM band has been checked
+individually and is trustworthy; the LOW band has not, and on the evidence of
+three rounds it is likely lower still.
+
+- **MEDIUM — 2, individually verified:** `SEC-L5` (largely addressed — see
+  below) and the open half of `CAR-system-actor`.
+- **LOW — 6:** `AUTHZ-M-1`, `AUTHZ-L-4`, `INJ-H-1`, `INJ-H-2`, `INJ-L-1`,
+  `INT-H4`, `INT-L2`, `SEC-L1`, `SEC-L4`, `SEC-L7`, `CAR-group-rename`,
+  `CAR-jml-triggers` — counted as a band rather than individually, because
+  several are "the pattern recurs in one new place" rather than a distinct
+  defect.
+- **INFO / deliberate — the remainder:** `AUTHZ-L-1`, `INT-L1`, `SEC-L3`,
+  `CAR-username`, `CAR-no-suspend`, `CAR-self-merge`, `CAR-self-editable`,
+  `CAR-jml-revocation`, `CAR-import-uuid`. These are recorded decisions, not
+  a backlog.
+
+**`SEC-L5` is partially addressed**, which the table does not capture. The
+audit asked for "rename plus disable". The rename happened —
+`keycloak/realm-import/identity-manager-realm.dev.json` is now explicitly
+named as development-only, `scripts/keycloak-setup.sh` builds a real realm
+through the Admin API instead, and `sslRequired` has moved from `none` to
+`external`. The disable happened too: `idm-test-client` is now `enabled: false`. What
+remains is a seeded `admin@example.com` whose password
+`dev_password_change_me` is published in this repository, so importing the
+file by mistake still creates one working account. That is kept deliberately —
+removing it makes the file useless for the local development it exists for —
+which makes the residue a documentation-and-naming risk rather than an
+unaddressed finding.
+
+**Nothing HIGH or CRITICAL remains open.** `CAR-ReDoS` was the only
+HIGH-if-opened item and it is closed; the gate it guarded was confirmed shut
+before the JML rules API was built on top of it.
+
+The honest summary is therefore: **two MEDIUM findings and a band of LOW
+ones**, none of them structural, plus a set of deliberate decisions that were
+never findings. That is a materially different picture from "roughly twenty
+unverified findings" and should be quoted instead of it.
+
+### What this re-count did NOT do
+
+It did not re-verify the LOW band individually. Each closure claim was checked
+against the code; the remainder was not re-derived. A LOW finding still marked
+"still holds" here means "still held when it was last examined", and given
+that three rounds of checking each found more closures, several of them
+probably do not.
+
+**The lesson is about the ledger, not the findings.** A hand-maintained status
+column drifts in the direction that flatters nobody: it accumulates stale
+"still holds" rows, because closing a finding elsewhere never prompts anyone
+to come back and update it. Any future count should start from the code.
+
+---
+
 ## Summary table
 
 | ID | Dimension | Claimed state | Verified state | Severity now |
@@ -226,7 +331,7 @@ apps/api/src/connectors/connector-targets.controller.ts:62
 const configPatchValueSchema = z.union([z.string().max(4000), z.number(), z.boolean(), z.null()])
 ```
 
-`PATCH /connector-targets/:target` with `{"config":{"host":"a b"}}` reproduces the
+`PATCH /connector-targets/:target` with `{"config":{"host":"a\u0000b"}}` reproduces the
 original failure exactly: legal JSON, passes Zod, fails at Postgres as a raw `pg` error that
 `DomainExceptionFilter` (`@Catch(DomainError)`) does not touch, so an unmapped 500. This is
 a fix applied in one place while the same pattern exists elsewhere unfixed — and the
