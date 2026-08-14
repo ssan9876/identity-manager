@@ -5,20 +5,20 @@ systemd**. No Docker, so an LXC container can be **unprivileged with nesting off
 
 > ## Read this first
 >
-> The adversarial security audit for this build is **incomplete**. It has found and
-> closed real issues — three authorization gaps where holding a permission *anywhere*
-> satisfied a route governing the whole directory, and a catalog drift that made a
-> live outbound integration impossible to disable through the API. The only *total*
-> on record is **six planned dimensions**; five have now run — the fifth, the
-> client-side and supply-chain pass, landed 2026-08-08 in `22283b5` — so **one**
-> remains unrun. A number of findings are still unverified: the "roughly twenty"
-> figure comes from that same drifted record and was **not** re-counted, so treat it
-> as an upper bound rather than a current count.
+> **All six planned adversarial audit dimensions have now run**, the sixth — tenant
+> isolation — on 2026-08-14. They found and closed real issues: three authorization
+> gaps where holding a permission *anywhere* satisfied a route governing the whole
+> directory, a catalog drift that made a live outbound integration impossible to
+> disable through the API, and a cross-tenant transfer that was refused by the
+> database but reported as a 500.
 >
-> Installing this on an internal or lab network is reasonable. Exposing it to
-> untrusted users is not, yet. See [12 — Security model](12-security.md), whose
-> banner carries the derivation and its caveats — including that no enumeration of
-> the planned dimensions by *name* exists anywhere.
+> **A number of findings remain unverified.** The "roughly twenty" figure comes from
+> a record that has drifted and was **not** re-counted, so treat it as an upper
+> bound. That backlog, rather than an unexamined direction, is what is left.
+>
+> See [12 — Security model](12-security.md) for the dimensions by name and what the
+> sixth pass deliberately did not cover — in particular, a **tenant-facing API would
+> be a second authorization model and would need its own pass**.
 
 ## What you need
 

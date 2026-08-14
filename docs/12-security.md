@@ -2,28 +2,41 @@
 
 > ## Current status
 >
-> **The adversarial security audit for this build is incomplete.**
+> **Six adversarial dimensions were planned. Six have now run.** The sixth —
+> tenant isolation — ran 2026-08-14
+> ([`archive/audits/audit-tenant-isolation.md`](archive/audits/audit-tenant-isolation.md)).
 >
-> Five dimensions ran — authentication/authorization, injection, integrity/concurrency,
-> secrets, and client-side/supply-chain ([`archive/audits/audit-client-supply-chain.md`](archive/audits/audit-client-supply-chain.md),
-> dated 2026-08-08) — and their findings were fixed across five waves plus the
-> follow-up work in [Recently closed findings](#recently-closed-findings) below.
+> **The dimensions, by name.** This list did not exist until 2026-08-14; only a
+> drifting *count* did, in three files that disagreed. It is written down here so
+> the next person inherits a list rather than an argument:
 >
-> A planned dimension remains unrun and a number of findings are still unverified. The
-> only *total* on record is **six planned dimensions**, in
-> [14 — Roadmap](14-roadmap.md); five have now run, so **one** remains unrun. The
-> roadmap said "four of six ran" until it was corrected to match this banner — the
-> arithmetic above is derived from a record that has itself drifted,
-> not from an independent re-count, and no enumeration of the planned dimensions by
-> *name* exists anywhere. [`archive/README.md`](archive/README.md) carries only the
-> older "two never ran" figure.
+> | # | Dimension | Report |
+> |---|---|---|
+> | 1 | Authentication and authorization | [`audit-authz.md`](archive/audits/audit-authz.md) |
+> | 2 | Injection, and input validation | [`audit-injection.md`](archive/audits/audit-injection.md), [`security-audit-input.md`](archive/audits/security-audit-input.md) |
+> | 3 | Integrity, concurrency, availability | [`audit-integrity.md`](archive/audits/audit-integrity.md) |
+> | 4 | Secret handling | [`audit-secrets.md`](archive/audits/audit-secrets.md) |
+> | 5 | Client-side and supply chain | [`audit-client-supply-chain.md`](archive/audits/audit-client-supply-chain.md) |
+> | 6 | Tenant isolation | [`audit-tenant-isolation.md`](archive/audits/audit-tenant-isolation.md) |
 >
-> The **~twenty unverified findings** figure is likewise carried forward from that
-> record and was **not re-counted in this pass**. It predates the closures below, so
-> treat it as an upper bound rather than a current figure.
+> **The sixth was chosen, not recovered**, and that matters: no enumeration by name
+> ever existed, so nobody can say what the original sixth was meant to be. The
+> reasoning for the choice is in that report's own preamble. Availability turned out
+> to be inside dimension 3's title, which ruled out the obvious guess; multi-tenancy
+> landed *after* the audit plan was written, making it the one dimension the system
+> grew and never had examined.
 >
-> **Installing this on an internal or lab network is reasonable. Exposing it to
-> untrusted users is not, yet.** The full record is in [`archive/audits/`](archive/audits/).
+> **Two things this does not mean.** The **~twenty unverified findings** figure was
+> **not re-counted** in the sixth pass and remains an upper bound carried forward
+> from a record that has itself drifted. And the sixth pass deliberately did not
+> audit read-side exposure, because [constraint 12](#what-the-system-claims-to-uphold)
+> does not claim it — administrators are platform operators and a global grant spans
+> every organization by design. **A tenant-facing API would be a second
+> authorization model and would need its own pass.**
+>
+> **What that adds up to:** the planned dimensions are done, and the remaining risk
+> is the unverified backlog rather than an unexamined direction. The full record is
+> in [`archive/audits/`](archive/audits/).
 
 ## What the system claims to uphold
 

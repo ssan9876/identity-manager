@@ -246,11 +246,11 @@ Re-verified in this pass unless marked otherwise.
 - **Group-rename fan-out re-syncs only current effective members.** Reconciliation is the
   backstop. *Carried forward from [12 — Security](12-security.md); not independently
   re-verified in this pass.*
-- **The security audit is incomplete.** Six dimensions were planned; five have run — the
-  fifth, the client-side and supply-chain pass, landed 2026-08-08 in `22283b5` — so **one**
-  remains unrun. The "roughly twenty" unverified findings figure was **not** re-counted in
-  this pass, so treat it as an upper bound rather than a current count. See
-  [12 — Security](12-security.md).
+- **The security audit's planned dimensions are done; its backlog is not.** All six ran,
+  the sixth (tenant isolation) on 2026-08-14. The "roughly twenty" unverified findings
+  figure has still **not** been re-counted, so it remains an upper bound rather than a
+  current count — and that backlog is now the whole of the remaining audit risk. See
+  [12 — Security](12-security.md) for the dimensions by name.
 
 ## If you are picking this up
 
@@ -258,18 +258,14 @@ The highest-value next steps, in order. **This ordering changed substantially**:
 previous list was written when business roles were the centre of gravity, and two of its
 four items are now either done or unblocked.
 
-1. **Finish the security audit** — unchanged at number one, and now more urgent, not less.
-   It is the one thing standing between this and a real network. One of the six planned
-   dimensions has never run at all.
-2. **A write path for attribute definitions** — promoted from third. The old caveat "fix
-   the ReDoS first, because that path is what makes it reachable" **no longer applies**:
-   the regex compile is gone and `validationRules.pattern` is rejected outright. This is
-   now a plain missing endpoint in front of a validator that is already safe, which makes
-   it the cheapest real capability left.
-3. **A JML rules API and console** — unchanged in substance, moved up one. The engine is
-   done and proven, and it got *smaller* when `0027` removed its group actions, so the
-   surface to build is now genuinely small: `set_attribute`, `deactivate`, and the
-   triggers.
+1. **Re-count and verify the ~20 carried findings.** The planned dimensions are done —
+   the sixth ran 2026-08-14 — so this is what is left of the audit, and it is now the
+   one thing standing between this and a real network. The figure comes from a record
+   that drifted and predates several closures; nobody has established what is actually
+   still open. Start by counting, not by fixing.
+2. ~~**A write path for attribute definitions**~~ — **shipped** 2026-08-12 (`5af373c`).
+3. ~~**A JML rules API and console**~~ — **shipped** 2026-08-13 (`7ba274c`, `600fd55`).
+   The ReDoS gate its plan was waiting on was confirmed closed before it was built.
 4. **A tenant-facing API** — new to this list, and the largest remaining structural piece
    now that per-organization connector targets have landed. It is deliberately last of
    the four because it is not a missing endpoint; it is a second authorization model, and

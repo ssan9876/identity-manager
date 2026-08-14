@@ -46,10 +46,15 @@ plan for `POST /users/:id/activate`, built from the spec of the same date.
 | `audit-injection.md` | Injection findings |
 | `audit-integrity.md` | Integrity and concurrency findings |
 | `audit-secrets.md` | Secret-handling findings |
+| `audit-tenant-isolation.md` | Tenant-isolation findings (the sixth dimension, 2026-08-14) |
 | `fix-wave-a-report.md` … `fix-wave-e-report.md` | What each remediation wave actually changed, and how it was verified |
 
 Findings are referenced throughout the source by identifier — `H1`, `M-2`, `C1`, `M6`,
 and so on. Those identifiers are stable; the file paths are what moved.
 
-**The audit is incomplete.** Two planned dimensions never ran and roughly twenty findings
-are unverified. See [12 — Security model](../12-security.md) for the current position.
+**All six planned dimensions have run**, the sixth on 2026-08-14. Roughly twenty
+findings remain unverified — a figure carried forward from a drifted record and never
+re-counted, so an upper bound rather than a count. The "two planned dimensions never
+ran" figure this file used to carry was already stale when it was written. See
+[12 — Security model](../12-security.md) for the dimensions by name and the current
+position.
