@@ -997,6 +997,38 @@ export class UsersController {
         throw new NotFoundError('org unit', parsed.orgUnitId)
       }
 
+      // TENANT BOUNDARY, checked here rather than left to the foreign key.
+      //
+      // A transfer sets `org_unit_id` and deliberately does not touch
+      // `organization_id` — a move is a move WITHIN a directory. Aim it at
+      // another tenant's unit and the composite key
+      // (org_unit_id, organization_id) -> org_units refuses the UPDATE, so
+      // security constraint 12 holds either way and no cross-tenant row is
+      // ever written.
+      //
+      // But it held as a 500. A globally-granted super_admin passes every
+      // authorization check on both ends — that is what a platform operator
+      // IS — so nothing before this point had an opinion, and the caller got
+      // a raw constraint violation. That is a bad refusal for three reasons:
+      // it tells an operator nothing they can act on, it is indistinguishable
+      // from a genuine fault to anything watching 5xx rates, and it is
+      // exactly the shape of failure someone later "fixes" by catching the
+      // exception and carrying on. Found by the tenant-isolation audit pass
+      // (test/tenant-isolation.audit.spec.ts), which attacks constraint 12's
+      // "not a future endpoint" claim — this route being one.
+      //
+      // Moving a person BETWEEN tenants is not a transfer at all: their
+      // groups, memberships, business roles and manager are all tenant-local,
+      // so nothing about them would follow. It is a leave and a join, and it
+      // is refused rather than half-performed.
+      if (destination.organizationId !== current.organizationId) {
+        throw new ValidationError([
+          `orgUnitId: "${destination.name}" belongs to a different organization — a transfer moves ` +
+            'someone within one directory, and their groups, memberships and manager are all ' +
+            'tenant-local, so none of it would follow them across',
+        ])
+      }
+
       // Both, in this order, before anything is written. `tx` passed
       // explicitly to every check — never defaulted to the pool while this
       // handler already holds a connection (finding C1).
