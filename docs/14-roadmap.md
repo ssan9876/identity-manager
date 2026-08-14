@@ -248,7 +248,7 @@ Re-verified in this pass unless marked otherwise.
   re-verified in this pass.*
 - **The security audit's planned dimensions are done, and its backlog is counted.** All
   six ran, the sixth (tenant isolation) on 2026-08-14, and the carried findings were
-  re-counted the same day: **twelve open, two of them MEDIUM, nothing HIGH or
+  re-counted the same day: **at most nine open, two of them MEDIUM, nothing HIGH or
   CRITICAL**. See [12 — Security](12-security.md) for the dimensions by name and the
   two MEDIUMs by ID.
 
@@ -258,8 +258,8 @@ The highest-value next steps, in order. **This ordering changed substantially**:
 previous list was written when business roles were the centre of gravity, and two of its
 four items are now either done or unblocked.
 
-1. **Close the two MEDIUM findings.** The counting is done (2026-08-14): twelve open,
-   two MEDIUM, nothing HIGH or CRITICAL. Take `CAR-system-actor`'s open half first —
+1. **Close the two MEDIUM findings.** The counting is done (2026-08-14): at most nine
+   open, two MEDIUM, nothing HIGH or CRITICAL. Take `CAR-system-actor`'s open half first —
    it is the only open finding that contradicts a stated constraint (7), and a
    constraint the code does not keep is worse than a gap nobody claimed to have
    filled. `SEC-L5` is the other, and is mostly a matter of finishing a job already

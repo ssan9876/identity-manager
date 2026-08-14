@@ -12,8 +12,8 @@ systemd**. No Docker, so an LXC container can be **unprivileged with nesting off
 > disable through the API, and a cross-tenant transfer that was refused by the
 > database but reported as a 500.
 >
-> **Twelve findings remain open**, re-counted against the code on 2026-08-14 — the
-> long-quoted "roughly twenty" was stale by eight closures. **Two are MEDIUM and
+> **At most nine findings remain open**, re-counted against the code on 2026-08-14 —
+> the long-quoted "roughly twenty" was stale by eleven closures. **Two are MEDIUM and
 > nothing HIGH or CRITICAL is open.** Both are named in
 > [12 — Security model](12-security.md) rather than left as a number.
 >

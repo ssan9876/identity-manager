@@ -76,6 +76,9 @@ before, by its own admission.
 | `INJ-M-1` / `INT-M6` | Fixed, widened default (MEDIUM) | **Closed** | Cap is 1,000 (`b36e7ad`); measured at ~8.5 s worst case, and the console mirror that still said 5,000 was fixed |
 | `SEC-L2` | Still holds (MEDIUM) | **Closed** | `users.repository.ts` throws `'primaryEmail: not available'` / `'username: not available'`, with a comment naming SEC-L2 — the direct-create sibling the import fix missed |
 | `INT-M7` | Still holds (MEDIUM) | **Closed** | The serial `for … of await` loops are gone; `resolveForUsers` batches via `listEffectiveGroupMembershipsForUsers` under one `Promise.all`, and `listEffectiveUserMembers` is no longer called there at all |
+| `SEC-L1` | Still holds (LOW) | **Closed** | `oidc-config.ts` sets BOTH `userStore` and `stateStore` to `sessionStorage`, with a comment naming SEC-L1 and the `stateStore`-defaults-separately trap |
+| `SEC-L4` | Still holds (LOW) | **Closed** | `jwt.guard.ts` passes `requiredClaims: ['exp']` |
+| `INJ-H-2` residual | Fixed but incomplete (LOW) | **Closed** | `connector-targets.controller.ts` applies `noNulChar` to config values (4 references) |
 
 **`CAR-system-actor` is half-closed** and stays on the list. The acting
 `userId` is now threaded into `TargetReconciliationJob.auditOverride`, so a
@@ -86,10 +89,21 @@ constraint 7 does not hold for that route.
 
 ### The current count
 
-**Twelve still hold**, of which:
+**At most nine still hold** — and "at most" is doing real work in that
+sentence, for a reason worth stating plainly.
 
-- **MEDIUM — 2:** `SEC-L5` (partially addressed — see below) and the open half
-  of `CAR-system-actor`.
+Eleven closures are now verified against the code. Every one was found by
+checking a specific claim, and three separate rounds of checking each turned
+up more. That pattern is the actual finding: **this ledger's "still holds"
+column has been wrong in one direction only — it over-reports.** Nothing has
+ever been found to be open that it called closed.
+
+So nine is a CEILING, not a count. The MEDIUM band has been checked
+individually and is trustworthy; the LOW band has not, and on the evidence of
+three rounds it is likely lower still.
+
+- **MEDIUM — 2, individually verified:** `SEC-L5` (largely addressed — see
+  below) and the open half of `CAR-system-actor`.
 - **LOW — 6:** `AUTHZ-M-1`, `AUTHZ-L-4`, `INJ-H-1`, `INJ-H-2`, `INJ-L-1`,
   `INT-H4`, `INT-L2`, `SEC-L1`, `SEC-L4`, `SEC-L7`, `CAR-group-rename`,
   `CAR-jml-triggers` — counted as a band rather than individually, because
@@ -124,10 +138,16 @@ unverified findings" and should be quoted instead of it.
 
 ### What this re-count did NOT do
 
-It did not re-verify the findings that remain open. Each was read closely
-enough to establish whether the closure claim was true, not to re-derive the
-original finding. A finding marked "still holds" here still means "still held
-when it was last examined".
+It did not re-verify the LOW band individually. Each closure claim was checked
+against the code; the remainder was not re-derived. A LOW finding still marked
+"still holds" here means "still held when it was last examined", and given
+that three rounds of checking each found more closures, several of them
+probably do not.
+
+**The lesson is about the ledger, not the findings.** A hand-maintained status
+column drifts in the direction that flatters nobody: it accumulates stale
+"still holds" rows, because closing a finding elsewhere never prompts anyone
+to come back and update it. Any future count should start from the code.
 
 ---
 

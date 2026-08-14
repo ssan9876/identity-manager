@@ -29,9 +29,14 @@
 > **The backlog has been re-counted.** The "~twenty unverified findings" figure was
 > quoted for months as an upper bound nobody had checked. It was re-counted on
 > 2026-08-14 against the code rather than against a ledger
-> ([the addendum](archive/audits/carried-findings-verification.md)): **eight had since
-> been closed**, leaving **twelve**, of which **two are MEDIUM** and the rest are
-> LOW or recorded decisions that were never findings.
+> ([the addendum](archive/audits/carried-findings-verification.md)): **eleven had
+> since been closed**, leaving **at most nine**, of which **two are MEDIUM** and the
+> rest are LOW or recorded decisions that were never findings.
+>
+> **"At most" is deliberate.** Three rounds of checking each found more closures, and
+> every correction went the same way — the ledger over-reports and has never once
+> been found to call something closed that was open. The two MEDIUMs were verified
+> individually; the LOW band was not, and is probably smaller than nine.
 >
 > **Nothing HIGH or CRITICAL is open.** The one HIGH-if-opened item was the ReDoS
 > gate on `validationRules.pattern`; it is shut, and was confirmed shut before the
