@@ -12,6 +12,7 @@ import { RoleAssignmentsRepository } from '../src/authz/role-assignments.reposit
 import { DB_CLIENT } from '../src/common/db.token'
 import { DomainExceptionFilter } from '../src/common/domain-exception.filter'
 import { OrgUnitsController } from '../src/org-units/org-units.controller'
+import { OrganizationsRepository } from '../src/organizations/organizations.repository'
 import { OrgUnitsRepository, type OrgUnit } from '../src/org-units/org-units.repository'
 import { OutboxWriter } from '../src/outbox/outbox.writer'
 import { UsersRepository } from '../src/users/users.repository'
@@ -602,6 +603,72 @@ describe('org unit write endpoints (Milestone 3b, Task 3)', () => {
       await request(app.getHttpServer())
         .delete('/org-units/00000000-0000-0000-0000-000000000000')
         .expect(404)
+    })
+  })
+
+  // =======================================================================
+  // GET /org-units?organizationId= — the console's tenant switcher
+  // =======================================================================
+
+  describe('tenant filtering', () => {
+    /**
+     * Applied in the repository rather than by filtering a page after the
+     * fact. A page narrowed client-side returns fewer rows than its own
+     * `total` claims, so the paginator offers a page that does not exist —
+     * or silently hides units that do. `total` and `items` have to come from
+     * the same predicate, which is why `list` and `count` share one.
+     */
+    it('narrows both the rows AND the total to one organization', async () => {
+      const root = await makeOrgUnit('Tenant Filter Root')
+      await orgUnitsRepo().createChild(root.id, 'Alpha')
+      await orgUnitsRepo().createChild(root.id, 'Beta')
+      const actor = await makeActiveUser('super_admin', root.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const master = await new OrganizationsRepository(ctx.db).findMaster()
+
+      const all = await request(app.getHttpServer()).get('/org-units?limit=100').expect(200)
+      const mine = await request(app.getHttpServer())
+        .get(`/org-units?limit=100&organizationId=${master.id}`)
+        .expect(200)
+
+      // Everything in this fixture belongs to master, so the filter keeps it
+      // all — the property under test is that total tracks items, not that
+      // the number shrinks.
+      expect(mine.body.total).toBe(mine.body.items.length)
+      expect(mine.body.items.length).toBeGreaterThan(0)
+      expect(mine.body.items.every((u: { organizationId: string }) => u.organizationId === master.id)).toBe(true)
+      expect(mine.body.total).toBeLessThanOrEqual(all.body.total)
+    })
+
+    /** An organization with nothing in it is an empty page, not everything. */
+    it('returns nothing for an organization that owns no units here', async () => {
+      const root = await makeOrgUnit('Tenant Empty Root')
+      const actor = await makeActiveUser('super_admin', root.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      const res = await request(app.getHttpServer())
+        .get('/org-units?limit=100&organizationId=00000000-0000-0000-0000-000000000000')
+        .expect(200)
+
+      expect(res.body.items).toEqual([])
+      expect(res.body.total).toBe(0)
+    })
+
+    /**
+     * A switcher whose narrowing is silently dropped shows one tenant's
+     * directory under another tenant's name. That must be a refusal, never a
+     * quietly-unfiltered page.
+     */
+    it('refuses a malformed organizationId rather than ignoring it', async () => {
+      const root = await makeOrgUnit('Tenant Bad Root')
+      const actor = await makeActiveUser('super_admin', root.id)
+      await grant(actor.id, 'super_admin', null)
+      currentUsername = actor.username
+
+      await request(app.getHttpServer()).get('/org-units?organizationId=not-a-uuid').expect(400)
     })
   })
 })

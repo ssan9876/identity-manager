@@ -743,6 +743,7 @@ export class UsersRepository {
   private listFilters(filter: {
     status?: UserStatus
     orgUnitId?: string
+    organizationId?: string
     scopePaths?: string[] | null
     search?: string
     ids?: string[]
@@ -754,6 +755,12 @@ export class UsersRepository {
       filters.push(ne(users.status, 'deactivated'))
     }
     if (filter.orgUnitId !== undefined) filters.push(eq(users.orgUnitId, filter.orgUnitId))
+    // Tenant narrowing. `users.organizationId` is carried on the row itself
+    // rather than reached through the org unit, so this stays one predicate
+    // on an indexed column instead of a join per page.
+    if (filter.organizationId !== undefined) {
+      filters.push(eq(users.organizationId, filter.organizationId))
+    }
     if (filter.scopePaths !== undefined && filter.scopePaths !== null) {
       filters.push(this.scopeFilter(filter.scopePaths))
     }
@@ -819,6 +826,14 @@ export class UsersRepository {
       offset: number
       status?: UserStatus
       orgUnitId?: string
+    /**
+     * Restrict to ONE tenant. Applied in the repository, never by filtering a
+     * page after the fact: the console's organization switcher pages through
+     * these results, and a page filtered client-side returns fewer rows than
+     * its own `total` claims — the paginator then offers a page 2 that does
+     * not exist, or hides people who do.
+     */
+    organizationId?: string
       scopePaths?: string[] | null
       search?: string
       ids?: string[]
@@ -848,6 +863,7 @@ export class UsersRepository {
     filter: {
       status?: UserStatus
       orgUnitId?: string
+      organizationId?: string
       scopePaths?: string[] | null
       search?: string
       ids?: string[]

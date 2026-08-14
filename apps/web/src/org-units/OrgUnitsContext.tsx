@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react'
 import { useAuth } from 'react-oidc-context'
+import { useSelectedOrganizationId } from '../organizations/OrganizationContext'
 import { fetchAllOrgUnits, type OrgUnit } from './api'
 
 export type OrgUnitsState =
@@ -68,12 +69,13 @@ export function OrgUnitsProvider({ children }: { children: ReactNode }) {
    * no way to take back out. Both need the set re-read rather than patched.
    */
   const [refreshToken, setRefreshToken] = useState(0)
+  const organizationId = useSelectedOrganizationId()
 
   useEffect(() => {
     if (accessToken === undefined) return
     let cancelled = false
 
-    void fetchAllOrgUnits(accessToken)
+    void fetchAllOrgUnits(accessToken, organizationId)
       .then((list) => {
         if (cancelled) return
         setState({ status: 'ready', list, byId: new Map(list.map((unit) => [unit.id, unit])) })
@@ -89,7 +91,8 @@ export function OrgUnitsProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [accessToken, refreshToken])
+    // Re-read on a tenant switch: the tree itself is what narrows.
+  }, [accessToken, refreshToken, organizationId])
 
   const addOrgUnit = useCallback((unit: OrgUnit) => {
     setState((prev) => {

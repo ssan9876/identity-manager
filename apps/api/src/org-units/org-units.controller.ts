@@ -96,9 +96,19 @@ export class OrgUnitsController {
     // null = unrestricted, [] = entitled nowhere — passed through as-is; see
     // UsersController.list and PermissionEngine.scopePathsFor's doc comment.
     const scopePaths = await this.engine.scopePathsFor(request.actor, 'org_unit:read')
+
+    // `?organizationId=` — the console's tenant switcher, narrowing the tree
+    // to one organization. Independent of `scopePaths`: scope says which
+    // subtrees this actor may see AT ALL, tenant says which one they are
+    // currently looking at. Both apply, and the intersection is the answer.
+    const organizationId =
+      query.organizationId === undefined
+        ? undefined
+        : parseId(String(query.organizationId), 'organizationId')
+
     const [items, total] = await Promise.all([
-      this.orgUnits.list({ ...page, scopePaths }),
-      this.orgUnits.count({ scopePaths }),
+      this.orgUnits.list({ ...page, scopePaths, organizationId }),
+      this.orgUnits.count({ scopePaths, organizationId }),
     ])
     return { items, total, limit: page.limit, offset: page.offset }
   }

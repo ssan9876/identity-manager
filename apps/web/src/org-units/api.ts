@@ -30,10 +30,14 @@ const MAX_PAGES = 100
 
 export function fetchOrgUnitsPage(
   accessToken: string,
-  options: { limit: number; offset: number },
+  options: { limit: number; offset: number; organizationId?: string },
 ): Promise<Page<OrgUnit>> {
   return authorizedRequest<Page<OrgUnit>>(
-    `/org-units${buildQuery({ limit: options.limit, offset: options.offset })}`,
+    `/org-units${buildQuery({
+      limit: options.limit,
+      offset: options.offset,
+      organizationId: options.organizationId,
+    })}`,
     accessToken,
   )
 }
@@ -45,12 +49,15 @@ export function fetchOrgUnitsPage(
  * both need the FULL set, not one page, so this is the one place that
  * paging happens rather than each screen reimplementing it.
  */
-export async function fetchAllOrgUnits(accessToken: string): Promise<OrgUnit[]> {
+export async function fetchAllOrgUnits(
+  accessToken: string,
+  organizationId?: string,
+): Promise<OrgUnit[]> {
   const all: OrgUnit[] = []
   let offset = 0
 
   for (let page = 0; page < MAX_PAGES; page++) {
-    const res = await fetchOrgUnitsPage(accessToken, { limit: PAGE_LIMIT, offset })
+    const res = await fetchOrgUnitsPage(accessToken, { limit: PAGE_LIMIT, offset, organizationId })
     all.push(...res.items)
     offset += res.items.length
     if (res.items.length === 0 || offset >= res.total) break

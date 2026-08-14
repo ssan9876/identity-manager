@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { Inject, Injectable, Optional } from '@nestjs/common'
-import { asc, eq, sql } from 'drizzle-orm'
+import { and, asc, eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { DB_CLIENT } from '../common/db.token'
 import { ConflictError, NotFoundError } from '../common/errors'
@@ -500,11 +500,33 @@ export class OrgUnitsRepository {
     return sql`${orgUnits.path} <@ ANY (${sql.param(scopePaths)}::ltree[])`
   }
 
-  async list(options: { limit: number; offset: number; scopePaths?: string[] | null }): Promise<OrgUnit[]> {
+  /**
+   * Scope AND tenant, as one predicate, so `list` and `count` cannot drift
+   * apart. They already shared `scopeFilter`; adding a second filter to only
+   * one of them is how a paginator starts reporting a total that does not
+   * match the rows it can actually show.
+   */
+  private listFilters(options: { scopePaths?: string[] | null; organizationId?: string }) {
+    const filters = []
+    const scope = this.scopeFilter(options.scopePaths)
+    if (scope !== undefined) filters.push(scope)
+    if (options.organizationId !== undefined) {
+      filters.push(eq(orgUnits.organizationId, options.organizationId))
+    }
+    return filters.length === 0 ? undefined : and(...filters)
+  }
+
+  async list(options: {
+    limit: number
+    offset: number
+    scopePaths?: string[] | null
+    /** Restrict to ONE tenant — see UsersRepository.list's own note on why this is a repository filter and not a post-hoc one. */
+    organizationId?: string
+  }): Promise<OrgUnit[]> {
     const rows = await this.db
       .select()
       .from(orgUnits)
-      .where(this.scopeFilter(options.scopePaths))
+      .where(this.listFilters(options))
       .orderBy(asc(orgUnits.path))
       .limit(options.limit)
       .offset(options.offset)
@@ -512,11 +534,13 @@ export class OrgUnitsRepository {
     return rows as OrgUnit[]
   }
 
-  async count(options: { scopePaths?: string[] | null } = {}): Promise<number> {
+  async count(
+    options: { scopePaths?: string[] | null; organizationId?: string } = {},
+  ): Promise<number> {
     const [row] = await this.db
       .select({ value: sql<number>`count(*)::int` })
       .from(orgUnits)
-      .where(this.scopeFilter(options.scopePaths))
+      .where(this.listFilters(options))
 
     return row?.value ?? 0
   }

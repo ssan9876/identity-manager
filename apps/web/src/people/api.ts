@@ -38,6 +38,12 @@ export interface ListPeopleParams {
   search?: string
   status?: UserStatus
   orgUnitId?: string
+  /**
+   * The console's tenant switcher. Applied by the API in the same predicate
+   * that computes `total`, never by filtering the returned page — a page
+   * narrowed after the fact reports a total it cannot show.
+   */
+  organizationId?: string
 }
 
 /**

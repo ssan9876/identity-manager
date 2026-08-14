@@ -497,6 +497,15 @@ export class UsersController {
         ? undefined
         : parseId(String(query.orgUnitId), 'orgUnitId')
 
+    // `?organizationId=` — the console's tenant switcher. A uuid or a clean
+    // 400, never a silently-ignored filter: a switcher whose narrowing is
+    // dropped shows one tenant's people under another tenant's name, which
+    // is the one mistake a multi-tenant console must not make.
+    const organizationId =
+      query.organizationId === undefined
+        ? undefined
+        : parseId(String(query.organizationId), 'organizationId')
+
     const searchParsed = searchQuerySchema.safeParse(query.search)
     if (!searchParsed.success) {
       throw new ValidationError(['search: must be a string of at most 255 characters'])
@@ -511,7 +520,14 @@ export class UsersController {
     // applies the same null-vs-[] distinction — never collapsed here first.
     const scopePaths = await this.engine.scopePathsFor(request.actor, 'user:read')
 
-    const filter = { status: status.data as UserStatus | undefined, orgUnitId, scopePaths, search, ids }
+    const filter = {
+      status: status.data as UserStatus | undefined,
+      orgUnitId,
+      organizationId,
+      scopePaths,
+      search,
+      ids,
+    }
 
     const [items, total] = await Promise.all([
       this.users.list({ ...page, ...filter }),
