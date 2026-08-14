@@ -51,12 +51,22 @@ there unmodified.
 ### The docs gate: `pnpm check:docs`
 
 ```bash
-pnpm check:docs   # node scripts/extract-doc-facts.test.mjs && node scripts/check-docs.mjs
+pnpm check:docs   # check-control-bytes.mjs && extract-doc-facts.test.mjs && check-docs.mjs
 ```
 
-Two scripts. `extract-doc-facts.test.mjs` proves the fact base itself is sound (that the
+Three scripts. `check-control-bytes.mjs` refuses any tracked text file containing a raw
+control byte: a literal NUL makes a file **binary** to git and grep, so `git diff` reports
+a byte count instead of the change and `grep` refuses to show the line. Four files in this
+repository had one — including both audit documents describing the NUL-injection finding,
+which were unreviewable because of the hazard they document. Write the escape, never the
+byte.
+
+`extract-doc-facts.test.mjs` proves the fact base itself is sound (that the
 extractor still finds routes, all 13 connector targets, the CLI scripts) — a fact
 extractor that silently returns nothing would make every check below pass vacuously.
+It also pins counts that are otherwise maintained by hand, such as the size of
+`ALL_ACTIONS`; that assertion has drifted twice, and CI stayed red for six pushes the
+second time because nobody read it.
 `check-docs.mjs` then compares documentation against those facts and prints one block per
 problem, with the command to run and the fix.
 
