@@ -317,7 +317,7 @@ is privilege escalation, not merely disclosure. Every grant and every revoke pas
 otherwise revocation becomes a side door around assignment's own narrowing.
 
 The **Admin roles** page in the left nav shows the static catalog: which of the five
-roles grants which of the 24 actions. See [08 — Authorization model](08-authorization.md).
+roles grants which of the 30 actions. See [08 — Authorization model](08-authorization.md).
 
 **These are not business roles.** An administrative role says what you may *do in this
 console*; a business role says what *access an employee gets* — see

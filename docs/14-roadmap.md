@@ -17,7 +17,7 @@ An honest inventory: what is finished, what is half-built, and what is not built
 |---|---|
 | People, org units, groups | Full CRUD except delete — nothing in this system is deleted |
 | Nested groups | Transitive effective membership, cycle-safe under an advisory lock |
-| RBAC with org-unit scoping | Five roles, **twenty-four** actions (it was fourteen when this file last claimed a number), three independent dimensions — action, scope, rank |
+| RBAC with org-unit scoping | Five roles, **thirty** actions (it was fourteen, then twenty-four, when this file last claimed a number), three independent dimensions — action, scope, rank |
 | Append-only audit log | Two independent enforcement mechanisms |
 | Transactional outbox + sync worker | Per-`(aggregate, target)` ordering, backoff, dead letters |
 | Synchronous offboarding | Disable + session revocation inline, before the response returns |
