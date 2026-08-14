@@ -63,7 +63,27 @@
 > organization by design. **A tenant-facing API would be a second authorization model
 > and would need its own pass.**
 >
-> The full record is in [`archive/audits/`](archive/audits/).
+> The full record is in [`archive/audits/`](archive/audits/).>
+> ### Can you deploy this?
+>
+> **Yes, for the deployment model it is built for:** an internal or enterprise
+> network where every administrator is a trusted platform operator authenticating
+> against the master realm. All six planned audit dimensions have run, nothing HIGH
+> or CRITICAL is open, and the two MEDIUMs are named above rather than left in an
+> appendix. Deploy it knowing those two.
+>
+> **No, for a tenant-facing surface.** Not because a pass found something, but
+> because there is nothing to audit yet: tenants have no API of their own, and
+> giving them one is a second authorization model
+> ([14 — Roadmap](14-roadmap.md) item 4), not a new endpoint. Everything this
+> document says about isolation is about the DATA — see constraint 12 — and says
+> nothing about a caller who is not a platform operator.
+>
+> **One caveat worth weighing before you do.** The open half of
+> `CAR-system-actor` means constraint 7 does not hold for the reconcile route: its
+> per-entity writes are not permission-checked, scope-narrowed, audited or
+> outboxed. A constraint the code does not keep is worse than a gap nobody claimed
+> to have filled, which is why it is the roadmap's next item.
 
 ## What the system claims to uphold
 
